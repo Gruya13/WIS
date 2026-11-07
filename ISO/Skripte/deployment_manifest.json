@@ -1,0 +1,374 @@
+{
+  "manifest_version": "2.17.0",
+  "schema_version": 1,
+  "description": "Jedinstveni kanonski manifest deployment komponenti za Tehno kutak WIS (GUI sync, CLI sync, OEM i payload).",
+  "components": [
+    {
+      "id": "autounattend_xml",
+      "source": "autounattend.xml",
+      "destinations": [
+        "autounattend.xml"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "setup_complete_cmd",
+      "source": "SetupComplete.cmd",
+      "destinations": [
+        "SetupComplete.cmd",
+        "sources/$OEM$/$$/Setup/Scripts/SetupComplete.cmd"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "setup_complete_ps1",
+      "source": "SetupComplete.ps1",
+      "destinations": [
+        "SetupComplete.ps1",
+        "Skripte/SetupComplete.ps1",
+        "sources/$OEM$/$$/Setup/Scripts/SetupComplete.ps1",
+        "sources/$OEM$/$1/setup/SetupComplete.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "preoobe_network_cmd",
+      "source": "sources/$OEM$/$$/Setup/Scripts/PreOOBE-Network.cmd",
+      "destinations": [
+        "sources/$OEM$/$$/Setup/Scripts/PreOOBE-Network.cmd"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "preoobe_network_ps1",
+      "source": "sources/$OEM$/$$/Setup/Scripts/PreOOBE-Network.ps1",
+      "destinations": [
+        "sources/$OEM$/$$/Setup/Scripts/PreOOBE-Network.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "first_logon_cmd",
+      "source": "FirstLogon.cmd",
+      "destinations": [
+        "FirstLogon.cmd",
+        "Skripte/FirstLogon.cmd",
+        "sources/$OEM$/$$/Setup/Scripts/FirstLogon.cmd",
+        "sources/$OEM$/$1/setup/FirstLogon.cmd"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "first_logon_ps1",
+      "source": "FirstLogon.ps1",
+      "destinations": [
+        "FirstLogon.ps1",
+        "Skripte/FirstLogon.ps1",
+        "sources/$OEM$/$$/Setup/Scripts/FirstLogon.ps1",
+        "sources/$OEM$/$1/setup/FirstLogon.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "wis_accelerate_pe_cmd",
+      "source": "WIS-AcceleratePE.cmd",
+      "destinations": [
+        "WIS-AcceleratePE.cmd",
+        "sources/$OEM$/$$/Setup/Scripts/WIS-AcceleratePE.cmd"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "pokreni_instalaciju_bat",
+      "source": "Pokreni-Instalaciju.bat",
+      "destinations": [
+        "Pokreni-Instalaciju.bat"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "osvezi_wim_sliku_bat",
+      "source": "Osvezi-WimSliku.bat",
+      "destinations": [
+        "Osvezi-WimSliku.bat"
+      ],
+      "required": false,
+      "type": "file"
+    },
+    {
+      "id": "version_json",
+      "source": "../version.json",
+      "destinations": [
+        "version.json",
+        "sources/$OEM$/$1/setup/version.json"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase1_network",
+      "source": "../UI/Skripte/Phases/Phase1-Network.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase1-Network.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase1-Network.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase2_drivers",
+      "source": "../UI/Skripte/Phases/Phase2-Drivers.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase2-Drivers.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase2-Drivers.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase3_optimization",
+      "source": "../UI/Skripte/Phases/Phase3-Optimization.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase3-Optimization.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase3-Optimization.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase4_apps",
+      "source": "../UI/Skripte/Phases/Phase4-Apps.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase4-Apps.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase4-Apps.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase5_stress",
+      "source": "../UI/Skripte/Phases/Phase5-Stress.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase5-Stress.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase5-Stress.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "phase6_finalize",
+      "source": "../UI/Skripte/Phases/Phase6-Finalize.ps1",
+      "destinations": [
+        "Skripte/Phases/Phase6-Finalize.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Phases/Phase6-Finalize.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_apps",
+      "source": "../UI/Skripte/Modules/WIS.Apps.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Apps.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Apps.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_branding",
+      "source": "../UI/Skripte/Modules/WIS.Branding.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Branding.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Branding.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_cleanup",
+      "source": "../UI/Skripte/Modules/WIS.Cleanup.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Cleanup.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Cleanup.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_common",
+      "source": "../UI/Skripte/Modules/WIS.Common.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Common.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Common.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_core",
+      "source": "../UI/Skripte/Modules/WIS.Core.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Core.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Core.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_hardware",
+      "source": "../UI/Skripte/Modules/WIS.Hardware.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Hardware.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Hardware.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_network",
+      "source": "../UI/Skripte/Modules/WIS.Network.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Network.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Network.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_screencapture",
+      "source": "../UI/Skripte/Modules/WIS.ScreenCapture.ps1",
+      "destinations": [
+        "Skripte/Modules/WIS.ScreenCapture.ps1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.ScreenCapture.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_telemetry",
+      "source": "../UI/Skripte/Modules/WIS.Telemetry.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Telemetry.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Telemetry.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_ui",
+      "source": "../UI/Skripte/Modules/WIS.UI.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.UI.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.UI.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_update",
+      "source": "../UI/Skripte/Modules/WIS.Update.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.Update.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.Update.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "bin_wis_ui_exe",
+      "source": "../UI/bin/Release/WIS.UI.exe",
+      "destinations": [
+        "WIS.UI.exe",
+        "Skripte/WIS.UI/WIS.UI.exe",
+        "Skripte/WIS.UI/bin/Release/WIS.UI.exe",
+        "sources/$OEM$/$1/setup/WIS.UI.exe",
+        "sources/$OEM$/$1/setup/Skripte/WIS.UI/WIS.UI.exe"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "bin_wis_launcher_exe",
+      "source": "../Launcher/bin/Release/WIS.Launcher.exe",
+      "destinations": [
+        "WIS.Launcher.exe",
+        "Skripte/WIS.Launcher/WIS.Launcher.exe",
+        "Skripte/WIS.Launcher/bin/Release/WIS.Launcher.exe",
+        "sources/$OEM$/$1/setup/WIS.Launcher.exe"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "lib_hidsharp_dll",
+      "source": "sources/$OEM$/$1/setup/HidSharp.dll",
+      "destinations": [
+        "sources/$OEM$/$1/setup/HidSharp.dll",
+        "Skripte/WIS.UI/HidSharp.dll"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "lib_lhm_dll",
+      "source": "sources/$OEM$/$1/setup/LibreHardwareMonitorLib.dll",
+      "destinations": [
+        "sources/$OEM$/$1/setup/LibreHardwareMonitorLib.dll",
+        "Skripte/WIS.UI/LibreHardwareMonitorLib.dll"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "secret_wifi_servis_ini",
+      "source": "Wifi-Servis.ini",
+      "destinations": [
+        "Wifi-Servis.ini",
+        "Skripte/Wifi-Servis.ini",
+        "sources/$OEM$/$1/setup/Wifi-Servis.ini",
+        "sources/$OEM$/$$/Setup/Scripts/Wifi-Servis.ini"
+      ],
+      "required": false,
+      "secret": true,
+      "type": "file"
+    },
+    {
+      "id": "doc_readme",
+      "source": "../README.md",
+      "destinations": [
+        "README.md"
+      ],
+      "required": false,
+      "type": "file"
+    },
+    {
+      "id": "doc_istorija",
+      "source": "../.workspace/istorija_izrade.md",
+      "destinations": [
+        "istorija_izrade.md"
+      ],
+      "required": false,
+      "type": "file"
+    },
+    {
+      "id": "wis_status_contract",
+      "source": "../UI/Skripte/Modules/WIS.StatusContract.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.StatusContract.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.StatusContract.psm1"
+      ],
+      "required": true,
+      "type": "file"
+    }
+  ]
+}

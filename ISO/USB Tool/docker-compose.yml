@@ -1,0 +1,52 @@
+# ==============================================================================
+# GWADT USB Tool - Docker Compose Konfiguracija (Hardened Security Profile)
+# ==============================================================================
+# BEZBEDNOSNE OGRADE (WIS-TASK-136 / Paket A3):
+# 1. Zabrana network_mode: host i izlaganja na 0.0.0.0:
+#    Port kontejnera je vezan isključivo za lokalni loopback interfejs hosta
+#    (127.0.0.1:8765:8765), čime je onemogućen neovlašćen pristup sa LAN mreže.
+# 2. Uklonjen široki 'privileged: true' režim:
+#    Zamenjen minimalnim neophodnim Linux mogućnostima (cap_add: SYS_ADMIN, SYS_RAWIO)
+#    za inspekciju i montiranje USB blok uređaja, uz 'no-new-privileges:true'
+#    kako procesi unutar kontejnera ne bi mogli da eskaliraju privilegije.
+# 3. Izvorni repozitorijum i lokalni ISO direktorijumi su montirani u read-only (:ro)
+#    režimu radi očuvanja integriteta host sistema.
+# ==============================================================================
+
+services:
+  gwadt-usb-tool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gwadt-usb-tool:latest
+    container_name: gwadt-usb-tool
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    cap_add:
+      - SYS_ADMIN
+      - SYS_RAWIO
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - GWADT_PROJECT_ROOT=/project
+      - GWADT_STAGING_DIR=/staging
+      - GWADT_HOST_DOWNLOADS=/host_downloads
+      - GWADT_HOST_STORAGE=/host_storage
+      - GWADT_PORT=8765
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # 1. Pristup USB hotplug metapodacima (read-only udev baza)
+      - /run/udev:/run/udev:ro
+      # 2. Propagacija tačaka montiranja sa Linux hosta (:rslave)
+      - /run/media:/run/media:rslave
+      - /media:/media:rslave
+      # 3. Sistemski DBus socket za UDisks2 kontrolisane USB operacije
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # 4. GWADT izvorni repozitorijum (strogo read-only)
+      - ..:/project:ro
+      # 5. Pre-Stage skladište za pripremu WIM slika
+      - /home/gru/Storage/gwadt_staging:/staging
+      # 6. Direktorijumi za pronalaženje Windows ISO/ESD slika (strogo read-only)
+      - /home/gru/Downloads:/host_downloads:ro
+      - /home/gru/Storage:/host_storage:ro

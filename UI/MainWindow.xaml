@@ -1,0 +1,2462 @@
+<Window x:Class="WIS.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:WIS.UI"
+        mc:Ignorable="d"
+        Title="{Binding WindowTitle}"
+        Icon="Assets/WIS.ico"
+        Height="640" Width="880"
+        MinHeight="580" MinWidth="840"
+        WindowStartupLocation="CenterScreen"
+        WindowState="Maximized"
+        Topmost="False"
+        ShowInTaskbar="True"
+        ResizeMode="CanResizeWithGrip"
+        Background="#1E1E1E"
+        Foreground="#FFFFFF"
+        FontFamily="Segoe UI, Microsoft YaHei, Arial, sans-serif"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display">
+
+    <Window.Resources>
+        <!-- Custom ProgressBar Style with Centered Text -->
+        <Style x:Key="DetailedProgressBarStyle" TargetType="ProgressBar">
+            <Setter Property="Background" Value="#2D2D30" />
+            <Setter Property="BorderBrush" Value="#3E3E42" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid>
+                            <Border Name="PART_Track"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="4" />
+                            <Border Name="PART_Indicator"
+                                    HorizontalAlignment="Left"
+                                    Background="#007ACC"
+                                    CornerRadius="4" />
+                            <TextBlock Text="{Binding RelativeSource={RelativeSource TemplatedParent}, Path=Value, StringFormat={}{0:0}%}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontWeight="Bold"
+                                       FontSize="11"
+                                       Foreground="#FFFFFF">
+                                <TextBlock.Effect>
+                                    <DropShadowEffect ShadowDepth="1" BlurRadius="2" Color="#000000" Opacity="0.8" />
+                                </TextBlock.Effect>
+                            </TextBlock>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Dark Theme ScrollBar Styles -->
+        <Style x:Key="DarkScrollBarThumb" TargetType="{x:Type Thumb}">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Border x:Name="thumbBorder"
+                                Background="#3E3E42"
+                                CornerRadius="3" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="thumbBorder" Property="Background" Value="#58a6ff" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="thumbBorder" Property="Background" Value="#1f6feb" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DarkScrollBarPageButton" TargetType="{x:Type RepeatButton}">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RepeatButton}">
+                        <Rectangle Fill="{TemplateBinding Background}" Height="{TemplateBinding Height}" Width="{TemplateBinding Width}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <ControlTemplate x:Key="VerticalScrollBarTemplate" TargetType="{x:Type ScrollBar}">
+            <Grid Background="#1E1E1E" Width="10">
+                <Track x:Name="PART_Track" IsDirectionReversed="True" HorizontalAlignment="Center" Width="8">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource DarkScrollBarPageButton}" Command="{x:Static ScrollBar.PageUpCommand}" />
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource DarkScrollBarThumb}" />
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource DarkScrollBarPageButton}" Command="{x:Static ScrollBar.PageDownCommand}" />
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+
+        <ControlTemplate x:Key="HorizontalScrollBarTemplate" TargetType="{x:Type ScrollBar}">
+            <Grid Background="#1E1E1E" Height="10">
+                <Track x:Name="PART_Track" IsDirectionReversed="False" VerticalAlignment="Center" Height="8">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource DarkScrollBarPageButton}" Command="{x:Static ScrollBar.PageLeftCommand}" />
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb>
+                        <Thumb Style="{StaticResource DarkScrollBarThumb}" />
+                    </Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Style="{StaticResource DarkScrollBarPageButton}" Command="{x:Static ScrollBar.PageRightCommand}" />
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Vertical">
+                    <Setter Property="Width" Value="10" />
+                    <Setter Property="Height" Value="Auto" />
+                    <Setter Property="Template" Value="{StaticResource VerticalScrollBarTemplate}" />
+                </Trigger>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto" />
+                    <Setter Property="Height" Value="10" />
+                    <Setter Property="Template" Value="{StaticResource HorizontalScrollBarTemplate}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- Gornji Header -->
+            <RowDefinition Height="Auto" />
+            <!-- Centralni TabControl -->
+            <RowDefinition Height="*" />
+            <!-- Donja Traka za Akcije -->
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ========================================================= -->
+        <!-- GORNJI HEADER: Model, Serijski, CPU, RAM, NVMe, Timer     -->
+        <!-- ========================================================= -->
+        <Border Grid.Row="0"
+                Background="#252526"
+                BorderBrush="#3E3E42"
+                BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <!-- Logo i Model računara -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- Hardverske specifikacije -->
+                    <ColumnDefinition Width="*" />
+                    <!-- Jezički selektor -->
+                    <ColumnDefinition Width="Auto" />
+                    <!-- Duration Timer -->
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Model i Naziv -->
+                <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,18,0">
+                    <StackPanel Orientation="Horizontal">
+                        <Border Background="#007ACC" CornerRadius="3" Padding="6,2" Margin="0,0,8,0">
+                            <TextBlock Text="{Binding AppVersionText}" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" />
+                        </Border>
+                        <TextBlock Text="{Binding Loc[CompanyBrand]}" FontSize="11" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding ComputerModel}"
+                               FontSize="14"
+                               FontWeight="Bold"
+                               Foreground="#FFFFFF"
+                               Margin="0,3,0,1"
+                               MaxWidth="260"
+                               TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding SerialNumber, StringFormat='SN: {0}'}"
+                               FontSize="11"
+                               Foreground="#888888" />
+                </StackPanel>
+
+                <!-- Fleksibilni prazan prostor (bedževi CPU/RAM/Disk uklonjeni prema PRD v2.15.0) -->
+                <Border Grid.Column="1" />
+
+                <!-- Jezički Selektor: [ 🇷🇸 SRB | 🇨🇳 中文 ] -->
+                <Border Grid.Column="2"
+                        Background="#1E1E1E"
+                        BorderBrush="#3E3E42"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="3,3"
+                        Margin="0,0,12,0"
+                        VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal">
+                        <Button Command="{Binding SwitchLanguageCommand}"
+                                CommandParameter="sr"
+                                ToolTip="{Binding Loc[LanguageSelectTooltipSrb]}"
+                                Background="{Binding SerbianButtonBrush}"
+                                Foreground="{Binding SerbianButtonForeground}"
+                                BorderThickness="0"
+                                Padding="8,4"
+                                FontSize="11"
+                                FontWeight="Bold"
+                                Cursor="Hand">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="3" />
+                                </Style>
+                            </Button.Resources>
+                            <TextBlock Text="{Binding Loc[LangSrb]}" />
+                        </Button>
+                        <Border Width="1" Background="#3E3E42" Margin="3,2" />
+                        <Button Command="{Binding SwitchLanguageCommand}"
+                                CommandParameter="zh"
+                                ToolTip="{Binding Loc[LanguageSelectTooltipZh]}"
+                                Background="{Binding ChineseButtonBrush}"
+                                Foreground="{Binding ChineseButtonForeground}"
+                                BorderThickness="0"
+                                Padding="8,4"
+                                FontSize="11"
+                                FontWeight="Bold"
+                                Cursor="Hand">
+                            <Button.Resources>
+                                <Style TargetType="Border">
+                                    <Setter Property="CornerRadius" Value="3" />
+                                </Style>
+                            </Button.Resources>
+                            <TextBlock Text="{Binding Loc[LangZh]}" />
+                        </Button>
+                    </StackPanel>
+                </Border>
+
+                <!-- Duration timer -->
+                <Border Grid.Column="3"
+                        Background="#1E1E1E"
+                        BorderBrush="#007ACC"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="12,6"
+                        VerticalAlignment="Center">
+                    <StackPanel HorizontalAlignment="Center">
+                        <TextBlock Text="{Binding Loc[WorkTimeTitle]}" FontSize="9" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" />
+                        <TextBlock Text="{Binding DurationString}"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="#4EC9B0"
+                                   FontFamily="Consolas, Segoe UI"
+                                   HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ========================================================= -->
+        <!-- TABCONTROL SA 5 TABOVA                                    -->
+        <!-- ========================================================= -->
+        <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="14,10,14,10" SelectionChanged="MainTabControl_SelectionChanged">
+            <!-- ===================================================== -->
+            <!-- TAB 1: PREGLED                                        -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabOverviewHeader}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="6,10,6,10">
+                        <!-- ISTAKNUTA KARTICA: SERVIS SPREMAN (Pred-start sažetak i brzo pokretanje) -->
+                        <Border Background="#252526"
+                                BorderBrush="#007ACC"
+                                BorderThickness="2"
+                                CornerRadius="8"
+                                Padding="18,16"
+                                Margin="0,0,0,14"
+                                Visibility="{Binding IsServiceReadyVisible, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                        <Border Background="#007ACC" CornerRadius="3" Padding="8,3" HorizontalAlignment="Left" Margin="0,0,0,6">
+                                            <TextBlock Text="{Binding Loc[ServiceReadyBadge]}" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" />
+                                        </Border>
+                                        <TextBlock Text="{Binding Loc[ServiceReadyDesc]}"
+                                                   FontSize="12"
+                                                   Foreground="#CCCCCC" />
+                                    </StackPanel>
+                                    <!-- Veliko, stilizovano dugme ▶ ZAPOČNI INSTALACIJU -->
+                                    <Button Grid.Column="1"
+                                            Content="{Binding Loc[BtnStartService]}"
+                                            Command="{Binding StartServiceCommand}"
+                                            Style="{StaticResource AccentButtonStyle}"
+                                            Padding="20,10"
+                                            FontSize="13"
+                                            FontWeight="Bold"
+                                            VerticalAlignment="Center" />
+                                </Grid>
+
+                                <!-- Brzi sažetak: Model računara, CPU, RAM, SMART Zdravlje i Autopilot status -->
+                                <Border Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,12">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <!-- Model računara -->
+                                        <Grid Grid.Row="0" Grid.Column="0" Margin="0,3,10,3">
+                                            <TextBlock Text="{Binding Loc[ComputerModelLabel]}" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding ComputerModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                        </Grid>
+
+                                        <!-- Procesor (CPU) -->
+                                        <Grid Grid.Row="0" Grid.Column="1" Margin="10,3,0,3">
+                                            <TextBlock Text="{Binding Loc[ProcessorLabel]}" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding CpuInfo}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                        </Grid>
+
+                                        <!-- Radna memorija (RAM) -->
+                                        <Grid Grid.Row="1" Grid.Column="0" Margin="0,3,10,3">
+                                            <TextBlock Text="{Binding Loc[MemoryLabel]}" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding RamInfo}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                        </Grid>
+
+                                        <!-- SMART Zdravlje -->
+                                        <Grid Grid.Row="1" Grid.Column="1" Margin="10,3,0,3">
+                                            <TextBlock Text="{Binding Loc[SmartStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding SmartStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding SmartStatusBrush}" />
+                                        </Grid>
+
+                                        <!-- Autopilot status -->
+                                        <Grid Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,0,0">
+                                            <TextBlock Text="{Binding Loc[AutopilotStatusLabel]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Autopilot.StatusTitle}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding Autopilot.StatusBrush}" TextTrimming="CharacterEllipsis" MaxWidth="380" />
+                                        </Grid>
+                                    </Grid>
+                                </Border>
+
+                                <!-- Prikaz odbrojavanja -->
+                                <Border Background="#2D2D30" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="4" Padding="12,8">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="⏱" FontSize="13" Foreground="#F1C40F" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding AutoStartMessage}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#CCCCCC"
+                                                   VerticalAlignment="Center" />
+                                    </Grid>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- FAZA TRACKER (1 - 6 Faza sa vizuelnim statusima) -->
+                        <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,12" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[InstallationFlowTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,10" />
+                                <ItemsControl ItemsSource="{Binding Phases}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <UniformGrid Rows="1" Columns="6" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#2D2D30"
+                                                    BorderBrush="{Binding BorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="5"
+                                                    Padding="8,6"
+                                                    Margin="3">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <!-- Circle Icon / Number -->
+                                                    <Border Grid.Column="0"
+                                                            Width="24" Height="24"
+                                                            CornerRadius="12"
+                                                            Background="{Binding BadgeBackground}"
+                                                            VerticalAlignment="Center"
+                                                            Margin="0,0,8,0">
+                                                        <TextBlock Text="{Binding IconText}"
+                                                                   Foreground="{Binding BadgeForeground}"
+                                                                   FontWeight="Bold"
+                                                                   FontSize="11"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <!-- Phase title & subtitle -->
+                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Title}"
+                                                                   FontSize="11"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#FFFFFF"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding Subtitle}"
+                                                                   FontSize="9"
+                                                                   Foreground="#888888"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- TRENUTNA AKTIVNOST I PROGRESS BAR -->
+                        <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="16,14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding PhaseName}"
+                                               FontSize="15"
+                                               FontWeight="Bold"
+                                               Foreground="#FFFFFF" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding Progress, StringFormat='{}{0}%'}"
+                                               FontSize="16"
+                                               FontWeight="Bold"
+                                               Foreground="#007ACC" />
+                                </Grid>
+                                <TextBlock Text="{Binding SubPhase}"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="#4EC9B0"
+                                           Margin="0,0,0,4" />
+                                <TextBlock Text="{Binding LiveStatus}"
+                                           FontSize="11"
+                                           Foreground="#CCCCCC"
+                                           Margin="0,0,0,10"
+                                           TextWrapping="Wrap" />
+
+                                <!-- Smooth Progress Bar -->
+                                <ProgressBar Value="{Binding Progress}"
+                                             Style="{StaticResource DetailedProgressBarStyle}"
+                                             Height="22" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- USB FREE BANNER (Prikazuje se kada je USB oslobodjen) -->
+                        <Border Background="#1B4332"
+                                BorderBrush="#2D6A4F"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="16,10"
+                                Margin="0,0,0,12"
+                                Visibility="{Binding UsbFree, Converter={StaticResource BoolToVis}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0"
+                                        Background="#2ECC71"
+                                        CornerRadius="14"
+                                        Width="28" Height="28"
+                                        Margin="0,0,12,0"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="✓"
+                                               FontWeight="Bold"
+                                               FontSize="14"
+                                               Foreground="#1B4332"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Loc[UsbFreeTitle]}"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Foreground="#52B788" />
+                                    <TextBlock Text="{Binding Loc[UsbFreeDesc]}"
+                                               FontSize="11"
+                                               Foreground="#D8F3DC" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- LOG ACTIVITY TAIL (Poslednjih 5 poruka) -->
+                        <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[RecentActivityTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
+                                <ItemsControl ItemsSource="{Binding RecentLogs}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#1E1E1E" BorderBrush="#2D2D30" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,2">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <!-- Time -->
+                                                    <TextBlock Grid.Column="0" Text="{Binding Time}" FontSize="11" Foreground="#888888" FontFamily="Consolas" Margin="0,0,8,0" />
+                                                    <!-- Level Badge -->
+                                                    <Border Grid.Column="1" Background="#2D2D30" CornerRadius="2" Padding="4,1" Margin="0,0,8,0">
+                                                        <TextBlock Text="{Binding Level}" FontSize="9" FontWeight="Bold" Foreground="{Binding LevelBrush}" />
+                                                    </Border>
+                                                    <!-- Tag -->
+                                                    <TextBlock Grid.Column="2" Text="{Binding Tag}" FontSize="11" Foreground="#4EC9B0" Margin="0,0,8,0" />
+                                                    <!-- Message -->
+                                                    <TextBlock Grid.Column="3" Text="{Binding Message}" FontSize="11" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB: INFORMACIJE O SISTEMU I HARDVERU (v2.7.1)        -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabHardwareHeader}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="6,10,6,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- HEADER BAR SA OSVEŽAVANJEM (Red 0, Kolone 0-1) -->
+                        <Border Grid.Row="0" Grid.ColumnSpan="2" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="{Binding Loc[HardwareOverviewTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                <Button Grid.Column="1"
+                                        Command="{Binding RefreshHardwareCommand}"
+                                        Content="{Binding Loc[BtnRefreshHardware]}"
+                                        Background="#2D2D30"
+                                        Foreground="#FFFFFF"
+                                        BorderBrush="#007ACC"
+                                        BorderThickness="1"
+                                        Padding="12,5"
+                                        FontSize="11"
+                                        FontWeight="SemiBold"
+                                        Cursor="Hand"
+                                        VerticalAlignment="Center">
+                                    <Button.Resources>
+                                        <Style TargetType="Border">
+                                            <Setter Property="CornerRadius" Value="4" />
+                                        </Style>
+                                    </Button.Resources>
+                                </Button>
+                            </Grid>
+                        </Border>
+
+                        <!-- KARTICA 1: PROCESOR (CPU) (Red 1, Kolona 0) -->
+                        <Border Grid.Row="1" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwCpuCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.CpuSocket}" FontSize="10" FontWeight="SemiBold" Foreground="#888888" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwCpuModelLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.CpuModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="240" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwCpuCoresThreadsLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.CpuCoresThreads}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwCpuClockLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.CpuClock}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwCpuSocketLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.CpuSocket}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 2: RADNA MEMORIJA (RAM) (Red 1, Kolona 1) -->
+                        <Border Grid.Row="1" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwRamCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <!-- Statusni bedž: Integrisana ili SO-DIMM -->
+                                    <Border Grid.Column="1" Background="#2D2D30" BorderBrush="#007ACC" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.RamSolderedBadge}" FontSize="10" FontWeight="Bold" Foreground="#58A6FF" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwRamTotalLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.RamSummary}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwRamTypeLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.RamType}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwRamSpeedLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.RamSpeed}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwRamConfigLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.RamDetails}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="200" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwRamSlotsLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.RamSlotsSummary}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#58A6FF" TextTrimming="CharacterEllipsis" MaxWidth="220" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 3: SKLADIŠTE & SMART (SSD) (Red 2, Kolona 0) -->
+                        <Border Grid.Row="2" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwStorageCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.StorageType}" FontSize="10" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwStoragePrimaryLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.StorageModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="230" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwStorageSmartLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.StorageHealth}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding HardwareInfo.StorageHealthBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwStorageHoursLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.StorageHours}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwStorageTempLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.StorageTemp}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 4: BATERIJA & NAPAJANJE (Red 2, Kolona 1) -->
+                        <Border Grid.Row="2" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwBatteryCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.BatteryPowerStatus}" FontSize="10" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBatteryWearLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BatteryWear}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding HardwareInfo.BatteryHealthBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBatteryCapacityLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BatteryCapacity}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="200" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBatteryCyclesLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BatteryCycles}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBatterySourceLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BatteryPowerStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 5: GRAFIKA & DISPLEJ (Red 3, Kolona 0) -->
+                        <Border Grid.Row="3" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwGpuCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.DisplaySpec}" FontSize="10" FontWeight="SemiBold" Foreground="#58A6FF" TextTrimming="CharacterEllipsis" MaxWidth="160" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwGpuPrimaryLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.GpuPrimary}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="240" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwGpuPrimaryVramLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.GpuPrimaryVram}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#58A6FF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwGpuSecondaryLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.GpuSecondary}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="240" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwGpuSecondaryVramLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.GpuSecondaryVram}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwDisplaySpecLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.DisplaySpec}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwDisplayModelLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.DisplayModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="260" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwDisplayColorGamutLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.DisplayColorGamut}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#58A6FF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwTouchscreenLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.TouchscreenStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.TouchscreenBrush}" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 6: MATIČNA PLOČA & BIOS (Red 3, Kolona 1) -->
+                        <Border Grid.Row="3" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwMotherboardCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="{Binding HardwareInfo.SecureBootStatus}" FontSize="10" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwMbModelLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.MotherboardModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="220" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwMbManufacturerLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.MotherboardManufacturer}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="200" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwSerialNumberLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.SerialNumber}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBiosVersionDateLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BiosVersionDate}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="220" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwSecureBootLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.SecureBootStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 7: PERIFERIJE & BIOMETRIJA (Windows Hello) (Red 4, Kolone 0-1) -->
+                        <Border Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[HwPeripheralsCardTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Border Grid.Column="1" Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="3" Padding="6,2">
+                                        <TextBlock Text="PnP &amp; WMI" FontSize="10" FontWeight="SemiBold" Foreground="#888888" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwWebcamLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.WebcamModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding HardwareInfo.WebcamBrush}" TextTrimming="CharacterEllipsis" MaxWidth="450" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwIrCameraLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.IrCameraStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.IrCameraBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwBacklitKeyboardLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.BacklitKeyboardStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.BacklitKeyboardBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwFingerprintLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.FingerprintSensor}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.FingerprintBrush}" TextTrimming="CharacterEllipsis" MaxWidth="450" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwSpeakersLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.AudioSpeakers}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.AudioSpeakersBrush}" TextTrimming="CharacterEllipsis" MaxWidth="450" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[HwMicrophoneLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding HardwareInfo.MicrophoneStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.MicrophoneBrush}" TextTrimming="CharacterEllipsis" MaxWidth="450" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB: DRAJVERI I UREĐAJI (v2.7.3 - TASK-113)          -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabDriversHeader}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="12,12,12,12">
+                        <Grid.RowDefinitions>
+                            <!-- 0: Kartica za nedostajuće / problematične uređaje -->
+                            <RowDefinition Height="Auto" />
+                            <!-- 1: Akciona traka (Pretraga, Osveži, Device Manager) -->
+                            <RowDefinition Height="Auto" />
+                            <!-- 2: Glavni prikaz kategorizovanih drajvera -->
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- ROW 0: KARTICA ZA NEDOSTAJUĆE / PROBLEMATIČNE UREĐAJE -->
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <!-- Stanje A: Postoje problematični drajveri (HasMissingDevices == true) -->
+                            <Border Visibility="{Binding Drivers.HasMissingDevices, Converter={StaticResource BoolToVis}}"
+                                    Background="#252526"
+                                    BorderBrush="#F85149"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="14">
+                                <StackPanel>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                                            <TextBlock Text="⚠" FontSize="16" Foreground="#F85149" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Drivers.MissingSummaryText}" FontSize="13" FontWeight="Bold" Foreground="#F85149" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <Border Grid.Column="1" Background="#3D1E1E" BorderBrush="#F85149" BorderThickness="1" CornerRadius="4" Padding="8,3">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="{Binding Drivers.MissingDevicesCount}" FontSize="10" FontWeight="Bold" Foreground="#F85149" Margin="0,0,4,0" />
+                                                <TextBlock Text="{Binding Loc[DriverInterventionRequired]}" FontSize="10" FontWeight="Bold" Foreground="#F85149" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+
+                                    <!-- Lista problematičnih uređaja sa HWID kopiranjem i instalacijom -->
+                                    <ItemsControl ItemsSource="{Binding Drivers.MissingDevices}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#1E1E1E" BorderBrush="{Binding CardBorderBrush}" BorderThickness="1" CornerRadius="4" Padding="12,10" Margin="0,0,0,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <!-- Leva strana: Naziv, Proizvođač, Greška -->
+                                                        <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="13" Foreground="#FFFFFF" Margin="0,0,0,4" />
+                                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                                                <TextBlock Text="{Binding Loc[DriverClassLabel]}" FontSize="11" Foreground="#888888" />
+                                                                <TextBlock Text="{Binding PnpClass}" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" Margin="0,0,12,0" />
+                                                                <TextBlock Text="{Binding Loc[DriverManufacturerLabel]}" FontSize="11" Foreground="#888888" />
+                                                                <TextBlock Text="{Binding Manufacturer}" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                                            </StackPanel>
+                                                            <TextBlock Text="{Binding ErrorDescription}" FontSize="11" FontWeight="SemiBold" Foreground="#F85149" />
+                                                        </StackPanel>
+
+                                                        <!-- Desna strana: Hardware ID, Dugme za kopiranje i Akcija Instalacije -->
+                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                                                            <TextBox Text="{Binding HardwareId, Mode=OneWay}"
+                                                                     IsReadOnly="True"
+                                                                     Background="#141414"
+                                                                     Foreground="#58A6FF"
+                                                                     BorderBrush="#3E3E42"
+                                                                     BorderThickness="1"
+                                                                     Padding="8,5"
+                                                                     FontFamily="Consolas"
+                                                                     FontSize="11"
+                                                                     Width="260"
+                                                                     VerticalAlignment="Center"
+                                                                     ToolTip="{Binding HardwareId}" />
+                                                            <Button Content="{Binding Loc[BtnCopyHwid]}"
+                                                                    Command="{Binding DataContext.Drivers.CopyHwidCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding HardwareId}"
+                                                                    Background="#21262D"
+                                                                    Foreground="#58A6FF"
+                                                                    BorderBrush="#388BFD"
+                                                                    BorderThickness="1"
+                                                                    Padding="10,5"
+                                                                    Margin="8,0,0,0"
+                                                                    Cursor="Hand"
+                                                                    FontWeight="SemiBold"
+                                                                    FontSize="11"
+                                                                    ToolTip="{Binding Loc[TooltipCopyHwid]}" />
+
+                                                            <!-- Primarno dugme: [⬇ Instaliraj zvanični drajver] -->
+                                                            <Button Content="{Binding Loc[BtnInstallOfficialDriver]}"
+                                                                    Command="{Binding DataContext.Drivers.InstallDriverCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                    CommandParameter="{Binding}"
+                                                                    Visibility="{Binding ShowInstallButton, Converter={StaticResource BoolToVis}}"
+                                                                    Background="#238636"
+                                                                    Foreground="#FFFFFF"
+                                                                    BorderBrush="#2EA043"
+                                                                    BorderThickness="1"
+                                                                    Padding="10,5"
+                                                                    Margin="8,0,0,0"
+                                                                    Cursor="Hand"
+                                                                    FontWeight="SemiBold"
+                                                                    FontSize="11"
+                                                                    ToolTip="{Binding Loc[TooltipInstallDriver]}" />
+
+                                                            <!-- Tokom instalacije: Inline Mini Progress Bar & Status (IsInstalling == true) -->
+                                                            <Border Visibility="{Binding IsInstalling, Converter={StaticResource BoolToVis}}"
+                                                                    Background="#161B22"
+                                                                    BorderBrush="#38BDF8"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="4"
+                                                                    Padding="8,4"
+                                                                    Margin="8,0,0,0"
+                                                                    Width="210"
+                                                                    VerticalAlignment="Center">
+                                                                <StackPanel>
+                                                                    <Grid Margin="0,0,0,3">
+                                                                        <TextBlock Text="{Binding InstallStatusText}"
+                                                                                   FontSize="10"
+                                                                                   FontWeight="SemiBold"
+                                                                                   Foreground="#38BDF8"
+                                                                                   HorizontalAlignment="Left"
+                                                                                   TextTrimming="CharacterEllipsis"
+                                                                                   MaxWidth="140" />
+                                                                        <TextBlock Text="{Binding InstallSpeedText}"
+                                                                                   FontSize="10"
+                                                                                   Foreground="#888888"
+                                                                                   HorizontalAlignment="Right" />
+                                                                    </Grid>
+                                                                    <ProgressBar Height="4"
+                                                                                 Foreground="#38BDF8"
+                                                                                 Background="#2D2D30"
+                                                                                 BorderThickness="0"
+                                                                                 Value="{Binding InstallProgressPercent}"
+                                                                                 Maximum="100" />
+                                                                </StackPanel>
+                                                            </Border>
+
+                                                            <!-- Kada je rešeno: Zeleni bedž [✓ Drajver uspešno instaliran!] (IsResolved == true) -->
+                                                            <Border Visibility="{Binding IsResolved, Converter={StaticResource BoolToVis}}"
+                                                                    Background="#162C1D"
+                                                                    BorderBrush="#238636"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="4"
+                                                                    Padding="8,5"
+                                                                    Margin="8,0,0,0"
+                                                                    VerticalAlignment="Center">
+                                                                <TextBlock Text="{Binding Loc[DriverInstalledSuccess]}"
+                                                                           FontSize="11"
+                                                                           FontWeight="SemiBold"
+                                                                           Foreground="#3FB950" />
+                                                            </Border>
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Stanje B: Svi drajveri su u redu (HasNoMissingDevices == true) -->
+                            <Border Visibility="{Binding Drivers.HasNoMissingDevices, Converter={StaticResource BoolToVis}}"
+                                    Background="#162C1D"
+                                    BorderBrush="#238636"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="14">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="✅" FontSize="18" Margin="0,0,10,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Drivers.MissingSummaryText}" FontSize="13" FontWeight="SemiBold" Foreground="#3FB950" VerticalAlignment="Center" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <!-- ROW 1: AKCIONA TRAKA -->
+                        <Border Grid.Row="1"
+                                Background="#252526"
+                                BorderBrush="#3E3E42"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="12,8"
+                                Margin="0,0,0,12">
+                            <StackPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Pretraga i filtriranje -->
+                                    <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                                        <TextBlock Text="🔍" FontSize="13" Foreground="#888888" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <TextBox Text="{Binding Drivers.SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                                 Width="260"
+                                                 Background="#1E1E1E"
+                                                 Foreground="#FFFFFF"
+                                                 BorderBrush="#3E3E42"
+                                                 BorderThickness="1"
+                                                 Padding="8,5"
+                                                 FontSize="11"
+                                                 VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Loc[DriverFilterPlaceholder]}" FontSize="11" Foreground="#6E7681" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                    </StackPanel>
+
+                                    <!-- Akciona dugmad -->
+                                    <StackPanel Orientation="Horizontal" Grid.Column="1" VerticalAlignment="Center">
+                                        <!-- Status provere ključnih drajvera (IsCheckingKeyDrivers == true) -->
+                                        <Border Visibility="{Binding Drivers.IsCheckingKeyDrivers, Converter={StaticResource BoolToVis}}"
+                                                Background="#161B22"
+                                                BorderBrush="#38BDF8"
+                                                BorderThickness="1"
+                                                CornerRadius="4"
+                                                Padding="8,5"
+                                                Margin="0,0,8,0"
+                                                VerticalAlignment="Center">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock Text="🔄 " FontSize="11" Foreground="#38BDF8" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding Drivers.KeyDriversCheckStatus}"
+                                                           FontSize="11"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#38BDF8"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Button Content="{Binding Loc[BtnCheckKeyDrivers]}"
+                                                Command="{Binding Drivers.CheckKeyDriversCommand}"
+                                                Background="#0E639C"
+                                                Foreground="#FFFFFF"
+                                                BorderBrush="#1177BB"
+                                                BorderThickness="1"
+                                                Padding="12,6"
+                                                Margin="0,0,8,0"
+                                                Cursor="Hand"
+                                                FontWeight="SemiBold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipCheckKeyDrivers]}" />
+                                        <Button Content="{Binding Loc[BtnResolveAllDrivers]}"
+                                                Command="{Binding Drivers.ResolveAllDriversCommand}"
+                                                Background="#8957E5"
+                                                Foreground="#FFFFFF"
+                                                BorderBrush="#A371F7"
+                                                BorderThickness="1"
+                                                Padding="12,6"
+                                                Margin="0,0,8,0"
+                                                Cursor="Hand"
+                                                FontWeight="Bold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipResolveAllDrivers]}" />
+                                        <Button Content="{Binding Loc[BtnRefreshDriverTree]}"
+                                                Command="{Binding Drivers.RefreshDriversCommand}"
+                                                Background="#21262D"
+                                                Foreground="#C9D1D9"
+                                                BorderBrush="#30363D"
+                                                BorderThickness="1"
+                                                Padding="12,6"
+                                                Margin="0,0,8,0"
+                                                Cursor="Hand"
+                                                FontWeight="SemiBold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipRefreshDriverTree]}" />
+                                        <Button Content="{Binding Loc[BtnOpenDeviceManager]}"
+                                                Command="{Binding Drivers.OpenDeviceManagerCommand}"
+                                                Background="#1F6FEB"
+                                                Foreground="#FFFFFF"
+                                                BorderBrush="#388BFD"
+                                                BorderThickness="1"
+                                                Padding="12,6"
+                                                Cursor="Hand"
+                                                FontWeight="SemiBold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipOpenDeviceManager]}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Inline progres bar za grupno rešavanje drajvera (IsBatchResolving == true) -->
+                                <Border Visibility="{Binding Drivers.IsBatchResolving, Converter={StaticResource BoolToVis}}"
+                                        Margin="0,8,0,0"
+                                        Padding="10,6"
+                                        Background="#161B22"
+                                        BorderBrush="#38BDF8"
+                                        BorderThickness="1"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,4">
+                                            <TextBlock Text="{Binding Drivers.BatchStatusText}"
+                                                       FontSize="11"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="#38BDF8"
+                                                       HorizontalAlignment="Left" />
+                                            <TextBlock Text="{Binding Drivers.BatchProgressPercent, StringFormat='{}{0}%'}"
+                                                       FontSize="11"
+                                                       FontWeight="Bold"
+                                                       Foreground="#58A6FF"
+                                                       HorizontalAlignment="Right" />
+                                        </Grid>
+                                        <ProgressBar Height="4"
+                                                     Foreground="#38BDF8"
+                                                     Background="#21262D"
+                                                     BorderThickness="0"
+                                                     Value="{Binding Drivers.BatchProgressPercent}"
+                                                     Maximum="100" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- ROW 2: KATEGORIZOVANO STABLO INSTALIRANIH DRAJVERA -->
+                        <Border Grid.Row="2"
+                                Background="#252526"
+                                BorderBrush="#3E3E42"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="14">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[DriversInstalledByCategoryTitle]}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="#888888"
+                                               VerticalAlignment="Center" />
+                                    <StackPanel Orientation="Horizontal" Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Loc[DriversTotalDetected]}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#58A6FF"
+                                                   Margin="0,0,4,0" />
+                                        <TextBlock Text="{Binding Drivers.TotalDevicesCount}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#58A6FF" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <Border Height="1" Background="#3E3E42" Margin="0,0,0,12" />
+
+                                <!-- Lista kategorija uređaja (Expanders) -->
+                                <ItemsControl ItemsSource="{Binding Drivers.Categories}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Expander IsExpanded="{Binding IsExpanded, Mode=TwoWay}"
+                                                      Visibility="{Binding IsVisible, Converter={StaticResource BoolToVis}}"
+                                                      Background="#1E1E1E"
+                                                      BorderBrush="#3E3E42"
+                                                      BorderThickness="1"
+                                                      Margin="0,0,0,8"
+                                                      Foreground="#FFFFFF">
+                                                <Expander.Header>
+                                                    <Grid Margin="6,4">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding CategoryIcon}" FontSize="14" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding CategoryName}" FontWeight="SemiBold" FontSize="12" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                        </StackPanel>
+                                                        <Border Grid.Column="1" Background="#2D2D30" CornerRadius="10" Padding="8,2" Margin="8,0,0,0" VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <TextBlock Text="{Binding DeviceCount}" FontSize="11" Foreground="#AAAAAA" Margin="0,0,3,0" />
+                                                                <TextBlock Text="{Binding Loc[DeviceUnitCount]}" FontSize="11" Foreground="#AAAAAA" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Expander.Header>
+
+                                                <!-- Sadržaj kategorije: Lista uređaja -->
+                                                <ItemsControl ItemsSource="{Binding Devices}" Margin="12,6,12,10">
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Background="#252526" BorderBrush="#333333" BorderThickness="1" CornerRadius="4" Padding="10,8" Margin="0,3,0,3">
+                                                                <Grid>
+                                                                    <Grid.RowDefinitions>
+                                                                        <RowDefinition Height="Auto" />
+                                                                        <RowDefinition Height="Auto" />
+                                                                    </Grid.RowDefinitions>
+
+                                                                    <!-- Red 0: Naziv i Proizvođač -->
+                                                                    <Grid Grid.Row="0" Margin="0,0,0,4">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <StackPanel Orientation="Horizontal" Grid.Column="0">
+                                                                            <Ellipse Width="6" Height="6" Fill="{Binding StatusBrush}" Margin="0,0,8,0" VerticalAlignment="Center" />
+                                                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="12" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="520" />
+                                                                        </StackPanel>
+                                                                        <TextBlock Grid.Column="1" Text="{Binding Manufacturer}" FontSize="11" Foreground="#888888" HorizontalAlignment="Right" />
+                                                                    </Grid>
+
+                                                                    <!-- Red 1: Verzija, Datum i Dugme za HWID -->
+                                                                    <Grid Grid.Row="1">
+                                                                        <Grid.ColumnDefinitions>
+                                                                            <ColumnDefinition Width="*" />
+                                                                            <ColumnDefinition Width="Auto" />
+                                                                        </Grid.ColumnDefinitions>
+                                                                        <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                                                                            <TextBlock Text="{Binding Loc[DriverVersionLabel]}" FontSize="11" Foreground="#888888" />
+                                                                            <TextBlock Text="{Binding DriverVersion}" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" Margin="0,0,12,0" />
+                                                                            <TextBlock Text="{Binding Loc[DriverDateLabel]}" FontSize="11" Foreground="#888888" />
+                                                                            <TextBlock Text="{Binding DriverDate}" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                                                        </StackPanel>
+                                                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                                                            <!-- Stanje 1: Nije provereno (dugme [🔍 Proveri]) -->
+                                                                            <Button Content="{Binding Loc[BtnDriverCheck]}"
+                                                                                    Command="{Binding CheckUpdateCommand}"
+                                                                                    CommandParameter="{Binding}"
+                                                                                    Visibility="{Binding ShowCheckUpdateButton, Converter={StaticResource BoolToVis}}"
+                                                                                    Background="#21262D"
+                                                                                    Foreground="#58A6FF"
+                                                                                    BorderBrush="#388BFD"
+                                                                                    BorderThickness="1"
+                                                                                    Padding="8,2"
+                                                                                    Margin="0,0,6,0"
+                                                                                    FontSize="10"
+                                                                                    FontWeight="SemiBold"
+                                                                                    Cursor="Hand"
+                                                                                    ToolTip="{Binding Loc[TooltipCheckKeyDrivers]}" />
+
+                                                                            <!-- Stanje 2: Provera u toku (tekstualni status 🔍 Provera...) -->
+                                                                            <Border Visibility="{Binding ShowCheckingUpdateBadge, Converter={StaticResource BoolToVis}}"
+                                                                                    Background="#161B22"
+                                                                                    BorderBrush="#38BDF8"
+                                                                                    BorderThickness="1"
+                                                                                    CornerRadius="3"
+                                                                                    Padding="6,2"
+                                                                                    Margin="0,0,6,0"
+                                                                                    VerticalAlignment="Center">
+                                                                                <TextBlock Text="{Binding Loc[DriverCheckingStatus]}"
+                                                                                           FontSize="10"
+                                                                                           FontWeight="SemiBold"
+                                                                                           Foreground="#38BDF8" />
+                                                                            </Border>
+
+                                                                            <!-- Stanje 3: Dostupno ažuriranje (stilizovani bedž i primarno dugme [⬇ Nadogradi]) -->
+                                                                            <StackPanel Orientation="Horizontal"
+                                                                                        Visibility="{Binding ShowUpdateAvailableBadge, Converter={StaticResource BoolToVis}}"
+                                                                                        VerticalAlignment="Center"
+                                                                                        Margin="0,0,6,0">
+                                                                                <Border Background="#2E1C0A"
+                                                                                        BorderBrush="#D29922"
+                                                                                        BorderThickness="1"
+                                                                                        CornerRadius="3"
+                                                                                        Padding="6,2"
+                                                                                        Margin="0,0,6,0"
+                                                                                        VerticalAlignment="Center">
+                                                                                    <StackPanel Orientation="Horizontal">
+                                                                                        <TextBlock Text="{Binding Loc[DriverNewVersionAvailable]}"
+                                                                                                   FontSize="10"
+                                                                                                   FontWeight="Bold"
+                                                                                                   Foreground="#F1E05A"
+                                                                                                   Margin="0,0,4,0" />
+                                                                                        <TextBlock Text="{Binding LatestVersion}"
+                                                                                                   FontSize="10"
+                                                                                                   FontWeight="Bold"
+                                                                                                   Foreground="#F1E05A" />
+                                                                                    </StackPanel>
+                                                                                </Border>
+                                                                                <Button Content="{Binding Loc[BtnDriverUpgrade]}"
+                                                                                        Command="{Binding UpgradeDriverCommand}"
+                                                                                        CommandParameter="{Binding}"
+                                                                                        Background="#238636"
+                                                                                        Foreground="#FFFFFF"
+                                                                                        BorderBrush="#2EA043"
+                                                                                        BorderThickness="1"
+                                                                                        Padding="8,2"
+                                                                                        FontSize="10"
+                                                                                        FontWeight="Bold"
+                                                                                        Cursor="Hand"
+                                                                                        ToolTip="{Binding Loc[TooltipInstallDriver]}" />
+                                                                            </StackPanel>
+
+                                                                            <!-- Stanje 4: Najnoviji drajver (zeleni bedž ✓ Najnoviji drajver) -->
+                                                                            <Border Visibility="{Binding ShowUpToDateBadge, Converter={StaticResource BoolToVis}}"
+                                                                                    Background="#162C1D"
+                                                                                    BorderBrush="#238636"
+                                                                                    BorderThickness="1"
+                                                                                    CornerRadius="3"
+                                                                                    Padding="6,2"
+                                                                                    Margin="0,0,6,0"
+                                                                                    VerticalAlignment="Center">
+                                                                                <TextBlock Text="{Binding Loc[DriverUpToDate]}"
+                                                                                           FontSize="10"
+                                                                                           FontWeight="SemiBold"
+                                                                                           Foreground="#3FB950" />
+                                                                            </Border>
+
+                                                                            <!-- Dugme za kopiranje HWID-ja -->
+                                                                            <Button Content="{Binding Loc[BtnHwidShort]}"
+                                                                                    Command="{Binding DataContext.Drivers.CopyHwidCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                                    CommandParameter="{Binding HardwareId}"
+                                                                                    Background="#1E1E1E"
+                                                                                    Foreground="#888888"
+                                                                                    BorderBrush="#3E3E42"
+                                                                                    BorderThickness="1"
+                                                                                    Padding="8,2"
+                                                                                    FontSize="10"
+                                                                                    Cursor="Hand"
+                                                                                    ToolTip="{Binding HardwareId}" />
+                                                                        </StackPanel>
+                                                                    </Grid>
+                                                                </Grid>
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </Expander>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- ===================================================== -->
+            <!-- TAB 2: DIJAGNOSTIKA                                   -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabDiagnosticsHeader}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="6,10,6,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- RED 0 (PUNA ŠIRINA): VIŠEKANALNI 5-MINUTNI GRAFIKON U REALNOM VREMENU -->
+                        <Border Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <!-- Zaglavlje i živa legenda na vrhu -->
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Loc[DiagGraphTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding ThermalSensorStatus}" FontSize="10" FontWeight="SemiBold" Foreground="{Binding ThermalSensorStatusBrush}" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                    </StackPanel>
+                                    <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding LegendCpuText}" Foreground="#E74C3C" FontWeight="Bold" FontSize="11" Margin="12,0,0,0" />
+                                        <TextBlock Text="{Binding LegendGpuText}" Foreground="#2ECC71" FontWeight="Bold" FontSize="11" Margin="12,0,0,0" />
+                                        <TextBlock Text="{Binding LegendMbText}" Foreground="#F39C12" FontWeight="Bold" FontSize="11" Margin="12,0,0,0" />
+                                        <TextBlock Text="{Binding LegendSsdText}" Foreground="#3498DB" FontWeight="Bold" FontSize="11" Margin="12,0,0,0" />
+                                        <TextBlock Text="{Binding LegendThrottleText}" Foreground="#9B59B6" FontWeight="Bold" FontSize="11" Margin="12,0,0,0" />
+                                    </WrapPanel>
+                                </Grid>
+
+                                <!-- Telo grafikona (Y-osa + Canvas 900x200 u Viewbox-u + X-osa) -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="68" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="210" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <!-- Y-osa (0..100°C / 0..100%) -->
+                                    <Grid Grid.Row="0" Grid.Column="0" Margin="0,2,6,2">
+                                        <TextBlock Text="100°C / %" FontSize="10" Foreground="#888888" VerticalAlignment="Top" HorizontalAlignment="Right" />
+                                        <TextBlock Text="75°C / %" FontSize="10" Foreground="#888888" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,46,0,0" />
+                                        <TextBlock Text="50°C / %" FontSize="10" Foreground="#888888" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                                        <TextBlock Text="25°C / %" FontSize="10" Foreground="#888888" VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,0,0,46" />
+                                        <TextBlock Text="0°C / %" FontSize="10" Foreground="#888888" VerticalAlignment="Bottom" HorizontalAlignment="Right" />
+                                    </Grid>
+
+                                    <!-- Platno grafikona -->
+                                    <Border Grid.Row="0" Grid.Column="1" Background="#18181A" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="4" Height="210" ClipToBounds="True">
+                                        <Viewbox Stretch="Fill">
+                                            <Canvas Width="900" Height="200" Background="#18181A" ClipToBounds="True">
+                                                <!-- Horizontalne mrežne linije (25%, 50%, 75%) i 85°C termalni prag -->
+                                                <Line X1="0" Y1="30" X2="900" Y2="30" Stroke="#44E74C3C" StrokeThickness="1" StrokeDashArray="3 3" />
+                                                <Line X1="0" Y1="50" X2="900" Y2="50" Stroke="#2D2D30" StrokeThickness="1" StrokeDashArray="4 4" />
+                                                <Line X1="0" Y1="100" X2="900" Y2="100" Stroke="#2D2D30" StrokeThickness="1" StrokeDashArray="4 4" />
+                                                <Line X1="0" Y1="150" X2="900" Y2="150" Stroke="#2D2D30" StrokeThickness="1" StrokeDashArray="4 4" />
+
+                                                <!-- Vertikalne vremenske linije (-4m, -3m, -2m, -1m) -->
+                                                <Line X1="180" Y1="0" X2="180" Y2="200" Stroke="#222225" StrokeThickness="1" />
+                                                <Line X1="360" Y1="0" X2="360" Y2="200" Stroke="#222225" StrokeThickness="1" />
+                                                <Line X1="540" Y1="0" X2="540" Y2="200" Stroke="#222225" StrokeThickness="1" />
+                                                <Line X1="720" Y1="0" X2="720" Y2="200" Stroke="#222225" StrokeThickness="1" />
+
+                                                <!-- 5 Kriva u realnom vremenu (300 tačaka, korak X=3.0) -->
+                                                <Polyline Points="{Binding SsdGraphPoints}" Stroke="#3498DB" StrokeThickness="2" StrokeLineJoin="Round" />
+                                                <Polyline Points="{Binding MbGraphPoints}" Stroke="#F39C12" StrokeThickness="2" StrokeLineJoin="Round" />
+                                                <Polyline Points="{Binding GpuGraphPoints}" Stroke="#2ECC71" StrokeThickness="2" StrokeLineJoin="Round" />
+                                                <Polyline Points="{Binding CpuGraphPoints}" Stroke="#E74C3C" StrokeThickness="2.2" StrokeLineJoin="Round" />
+                                                <Polyline Points="{Binding ThrottleGraphPoints}" Stroke="#9B59B6" StrokeThickness="2" StrokeDashArray="4 2" StrokeLineJoin="Round" />
+                                            </Canvas>
+                                        </Viewbox>
+                                    </Border>
+
+                                    <!-- X-osa (-5m do 0s) -->
+                                    <Grid Grid.Row="1" Grid.Column="1" Margin="2,4,2,0">
+                                        <TextBlock Text="-5m (300s)" FontSize="10" Foreground="#888888" HorizontalAlignment="Left" />
+                                        <TextBlock Text="-4m" FontSize="10" Foreground="#666666" HorizontalAlignment="Left" Margin="170,0,0,0" />
+                                        <TextBlock Text="-3m" FontSize="10" Foreground="#666666" HorizontalAlignment="Left" Margin="345,0,0,0" />
+                                        <TextBlock Text="-2m" FontSize="10" Foreground="#666666" HorizontalAlignment="Right" Margin="0,0,345,0" />
+                                        <TextBlock Text="-1m" FontSize="10" Foreground="#666666" HorizontalAlignment="Right" Margin="0,0,170,0" />
+                                        <TextBlock Text="0s" FontSize="10" Foreground="#888888" HorizontalAlignment="Right" />
+                                    </Grid>
+                                </Grid>
+
+                                <!-- Donja traka grafikona: Status + Fan RPM levo, [ ▶ Start Stres ] i [ ⏹ Stop Stres ] u donjem desnom uglu -->
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding StressTestStatusText}" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="460" />
+                                        <TextBlock Text="{Binding ThermalVerdictTitle}" Foreground="{Binding ThermalVerdictBrush}" FontSize="11" FontWeight="Bold" Margin="14,0,0,0" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding FanSpeedText, StringFormat='  •  Fan: {0}'}" Foreground="{Binding FanSpeedBrush}" FontSize="11" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    </StackPanel>
+
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <Button Content="{Binding Loc[BtnStartStress]}"
+                                                Command="{Binding RunThermalStressCommand}"
+                                                IsEnabled="{Binding IsNotStressTestRunning}"
+                                                Background="#E74C3C"
+                                                Foreground="#FFFFFF"
+                                                BorderBrush="#C0392B"
+                                                BorderThickness="1"
+                                                Padding="14,5"
+                                                Margin="0,0,8,0"
+                                                Cursor="Hand"
+                                                FontWeight="Bold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipRunStressTest]}" />
+
+                                        <Button Content="{Binding Loc[BtnStopStress]}"
+                                                Command="{Binding CancelThermalStressCommand}"
+                                                IsEnabled="{Binding IsStressTestRunning}"
+                                                Background="#3E3E42"
+                                                Foreground="#FFFFFF"
+                                                BorderBrush="#55555A"
+                                                BorderThickness="1"
+                                                Padding="14,5"
+                                                Cursor="Hand"
+                                                FontWeight="Bold"
+                                                FontSize="11"
+                                                ToolTip="{Binding Loc[TooltipCancelStressTest]}" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- RED 1 (PUNA ŠIRINA): TABELA TAKTOVA PROCESORSKIH JEZGARA (CORE CLOCKS) -->
+                        <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,12">
+                            <StackPanel>
+                                <!-- Naslov sekcije i [ ↺ Reset Min/Max ] dugme -->
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="{Binding Loc[CoreClocksTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <Button Content="{Binding Loc[BtnResetMinMax]}"
+                                            Command="{Binding ResetCoreClocksCommand}"
+                                            HorizontalAlignment="Right"
+                                            Background="#2D2D30"
+                                            Foreground="#CCCCCC"
+                                            BorderBrush="#3E3E42"
+                                            BorderThickness="1"
+                                            Padding="10,4"
+                                            Cursor="Hand"
+                                            FontSize="11"
+                                            FontWeight="SemiBold" />
+                                </Grid>
+
+                                <!-- Zaglavlje tabele -->
+                                <Border Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1,1,1,0" CornerRadius="4,4,0,0" Padding="10,6">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="1.2*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="1*" />
+                                            <ColumnDefinition Width="1.8*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding Loc[ColCoreName]}" FontSize="11" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Loc[ColCurrentClock]}" FontSize="11" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Grid.Column="2" Text="{Binding Loc[ColMinClock]}" FontSize="11" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Grid.Column="3" Text="{Binding Loc[ColMaxClock]}" FontSize="11" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Grid.Column="4" Text="{Binding Loc[ColClockRatio]}" FontSize="11" FontWeight="Bold" Foreground="#888888" />
+                                    </Grid>
+                                </Border>
+
+                                <!-- Lista jezgara -->
+                                <Border Background="#18181A" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="0,0,4,4">
+                                    <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                        <ItemsControl ItemsSource="{Binding CoreClocks}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border BorderBrush="#2D2D30" BorderThickness="0,0,0,1" Padding="10,5">
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="1.2*" />
+                                                                <ColumnDefinition Width="1*" />
+                                                                <ColumnDefinition Width="1*" />
+                                                                <ColumnDefinition Width="1*" />
+                                                                <ColumnDefinition Width="1.8*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <TextBlock Grid.Column="0" Text="{Binding CoreName}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="1" Text="{Binding CurrentClockText}" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="2" Text="{Binding MinClockText}" FontSize="11" Foreground="#CCCCCC" VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="3" Text="{Binding MaxClockText}" FontSize="11" FontWeight="SemiBold" Foreground="#F39C12" VerticalAlignment="Center" />
+                                                            <ProgressBar Grid.Column="4" Value="{Binding ClockRatioPercent}" Maximum="100" Height="10" Margin="4,0,0,0" VerticalAlignment="Center" Style="{StaticResource DetailedProgressBarStyle}" />
+                                                        </Grid>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Border>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 1: S.M.A.R.T. SSD ZDRAVLJE -->
+                        <Border Grid.Row="2" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[DiagSmartTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[DiagWearPercentLabel]}" FontSize="12" Foreground="#CCCCCC" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{Binding DiskWearText}" FontSize="14" FontWeight="Bold" Foreground="{Binding SmartStatusBrush}" />
+                                </Grid>
+                                <ProgressBar Value="{Binding DiskWear}" Maximum="100" Height="14" Margin="0,0,0,12" Style="{StaticResource DetailedProgressBarStyle}" />
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagSmartStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding SmartStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding SmartStatusBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagTotalTbwLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DiskTbw}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagReallocatedSectorsLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding ReallocatedSectors}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagCriticalWarningsLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding CriticalWarnings}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 2: BATERIJA & NAPAJANJE -->
+                        <Border Grid.Row="2" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[DiagBatteryTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Loc[DiagBatteryHealthLabel]}" FontSize="12" Foreground="#CCCCCC" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{Binding BatteryHealthText}" FontSize="14" FontWeight="Bold" Foreground="{Binding BatteryHealthBrush}" />
+                                </Grid>
+                                <ProgressBar Value="{Binding BatteryHealth}" Maximum="100" Height="14" Margin="0,0,0,12" Style="{StaticResource DetailedProgressBarStyle}" />
+
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagBatteryCyclesLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding BatteryCycles}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagBatteryPowerStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding BatteryStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagDeviceTypeLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DeviceTypeText}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 3: PROCESOR & RADNA MEMORIJA -->
+                        <Border Grid.Row="3" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[DiagCpuRamTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagCpuLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding CpuDetail}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagCpuUsageLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding CpuUsage}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" />
+                                </Grid>
+                                <Separator Background="#3E3E42" Margin="0,8" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagRamLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding RamDetail}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagRamUsageLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding RamUsage}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 4: GRAFIČKA KARTA & DISPLEJ -->
+                        <Border Grid.Row="3" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[DiagGpuDisplayTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagGpuLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding GpuName}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagVramLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding GpuVram}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
+                                </Grid>
+                                <Separator Background="#3E3E42" Margin="0,8" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagDisplayResLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DisplayResolution}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagRefreshDpiLabel]}" FontSize="11" Foreground="#888888" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <TextBlock Text="{Binding DisplayRefreshRate}" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding DisplayDpiScale, StringFormat='(Skala: {0})'}" FontSize="11" Foreground="#888888" />
+                                    </StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 5: UPRAVLJAČ UREĐAJA & DRAJVERI -->
+                        <Border Grid.Row="4" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,10">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <TextBlock Text="{Binding Loc[DiagDeviceManagerTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding PnpSummaryText}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding PnpStatusBrush}" VerticalAlignment="Center" />
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding PnpProblemDevices}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="4" Padding="8,5" Margin="0,2">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding Name}" FontSize="11" FontWeight="SemiBold" Foreground="#F1C40F" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding ErrorStatus}" FontSize="10" Foreground="#888888" Margin="8,0,0,0" />
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="{Binding Loc[DiagAllDevicesOkText]}"
+                                           FontSize="11"
+                                           Foreground="#888888"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- KARTICA 6: MATIČNA PLOČA, BIOS & TPM -->
+                        <Border Grid.Row="4" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[DiagMotherboardBiosTpmTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagMotherboardLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding MotherboardModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagBiosVersionLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding BiosVersion}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="190" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagBiosDateLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding BiosReleaseDate}" HorizontalAlignment="Right" FontSize="11" Foreground="#888888" />
+                                </Grid>
+                                <Separator Background="#3E3E42" Margin="0,8" />
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagTpmChipLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding TpmStatusSummary}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding Autopilot.TpmStatusBrush}" />
+                                </Grid>
+                                <Grid Margin="0,3">
+                                    <TextBlock Text="{Binding Loc[DiagSecureBootLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding SecureBootStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB 3: MREŽA                                          -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabNetworkHeader}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid Margin="6,10,6,10">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Wi-Fi SSID i Mreža -->
+                        <Border Grid.Row="0" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[NetWifiTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetCurrentSsidLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding WifiSsid}" HorizontalAlignment="Right" FontSize="12" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </Grid>
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetConnectionStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding ConnectionStatusText}" Foreground="{Binding ConnectionStatusBrush}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- IP Konfiguracija -->
+                        <Border Grid.Row="0" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[NetIpConfigTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetIpAddressLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding IpAddress}" HorizontalAlignment="Right" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" FontFamily="Consolas" />
+                                </Grid>
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetAdapterTypeLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding ConnectionType}" HorizontalAlignment="Right" FontSize="11" Foreground="#CCCCCC" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- NAS Server & Ping Latencija -->
+                        <Border Grid.Row="1" Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,10">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[NetNasServerTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetNasConnectionStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding NasStatus}" HorizontalAlignment="Right" FontSize="12" FontWeight="Bold" Foreground="#2ECC71" />
+                                </Grid>
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetNasPingLatencyLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding NasLatency}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Prenos Podataka / Downloaded MB -->
+                        <Border Grid.Row="1" Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,10">
+                            <StackPanel>
+                                <TextBlock Text="{Binding Loc[NetTrafficDownloadTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetTotalDownloadedPackagesLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DownloadedMb}" HorizontalAlignment="Right" FontSize="13" FontWeight="Bold" Foreground="#007ACC" />
+                                </Grid>
+                                <Grid Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[NetDistributionSourceLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DistributionSourceText}" HorizontalAlignment="Right" FontSize="11" Foreground="#CCCCCC" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB 4: PROGRAMI                                         -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabAppsHeader}">
+                <Grid Margin="6,10,6,10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="{Binding Loc[StandardAppsTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <TextBlock Grid.Column="1" Text="{Binding AppsSummaryText}" HorizontalAlignment="Left" FontSize="11" FontWeight="SemiBold" Foreground="#58A6FF" VerticalAlignment="Center" Margin="0,0,14,0" />
+                            <Button Grid.Column="2"
+                                    Command="{Binding RerunPhase4Command}"
+                                    Content="{Binding Loc[BtnRerunApps]}"
+                                    Background="#2D2D30"
+                                    Foreground="#FFFFFF"
+                                    BorderBrush="#007ACC"
+                                    BorderThickness="1"
+                                    Padding="12,5"
+                                    FontSize="11"
+                                    FontWeight="SemiBold"
+                                    Cursor="Hand"
+                                    VerticalAlignment="Center">
+                                <Button.Resources>
+                                    <Style TargetType="Border">
+                                        <Setter Property="CornerRadius" Value="4" />
+                                    </Style>
+                                </Button.Resources>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding Apps}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="2" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#1E1E1E"
+                                            BorderThickness="1.5"
+                                            CornerRadius="6"
+                                            Padding="12"
+                                            Margin="4">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="BorderBrush" Value="#2D2D30" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#007ACC" />
+                                                        <Setter Property="Background" Value="#252A30" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsCompleted}" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#27AE60" />
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding IsError}" Value="True">
+                                                        <Setter Property="BorderBrush" Value="#E74C3C" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <!-- Kolona 0: Velika ikona programa -->
+                                            <TextBlock Grid.Column="0"
+                                                       Text="{Binding IconGlyph}"
+                                                       FontSize="24"
+                                                       VerticalAlignment="Center"
+                                                       Margin="0,0,12,0" />
+
+                                            <!-- Kolona 1: Naziv, detalj i mini progres -->
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="0,0,8,0">
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="13"
+                                                           FontWeight="Bold"
+                                                           Foreground="#FFFFFF"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Detail}"
+                                                           FontSize="11"
+                                                           Foreground="#AAAAAA"
+                                                           Margin="0,2,0,0"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <!-- Mini animirani/plavi ProgressBar vidljiv samo kada je IsRunning == true -->
+                                                <ProgressBar Height="4"
+                                                             Margin="0,6,0,0"
+                                                             IsIndeterminate="True"
+                                                             Foreground="#007ACC"
+                                                             Background="#2D2D30"
+                                                             BorderThickness="0">
+                                                    <ProgressBar.Style>
+                                                        <Style TargetType="ProgressBar">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ProgressBar.Style>
+                                                </ProgressBar>
+                                            </StackPanel>
+
+                                            <!-- Kolona 2: Statusni bedž -->
+                                            <Border Grid.Column="2"
+                                                    Background="{Binding BadgeBackground}"
+                                                    CornerRadius="4"
+                                                    Padding="10,5"
+                                                    VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding IconText}"
+                                                           FontSize="11"
+                                                           FontWeight="Bold"
+                                                           Foreground="{Binding BadgeForeground}" />
+                                            </Border>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB 5: LOG                                            -->
+            <!-- ===================================================== -->
+            <TabItem Header="{Binding TabLogsHeader}">
+                <Grid Margin="6,10,6,10">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="12,8" Margin="0,0,0,10">
+                        <Grid>
+                            <TextBlock Text="{Binding Loc[LogBufferTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
+                            <CheckBox Content="{Binding Loc[LogAutoScrollCheck]}"
+                                      IsChecked="{Binding AutoScroll}"
+                                      Foreground="#CCCCCC"
+                                      FontSize="11"
+                                      HorizontalAlignment="Right"
+                                      VerticalAlignment="Center" />
+                        </Grid>
+                    </Border>
+
+                    <ListView x:Name="LogListView"
+                              Grid.Row="1"
+                              ItemsSource="{Binding AllLogs}"
+                              Background="#181818"
+                              BorderBrush="#3E3E42"
+                              BorderThickness="1"
+                              VirtualizingStackPanel.IsVirtualizing="True"
+                              VirtualizingStackPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.IsDeferredScrollingEnabled="True"
+                              ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Width="90">
+                                    <GridViewColumn.Header>
+                                        <TextBlock Text="{Binding Loc[LogColTime]}" />
+                                    </GridViewColumn.Header>
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Time}" FontSize="11" FontFamily="Consolas" Foreground="#888888" />
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Width="80">
+                                    <GridViewColumn.Header>
+                                        <TextBlock Text="{Binding Loc[LogColLevel]}" />
+                                    </GridViewColumn.Header>
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#2D2D30" CornerRadius="2" Padding="4,1">
+                                                <TextBlock Text="{Binding Level}" FontSize="10" FontWeight="Bold" Foreground="{Binding LevelBrush}" />
+                                            </Border>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Width="100">
+                                    <GridViewColumn.Header>
+                                        <TextBlock Text="{Binding Loc[LogColTag]}" />
+                                    </GridViewColumn.Header>
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Tag}" FontSize="11" Foreground="#4EC9B0" />
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Width="550">
+                                    <GridViewColumn.Header>
+                                        <TextBlock Text="{Binding Loc[LogColMessage]}" />
+                                    </GridViewColumn.Header>
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding Message}" FontSize="11" Foreground="#E0E0E0" TextWrapping="NoWrap" />
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                </Grid>
+            </TabItem>
+
+            <!-- ===================================================== -->
+            <!-- TAB 6: AUTOPILOT                                      -->
+            <!-- ===================================================== -->
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{Binding TabAutopilotHeader}" VerticalAlignment="Center" />
+                        <Border x:Name="AlertBadge"
+                                Margin="6,0,0,0"
+                                Background="#DA3633"
+                                CornerRadius="8"
+                                Padding="5,1"
+                                VerticalAlignment="Center"
+                                Visibility="{Binding Autopilot.IsAlertActive, Converter={StaticResource BoolToVis}}">
+                            <Border.Style>
+                                <Style TargetType="Border">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Autopilot.IsAlertActive}" Value="True">
+                                            <DataTrigger.EnterActions>
+                                                <BeginStoryboard Name="PulseStoryboard">
+                                                    <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                                                        <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                         From="1.0" To="0.2"
+                                                                         Duration="0:0:0.6" />
+                                                    </Storyboard>
+                                                </BeginStoryboard>
+                                            </DataTrigger.EnterActions>
+                                            <DataTrigger.ExitActions>
+                                                <StopStoryboard BeginStoryboardName="PulseStoryboard" />
+                                            </DataTrigger.ExitActions>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
+                            <TextBlock Text="(!)" FontWeight="Bold" FontSize="11" Foreground="#FFFFFF" VerticalAlignment="Center" />
+                        </Border>
+                    </StackPanel>
+                </TabItem.Header>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="6,10,6,10">
+                        <!-- GLAVNI STATUSNI BANER MATRICE STANJA -->
+                        <Border Background="#252526"
+                                BorderBrush="{Binding Autopilot.StatusBrush}"
+                                BorderThickness="2"
+                                CornerRadius="8"
+                                Padding="18,16"
+                                Margin="0,0,0,14">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Ikona bedža -->
+                                <Border Grid.Column="0"
+                                        Width="48" Height="48"
+                                        CornerRadius="24"
+                                        Background="{Binding Autopilot.StatusBrush}"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,16,0">
+                                    <TextBlock Text="🛡"
+                                               FontSize="22"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+
+                                <!-- Tekstualni status presude -->
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Autopilot.StatusTitle}"
+                                               FontSize="15"
+                                               FontWeight="Bold"
+                                               Foreground="#FFFFFF"
+                                               Margin="0,0,0,4" />
+                                    <TextBlock Text="{Binding Autopilot.StatusDescription}"
+                                               FontSize="12"
+                                               Foreground="#CCCCCC"
+                                               TextWrapping="Wrap"
+                                               Margin="0,0,0,6" />
+                                    <Border Background="#1E1E1E"
+                                            BorderBrush="#3E3E42"
+                                            BorderThickness="1"
+                                            CornerRadius="4"
+                                            Padding="10,6">
+                                        <TextBlock Text="{Binding Autopilot.RecommendedAction}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{Binding Autopilot.StatusBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- Re-scan akcija -->
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="16,0,0,0">
+                                    <Button Content="{Binding Loc[BtnRescanAutopilot]}"
+                                            Command="{Binding Autopilot.RescanCommand}"
+                                            Style="{StaticResource ActionButtonStyle}"
+                                            Padding="14,8"
+                                            FontSize="12"
+                                            FontWeight="Bold" />
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,6,0,0">
+                                        <TextBlock Text="{Binding Loc[AutopilotUpdatedFormat]}" FontSize="10" Foreground="#888888" Margin="0,0,3,0" />
+                                        <TextBlock Text="{Binding Autopilot.LastScanTime}" FontSize="10" Foreground="#888888" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- TRI DETALJNE KARTICE -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- KARTICA 1: Hardverski Otisak -->
+                            <Border Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Loc[ApHardwareFingerprintTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApManufacturerLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.HwManufacturer}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApDeviceModelLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.HwModel}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApSerialNumberLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.HwSerialNumber}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" FontFamily="Consolas" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApSmbiosUuidLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.HwSmbiosUuid}" HorizontalAlignment="Right" FontSize="9" Foreground="#CCCCCC" FontFamily="Consolas" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Separator Background="#3E3E42" Margin="0,8" />
+                                    <Grid Margin="0,2">
+                                        <TextBlock Text="{Binding Loc[ApTpmStatusLabel]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                        <TextBlock Text="{Binding Autopilot.TpmStatusText}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding Autopilot.TpmStatusBrush}" VerticalAlignment="Center" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- KARTICA 2: Duboka Lokalna Forenzika -->
+                            <Border Grid.Column="1" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="3,0,3,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Loc[ApLocalForensicsTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApRegistryTracesLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.LocalTracesText}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding Autopilot.LocalTracesBrush}" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApTenantDomainLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.TenantDomain}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApTenantGuidLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.TenantId}" HorizontalAlignment="Right" FontSize="9" Foreground="#888888" FontFamily="Consolas" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApAssignedNameLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.AssignedDeviceName}" HorizontalAlignment="Right" FontSize="11" Foreground="#CCCCCC" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Separator Background="#3E3E42" Margin="0,8" />
+                                    <Grid Margin="0,2">
+                                        <TextBlock Text="{Binding Loc[ApEntraIdStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.AzureAdStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                    </Grid>
+                                    <Grid Margin="0,2">
+                                        <TextBlock Text="{Binding Loc[ApIntuneMdmLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.MdmStatus}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                    </Grid>
+                                    <Grid Margin="0,2">
+                                        <TextBlock Text="{Binding Loc[ApOrgCertsLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.OrgCertificatesCount}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- KARTICA 3: Microsoft ZTD Oblak -->
+                            <Border Grid.Column="2" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14" Margin="6,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding Loc[ApZtdCloudTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,10" />
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApOnlineZtdQueryLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.CloudCheckedText}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApCloudStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.CloudStatusText}" HorizontalAlignment="Right" FontSize="11" FontWeight="Bold" Foreground="{Binding Autopilot.CloudStatusBrush}" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApServerResponseCodeLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.ZtdErrorCode}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="#4EC9B0" FontFamily="Consolas" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Grid Margin="0,3">
+                                        <TextBlock Text="{Binding Loc[ApRawResponseLabel]}" FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Autopilot.RawStatusMessage}" ToolTip="{Binding Autopilot.RawStatusMessage}" HorizontalAlignment="Right" FontSize="10" Foreground="#CCCCCC" FontFamily="Consolas" TextTrimming="CharacterEllipsis" MaxWidth="130" />
+                                    </Grid>
+                                    <Separator Background="#3E3E42" Margin="0,8" />
+                                    <TextBlock Text="{Binding Loc[ApZtdDescText]}"
+                                               FontSize="10"
+                                               Foreground="#888888"
+                                               TextWrapping="Wrap" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+
+        <!-- ========================================================= -->
+        <!-- DONJA TRAKA ZA AKCIJE: Pauza, Preskoči, Odloži restart   -->
+        <!-- ========================================================= -->
+        <Border Grid.Row="2"
+                Background="#252526"
+                BorderBrush="#3E3E42"
+                BorderThickness="0,1,0,0"
+                Padding="16,10">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <!-- IPC Status Indicator -->
+                    <ColumnDefinition Width="*" />
+                    <!-- Action Buttons -->
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- IPC Status Indicator -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="10" Height="10" Fill="#2ECC71" Margin="0,0,8,0" />
+                    <TextBlock Text="{Binding IpcStatusText}" FontSize="12" Foreground="#888888" VerticalAlignment="Center" />
+                </StackPanel>
+
+                <!-- Action Buttons -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- 1. Završna dugmad - trajno aktivna kada je servis gotov -->
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding IsServiceFinished, Converter={StaticResource BoolToVis}}">
+                        <Button Content="{Binding Loc[BtnCleanAndShutdown]}"
+                                Command="{Binding CleanAndShutdownCommand}"
+                                Background="#DA3633" Foreground="#FFFFFF" FontWeight="Bold" FontSize="11"
+                                BorderBrush="#B62324" BorderThickness="1"
+                                Padding="14,6"
+                                Margin="0,0,8,0"
+                                Cursor="Hand" />
+                        <Button Content="{Binding Loc[BtnCompletionSummary]}"
+                                Command="{Binding ShowCompletionSummaryCommand}"
+                                Style="{StaticResource ActionButtonStyle}"
+                                Padding="10,6"
+                                Margin="0,0,8,0"
+                                Cursor="Hand" />
+                        <Button Content="{Binding Loc[BtnExitWithoutClean]}"
+                                Command="{Binding ExitWithoutCleanCommand}"
+                                Background="#21262D" Foreground="#CCCCCC" FontSize="11"
+                                BorderBrush="#3E3E42" BorderThickness="1"
+                                Padding="10,6"
+                                Margin="0,0,8,0"
+                                Cursor="Hand" />
+                    </StackPanel>
+
+                    <!-- 2. Standardna kontrolna dugmad - aktivna isključivo tokom toka instalacije -->
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding IsNotServiceFinished, Converter={StaticResource BoolToVis}}">
+                        <Button Content="{Binding PauseButtonText}"
+                                Command="{Binding PauseCommand}"
+                                Style="{StaticResource ActionButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="{Binding Loc[BtnSkip]}"
+                                Command="{Binding SkipCommand}"
+                                Style="{StaticResource ActionButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="{Binding Loc[BtnDelayRestart]}"
+                                Command="{Binding DelayRestartCommand}"
+                                Style="{StaticResource ActionButtonStyle}" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ========================================================= -->
+        <!-- ZAVRŠNI PRIKAZ (COMPLETION PANEL / REKAPITULACIJA)        -->
+        <!-- ========================================================= -->
+        <Border Grid.Row="0" Grid.RowSpan="3"
+                Background="#E6121214"
+                Visibility="{Binding IsCompleted, Converter={StaticResource BoolToVis}}">
+            <Grid>
+                <Border Background="#18241D"
+                        BorderBrush="#2ECC71"
+                        BorderThickness="2"
+                        CornerRadius="10"
+                        Width="680"
+                        Padding="28"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Center">
+                    <StackPanel>
+                        <!-- Naslov Servisnog Kartona -->
+                        <Border Background="#2ECC71" CornerRadius="4" Padding="12,4" HorizontalAlignment="Center" Margin="0,0,0,14">
+                            <TextBlock Text="{Binding Loc[ServiceFinishedTitle]}" FontSize="14" FontWeight="Bold" Foreground="#121214" />
+                        </Border>
+                        <TextBlock Text="{Binding CompletionTitle}"
+                                   FontSize="18"
+                                   FontWeight="Bold"
+                                   Foreground="#FFFFFF"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Margin="0,0,0,6" />
+                        <TextBlock Text="{Binding CompletionSummary}"
+                                   FontSize="12"
+                                   Foreground="#CCCCCC"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Margin="0,0,0,20" />
+
+                        <TextBlock Text="{Binding DiagnosticsSummary}" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="#F1C40F" TextWrapping="Wrap" TextAlignment="Center"
+                                   Margin="0,0,0,16" />
+
+                        <!-- Rekapitulacija Grid -->
+                        <Border Background="#1E2F25" BorderBrush="#2D6A4F" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,0,0,20">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[ComputerModelLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding ComputerModel}" FontSize="13" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="0" Grid.Column="1" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[SerialNumberLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding SerialNumber}" FontSize="13" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="1" Grid.Column="0" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[TotalServiceDuration]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DurationString}" FontSize="13" FontWeight="Bold" Foreground="#4EC9B0" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[DiskHealthLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding DiskWearText}" FontSize="13" FontWeight="Bold" Foreground="#2ECC71" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="2" Grid.Column="0" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[InstalledAppsLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding AppsSummaryText}" FontSize="13" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="2" Grid.Column="1" Margin="0,4">
+                                    <TextBlock Text="{Binding Loc[BatteryPowerStatusLabel]}" FontSize="11" Foreground="#888888" />
+                                    <TextBlock Text="{Binding BatteryStatus}" FontSize="13" FontWeight="Bold" Foreground="#FFFFFF" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+
+                        <!-- Informacioni Boks -->
+                        <Border Background="#121A15" BorderBrush="#2D6A4F" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,20">
+                            <StackPanel HorizontalAlignment="Center">
+                                <TextBlock Text="{Binding Loc[ServiceFinishedDesc]}"
+                                           FontSize="15"
+                                           FontWeight="Bold"
+                                           Foreground="#2ECC71"
+                                           HorizontalAlignment="Center" />
+                                <TextBlock Text="{Binding Loc[SelectFinalActionDesc]}"
+                                           FontSize="11"
+                                           Foreground="#888888"
+                                           Margin="0,4,0,0"
+                                           HorizontalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Dugmad za Završetak Servisa -->
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Content="{Binding Loc[BtnCleanAndShutdown]}"
+                                    Command="{Binding CleanAndShutdownCommand}"
+                                    Background="#DA3633" Foreground="#FFFFFF" FontWeight="Bold" FontSize="13"
+                                    BorderBrush="#B62324" BorderThickness="1"
+                                    Padding="22,12"
+                                    Margin="0,0,12,0"
+                                    Cursor="Hand" />
+                            <Button Content="{Binding Loc[BtnExitWithoutClean]}"
+                                    Command="{Binding ExitWithoutCleanCommand}"
+                                    Background="#21262D" Foreground="#FFFFFF" FontSize="13"
+                                    BorderBrush="#3E3E42" BorderThickness="1"
+                                    Padding="18,12"
+                                    Margin="0,0,12,0"
+                                    Cursor="Hand" />
+                            <Button Content="{Binding Loc[BtnStayInApp]}" Command="{Binding CancelShutdownCommand}" Style="{StaticResource AccentButtonStyle}" Padding="18,12" Margin="0,0,12,0" Cursor="Hand" ToolTip="{Binding Loc[TooltipStayInApp]}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

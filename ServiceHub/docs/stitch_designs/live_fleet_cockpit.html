@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Servis Hub Telemetry Cockpit</title>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+              "error": "#ffb4ab",
+              "secondary": "#adc6ff",
+              "surface-variant": "#2d3449",
+              "primary-container": "#38bdf8",
+              "on-primary-container": "#004965",
+              "surface-dim": "#0b1326",
+              "on-secondary": "#002e6a",
+              "primary-fixed": "#c4e7ff",
+              "on-primary": "#00354a",
+              "text-primary": "#f8fafc",
+              "tertiary-fixed-dim": "#ffb960",
+              "surface-container-lowest": "#060e20",
+              "on-tertiary-fixed-variant": "#653e00",
+              "on-error-container": "#ffdad6",
+              "tertiary-container": "#f1a02b",
+              "on-error": "#690005",
+              "on-secondary-fixed": "#001a42",
+              "surface-bright": "#31394d",
+              "background": "#0b1326",
+              "on-secondary-container": "#e6ecff",
+              "on-primary-fixed": "#001e2c",
+              "inverse-on-surface": "#283044",
+              "secondary-fixed": "#d8e2ff",
+              "status-success": "#10b981",
+              "status-error": "#ef4444",
+              "on-surface": "#dae2fd",
+              "surface-container-high": "#222a3d",
+              "secondary-fixed-dim": "#adc6ff",
+              "border-divider": "#334155",
+              "text-muted": "#94a3b8",
+              "tertiary-fixed": "#ffddb8",
+              "surface-container-low": "#131b2e",
+              "error-container": "#93000a",
+              "surface-container": "#1e293b",
+              "outline-variant": "#3e484f",
+              "primary-fixed-dim": "#7bd0ff",
+              "on-tertiary": "#472a00",
+              "status-warning": "#f59e0b",
+              "secondary-container": "#0566d9",
+              "inverse-surface": "#dae2fd",
+              "canvas-background": "#0f172a",
+              "primary": "#8ed5ff",
+              "surface-tint": "#7bd0ff",
+              "on-background": "#dae2fd",
+              "on-primary-fixed-variant": "#004c69",
+              "inverse-primary": "#00668a",
+              "tertiary": "#ffc176",
+              "surface-container-highest": "#2d3449",
+              "surface": "#0b1326",
+              "on-tertiary-container": "#613b00",
+              "on-surface-variant": "#bdc8d1",
+              "outline": "#87929a",
+              "on-tertiary-fixed": "#2a1700",
+              "on-secondary-fixed-variant": "#004395"
+            },
+            "borderRadius": {
+              "DEFAULT": "0.25rem",
+              "lg": "0.5rem",
+              "xl": "0.75rem",
+              "full": "9999px"
+            },
+            "spacing": {
+              "space-xs": "0.25rem",
+              "margin-desktop": "2rem",
+              "gutter-desktop": "1.5rem",
+              "space-3xl": "2rem",
+              "space-xl": "1.25rem",
+              "margin": "1rem",
+              "space-2xl": "1.5rem",
+              "space-lg": "1rem",
+              "gutter": "1rem",
+              "space-sm": "0.5rem",
+              "space-md": "0.75rem",
+              "margin-tablet": "1.5rem",
+              "space-4xl": "3rem"
+            },
+            "fontFamily": {
+              "display-hero-mobile": ["Inter"],
+              "headline-1": ["Inter"],
+              "display-hero": ["Inter"],
+              "body-regular": ["Inter"],
+              "label-action": ["Inter"],
+              "code-telemetry": ["JetBrains Mono"],
+              "body-small": ["Inter"],
+              "headline-2": ["Inter"],
+              "headline-3": ["Inter"]
+            },
+            "fontSize": {
+              "display-hero-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+              "headline-1": ["28px", {"lineHeight": "36px", "fontWeight": "600"}],
+              "display-hero": ["36px", {"lineHeight": "44px", "fontWeight": "700"}],
+              "body-regular": ["15px", {"lineHeight": "24px", "fontWeight": "400"}],
+              "label-action": ["14px", {"lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "600"}],
+              "code-telemetry": ["12px", {"lineHeight": "16px", "fontWeight": "400"}],
+              "body-small": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+              "headline-2": ["22px", {"lineHeight": "30px", "fontWeight": "600"}],
+              "headline-3": ["18px", {"lineHeight": "26px", "fontWeight": "500"}]
+            }
+          }
+        }
+      }
+    </script>
+<style>
+      body {
+        background-color: #0f172a;
+        color: #f8fafc;
+        font-family: 'Inter', sans-serif;
+      }
+      .font-code {
+        font-family: 'JetBrains Mono', monospace;
+      }
+      /* Custom scrollbar for telemetry logs */
+      ::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0b1326;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #334155;
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #38bdf8;
+      }
+    </style>
+</head>
+<body class="bg-canvas-background text-text-primary min-h-screen flex flex-col overflow-x-hidden">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center w-full px-space-xl h-14 bg-surface-container dark:bg-surface-container border-b border-border-divider dark:border-border-divider z-30 fixed top-0 left-0 right-0">
+<div class="flex items-center gap-space-md">
+<span class="text-headline-2 font-headline-2 text-text-primary dark:text-text-primary tracking-tight font-bold">Servis Hub</span>
+<div class="hidden md:flex items-center bg-surface dark:bg-surface border border-border-divider rounded-lg px-space-sm py-1 ml-space-lg w-72">
+<span class="material-symbols-outlined text-text-muted text-sm mr-2">search</span>
+<input class="bg-transparent border-none text-body-small text-text-primary focus:outline-none w-full p-0" placeholder="Filter telemetry or bench ID..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<button class="hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action transition-colors">
+<span class="material-symbols-outlined text-sm">terminal</span>
+<span>Diagnostic Report</span>
+</button>
+<button class="flex items-center gap-1.5 px-3.5 py-1.5 bg-primary-container text-on-primary-container rounded-lg text-label-action font-label-action hover:opacity-90 transition-opacity">
+<span class="material-symbols-outlined text-sm font-bold">bolt</span>
+<span>Preuzmi Kontrolu</span>
+</button>
+<div class="flex items-center gap-space-sm pl-space-sm border-l border-border-divider">
+<button aria-label="Refresh" class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors relative">
+<span class="material-symbols-outlined text-lg">refresh</span>
+</button>
+<button aria-label="Terminal" class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors relative">
+<span class="material-symbols-outlined text-lg">terminal</span>
+</button>
+<button aria-label="Notifications" class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors relative">
+<span class="material-symbols-outlined text-lg">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 bg-primary-container rounded-full"></span>
+</button>
+<div class="w-8 h-8 rounded-full bg-surface-variant border border-border-divider overflow-hidden flex items-center justify-center ml-1">
+<img class="w-full h-full object-cover" data-alt="Operator Servis Hub avatar portrait showing professional technician with safety glasses in a brightly lit modern data center environment with blue ambient lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAwn2ZxxBbATS1HA73Rh-3smiQDEj7TaMkzVbNq3koPdADa2GA-JyDi7myZ3njHVaydIaLT9apHHfkx2_zlSmiNxZxkXqD6XW21d557RwsoKUyC_OCjW_KonE-Zvummx5tIzyHb_OlaAvEsaJ_eABbFlDiF0iHaq4kyt4Y0SckKjlVKAeuRk5U5uOVB3mi7AQ2T-oKMMCVrhyC2sXV9OGHVuiB6radexGrAD2__WoCuSS697YwmD7IzZOxyNw_yVIF76Boc2E0MMl0L"/>
+</div>
+</div>
+</div>
+</header>
+<div class="flex pt-14 min-h-screen">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-14 h-[calc(100vh-3.5rem)] w-64 z-40 flex flex-col justify-between p-space-md border-r border-border-divider dark:border-border-divider bg-surface-container dark:bg-surface-container overflow-y-auto">
+<div class="flex flex-col gap-space-lg">
+<!-- Header/Branding inside sidebar -->
+<div class="flex items-center gap-space-sm px-space-sm py-2">
+<div class="w-9 h-9 rounded-lg bg-surface-container-high flex items-center justify-center text-primary-container border border-border-divider">
+<span class="material-symbols-outlined">precision_manufacturing</span>
+</div>
+<div>
+<h1 class="text-headline-3 font-headline-3 text-text-primary font-bold">Servis Hub</h1>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Telemetry v2.4</p>
+</div>
+</div>
+<!-- Navigation Links -->
+<nav class="flex flex-col gap-space-xs">
+<!-- Active Item -->
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-high dark:bg-surface-container-high text-primary-container dark:text-primary-container border-l-2 border-primary-container font-label-action text-label-action" href="#">
+<span class="material-symbols-outlined">precision_manufacturing</span>
+<span>Radionička Flota</span>
+</a>
+<!-- Inactive Items -->
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors" href="#">
+<span class="material-symbols-outlined">usb</span>
+<span>WIS USB Builder</span>
+</a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors" href="#">
+<span class="material-symbols-outlined">folder_shared</span>
+<span>Service Records &amp; AGY</span>
+</a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors" href="#">
+<span class="material-symbols-outlined">developer_board</span>
+<span>OEM Drivers</span>
+</a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors" href="#">
+<span class="material-symbols-outlined">system_update</span>
+<span>Windows Updates</span>
+</a>
+</nav>
+</div>
+<!-- Sidebar Footer / Server Vital Stats -->
+<div class="flex flex-col gap-space-sm pt-space-md border-t border-border-divider">
+<div class="bg-surface-dim p-space-sm rounded-lg border border-border-divider text-code-telemetry font-code-telemetry flex flex-col gap-1.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="w-2 h-2 rounded-full bg-status-success animate-pulse"></span>
+<span class="text-text-primary font-semibold">Server Telemetry</span>
+</div>
+<span class="text-status-success">Online</span>
+</div>
+<div class="flex justify-between text-text-muted">
+<span>Uptime:</span>
+<span class="text-text-primary">99.98%</span>
+</div>
+<div class="flex justify-between text-text-muted">
+<span>ZFS Cache:</span>
+<span class="text-primary-container">10 GbE</span>
+</div>
+<div class="flex justify-between text-text-muted">
+<span>UDP Port:</span>
+<span class="text-text-primary">8888</span>
+</div>
+</div>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span>Postavke Sustava</span>
+</a>
+</div>
+</aside>
+<!-- Main Content Area -->
+<main class="ml-64 flex-1 p-space-2xl flex flex-col gap-space-2xl bg-canvas-background">
+<!-- Breadcrumbs & Status Bar -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md bg-surface-container p-space-lg rounded-xl border border-border-divider">
+<div class="flex flex-col gap-1">
+<div class="flex items-center gap-2 text-text-muted text-body-small">
+<span>Servis Hub</span>
+<span class="material-symbols-outlined text-xs">chevron_right</span>
+<span>Radionička Flota</span>
+<span class="material-symbols-outlined text-xs">chevron_right</span>
+<span class="text-primary-container">BENCH-03 Active Cockpit</span>
+</div>
+<h2 class="text-headline-1 font-headline-1 text-text-primary">Master Workbench Cockpit</h2>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-2 px-3 py-1.5 bg-surface-dim rounded-lg border border-border-divider">
+<span class="w-2.5 h-2.5 rounded-full bg-status-success"></span>
+<span class="text-body-small font-semibold">Active Fleet: 4 Benches</span>
+</div>
+<div class="flex items-center gap-2 px-3 py-1.5 bg-surface-dim rounded-lg border border-border-divider text-code-telemetry font-code-telemetry">
+<span class="text-text-muted">SSE Stream:</span>
+<span class="text-status-success">CONNECTED (1Hz)</span>
+</div>
+</div>
+</div>
+<!-- High-Density Split-Pane Layout -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-2xl items-start">
+<!-- Left Pane: Fleet Explorer (4 cols) -->
+<div class="lg:col-span-4 flex flex-col gap-space-md">
+<div class="flex items-center justify-between">
+<h3 class="text-headline-3 font-headline-3 text-text-primary flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container">dns</span>
+<span>Fleet Explorer</span>
+</h3>
+<span class="text-body-small text-text-muted font-code-telemetry">4 Active Nodes</span>
+</div>
+<!-- Search filter -->
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-2.5 text-text-muted text-sm">filter_list</span>
+<input class="w-full bg-surface-container border border-border-divider rounded-lg pl-9 pr-3 py-2 text-body-small text-text-primary focus:border-primary-container focus:outline-none" placeholder="Quick search bench or serial..." type="text" value=""/>
+</div>
+<!-- Workbench PC Cards List -->
+<div class="flex flex-col gap-space-md">
+<!-- BENCH-01 -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md hover:border-primary-container transition-all cursor-pointer flex flex-col gap-space-sm">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted">laptop</span>
+<span class="font-bold text-text-primary text-body-regular">BENCH-01</span>
+</div>
+<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-status-warning/10 text-status-warning border border-status-warning/20">Rebooting</span>
+</div>
+<div class="text-body-small text-text-muted">ThinkPad T480 - i5-8350U / 16GB</div>
+<div class="flex items-center justify-between pt-2 border-t border-border-divider text-code-telemetry">
+<span class="text-text-muted">Phase 2/5 (UEFI Flash)</span>
+<span class="text-primary-container">00:14:22</span>
+</div>
+</div>
+<!-- BENCH-02 -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md hover:border-primary-container transition-all cursor-pointer flex flex-col gap-space-sm">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted">desktop_windows</span>
+<span class="font-bold text-text-primary text-body-regular">BENCH-02</span>
+</div>
+<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-status-success/10 text-status-success border border-status-success/20">Complete</span>
+</div>
+<div class="text-body-small text-text-muted">HP EliteDesk 800 G4 - i7-8700</div>
+<div class="flex items-center justify-between pt-2 border-t border-border-divider text-code-telemetry">
+<span class="text-text-muted">Phase 5/5 (AGY Verified)</span>
+<span class="text-status-success">00:45:00</span>
+</div>
+</div>
+<!-- BENCH-03 (Selected) -->
+<div class="bg-surface-container border-2 border-primary-container rounded-xl p-space-md shadow-lg shadow-primary-container/5 relative overflow-hidden flex flex-col gap-space-sm">
+<div class="absolute top-0 right-0 w-1.5 h-full bg-primary-container"></div>
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container">sports_esports</span>
+<span class="font-bold text-text-primary text-body-regular">BENCH-03</span>
+<span class="text-xs bg-primary-container/20 text-primary-container px-1.5 py-0.5 rounded font-code-telemetry">ACTIVE</span>
+</div>
+<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-primary-container/10 text-primary-container border border-primary-container/20">Active</span>
+</div>
+<div class="text-body-small text-text-muted">Custom RTX 4090 Rig - i9-13900K</div>
+<div class="flex items-center justify-between pt-2 border-t border-border-divider text-code-telemetry">
+<span class="text-text-muted">Phase 3/5 (Stress Test)</span>
+<span class="text-primary-container">01:12:05</span>
+</div>
+</div>
+<!-- BENCH-04 -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md hover:border-primary-container transition-all cursor-pointer flex flex-col gap-space-sm">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-text-muted">dns</span>
+<span class="font-bold text-text-primary text-body-regular">BENCH-04</span>
+</div>
+<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-status-error/10 text-status-error border border-status-error/20">Warning</span>
+</div>
+<div class="text-body-small text-text-muted">Dell OptiPlex 7060 - SMART Alert</div>
+<div class="flex items-center justify-between pt-2 border-t border-border-divider text-code-telemetry">
+<span class="text-text-muted">Phase 1/5 (Diagnostics)</span>
+<span class="text-status-error">00:08:15</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Pane: Focused Live Cockpit for BENCH-03 (8 cols) -->
+<div class="lg:col-span-8 flex flex-col gap-space-2xl">
+<!-- Quick Action Toolbar -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md flex flex-wrap items-center justify-between gap-space-md">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container">terminal</span>
+<div>
+<h4 class="text-headline-3 font-headline-3 text-text-primary">BENCH-03 Control Panel</h4>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Target: 192.168.1.142 (WDS-AGENT-V4)</p>
+</div>
+</div>
+<div class="flex flex-wrap items-center gap-space-sm">
+<button class="px-3 py-2 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action border border-border-divider flex items-center gap-1.5 transition-colors">
+<span class="material-symbols-outlined text-sm text-primary-container">restart_alt</span>
+<span>Reboot to UEFI/BIOS</span>
+</button>
+<button class="px-3 py-2 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action border border-border-divider flex items-center gap-1.5 transition-colors">
+<span class="material-symbols-outlined text-sm text-status-success">smart_toy</span>
+<span>Trigger AGY Serviser</span>
+</button>
+<button class="px-3 py-2 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action border border-border-divider flex items-center gap-1.5 transition-colors">
+<span class="material-symbols-outlined text-sm text-status-success">check_circle</span>
+<span>Mark as Complete</span>
+</button>
+<button class="px-3.5 py-2 bg-primary-container text-on-primary-container rounded-lg text-label-action font-label-action hover:opacity-90 flex items-center gap-1.5 transition-opacity">
+<span class="material-symbols-outlined text-sm">markdown</span>
+<span>Export Markdown Report</span>
+</button>
+</div>
+</div>
+<!-- Hardware Telemetry Gauges Grid -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-space-md">
+<!-- CPU Temp & Load -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md flex flex-col justify-between gap-2">
+<div class="flex items-center justify-between text-text-muted">
+<span class="text-body-small font-medium">CPU Temp / Load</span>
+<span class="material-symbols-outlined text-primary-container">device_thermostat</span>
+</div>
+<div>
+<div class="text-headline-2 font-headline-2 text-text-primary font-bold">48°C</div>
+<div class="w-full bg-surface-dim h-1.5 rounded-full mt-2 overflow-hidden">
+<div class="bg-primary-container h-full w-[34%]"></div>
+</div>
+</div>
+<span class="text-code-telemetry font-code-telemetry text-text-muted">i9-13900K @ 34% Load</span>
+</div>
+<!-- RAM Usage -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md flex flex-col justify-between gap-2">
+<div class="flex items-center justify-between text-text-muted">
+<span class="text-body-small font-medium">RAM Usage</span>
+<span class="material-symbols-outlined text-secondary">memory</span>
+</div>
+<div>
+<div class="text-headline-2 font-headline-2 text-text-primary font-bold">6.4 / 16 GB</div>
+<div class="w-full bg-surface-dim h-1.5 rounded-full mt-2 overflow-hidden">
+<div class="bg-secondary h-full w-[40%]"></div>
+</div>
+</div>
+<span class="text-code-telemetry font-code-telemetry text-text-muted">DDR5 5600MHz (40%)</span>
+</div>
+<!-- NVMe SMART -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md flex flex-col justify-between gap-2">
+<div class="flex items-center justify-between text-text-muted">
+<span class="text-body-small font-medium">NVMe SMART</span>
+<span class="material-symbols-outlined text-status-success">verified</span>
+</div>
+<div>
+<div class="text-headline-2 font-headline-2 text-status-success font-bold">99% Health</div>
+<div class="w-full bg-surface-dim h-1.5 rounded-full mt-2 overflow-hidden">
+<div class="bg-status-success h-full w-[99%]"></div>
+</div>
+</div>
+<span class="text-code-telemetry font-code-telemetry text-text-muted">Samsung 990 Pro 2TB</span>
+</div>
+<!-- Disk I/O -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-md flex flex-col justify-between gap-2">
+<div class="flex items-center justify-between text-text-muted">
+<span class="text-body-small font-medium">Disk I/O Throughput</span>
+<span class="material-symbols-outlined text-primary-container">speed</span>
+</div>
+<div>
+<div class="text-headline-2 font-headline-2 text-primary-container font-bold">2.8 GB/s</div>
+<div class="w-full bg-surface-dim h-1.5 rounded-full mt-2 overflow-hidden">
+<div class="bg-primary-container h-full w-[75%]"></div>
+</div>
+</div>
+<span class="text-code-telemetry font-code-telemetry text-text-muted">PCIe 4.0 x4 Burst</span>
+</div>
+</div>
+<!-- 1 Hz Workstation Live Screen Mirror Frame -->
+<div class="bg-surface-container border border-border-divider rounded-xl overflow-hidden flex flex-col">
+<!-- CRT Scanline Telemetry Header -->
+<div class="bg-surface-container-high px-space-md py-space-sm border-b border-border-divider flex items-center justify-between">
+<div class="flex items-center gap-space-sm">
+<span class="w-2.5 h-2.5 rounded-full bg-status-success animate-ping"></span>
+<span class="text-code-telemetry font-code-telemetry text-text-primary font-semibold">1 Hz Workstation Live Screen Mirror // BENCH-03</span>
+</div>
+<div class="flex items-center gap-space-md text-code-telemetry font-code-telemetry text-text-muted">
+<span>RES: 1920x1080 @ 60Hz</span>
+<span class="text-primary-container timestamp-display">2025-05-18 14:32:01 UTC</span>
+</div>
+</div>
+<!-- Screen Viewport Simulator -->
+<div class="relative w-full h-80 bg-surface-dim overflow-hidden flex items-center justify-center">
+<!-- Background placeholder representing client windows desktop -->
+<div class="absolute inset-0 bg-cover bg-center opacity-80" data-alt="A detailed high-tech Windows 11 desktop environment displayed on a professional technician bench monitor with glowing cyan accents, telemetry graphs, open terminal windows, and code editors running in dark mode." style="background-image: url('https://lh3.googleusercontent.com/aida-public/AB6AXuBcP-eRAuadyzSaeUYApgEnZm3NggAMPnoBqea4NLyOAt5M4_Xa5b99ZBP9Pg_bkb8tjOofYLwKZ8dnUCFtwN1pW8uIGUfC77jG4QMd5-1tahOrVWwUd5ghhoA4gPoXbxyyruXafUgtCTcztAMZXF6b3jUYAw2o9argcv0S7AJNhcw1ChUiidR1JjnFBritos682EpIQIUJtloLLkWXJiEJB6cbbe_vWrwTYYbYW5lkXR_1Gv4YL3ndgYvTJ1Z1v8T8f9iGOt855whE')"></div>
+<!-- CRT Scanline Overlay Effect -->
+<div class="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%)] bg-[length:100%_4px] pointer-events-none"></div>
+<!-- Live Mirror Overlay Badge -->
+<div class="absolute bottom-4 left-4 bg-surface/90 backdrop-blur border border-border-divider px-3 py-1.5 rounded-lg flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-status-success"></span>
+<span class="text-code-telemetry font-code-telemetry text-text-primary">VNC Stream Active • Latency 12ms</span>
+</div>
+</div>
+</div>
+<!-- Live SSE Diagnostic Log Console -->
+<div class="bg-surface-container border border-border-divider rounded-xl overflow-hidden flex flex-col">
+<div class="bg-surface-container-high px-space-md py-space-sm border-b border-border-divider flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary-container text-sm">code</span>
+<span class="text-code-telemetry font-code-telemetry text-text-primary font-semibold">Live SSE Diagnostic Log Console</span>
+</div>
+<div class="flex items-center gap-2">
+<span class="px-2 py-0.5 rounded bg-surface-dim text-code-telemetry font-code-telemetry text-status-success border border-border-divider">Listening /api/v2/sse/stream</span>
+<button aria-label="Clear Console" class="p-1 text-text-muted hover:text-text-primary rounded transition-colors">
+<span class="material-symbols-outlined text-sm">block</span>
+</button>
+</div>
+</div>
+<div class="p-space-md bg-surface-dim font-code-telemetry text-code-telemetry text-text-muted h-48 overflow-y-auto flex flex-col gap-1.5">
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:01.042]</span>
+<span class="text-primary-container">[INFO]</span>
+<span>SSE client connected to BENCH-03 telemetry daemon.</span>
+</div>
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:02.118]</span>
+<span class="text-status-success">[SUCCESS]</span>
+<span>NVMe SMART self-test passed. Wear level indicator: 99%.</span>
+</div>
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:03.450]</span>
+<span class="text-primary-container">[TELEMETRY]</span>
+<span>CPU Package Temp stable at 48°C. Core frequencies locked at 5.2GHz.</span>
+</div>
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:04.890]</span>
+<span class="text-status-warning">[WARN]</span>
+<span>Windows Update KB5034441 pending user confirmation for deployment.</span>
+</div>
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:05.992]</span>
+<span class="text-primary-container">[AGY]</span>
+<span>Serviser automated script phase 3 initiated successfully.</span>
+</div>
+<div class="flex gap-2">
+<span class="text-text-muted">[14:32:07.015]</span>
+<span class="text-status-success">[SUCCESS]</span>
+<span>ZFS Cache synchronization complete with TrueNAS 10 GbE backbone.</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</div>
+<script>
+        // Simple live timestamp updater for CRT telemetry header
+        setInterval(() => {
+            const now = new Date();
+            const utcString = now.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+            document.querySelectorAll('.timestamp-display').forEach(el => {
+                el.textContent = utcString;
+            });
+        }, 1000);
+    </script>
+</body></html>

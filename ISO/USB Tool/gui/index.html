@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" content="__USB_TOOL_CSRF_TOKEN__">
+  <title>GWADT USB Tool - Centar za Održavanje i Nadogradnju USB Fleša</title>
+  <link rel="stylesheet" href="/gui/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Gornje Zaglavlje -->
+    <header class="header">
+      <div class="logo-area">
+        <div class="logo-badge">GWADT</div>
+        <div class="logo-text">
+          <h1>USB Maintenance &amp; Updater Tool</h1>
+          <p>Tehno-Kutak Windows 11 Automatizacija &bull; Servisni Toolkit</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btnCheckOnline" class="btn btn-secondary" title="Proveri najnovije verzije sa Microsoft servera">
+          <span class="icon">&#127760;</span> Proveri Online
+        </button>
+        <button id="btnRefreshStatus" class="btn btn-outline" title="Osveži trenutni status uređaja">
+          <span class="icon">&#8635;</span> Osveži
+        </button>
+        <button id="btnClearDirty" class="btn btn-outline" title="Popravi fajl sistem i ukloni 'dirty bit' zastavicu sa USB fleša">
+          <span class="icon">&#129529;</span> Očisti Dirty Bit
+        </button>
+        <button id="btnEjectUsb" class="btn btn-danger-outline" title="Bezbedno demontiraj ubačeni USB fleš" disabled>
+          <span class="icon">&#9167;</span> Demontiraj (Eject)
+        </button>
+      </div>
+    </header>
+
+    <!-- Statusni Baner Uređaja -->
+    <div id="deviceBanner" class="banner banner-waiting">
+      <div class="pulse-indicator"></div>
+      <div class="banner-content">
+        <strong id="bannerTitle">Čekam ubacivanje USB fleš diska...</strong>
+        <span id="bannerSubtitle">Ubacite USB fleš u računar radi automatske detekcije i inspekcije.</span>
+      </div>
+      <div class="banner-toggle">
+        <label class="toggle-label" title="Dozvoli rad sa lokalnim repozitorijumom projekta kao virtuelnim USB-om">
+          <input type="checkbox" id="chkDevMode">
+          <span>Testni / Razvojni Režim</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Glavna Mreža sa Karticama -->
+    <main class="main-grid">
+      <!-- Kartica 1: USB Uređaj -->
+      <section class="card card-device">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">&#128190;</span>
+            <h2>USB Skladišni Medijum</h2>
+          </div>
+          <span id="gwadtBadge" class="badge badge-gray">Nema Uređaja</span>
+        </div>
+
+        <div class="card-body">
+          <div class="device-meta">
+            <div class="meta-row">
+              <span class="meta-label">Model Uređaja:</span>
+              <span id="devModel" class="meta-value">-</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Particija / Mount:</span>
+              <span id="devMount" class="meta-value">-</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Oznaka Diska (Label):</span>
+              <span id="devLabel" class="meta-value">-</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Fajlsistem (FS):</span>
+              <span id="devFs" class="meta-value">-</span>
+            </div>
+            <div class="meta-row">
+              <span class="meta-label">Integritet Skripti (Pajplajn):</span>
+              <span id="pipelineStatusBadge" class="badge badge-gray">Učitavanje...</span>
+            </div>
+          </div>
+
+          <!-- Indikator zauzeća prostora -->
+          <div class="storage-container">
+            <div class="storage-labels">
+              <span>Zauzeće Diska</span>
+              <span id="storageText">0 MB / 0 MB (0%)</span>
+            </div>
+            <div class="progress-track">
+              <div id="storageBar" class="progress-fill" style="width: 0%;"></div>
+            </div>
+          </div>
+
+          <!-- Markeri GWADT sistema na flešu -->
+          <div class="markers-box">
+            <h3>Prepoznate GWADT Komponente:</h3>
+            <div class="markers-grid">
+              <div id="m_wim" class="marker-chip marker-off">WIM Slika</div>
+              <div id="m_unattend" class="marker-chip marker-off">autounattend.xml</div>
+              <div id="m_firstlogon" class="marker-chip marker-off">FirstLogon.cmd</div>
+              <div id="m_script" class="marker-chip marker-off">Deploy Skripte</div>
+              <div id="m_programi" class="marker-chip marker-off">Programi</div>
+              <div id="m_zakrpe" class="marker-chip marker-off">Zakrpe</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Kartica 2: Verzije & Zakrpe -->
+      <section class="card card-versions">
+        <div class="card-header">
+          <div class="card-title">
+            <span class="card-icon">&#128737;</span>
+            <h2>Verzije &amp; Zakrpe</h2>
+          </div>
+          <span id="versionStatusBadge" class="badge badge-info">Provera...</span>
+        </div>
+
+        <div class="card-body">
+          <div class="versions-comparison-grid">
+            <!-- Kolona 1: USB Fleš -->
+            <div class="version-column">
+              <div class="col-header">
+                <span class="col-icon">&#128191;</span>
+                <h3>Na USB Flešu</h3>
+              </div>
+              <div class="version-display" id="verUsb">Nema WIM-a</div>
+              <div class="version-subtext" id="verUsbSub">-</div>
+            </div>
+
+            <!-- Kolona 2: Program / Keš -->
+            <div class="version-column highlight-column">
+              <div class="col-header">
+                <span class="col-icon">&#128187;</span>
+                <h3>U Programu / Kešu</h3>
+              </div>
+              <div class="version-display" id="verStaging">Učitavanje...</div>
+              <div class="version-subtext" id="verStagingSub">-</div>
+            </div>
+
+            <!-- Kolona 3: Microsoft Online -->
+            <div class="version-column">
+              <div class="col-header">
+                <span class="col-icon">&#9729;</span>
+                <h3>Microsoft Online</h3>
+              </div>
+              <div class="version-display" id="verOnline">Učitavanje...</div>
+              <div class="version-subtext" id="verOnlineSub">-</div>
+            </div>
+          </div>
+
+          <!-- Preporučena Akcija -->
+          <div class="action-recommendation" id="actionRecBox">
+            <div class="rec-icon">&#9432;</div>
+            <div class="rec-content">
+              <strong>Preporuka Sistema:</strong>
+              <p id="actionRecText">Inicijalizacija i provera stanja...</p>
+            </div>
+          </div>
+
+          <!-- Glavna Akciona Dugmad -->
+          <div class="actions-toolbar">
+            <button id="btnUpgradeUsb" class="btn btn-primary btn-large" disabled>
+              <span class="icon">&#128640;</span> Nadogradi USB na Novu Verziju
+            </button>
+            <button id="btnQuickOnlineUpdate" class="btn btn-secondary btn-large" style="display: none;" title="Automatski preuzmi najnoviji Build sa Microsoft servera i pripremi ga u programu">
+              <span class="icon">&#127760;</span> Preuzmi Najnoviji Build sa Interneta
+            </button>
+            <button id="btnSyncScripts" class="btn btn-outline" disabled title="Sinhronizuje samo skripte i XML konfiguraciju za samo 1s">
+              <span class="icon">&#9889;</span> Osveži Samo Skripte (1s)
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Sekcija: Napredak Nadogradnje (Prikazuje se tokom prenosa) -->
+    <section id="upgradeSection" class="upgrade-panel card hidden">
+      <div class="card-header">
+        <div class="card-title">
+          <span class="card-icon spin">&#8987;</span>
+          <h2 id="upgradeTitle">Nadogradnja USB Fleša u Toku...</h2>
+        </div>
+        <span id="upgradeSpeedBadge" class="badge badge-accent">0.0 MB/s</span>
+      </div>
+
+      <div class="card-body">
+        <div class="progress-details">
+          <span id="upgradeStepText">Priprema prenosa...</span>
+          <span id="upgradePercentText">0.0%</span>
+        </div>
+
+        <div class="progress-track track-large">
+          <div id="upgradeProgressBar" class="progress-fill progress-animated" style="width: 0%;"></div>
+        </div>
+
+        <div class="progress-stats">
+          <span>Preneto: <strong id="upgradeCopiedText">0 MB</strong> / <strong id="upgradeTotalText">0 MB</strong></span>
+          <span>Preostalo vreme: <strong id="upgradeEtaText">Računam...</strong></span>
+          <span>Proteklo: <strong id="upgradeElapsedText">0s</strong></span>
+        </div>
+
+        <!-- Terminal log prozor -->
+        <div class="console-wrapper">
+          <div class="console-header">
+            <span>Servisni Izlaz Operacije</span>
+            <button id="btnClearLogs" class="btn-text">Očisti</button>
+          </div>
+          <pre id="consoleLogs" class="console-logs"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Donja Sekcija: Alati i Pregled Zakrpa -->
+    <section class="card card-tools">
+      <div class="tabs-header">
+        <button class="tab-btn active" data-tab="tabPatches">&#128230; Preuzete Zakrpe u Projektu</button>
+        <button class="tab-btn" data-tab="tabProgramUpdate">&#9889; Ažuriranje Programa (Bez USB-a)</button>
+        <button class="tab-btn" data-tab="tabVentoyIso">&#128191; Ventoy ISO Generator</button>
+        <button class="tab-btn" data-tab="tabDiag">&#128269; Dijagnostika i Servisni Log</button>
+      </div>
+
+      <div class="tabs-content">
+        <!-- Tab 1: Zakrpe -->
+        <div id="tabPatches" class="tab-pane active">
+          <div class="tab-pane-header">
+            <p>Kumulativne zakrpe (.msu i .cab) locirane u direktorijumu <code>Zakrpe/</code> za offline integraciju u WIM sliku.</p>
+            <span id="patchesCountBadge" class="badge badge-gray">0 paketa</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>KB Oznaka</th>
+                  <th>Naziv Datoteke</th>
+                  <th>Tip Paketa</th>
+                  <th>Veličina</th>
+                </tr>
+              </thead>
+              <tbody id="patchesTableBody">
+                <tr>
+                  <td colspan="4" class="text-center text-muted">Učitavam spisak zakrpa...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Tab 2: Ažuriranje Programa (Pre-Stage WIM) -->
+        <div id="tabProgramUpdate" class="tab-pane">
+          <div class="tab-pane-header">
+            <div>
+              <h3 style="font-size: 14px; color: var(--text-main); margin-bottom: 4px;">Priprema Nove Slike u Programu (Pre-Stage Keš)</h3>
+              <p>Pripremite najnoviju Windows 11 WIM sliku direktno na računaru nezavisno od USB fleša. Čim se slika sačuva u programskom kešu, biće odmah spremna za 1-klik prenos na bilo koji USB.</p>
+            </div>
+            <button id="btnRescanIso" class="btn btn-outline btn-sm" title="Ponovo pretraži lokalne diskove za ISO fajlovima">
+              <span class="icon">&#8635;</span> Osveži Listu
+            </button>
+          </div>
+
+          <div class="program-update-grid">
+            <!-- 1. Automatsko Preuzimanje sa Interneta (UUP & Microsoft CDN) -->
+            <div class="form-card" style="border: 1px solid rgba(6, 182, 212, 0.35); background: rgba(6, 182, 212, 0.04);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                    <span style="font-size: 20px;">&#127760;</span>
+                    <h4 style="font-size: 14px; color: var(--accent-cyan); font-weight: 700;">100% Automatsko Preuzimanje i Sklapanje sa Interneta</h4>
+                  </div>
+                  <p style="font-size: 12px; color: var(--text-muted);">
+                    Sistem se povezuje sa zvaničnim Microsoft CDN serverima, preuzima najnoviji Windows 11 Build preko <code>aria2c</code> i sabija novi <code>install.wim</code> pomoću <code>wimlib-imagex</code> bez ručnog traženja ISO fajla.
+                  </p>
+                </div>
+                <span id="onlineBuildTargetBadge" class="badge badge-accent">Učitavanje...</span>
+              </div>
+
+              <div style="display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-top: 10px;">
+                <button id="btnTriggerOnlineBuild" class="btn btn-secondary btn-large">
+                  <span class="icon">&#128640;</span> Preuzmi i Sklopi Najnoviji Build sa Interneta
+                </button>
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; color: var(--text-main);">
+                  <input type="checkbox" id="chkAutoSyncUsb" checked>
+                  <span>Automatski odmah nadogradi i ubačeni USB fleš kada se preuzimanje završi</span>
+                </label>
+              </div>
+
+              <!-- Progres preuzimanja sa interneta -->
+              <div id="onlineProgSection" class="prepare-progress-box hidden" style="margin-top: 16px; border-color: rgba(6, 182, 212, 0.4);">
+                <div class="progress-details">
+                  <span id="onlineStepText">Inicijalizacija preuzimanja sa Microsoft servera...</span>
+                  <span id="onlinePercentText" class="badge badge-accent">0.0%</span>
+                </div>
+                <div class="progress-track track-large">
+                  <div id="onlineProgressBar" class="progress-fill progress-animated" style="width: 0%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-emerald));"></div>
+                </div>
+                <div class="progress-stats">
+                  <span>Brzina: <strong id="onlineSpeedText">0.0 MB/s</strong></span>
+                  <span>Proteklo: <strong id="onlineElapsedText">0s</strong></span>
+                </div>
+                <pre id="onlineLogs" class="console-logs" style="max-height: 180px; margin-top: 10px;"></pre>
+              </div>
+            </div>
+
+            <!-- 2. Ručni izbor lokalnog ISO / ESD fajla -->
+            <div class="form-card">
+              <label for="selectIsoSource" class="form-label">Ili izaberite postojeći lokalni ISO / ESD / WIM fajl sa računara:</label>
+              <div class="form-row">
+                <select id="selectIsoSource" class="form-select">
+                  <option value="">Učitavam dostupne izvore...</option>
+                </select>
+              </div>
+              <div id="customIsoContainer" style="display: none; margin-top: 10px;">
+                <label for="inputCustomIso" class="form-label">Unesite prilagođenu lokalnu putanju ili direktan URL:</label>
+                <input type="text" id="inputCustomIso" class="form-input" placeholder="/home/gru/Downloads/Win11_Serbian_x64.iso">
+              </div>
+
+              <div class="sources-help-box">
+                <div class="help-title">&#9432; Zvanični Microsoft Izvori za Preuzimanje:</div>
+                <ul id="officialLinksList" class="official-links-list">
+                  <li><a href="https://www.microsoft.com/software-download/windows11" target="_blank" rel="noopener">Microsoft Zvanična Stranica za Preuzimanje Windows 11 ISO</a></li>
+                  <li><a href="https://uupdump.net" target="_blank" rel="noopener">UUP Dump (Najnoviji kumulativni buildovi direktno sa Microsoft CDN-a)</a></li>
+                </ul>
+              </div>
+
+              <div style="margin-top: 16px;">
+                <button id="btnStartPrepare" class="btn btn-primary btn-large">
+                  <span class="icon">&#9889;</span> Pripremi Sliku u Programu (Pre-Stage)
+                </button>
+              </div>
+            </div>
+
+            <!-- Progres pripreme u programu -->
+            <div id="prepareProgSection" class="prepare-progress-box hidden">
+              <div class="progress-details">
+                <span id="prepareStepText">Pokretanje pripreme...</span>
+                <span id="preparePercentText" class="badge badge-accent">0.0%</span>
+              </div>
+              <div class="progress-track">
+                <div id="prepareProgressBar" class="progress-fill progress-animated" style="width: 0%;"></div>
+              </div>
+              <div class="progress-stats">
+                <span>Status: <strong id="prepareStatusText">Obrada...</strong></span>
+                <span>Proteklo: <strong id="prepareElapsedText">0s</strong></span>
+              </div>
+              <pre id="prepareLogs" class="console-logs" style="max-height: 150px; margin-top: 10px;"></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 3: Ventoy ISO Generator -->
+        <div id="tabVentoyIso" class="tab-pane">
+          <div class="tab-pane-header">
+            <div>
+              <h3 style="font-size: 14px; color: var(--text-main); margin-bottom: 4px;">Ventoy ISO Generator (Hibridni UEFI + Legacy BIOS)</h3>
+              <p>Brzo generisanje optimizovane (~12 GB) bootable hibridne (UEFI + Legacy BIOS) Windows 11 ISO slike sa No-Prompt startom za Ventoy USB diskove.</p>
+            </div>
+            <span id="isoTargetBuildBadge" class="badge badge-accent">10.0.26200.8037 / v2.5.0</span>
+          </div>
+
+          <div class="program-update-grid">
+            <!-- Kartica sa podešavanjima -->
+            <div class="form-card" style="border: 1px solid rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.04);">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; flex-wrap: wrap;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                    <span style="font-size: 20px;">&#128191;</span>
+                    <h4 style="font-size: 14px; color: var(--accent-emerald); font-weight: 700;">Konfiguracija Ventoy ISO Slike</h4>
+                  </div>
+                  <p style="font-size: 12px; color: var(--text-muted);">
+                    Kreira hibridnu El Torito bootable ISO sliku (Dual-Boot EFI/CDBOOT.BIN + boot/etfsboot.com) sa integrisanom <code>autounattend.xml</code> konfiguracijom i svim GWADT servisnim skriptama.
+                  </p>
+                </div>
+                <div style="text-align: right;">
+                  <span style="font-size: 11px; color: var(--text-dim); display: block; margin-bottom: 2px;">Ciljani OS Build:</span>
+                  <span id="isoDetectedBuildText" class="badge badge-info">10.0.26200.8037 / v2.5.0</span>
+                </div>
+              </div>
+
+              <!-- Izlazna putanja -->
+              <div style="margin-bottom: 14px;">
+                <label for="inputIsoOutputDir" class="form-label">Izlazni direktorijum za ISO fajl:</label>
+                <div class="form-row">
+                  <input type="text" id="inputIsoOutputDir" class="form-input" placeholder="Podrazumevano: ~/Downloads (ili unesite prilagođenu putanju)">
+                </div>
+                <span style="font-size: 11px; color: var(--text-dim); margin-top: 4px; display: inline-block;">
+                  Ako ostavite prazno, ISO fajl se automatski smešta u <code>~/Downloads</code> folder.
+                </span>
+              </div>
+
+              <!-- Checkbox za No-Prompt Boot -->
+              <div style="margin-bottom: 18px;">
+                <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-main);">
+                  <input type="checkbox" id="chkNoPrompt" checked>
+                  <span>Direktno pokretanje bez Press any key zastoja (No-Prompt Boot)</span>
+                </label>
+              </div>
+
+              <!-- Dugme za pokretanje -->
+              <div>
+                <button id="btnStartBuildIso" class="btn btn-primary btn-large">
+                  <span class="icon">&#128230;</span> Generiši Ventoy ISO Sliku
+                </button>
+              </div>
+            </div>
+
+            <!-- Progres sekcija za ISO generisanje (inicijalno skrivena) -->
+            <div id="isoBuildProgSection" class="prepare-progress-box hidden" style="border-color: rgba(16, 185, 129, 0.4);">
+              <div class="progress-details">
+                <span id="isoStepText">Priprema i verifikacija izvora...</span>
+                <span id="isoPercentText" class="badge badge-accent">0.0%</span>
+              </div>
+              <div class="progress-track track-large" style="margin: 10px 0;">
+                <div id="isoProgressBar" class="progress-fill progress-animated" style="width: 0%; background: linear-gradient(90deg, var(--accent-emerald), var(--accent-cyan));"></div>
+              </div>
+              <div class="progress-stats">
+                <span>Status: <strong id="isoStatusText">Čekanje...</strong></span>
+                <span>Proteklo vreme: <strong id="isoElapsedText">0s</strong></span>
+              </div>
+              <div class="console-wrapper" style="margin-top: 12px;">
+                <div class="console-header">
+                  <span>Log Izgradnje Ventoy ISO Slike</span>
+                  <button id="btnClearIsoLogs" class="btn-text">Očisti</button>
+                </div>
+                <pre id="isoBuildLogs" class="console-logs" style="max-height: 180px;"></pre>
+              </div>
+            </div>
+
+            <!-- Kartica sa rezultatom (inicijalno skrivena) -->
+            <div id="isoResultCard" class="form-card hidden" style="border: 1px solid rgba(16, 185, 129, 0.6); background: rgba(16, 185, 129, 0.08);">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 24px; color: var(--accent-emerald);">&#10004;</span>
+                  <div>
+                    <h4 style="font-size: 15px; color: var(--accent-emerald); font-weight: 700;">ISO Slika je Uspešno Generisana!</h4>
+                    <p style="font-size: 12px; color: var(--text-muted);">Fajl je spreman za direktno kopiranje na vaš Ventoy USB fleš disk.</p>
+                  </div>
+                </div>
+                <span class="badge badge-success">Spremno za Ventoy</span>
+              </div>
+
+              <div class="iso-result-details">
+                <div class="iso-result-row">
+                  <span class="result-label">Putanja generisanog ISO-a:</span>
+                  <div class="result-path-box">
+                    <code id="isoResultPath">-</code>
+                    <button id="btnCopyIsoPath" class="btn btn-outline btn-sm" title="Kopiraj putanju u clipboard">
+                      <span class="icon">&#128203;</span> Kopiraj Putanju
+                    </button>
+                  </div>
+                </div>
+                <div class="iso-result-row">
+                  <span class="result-label">Veličina slike:</span>
+                  <div>
+                    <strong id="isoResultSize" style="color: var(--accent-cyan); font-size: 14px;">-</strong>
+                  </div>
+                </div>
+                <div class="iso-result-row">
+                  <span class="result-label">SHA-256 Heš:</span>
+                  <div style="overflow-x: auto; max-width: 100%;">
+                    <code id="isoResultSha256" class="hash-code">-</code>
+                  </div>
+                </div>
+                <div class="iso-result-row">
+                  <span class="result-label">MD5 Heš:</span>
+                  <div style="overflow-x: auto; max-width: 100%;">
+                    <code id="isoResultMd5" class="hash-code">-</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Greška baner (inicijalno skriven) -->
+            <div id="isoErrorBanner" class="banner banner-danger hidden" style="margin-top: 10px;">
+              <span style="font-size: 20px;">&#9888;</span>
+              <div class="banner-content">
+                <strong style="color: var(--accent-rose);">Greška tokom generisanja ISO slike:</strong>
+                <span id="isoErrorText">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tab 4: Dijagnostika i Logovi -->
+        <div id="tabDiag" class="tab-pane">
+          <div class="tab-pane-header">
+            <p>Inspekcija lokalnih i USB servisnih dnevnika (<code>servis_deploy.log</code>).</p>
+            <button id="btnFetchUsbLogs" class="btn btn-outline btn-sm">Učitaj Log sa USB-a</button>
+          </div>
+          <pre id="diagLogView" class="console-logs" style="max-height: 250px;">Izaberite 'Učitaj Log sa USB-a' za analizu poslednje instalacije.</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div>Tehno-Kutak GWADT &bull; Windows 11 Automatizovani Servisni Toolkit</div>
+      <div id="heartbeatStatus" class="text-muted">Povezano sa lokalnim serverom na portu 8092</div>
+    </footer>
+  </div>
+
+  <script>
+    (function () {
+      const origFetch = window.fetch.bind(window);
+      window.getUsbToolCsrfToken = function () {
+        const meta = document.querySelector('meta[name="csrf-token"]');
+        return meta ? (meta.getAttribute("content") || "") : "";
+      };
+      window.fetch = function (input, init) {
+        const opts = Object.assign({}, init || {});
+        const method = String(opts.method || "GET").toUpperCase();
+        if (method === "POST") {
+          const headers = new Headers(opts.headers || {});
+          const token = window.getUsbToolCsrfToken();
+          if (token && !headers.has("X-USB-Tool-Token")) {
+            headers.set("X-USB-Tool-Token", token);
+          }
+          opts.headers = headers;
+          if (!opts.credentials) {
+            opts.credentials = "same-origin";
+          }
+        }
+        return origFetch(input, opts);
+      };
+    })();
+  </script>
+  <script src="/gui/app.js"></script>
+</body>
+</html>

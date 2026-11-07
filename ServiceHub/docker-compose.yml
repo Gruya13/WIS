@@ -1,0 +1,19 @@
+services:
+  servis-hub:
+    container_name: servis-hub
+    build: .
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SERVIS_HUB_PORT=8080
+      - SERVIS_HUB_UDP_PORT=8888
+      - SERVIS_UPDATES_DIR=/home/gru/Storage/Updates/Win11
+    volumes:
+      - /dev:/dev:ro
+      - /mnt/TK_NAS/Servis/servis-hub/storage:/app/storage:rw
+      - /mnt/TK_NAS/Servis/servis-hub/storage/cache:/app/storage/cache:ro
+      - /mnt/TK_NAS/Servis/servis-hub/Logs/reports:/app/Logs/reports:rw
+      - /mnt/TK_NAS/Servis/servis-hub/Logs/live:/app/Logs/live:rw
+      - /mnt/TK_NAS/Servis/Updates/Win11:/home/gru/Storage/Updates/Win11:ro

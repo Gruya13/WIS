@@ -1,0 +1,72 @@
+[
+  {
+    "key": "live_fleet_cockpit",
+    "title": "Servis Hub - Telemetry Cockpit",
+    "screen_id": "3945733ff2924a26ac6382a52b1811d1",
+    "screen_name": "projects/16865739281301355668/screens/3945733ff2924a26ac6382a52b1811d1",
+    "width": "2560",
+    "height": "2444",
+    "deviceType": "DESKTOP",
+    "html_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/live_fleet_cockpit.html",
+    "html_size": 29187,
+    "png_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/live_fleet_cockpit.png",
+    "png_size": 162577,
+    "status": "SUCCESS"
+  },
+  {
+    "key": "wis_usb_builder",
+    "title": "Servis Hub - UEFI USB & ISO Builder Center",
+    "screen_id": "da90fa64e14d48a397a03ce534477ec9",
+    "screen_name": "projects/16865739281301355668/screens/da90fa64e14d48a397a03ce534477ec9",
+    "width": "2560",
+    "height": "2432",
+    "deviceType": "DESKTOP",
+    "html_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/wis_usb_builder.html",
+    "html_size": 23147,
+    "png_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/wis_usb_builder.png",
+    "png_size": 107046,
+    "status": "SUCCESS"
+  },
+  {
+    "key": "service_record_agy",
+    "title": "Servis Hub - Service Record & Diagnostic Log",
+    "screen_id": "58a0b24e69c746bdb7ba29c953a5f9f8",
+    "screen_name": "projects/16865739281301355668/screens/58a0b24e69c746bdb7ba29c953a5f9f8",
+    "width": "2560",
+    "height": "2226",
+    "deviceType": "DESKTOP",
+    "html_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/service_record_agy.html",
+    "html_size": 27623,
+    "png_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/service_record_agy.png",
+    "png_size": 119883,
+    "status": "SUCCESS"
+  },
+  {
+    "key": "oem_drivers_firmware",
+    "title": "Servis Hub - OEM Drivers & Firmware Hub",
+    "screen_id": "2b3a6237f4b141a1929eb6ccc0fabd3d",
+    "screen_name": "projects/16865739281301355668/screens/2b3a6237f4b141a1929eb6ccc0fabd3d",
+    "width": "2560",
+    "height": "2048",
+    "deviceType": "DESKTOP",
+    "html_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/oem_drivers_firmware.html",
+    "html_size": 24073,
+    "png_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/oem_drivers_firmware.png",
+    "png_size": 100595,
+    "status": "SUCCESS"
+  },
+  {
+    "key": "windows_updates_cache",
+    "title": "Servis Hub - Windows Updates & Pre-Patching Cache",
+    "screen_id": "bd444814b01e45f38fd04d28f3f4a703",
+    "screen_name": "projects/16865739281301355668/screens/bd444814b01e45f38fd04d28f3f4a703",
+    "width": "2560",
+    "height": "2048",
+    "deviceType": "DESKTOP",
+    "html_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/windows_updates_cache.html",
+    "html_size": 26655,
+    "png_path": "/home/gru/Projects/Servis Hub/docs/stitch_designs/windows_updates_cache.png",
+    "png_size": 98997,
+    "status": "SUCCESS"
+  }
+]
