@@ -1,0 +1,471 @@
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Servis Hub - Windows Updates</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "inverse-on-surface": "#283044",
+            "tertiary-fixed-dim": "#ffb960",
+            "outline": "#87929a",
+            "outline-variant": "#3e484f",
+            "tertiary-container": "#f1a02b",
+            "surface-container-high": "#222a3d",
+            "text-primary": "#f8fafc",
+            "surface-container-lowest": "#060e20",
+            "surface-container": "#1e293b",
+            "status-success": "#10b981",
+            "on-secondary-fixed-variant": "#004395",
+            "inverse-primary": "#00668a",
+            "primary-container": "#38bdf8",
+            "on-secondary-fixed": "#001a42",
+            "on-surface": "#dae2fd",
+            "surface-container-highest": "#2d3449",
+            "tertiary": "#ffc176",
+            "status-warning": "#f59e0b",
+            "surface-container-low": "#131b2e",
+            "on-primary-fixed-variant": "#004c69",
+            "inverse-surface": "#dae2fd",
+            "text-muted": "#94a3b8",
+            "secondary-fixed-dim": "#adc6ff",
+            "tertiary-fixed": "#ffddb8",
+            "on-secondary": "#002e6a",
+            "surface-variant": "#2d3449",
+            "on-primary": "#00354a",
+            "primary": "#8ed5ff",
+            "on-tertiary": "#472a00",
+            "primary-fixed": "#c4e7ff",
+            "surface-dim": "#0b1326",
+            "background": "#0b1326",
+            "on-error": "#690005",
+            "error": "#ffb4ab",
+            "border-divider": "#334155",
+            "on-primary-fixed": "#001e2c",
+            "on-background": "#dae2fd",
+            "status-error": "#ef4444",
+            "on-tertiary-fixed-variant": "#653e00",
+            "on-primary-container": "#004965",
+            "on-surface-variant": "#bdc8d1",
+            "on-tertiary-container": "#613b00",
+            "secondary-fixed": "#d8e2ff",
+            "on-tertiary-fixed": "#2a1700",
+            "canvas-background": "#0f172a",
+            "surface-tint": "#7bd0ff",
+            "on-error-container": "#ffdad6",
+            "surface": "#0b1326",
+            "primary-fixed-dim": "#7bd0ff",
+            "on-secondary-container": "#e6ecff",
+            "surface-bright": "#31394d",
+            "secondary": "#adc6ff",
+            "secondary-container": "#0566d9",
+            "error-container": "#93000a"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "space-4xl": "3rem",
+            "margin": "1rem",
+            "gutter-desktop": "1.5rem",
+            "space-xl": "1.25rem",
+            "margin-tablet": "1.5rem",
+            "space-xs": "0.25rem",
+            "margin-desktop": "2rem",
+            "space-3xl": "2rem",
+            "gutter": "1rem",
+            "space-sm": "0.5rem",
+            "space-lg": "1rem",
+            "space-md": "0.75rem",
+            "space-2xl": "1.5rem"
+          },
+          "fontFamily": {
+            "body-regular": ["Inter"],
+            "headline-1": ["Inter"],
+            "code-telemetry": ["JetBrains Mono"],
+            "label-action": ["Inter"],
+            "headline-3": ["Inter"],
+            "display-hero-mobile": ["Inter"],
+            "headline-2": ["Inter"],
+            "display-hero": ["Inter"],
+            "body-small": ["Inter"]
+          },
+          "fontSize": {
+            "body-regular": ["15px", { "lineHeight": "24px", "fontWeight": "400" }],
+            "headline-1": ["28px", { "lineHeight": "36px", "fontWeight": "600" }],
+            "code-telemetry": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+            "label-action": ["14px", { "lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "600" }],
+            "headline-3": ["18px", { "lineHeight": "26px", "fontWeight": "500" }],
+            "display-hero-mobile": ["28px", { "lineHeight": "36px", "fontWeight": "700" }],
+            "display-hero": ["36px", { "lineHeight": "44px", "fontWeight": "700" }],
+            "headline-2": ["22px", { "lineHeight": "30px", "fontWeight": "600" }],
+            "body-small": ["13px", { "lineHeight": "18px", "fontWeight": "400" }]
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="bg-canvas-background text-text-primary font-body-regular min-h-screen flex flex-col antialiased selection:bg-primary-container selection:text-on-primary-container">
+<!-- SideNavBar Component -->
+<aside class="fixed left-0 top-0 h-screen w-64 z-40 flex flex-col justify-between p-space-md border-r border-border-divider dark:border-border-divider bg-surface-container dark:bg-surface-container">
+<div>
+<div class="flex items-center gap-space-md px-space-md py-space-md mb-space-md border-b border-border-divider">
+<div class="w-10 h-10 rounded-lg bg-surface-variant flex items-center justify-center text-primary-container font-bold text-headline-3">
+<span class="material-symbols-outlined">dns</span>
+</div>
+<div>
+<h1 class="text-headline-3 font-headline-3 text-text-primary tracking-wide">Servis Hub</h1>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Telemetry Cockpit v2.4</p>
+</div>
+</div>
+<nav class="flex flex-col gap-space-xs">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">precision_manufacturing</span>
+          Radionička Flota
+        </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">usb</span>
+          WIS USB Builder
+        </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-high dark:bg-surface-container-high text-primary-container dark:text-primary-container border-l-2 border-primary-container font-label-action text-label-action cursor-pointer transition-colors duration-150" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">system_update</span>
+          Windows Updates
+        </a>
+</nav>
+</div>
+<div class="flex flex-col gap-space-xs border-t border-border-divider pt-space-md">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">dns</span>
+        Server Telemetry
+      </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">settings</span>
+        Postavke Sustava
+      </a>
+</div>
+</aside>
+<!-- Main Wrapper -->
+<div class="pl-64 flex flex-col flex-1 min-h-screen">
+<!-- TopNavBar Component -->
+<header class="flex justify-between items-center w-full px-space-xl h-14 bg-surface-container dark:bg-surface-container border-b border-border-divider dark:border-border-divider z-30 sticky top-0">
+<div class="flex items-center gap-space-xl flex-1 max-w-md">
+<span class="text-headline-2 font-headline-2 text-text-primary tracking-tight">Servis Hub</span>
+<div class="relative w-full">
+<span class="material-symbols-outlined absolute left-3 top-2 text-text-muted text-sm">search</span>
+<input class="w-full bg-surface text-text-primary text-body-small rounded-lg pl-9 pr-space-md py-1.5 border border-border-divider focus:outline-none focus:border-primary-container transition-colors" placeholder="Filter KB, build version, or hash..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<button class="flex items-center gap-space-xs px-space-md py-1.5 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action transition-colors cursor-pointer active:scale-95">
+<span class="material-symbols-outlined text-sm">refresh</span>
+          Preuzmi Kontrolu
+        </button>
+<button class="flex items-center gap-space-xs px-space-md py-1.5 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action transition-colors cursor-pointer active:scale-95">
+<span class="material-symbols-outlined text-sm">terminal</span>
+          Diagnostic Report
+        </button>
+<div class="flex items-center gap-space-sm pl-space-sm border-l border-border-divider">
+<button class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors cursor-pointer">
+<span class="material-symbols-outlined">refresh</span>
+</button>
+<button class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors cursor-pointer">
+<span class="material-symbols-outlined">terminal</span>
+</button>
+<button class="p-2 text-text-muted hover:text-text-primary rounded-lg hover:bg-surface-variant transition-colors cursor-pointer relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 bg-primary-container rounded-full"></span>
+</button>
+<div class="w-8 h-8 rounded-full bg-surface-variant flex items-center justify-center border border-border-divider overflow-hidden ml-space-xs">
+<img class="w-full h-full object-cover" data-alt="Operator Servis Hub avatar professional headshot placeholder dark mode style enterprise technician" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBnC-tzyyJnGHKPNFMZHXm8Jo59sP8269safbEL_NW5emTzVAGamq-_CQte0Hm60pq5qtwk5mfqwSHiaIbeMCqITIm0W6jBI938hcOpcpXcBdFXlXeYNVFfPxyKEMRp2gNXAbE-BOyQJ2d2-bPJvtPVpUXzrA1TLjfNiWYKf21XCnu2UzVJk6HGJiGLxiqt5kxdP0K9nA-9V-gmZK5NLXM9nDL_KhZxxqNJwlNCOm7mt4BM_QVPISihnUcGxvblORqFZr3hwlPv0pyG"/>
+</div>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="flex-1 p-space-2xl flex flex-col gap-space-2xl max-w-[1600px] w-full mx-auto">
+<!-- Top Overview Section: Bento Grid -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-space-2xl">
+<!-- TrueNAS Gigabit Update Cache Status Card -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col justify-between shadow-sm relative overflow-hidden">
+<div class="absolute -right-10 -bottom-10 w-32 h-32 bg-primary-container/5 rounded-full blur-2xl"></div>
+<div>
+<div class="flex items-center justify-between mb-space-md">
+<div class="flex items-center gap-space-sm">
+<div class="p-2 rounded-lg bg-surface-variant text-primary-container">
+<span class="material-symbols-outlined">dns</span>
+</div>
+<div>
+<h2 class="text-headline-3 font-headline-3 text-text-primary">TrueNAS Update Cache</h2>
+<p class="text-body-small text-text-muted">Storage Pool // zfs-tank-ssd01</p>
+</div>
+</div>
+<span class="px-2.5 py-1 rounded-full bg-status-success/10 text-status-success text-body-small font-medium flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse"></span>
+                Sync Active
+              </span>
+</div>
+<div class="grid grid-cols-2 gap-space-md my-space-lg">
+<div class="bg-surface p-space-md rounded-lg border border-border-divider">
+<span class="text-body-small text-text-muted block mb-1">Total Cached Size</span>
+<span class="text-headline-1 font-headline-1 text-text-primary tracking-tight">842.6 <span class="text-headline-3 text-text-muted font-normal">GB</span></span>
+</div>
+<div class="bg-surface p-space-md rounded-lg border border-border-divider">
+<span class="text-body-small text-text-muted block mb-1">Available Quota</span>
+<span class="text-headline-1 font-headline-1 text-text-primary tracking-tight">1.15 <span class="text-headline-3 text-text-muted font-normal">TB</span></span>
+</div>
+</div>
+</div>
+<div class="space-y-space-sm pt-space-md border-t border-border-divider">
+<div class="flex justify-between text-body-small">
+<span class="text-text-muted">Storage Utilization</span>
+<span class="text-text-primary font-code-telemetry">42.1% (2.0TB Pool)</span>
+</div>
+<div class="w-full bg-surface h-2 rounded-full overflow-hidden border border-border-divider">
+<div class="bg-primary-container h-full rounded-full" style="width: 42.1%;"></div>
+</div>
+</div>
+</div>
+<!-- Pre-Patching Speed Benchmark Metrics -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col justify-between shadow-sm">
+<div>
+<div class="flex items-center justify-between mb-space-md">
+<div class="flex items-center gap-space-sm">
+<div class="p-2 rounded-lg bg-surface-variant text-primary-container">
+<span class="material-symbols-outlined">speed</span>
+</div>
+<div>
+<h2 class="text-headline-3 font-headline-3 text-text-primary">Throughput &amp; Hit Ratio</h2>
+<p class="text-body-small text-text-muted">Local Peer Distribution Engine</p>
+</div>
+</div>
+<span class="px-2.5 py-1 rounded-full bg-surface-variant text-text-primary text-body-small font-code-telemetry">10 GbE Link</span>
+</div>
+<div class="grid grid-cols-2 gap-space-md my-space-lg">
+<div class="bg-surface p-space-md rounded-lg border border-border-divider">
+<span class="text-body-small text-text-muted block mb-1">Peak Throughput</span>
+<span class="text-headline-1 font-headline-1 text-text-primary tracking-tight">9.42 <span class="text-headline-3 text-text-muted font-normal">Gbps</span></span>
+</div>
+<div class="bg-surface p-space-md rounded-lg border border-border-divider">
+<span class="text-body-small text-text-muted block mb-1">Cache Hit Ratio</span>
+<span class="text-headline-1 font-headline-1 text-status-success tracking-tight">98.4%</span>
+</div>
+</div>
+</div>
+<div class="flex items-center justify-between pt-space-md border-t border-border-divider text-body-small">
+<span class="text-text-muted">Average Latency: <strong class="text-text-primary font-code-telemetry">0.8ms</strong></span>
+<span class="text-text-muted">Active Clients: <strong class="text-text-primary font-code-telemetry">34 Nodes</strong></span>
+</div>
+</div>
+<!-- Quick Actions & Pipeline Status -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col justify-between shadow-sm">
+<div>
+<div class="flex items-center justify-between mb-space-md">
+<div class="flex items-center gap-space-sm">
+<div class="p-2 rounded-lg bg-surface-variant text-primary-container">
+<span class="material-symbols-outlined">hub</span>
+</div>
+<div>
+<h2 class="text-headline-3 font-headline-3 text-text-primary">Pre-Patching Pipeline</h2>
+<p class="text-body-small text-text-muted">WSUS &amp; Microsoft Catalog Sync</p>
+</div>
+</div>
+</div>
+<div class="space-y-space-md my-space-lg">
+<div class="flex items-center justify-between p-space-sm bg-surface rounded-lg border border-border-divider">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-status-success">check_circle</span>
+<span class="text-body-small text-text-primary">Catalog Manifest Index</span>
+</div>
+<span class="text-code-telemetry text-text-muted">Updated 4m ago</span>
+</div>
+<div class="flex items-center justify-between p-space-sm bg-surface rounded-lg border border-border-divider">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-status-success">check_circle</span>
+<span class="text-body-small text-text-primary">SHA-256 Integrity Verification</span>
+</div>
+<span class="text-code-telemetry text-status-success">Passed (1,420 files)</span>
+</div>
+</div>
+</div>
+<div class="flex gap-space-md">
+<button class="flex-1 bg-primary-container hover:bg-surface-tint text-on-primary-container py-2.5 rounded-lg text-label-action font-label-action transition-colors cursor-pointer active:scale-95 text-center">
+              Force Sync Catalog
+            </button>
+<button class="px-space-md py-2.5 bg-surface-variant hover:bg-surface-bright text-text-primary rounded-lg text-label-action font-label-action transition-colors cursor-pointer active:scale-95">
+              Purge Cache
+            </button>
+</div>
+</div>
+</div>
+<!-- Search & Filter Bar Section -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-lg flex flex-wrap items-center justify-between gap-space-md">
+<div class="flex flex-wrap items-center gap-space-md flex-1">
+<div class="relative min-w-[280px] flex-1">
+<span class="material-symbols-outlined absolute left-3 top-2.5 text-text-muted text-sm">search</span>
+<input class="w-full bg-surface text-text-primary text-body-small rounded-lg pl-9 pr-space-md py-2 border border-border-divider focus:outline-none focus:border-primary-container transition-colors" placeholder="Search KB number (e.g. KB5034441), Build 22631..." type="text"/>
+</div>
+<select class="bg-surface text-text-primary text-body-small rounded-lg px-space-md py-2 border border-border-divider focus:outline-none focus:border-primary-container">
+<option>All Architectures (x64 / ARM64)</option>
+<option>x64 (AMD64 / Intel)</option>
+<option>ARM64 (Snapdragon)</option>
+</select>
+<select class="bg-surface text-text-primary text-body-small rounded-lg px-space-md py-2 border border-border-divider focus:outline-none focus:border-primary-container">
+<option>Package Type: All</option>
+<option>.msu (Cumulative Update)</option>
+<option>.cab (Servicing Stack)</option>
+</select>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="text-body-small text-text-muted">Showing <strong>1 - 8</strong> of <strong>1,420</strong> packages</span>
+<button class="p-2 bg-surface hover:bg-surface-variant text-text-muted hover:text-text-primary rounded-lg border border-border-divider transition-colors">
+<span class="material-symbols-outlined text-sm">filter_list</span>
+</button>
+</div>
+</div>
+<!-- High-Density Data Table Section -->
+<div class="bg-surface-container border border-border-divider rounded-xl overflow-hidden shadow-sm">
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface border-b border-border-divider text-text-muted text-body-small font-medium">
+<th class="py-3 px-space-lg">Update Identifier</th>
+<th class="py-3 px-space-lg">Package Type &amp; Name</th>
+<th class="py-3 px-space-lg">Build Version</th>
+<th class="py-3 px-space-lg">Architecture</th>
+<th class="py-3 px-space-lg">Release Date</th>
+<th class="py-3 px-space-lg">File Size</th>
+<th class="py-3 px-space-lg">Checksum (SHA-256)</th>
+<th class="py-3 px-space-lg text-right">Action</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-border-divider text-body-small">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-variant/50 transition-colors">
+<td class="py-3 px-space-lg font-code-telemetry text-primary-container font-medium">KB5034441</td>
+<td class="py-3 px-space-lg">
+<div class="flex items-center gap-space-sm">
+<span class="px-1.5 py-0.5 rounded bg-primary-container/10 text-primary-container font-code-telemetry text-[11px]">.msu</span>
+<span class="text-text-primary font-medium">Windows 11 23H2 Cumulative Update</span>
+</div>
+</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted">22631.3085</td>
+<td class="py-3 px-space-lg">
+<span class="px-2 py-0.5 rounded-full bg-surface-variant text-text-primary text-[11px] font-code-telemetry">x64</span>
+</td>
+<td class="py-3 px-space-lg text-text-muted">2024-02-13</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-primary">624.8 MB</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted text-[11px]">8F92...4A1B</td>
+<td class="py-3 px-space-lg text-right">
+<button class="px-2.5 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-xs font-label-action transition-colors">Deploy</button>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-variant/50 transition-colors">
+<td class="py-3 px-space-lg font-code-telemetry text-primary-container font-medium">KB5034123</td>
+<td class="py-3 px-space-lg">
+<div class="flex items-center gap-space-sm">
+<span class="px-1.5 py-0.5 rounded bg-tertiary-container/10 text-tertiary-container font-code-telemetry text-[11px]">.cab</span>
+<span class="text-text-primary font-medium">Servicing Stack Update (SSU)</span>
+</div>
+</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted">22621.3070</td>
+<td class="py-3 px-space-lg">
+<span class="px-2 py-0.5 rounded-full bg-surface-variant text-text-primary text-[11px] font-code-telemetry">ARM64</span>
+</td>
+<td class="py-3 px-space-lg text-text-muted">2024-02-13</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-primary">48.2 MB</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted text-[11px]">3C10...9E5F</td>
+<td class="py-3 px-space-lg text-right">
+<button class="px-2.5 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-xs font-label-action transition-colors">Deploy</button>
+</td>
+</tr>
+<!-- Row 3 -->
+<tr class="hover:bg-surface-variant/50 transition-colors">
+<td class="py-3 px-space-lg font-code-telemetry text-primary-container font-medium">KB5033375</td>
+<td class="py-3 px-space-lg">
+<div class="flex items-center gap-space-sm">
+<span class="px-1.5 py-0.5 rounded bg-primary-container/10 text-primary-container font-code-telemetry text-[11px]">.msu</span>
+<span class="text-text-primary font-medium">Windows 11 22H2 Security Update</span>
+</div>
+</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted">22621.2861</td>
+<td class="py-3 px-space-lg">
+<span class="px-2 py-0.5 rounded-full bg-surface-variant text-text-primary text-[11px] font-code-telemetry">x64</span>
+</td>
+<td class="py-3 px-space-lg text-text-muted">2024-01-09</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-primary">589.1 MB</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted text-[11px]">1B44...88C2</td>
+<td class="py-3 px-space-lg text-right">
+<button class="px-2.5 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-xs font-label-action transition-colors">Deploy</button>
+</td>
+</tr>
+<!-- Row 4 -->
+<tr class="hover:bg-surface-variant/50 transition-colors">
+<td class="py-3 px-space-lg font-code-telemetry text-primary-container font-medium">KB5032190</td>
+<td class="py-3 px-space-lg">
+<div class="flex items-center gap-space-sm">
+<span class="px-1.5 py-0.5 rounded bg-primary-container/10 text-primary-container font-code-telemetry text-[11px]">.msu</span>
+<span class="text-text-primary font-medium">Windows 11 23H2 Moment 4 Update</span>
+</div>
+</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted">22631.2715</td>
+<td class="py-3 px-space-lg">
+<span class="px-2 py-0.5 rounded-full bg-surface-variant text-text-primary text-[11px] font-code-telemetry">x64</span>
+</td>
+<td class="py-3 px-space-lg text-text-muted">2023-12-14</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-primary">812.4 MB</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted text-[11px]">7E21...33F0</td>
+<td class="py-3 px-space-lg text-right">
+<button class="px-2.5 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-xs font-label-action transition-colors">Deploy</button>
+</td>
+</tr>
+<!-- Row 5 -->
+<tr class="hover:bg-surface-variant/50 transition-colors">
+<td class="py-3 px-space-lg font-code-telemetry text-primary-container font-medium">KB5031455</td>
+<td class="py-3 px-space-lg">
+<div class="flex items-center gap-space-sm">
+<span class="px-1.5 py-0.5 rounded bg-tertiary-container/10 text-tertiary-container font-code-telemetry text-[11px]">.cab</span>
+<span class="text-text-primary font-medium">Dynamic Update SafeOS Package</span>
+</div>
+</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted">22621.2428</td>
+<td class="py-3 px-space-lg">
+<span class="px-2 py-0.5 rounded-full bg-surface-variant text-text-primary text-[11px] font-code-telemetry">ARM64</span>
+</td>
+<td class="py-3 px-space-lg text-text-muted">2023-11-20</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-primary">115.6 MB</td>
+<td class="py-3 px-space-lg font-code-telemetry text-text-muted text-[11px]">5D98...12A3</td>
+<td class="py-3 px-space-lg text-right">
+<button class="px-2.5 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-xs font-label-action transition-colors">Deploy</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Table Footer / Pagination -->
+<div class="bg-surface px-space-lg py-space-md border-t border-border-divider flex items-center justify-between">
+<div class="text-body-small text-text-muted">
+            Auto-refresh active every 30s. Connected to TrueNAS local cache daemon.
+          </div>
+<div class="flex items-center gap-space-sm">
+<button class="px-3 py-1 bg-surface-variant text-text-muted rounded text-body-small cursor-not-allowed">Previous</button>
+<button class="px-3 py-1 bg-primary-container text-on-primary-container font-medium rounded text-body-small">1</button>
+<button class="px-3 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-body-small transition-colors">2</button>
+<button class="px-3 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-body-small transition-colors">3</button>
+<button class="px-3 py-1 bg-surface-variant hover:bg-surface-bright text-text-primary rounded text-body-small transition-colors">Next</button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

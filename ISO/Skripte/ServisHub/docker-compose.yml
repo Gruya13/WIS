@@ -1,0 +1,12 @@
+services:
+  gwadt-servis-hub:
+    container_name: gwadt-servis-hub
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - /mnt/TK_NAS/Servis/Skripte:/app/Skripte:ro
+      - /mnt/TK_NAS/Servis/servis-hub/storage:/app/storage:rw
+      - /mnt/TK_NAS/Servis/servis-hub/Logs/reports:/app/Logs/reports:rw

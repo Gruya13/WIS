@@ -1,0 +1,37 @@
+name: Windows validation
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ISO/Skripte/**', 'UI/**', 'Launcher/**', 'ServiceHub/**', 'version.json', '.github/workflows/windows-validation.yml']
+  pull_request:
+    paths: ['ISO/Skripte/**', 'UI/**', 'Launcher/**', 'ServiceHub/**', 'version.json', '.github/workflows/windows-validation.yml']
+jobs:
+  windows-contract:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Windows PowerShell 5.1, Launcher behavior, WPF build and provenance
+        shell: powershell
+        run: |
+          & .\ISO\Skripte\Build-WIS.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-${{ github.sha }}
+          path: .workspace/artifacts/windows/
+  linux-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y mono-devel libarchive-tools openssl
+      - run: python -m pip install -r ServiceHub/requirements-dev.txt
+      - run: python -m unittest discover -s tests -q
+        working-directory: ServiceHub
+      - run: python ISO/Skripte/Sync-Versions.py --check
+      - run: python Launcher/Tests/run_tests.py
+      - run: git diff --check
+# Restart/cleanup harness runs only inside a dedicated disposable Windows VM.
+# Hosted CI above never runs the installer or modifies WLAN profiles.
