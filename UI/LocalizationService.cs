@@ -20,6 +20,7 @@ namespace WIS.UI
 
         private string _currentLanguage;
         private readonly Dictionary<string, string> _srDict;
+        private readonly Dictionary<string, string> _enDict;
         private readonly Dictionary<string, string> _zhDict;
 
         public static LocalizationService Instance
@@ -43,6 +44,7 @@ namespace WIS.UI
         private LocalizationService()
         {
             _srDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            _enDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             _zhDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             InitializeDictionaries();
@@ -59,6 +61,11 @@ namespace WIS.UI
         public bool IsSerbian
         {
             get { return string.Equals(_currentLanguage, "sr", StringComparison.OrdinalIgnoreCase); }
+        }
+
+        public bool IsEnglish
+        {
+            get { return string.Equals(_currentLanguage, "en", StringComparison.OrdinalIgnoreCase); }
         }
 
         public bool IsChinese
@@ -81,6 +88,14 @@ namespace WIS.UI
                 if (_zhDict.TryGetValue(key, out zhVal))
                 {
                     return zhVal;
+                }
+            }
+            else if (IsEnglish)
+            {
+                string enVal;
+                if (_enDict.TryGetValue(key, out enVal))
+                {
+                    return enVal;
                 }
             }
 
@@ -117,6 +132,10 @@ namespace WIS.UI
             {
                 normalized = "zh";
             }
+            else if (normalized == "en" || normalized == "en-us" || normalized == "english")
+            {
+                normalized = "en";
+            }
             else
             {
                 normalized = "sr";
@@ -132,6 +151,7 @@ namespace WIS.UI
                 OnPropertyChanged("Item[]");
                 OnPropertyChanged("CurrentLanguage");
                 OnPropertyChanged("IsSerbian");
+                OnPropertyChanged("IsEnglish");
                 OnPropertyChanged("IsChinese");
 
                 if (LanguageChanged != null)
@@ -148,7 +168,7 @@ namespace WIS.UI
                 Application app = Application.Current;
                 if (app != null && app.Resources != null)
                 {
-                    Dictionary<string, string> dict = (lang == "zh") ? _zhDict : _srDict;
+                    Dictionary<string, string> dict = (lang == "zh") ? _zhDict : ((lang == "en") ? _enDict : _srDict);
                     foreach (KeyValuePair<string, string> entry in dict)
                     {
                         app.Resources["Loc_" + entry.Key] = entry.Value;
@@ -267,7 +287,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v2.17.0 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v2.18.0 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -530,7 +550,7 @@ namespace WIS.UI
             // TAB 7: Servisni dnevnik (Logs)
             _srDict["LogServiceJournalTitle"] = "Servisni dnevnik rada";
             _srDict["LogBufferTitle"] = "DETALJAN RING-BUFFER LOG (MAX 500 LINIJA)";
-            _srDict["LogAutoScrollCheck"] = "Automatski skroluj na kraj";
+            _srDict["LogAutoScrollCheck"] = "Prati najnovije (vrh)";
             _srDict["LogSearchLabel"] = "Pretraga dnevnika:";
             _srDict["LogCopyAllBtn"] = "📋 Kopiraj sve";
             _srDict["LogClearBtn"] = "🗑 Očisti prikaz";
@@ -686,11 +706,131 @@ namespace WIS.UI
             _srDict["ApLogScriptNotFound"] = "Provera_autopilota.ps1 nije pronađena.";
             _srDict["ApLogWorkerException"] = "Izuzetak u Autopilot radniku: {0}";
             _srDict["ApLogInvalidJson"] = "Neispravan JSON format skripte.";
+            _srDict["BgWuTitle"] = "POZADINSKI WINDOWS UPDATE";
+            _srDict["BgWuDefaultDesc"] = "Pokrenut nakon Koraka 2 — paralelno preuzimanje i instalacija zakrpa u pozadini";
+
+            // Koraci i stanja koraka (WIS-TASK-181)
+            _srDict["PhaseStepsTitle"] = "Koraci";
+            _srDict["StepStatusWait"] = "ČEKA";
+            _srDict["StepStatusRunning"] = "U TOKU";
+            _srDict["StepStatusOk"] = "URAĐENO";
+            _srDict["StepStatusSkippedDone"] = "PRESKOČENO (već urađeno)";
+            _srDict["StepStatusSkippedUser"] = "PRESKOČENO (korisnik)";
+            _srDict["StepStatusWarn"] = "UPOZORENJE";
+            _srDict["StepStatusError"] = "GREŠKA";
+
+            _srDict["Step_P2_Identify"] = "Identifikacija modela";
+            _srDict["Step_P2_NasCache"] = "TrueNAS drajveri";
+            _srDict["Step_P2_Vmd"] = "Intel VMD / RST";
+            _srDict["Step_P2_Pnp"] = "PnP drajveri";
+            _srDict["Step_P2_Diag"] = "Dijagnostika uređaja";
+            _srDict["Step_P2_WuDrivers"] = "Windows Update drajveri";
+
+            _srDict["Step_P3_Debloat"] = "Debloat aplikacija";
+            _srDict["Step_P3_Telemetry"] = "Gašenje telemetrije";
+            _srDict["Step_P3_Oem"] = "OEM brending i regija";
+            _srDict["Step_P3_VcRedist"] = "Visual C++ Runtime";
+            _srDict["Step_P3_Scaling"] = "Optimalno skaliranje ekrana";
+            _srDict["Step_P3_UsbFree"] = "Signal USB slobodan";
+
+            _srDict["Step_P4_Runtimes"] = ".NET Runtimes";
+            _srDict["Step_P4_WinRAR"] = "WinRAR";
+            _srDict["Step_P4_Chrome"] = "Google Chrome";
+            _srDict["Step_P4_Acrobat"] = "Adobe Acrobat";
+            _srDict["Step_P4_Office"] = "Microsoft Office";
+            _srDict["Step_P4_BatteryBar"] = "BatteryBar";
+            _srDict["Step_P4_Shortcuts"] = "Prečice na radnoj površini";
+            _srDict["Step_P4_PdfDefault"] = "Podrazumevani PDF pregledač";
+            _srDict["Step_P4_Activation"] = "Aktivacija Windows/Office";
+
+            // ==========================================
+            // ENGLESKI JEZIK (EN - English)
+            // ==========================================
+            _enDict["AppTitle"] = "WIS v2.19.0 - Windows Installation Assistant";
+            _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
+            _enDict["WorkTimeTitle"] = "Elapsed Time";
+            _enDict["CpuLabel"] = "⚙ CPU:";
+            _enDict["RamLabel"] = "💾 RAM:";
+            _enDict["DiskLabel"] = "🖴 Disk:";
+
+            _enDict["TabOverview"] = "📊 Overview";
+            _enDict["TabHardware"] = "💻 Hardware Info";
+            _enDict["TabDrivers"] = "⚙ Drivers";
+            _enDict["TabDiagnostics"] = "🔍 Diagnostics";
+            _enDict["TabNetwork"] = "🌐 Network";
+            _enDict["TabApps"] = "📦 Applications";
+            _enDict["TabLogs"] = "📜 System Log";
+            _enDict["TabAutopilot"] = "🛡️ Autopilot";
+
+            _enDict["BtnStartService"] = "▶ Start Automated Service";
+            _enDict["BtnPause"] = "⏸ Pause";
+            _enDict["BtnResume"] = "▶ Resume";
+            _enDict["BtnSkip"] = "⏭ Skip Current";
+            _enDict["BtnDelayRestart"] = "⏱ Delay Reboot";
+            _enDict["BtnRefreshHardware"] = "🔄 Refresh Hardware";
+            _enDict["BtnRerunApps"] = "🔄 Reinstall Apps";
+            _enDict["BtnRunStressTest"] = "🔥 Start 30s Stress Test";
+
+            _enDict["InstallationFlowTitle"] = "INSTALLATION & OPTIMIZATION FLOW";
+            _enDict["CurrentPhaseTitle"] = "CURRENT ACTIVITY & PHASE PROGRESS";
+            _enDict["LivePhaseTitle"] = "ACTIVE TASK & SCRIPT";
+            _enDict["RecentLogsTitle"] = "RECENT ACTIVITY (LAST 5 LOGS)";
+            _enDict["HardwareSummaryTitle"] = "HARDWARE SPECIFICATIONS & HEALTH";
+            _enDict["UsbFreeNotice"] = "✓ USB Flash Drive is safe to disconnect";
+
+            _enDict["LogServiceJournalTitle"] = "Service Operation Log";
+            _enDict["LogBufferTitle"] = "DETAILED RING-BUFFER LOG (MAX 500 LINES)";
+            _enDict["LogAutoScrollCheck"] = "Follow newest (top)";
+            _enDict["LogSearchLabel"] = "Search log:";
+            _enDict["LogCopyAllBtn"] = "📋 Copy All";
+            _enDict["LogClearBtn"] = "🗑 Clear View";
+            _enDict["LogFilterLevelLabel"] = "Filter Level:";
+            _enDict["LogFilterAll"] = "All";
+            _enDict["LogFilterInfo"] = "Info";
+            _enDict["LogFilterWarning"] = "Warning";
+            _enDict["LogFilterError"] = "Error";
+            _enDict["LogColTime"] = "Time";
+            _enDict["LogColLevel"] = "Level";
+            _enDict["LogColTag"] = "Tag";
+            _enDict["LogColMessage"] = "Message";
+
+            _enDict["PhaseStepsTitle"] = "Steps";
+            _enDict["StepStatusWait"] = "WAIT";
+            _enDict["StepStatusRunning"] = "RUNNING";
+            _enDict["StepStatusOk"] = "DONE";
+            _enDict["StepStatusSkippedDone"] = "SKIPPED (already done)";
+            _enDict["StepStatusSkippedUser"] = "SKIPPED (user)";
+            _enDict["StepStatusWarn"] = "WARNING";
+            _enDict["StepStatusError"] = "ERROR";
+
+            _enDict["Step_P2_Identify"] = "Model identification";
+            _enDict["Step_P2_NasCache"] = "TrueNAS model drivers";
+            _enDict["Step_P2_Vmd"] = "Intel VMD / RST";
+            _enDict["Step_P2_Pnp"] = "PnP driver install";
+            _enDict["Step_P2_Diag"] = "Device diagnostics";
+            _enDict["Step_P2_WuDrivers"] = "Windows Update drivers";
+
+            _enDict["Step_P3_Debloat"] = "App debloat";
+            _enDict["Step_P3_Telemetry"] = "Disable telemetry";
+            _enDict["Step_P3_Oem"] = "OEM branding & region";
+            _enDict["Step_P3_VcRedist"] = "Visual C++ Runtime";
+            _enDict["Step_P3_Scaling"] = "Display scaling";
+            _enDict["Step_P3_UsbFree"] = "USB free signal";
+
+            _enDict["Step_P4_Runtimes"] = ".NET Runtimes";
+            _enDict["Step_P4_WinRAR"] = "WinRAR";
+            _enDict["Step_P4_Chrome"] = "Google Chrome";
+            _enDict["Step_P4_Acrobat"] = "Adobe Acrobat";
+            _enDict["Step_P4_Office"] = "Microsoft Office";
+            _enDict["Step_P4_BatteryBar"] = "BatteryBar";
+            _enDict["Step_P4_Shortcuts"] = "Desktop shortcuts";
+            _enDict["Step_P4_PdfDefault"] = "Default PDF viewer";
+            _enDict["Step_P4_Activation"] = "Windows/Office activation";
 
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v2.17.0 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v2.18.0 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";
@@ -1109,6 +1249,42 @@ namespace WIS.UI
             _zhDict["ApLogScriptNotFound"] = "未在系统中找到 Provera_autopilota.ps1 脚本。";
             _zhDict["ApLogWorkerException"] = "Autopilot 巡检后台线程异常: {0}";
             _zhDict["ApLogInvalidJson"] = "巡检脚本返回的 JSON 格式无效。";
+            _zhDict["BgWuTitle"] = "后台 WINDOWS 更新";
+            _zhDict["BgWuDefaultDesc"] = "阶段 2 后已启动 — 正在后台并行下载与安装系统更新";
+
+            // Koraci i stanja koraka (WIS-TASK-181)
+            _zhDict["PhaseStepsTitle"] = "步骤";
+            _zhDict["StepStatusWait"] = "等待中";
+            _zhDict["StepStatusRunning"] = "进行中";
+            _zhDict["StepStatusOk"] = "已完成";
+            _zhDict["StepStatusSkippedDone"] = "已跳过（已完成）";
+            _zhDict["StepStatusSkippedUser"] = "已跳过（用户要求）";
+            _zhDict["StepStatusWarn"] = "警告";
+            _zhDict["StepStatusError"] = "错误";
+
+            _zhDict["Step_P2_Identify"] = "机型识别";
+            _zhDict["Step_P2_NasCache"] = "TrueNAS驱动";
+            _zhDict["Step_P2_Vmd"] = "Intel VMD / RST";
+            _zhDict["Step_P2_Pnp"] = "PnP驱动安装";
+            _zhDict["Step_P2_Diag"] = "设备诊断";
+            _zhDict["Step_P2_WuDrivers"] = "Windows Update 驱动";
+
+            _zhDict["Step_P3_Debloat"] = "系统精简";
+            _zhDict["Step_P3_Telemetry"] = "关闭遥测";
+            _zhDict["Step_P3_Oem"] = "OEM品牌与区域";
+            _zhDict["Step_P3_VcRedist"] = "Visual C++ 运行库";
+            _zhDict["Step_P3_Scaling"] = "屏幕缩放优化";
+            _zhDict["Step_P3_UsbFree"] = "USB就绪信号";
+
+            _zhDict["Step_P4_Runtimes"] = ".NET 运行库";
+            _zhDict["Step_P4_WinRAR"] = "WinRAR";
+            _zhDict["Step_P4_Chrome"] = "Google Chrome";
+            _zhDict["Step_P4_Acrobat"] = "Adobe Acrobat";
+            _zhDict["Step_P4_Office"] = "Microsoft Office";
+            _zhDict["Step_P4_BatteryBar"] = "BatteryBar";
+            _zhDict["Step_P4_Shortcuts"] = "桌面快捷方式";
+            _zhDict["Step_P4_PdfDefault"] = "默认PDF查看器";
+            _zhDict["Step_P4_Activation"] = "Windows/Office 激活";
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

@@ -65,5 +65,24 @@ try {
     Assert-Equal $wire.diagnostics_status 'SENSOR_UNAVAILABLE' 'No result never produces fake OK'
     Assert-Equal $wire.cooling_verified $false 'No result is not cooling proof'
 
-    Write-Output 'PASS: 10 status/persistence/wire JSON cases, history, corrupt JSON, archive fallback and captured cleanup contract'
+    # Provera StepGuard IPC ugovora (događaj 'step')
+    $stepStates = @('WAIT', 'RUNNING', 'OK', 'SKIPPED_DONE', 'SKIPPED_USER', 'WARN', 'ERROR')
+    foreach ($st in $stepStates) {
+        $sw = New-Object System.IO.StringWriter
+        $prevOut = [Console]::Out
+        try {
+            [Console]::SetOut($sw)
+            Send-IpcStep -Phase 4 -StepId "P4.Chrome" -Title "Google Chrome" -State $st -Reason "Test status" -Progress 50
+        } finally {
+            [Console]::SetOut($prevOut)
+        }
+        $stepJson = $sw.ToString().Trim()
+        $stepObj = ConvertFrom-Json $stepJson
+        Assert-Equal $stepObj.type 'step' 'Step IPC type'
+        Assert-Equal $stepObj.step.state $st 'Step state in payload'
+        Assert-Equal $stepObj.phase 4 'Step phase in payload'
+        Assert-Equal $stepObj.step_id 'P4.Chrome' 'StepId in payload'
+    }
+
+    Write-Output 'PASS: 10 status/persistence/wire JSON cases, history, corrupt JSON, archive fallback, captured cleanup contract and StepGuard IPC contract'
 } finally { Remove-Item $tempRoot -Recurse -Force }

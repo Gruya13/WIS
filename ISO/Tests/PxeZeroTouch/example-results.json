@@ -1,0 +1,123 @@
+{
+  "suite": "WIS-PXE-ZERO-TOUCH-v1",
+  "run_metadata": {
+    "iso_sha256": "",
+    "machine": "",
+    "winpe_version": "",
+    "setup_version": "",
+    "iventoy_version": "",
+    "date": ""
+  },
+  "results": [
+    {
+      "id": "PXE-01",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-02",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-03",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-04",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-05",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-06",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-07",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-08",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-09",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-10",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-11",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-12",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-13",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-14",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-15",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-16",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-17",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-18",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-19",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-20",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-21",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "PXE-22",
+      "status": "NOT_RUN",
+      "evidence": []
+    }
+  ]
+}

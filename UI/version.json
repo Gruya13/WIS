@@ -1,13 +1,13 @@
 {
   "name": "wis-ui",
-  "version": "2.1.0",
+  "version": "2.3.0",
   "build_target": "Windows 11 24H2+ / PowerShell 5.1 / .NET Framework 4.8",
   "os_build_target": "10.0.26200.8037",
   "components": {
     "ui": {
       "framework": "WPF / C# .NET Framework 4.8",
       "binary": "WIS.UI.exe",
-      "version": "2.1.0"
+      "version": "2.3.0"
     },
     "launcher": {
       "framework": "WinForms / C# .NET Framework 4.0",
@@ -15,7 +15,7 @@
       "version": "2.2.17"
     },
     "iso": {
-      "version": "2.17.0",
+      "version": "2.18.0",
       "directory": "ISO",
       "embedded_launcher_version": "2.2.17"
     },
@@ -28,13 +28,13 @@
   "windows_validation": "pending",
   "release_package": {
     "name": "WIS paket izdanja",
-    "version": "2.17.0"
+    "version": "2.19.0"
   },
   "compatibility": {
     "min_launcher_version": "2.2.17",
     "payload_schema_version": 2,
     "version_field": "wis_release_package"
   },
-  "wis_release_version": "2.17.0",
+  "wis_release_version": "2.19.0",
   "generated_from": "../version.json"
 }

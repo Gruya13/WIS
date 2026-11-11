@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.Cleanup.psm1
 .DESCRIPTION

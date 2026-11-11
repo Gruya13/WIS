@@ -2,7 +2,7 @@
 title: "Centralizovani Servisni Hub (ServiceHub v3.2.0) - Tehnička i Arhitektonska Specifikacija"
 type: architecture
 created: 2026-10-08
-updated: 2026-10-26
+updated: 2026-11-11
 tags:
   - architecture
   - servis-hub
@@ -15,13 +15,13 @@ tags:
 ---
 
 # ⚡ WIS Service Centralni Servisni Hub (`ServiceHub/` v3.2.0)
-## Sveobuhvatna Tehnička i Arhitektonska Specifikacija u WIS Monorepo-u (v2.17.0)
+## Sveobuhvatna Tehnička i Arhitektonska Specifikacija u WIS Monorepo-u (v2.19.0)
 
 ---
 
 ## 1. Pregled i Svrha Podsistema
 
-**ServiceHub** (komponentna verzija **3.2.0** u okviru WIS paketa **2.17.0**, smeštena u kanonskom direktorijumu `/home/gru/Projects/WIS/ServiceHub/`) je centralni kontrolni server, telemetrijski agregator, verifikator potpisanih OTA izdanja, pametni proksi za OEM drajvere i upravljač butabilnih USB medijuma za servis računara **WIS Service**.
+**ServiceHub** (komponentna verzija **3.2.0** u okviru WIS paketa **2.19.0**, smeštena u kanonskom direktorijumu `/home/gru/Projects/WIS/ServiceHub/`) je centralni kontrolni server, telemetrijski agregator, verifikator potpisanih OTA izdanja, pametni proksi za OEM drajvere i upravljač butabilnih USB medijuma za servis računara **WIS Service**.
 
 ### Ključne Funkcionalnosti (v3.2.0):
 1. **Imutabilna Kriptografski Potpisana Izdanja (`servishub/releases.py` & `payload.py`):** Služi isključivo RSA-2048 PKCS#1 v1.5 potpisana i SHA-256 verifikovana `wis-payload.zip` izdanja (`releases/<release_id>/` i atomarni `current.json`). Ne vrši nesigurno automatsko prepakivanje pri HTTP GET zahtevu.
@@ -35,20 +35,20 @@ tags:
 
 ## 2. Modularna Arhitektura Paketa (`ServiceHub/servishub/`)
 
-Kompletan serverski kod napisan je u čistom Python 3 standardnom okruženju (**Zero External Dependencies**, **32 Python modula**, **12,112 linija izvornog koda**) uz pokrivenost od **259 automatizovanih jediničnih i integracionih testova** (`ServiceHub/tests/`, 6,575 linija):
+Kompletan serverski kod napisan je u čistom Python 3 standardnom okruženju (**Zero External Dependencies**, **32 Python modula**, **12,080 linija izvornog koda**, `517,373 B`) uz pokrivenost od **259 unittest metoda** u **27 test modula** (`ServiceHub/tests/`, `6,505` linija — u baznom Linux Python okruženju bez opcionih paketa `Pillow`/`FastAPI`/`Node`: **239 PASS, 20 skipped**):
 
 ```text
 ServiceHub/
-├── servishub/                     # Glavni modularni Python paket (12,112 linija)
+├── servishub/                     # Glavni modularni Python paket (32 modula, 12,080 linija)
 │   ├── __init__.py & version.py   # Kanonska verzija (3.2.0)
 │   ├── config.py                  # Upravljanje putanjama i okruženjem
-│   ├── server.py                  # ThreadingHTTPServer (:8080) i signal handler
+│   ├── server.py                  # ThreadingHTTPServer (:8080) i signal handler (141 linija)
 │   ├── handlers.py                # REST API ruter, XSS zaštita i SSE striming (1,480 linija)
-│   ├── discovery.py               # UDP Auto-Discovery responder na portu :8888
+│   ├── discovery.py               # UDP Auto-Discovery responder na portu :8888 (49 linija)
 │   ├── telemetry.py               # Thread-safe FleetStore, sesije, FIFO komande i 1Hz RAM frejm bafer (930 linija)
 │   ├── releases.py & payload.py   # RSA-2048 PKCS#1 v1.5 verifikacija manifesta i serviranje wis-payload.zip
 │   ├── reports.py                 # Generator JSON/Markdown servisnih kartona i AGY sesija (632 linije)
-│   ├── cli.py & tui_cli.py        # CLI argument parser i terminalski TUI monitor flote (588 linija)
+│   ├── cli.py & tui_cli.py        # CLI argument parser i terminalski TUI monitor flote (504 linije TUI)
 │   ├── api/updates.py             # Skener TrueNAS skladišta Windows 11 kumulativnih zakrpi (.msu/.cab)
 │   ├── models/updates.py          # Modeli podataka za inventar zakrpi
 │   ├── drivers/                   # Pametni podsistem za drajvere i OEM trijažu
@@ -57,9 +57,9 @@ ServiceHub/
 │   │   ├── scraper.py             # Microsoft Update Catalog scraper
 │   │   ├── cache.py               # Lokalni keš .cab paketa na TrueNAS-u
 │   │   └── oem/                   # Lenovo (575 lin.), Dell (740 lin.), HP (758 lin.) i BaseOEMProvider
-│   ├── wis/                       # WisIsoManager (iso.py) i WisUsbEngine sa ZFS/System zaštitom (usb.py)
+│   ├── wis/                       # WisIsoManager (iso.py 366 lin.) i WisUsbEngine (usb.py 513 lin.)
 │   └── web/dashboard.py           # Modern Enterprise Dark Mode Cockpit (3,682 linija, Vanilla HTML/CSS/JS)
-├── tests/                         # 29 testnih modula — 259/259 PASS bez preskakanja
+├── tests/                         # 27 testnih modula — 259 metoda (239 PASS, 20 skipped bez Pillow/FastAPI/Node)
 ├── hub_server.py & hub_cli.py     # Glavni pokretački skriptovi
 └── docker/                        # Dockerfile i docker-compose.yml za TrueNAS SCALE
 ```

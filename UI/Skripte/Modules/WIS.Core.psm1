@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.Core.psm1
 .DESCRIPTION
@@ -652,17 +652,27 @@ function Sync-ProgramiFromNas {
             $candUnc = "\\$programiHost\$cand"
             Write-ServisLog "Povezujem se na servisni NAS resurs: $candUnc radi preuzimanja instalacionih paketa..." -Level "INFO" -Component "NasProgrami"
             
-            $userArg = if ($uName -match "\\") { $uName } else { "$programiHost\$uName" }
-            if (-not [string]::IsNullOrWhiteSpace($uPass)) {
-                & net.exe use $candUnc $uPass "/user:$userArg" /persistent:no >$null 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    & net.exe use $candUnc $uPass "/user:$uName" /persistent:no >$null 2>&1
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                    $userArg = if ($uName -match "\\") { $uName } else { "$programiHost\$uName" }
+                    if (-not [string]::IsNullOrWhiteSpace($uPass)) {
+                        $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
+                        if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                            $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$uName`" /persistent:no >nul 2>&1"
+                        }
+                        if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                            $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
+                            $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
+                        }
+                    }
+                    if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                        $null = & cmd.exe /c "net.exe use `"$candUnc`" `"`" /user:guest /persistent:no >nul 2>&1"
+                    }
                 }
-            } else {
-                $LASTEXITCODE = 1
-            }
-            if ($LASTEXITCODE -ne 0) {
-                & net.exe use $candUnc '""' /user:guest /persistent:no >$null 2>&1
+            } catch {} finally {
+                $ErrorActionPreference = $prevEap
             }
 
             # Provera gde se nalaze programi:
@@ -700,8 +710,8 @@ function Sync-ProgramiFromNas {
                      (Test-Path (Join-Path $nasProgDir "Programi\Office 2024\setup.exe"))
         $nasAdobe = (Test-Path (Join-Path $nasProgDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or (Test-Path (Join-Path $nasProgDir "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi"))
         $nasChrome = (Test-Path (Join-Path $nasProgDir "ChromeSetup.exe")) -or (Test-Path (Join-Path $nasProgDir "GoogleChromeStandaloneEnterprise64.msi"))
-        $nasBatteryBar = (Test-Path (Join-Path $nasProgDir "BatteryBarSetup-3.6.6.exe")) -or `
-                         (Test-Path (Join-Path $nasProgDir "BatteryBar\BatteryBarSetup-3.6.6.exe"))
+        $nasBatteryBar = (Test-Path (Join-Path $nasProgDir "BatteryBar\BatteryBar.exe")) -or `
+                         (Test-Path (Join-Path $nasProgDir "Programi\BatteryBar\BatteryBar.exe"))
 
         if (-not $nasOffice -and -not $nasAdobe) {
             Write-ServisLog "NAS folder $nasProgDir ne sadrzi kompletne pakete (Office=$nasOffice, Adobe=$nasAdobe, BatteryBar=$nasBatteryBar)." -Level "WARN" -Component "NasProgrami"
@@ -714,11 +724,10 @@ function Sync-ProgramiFromNas {
             $locOffice = (Test-Path (Join-Path $DestinationDir "Office 2024\files\setup.exe")) -or (Test-Path (Join-Path $DestinationDir "Office 2024\setup.exe"))
             $locAdobe = (Test-Path (Join-Path $DestinationDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or (Test-Path (Join-Path $DestinationDir "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi"))
             $locChrome = (Test-Path (Join-Path $DestinationDir "ChromeSetup.exe")) -or (Test-Path (Join-Path $DestinationDir "GoogleChromeStandaloneEnterprise64.msi"))
-            $locBatteryBar = (Test-Path (Join-Path $DestinationDir "BatteryBarSetup-3.6.6.exe")) -or `
-                             (Test-Path (Join-Path $DestinationDir "BatteryBar\BatteryBarSetup-3.6.6.exe")) -or `
-                             (Get-ChildItem -Path $DestinationDir -Filter "*batterybar*.exe" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+            $locBatteryBar = (Test-Path (Join-Path $DestinationDir "BatteryBar\BatteryBar.exe")) -or `
+                             (Test-Path (Join-Path $DestinationDir "Programi\BatteryBar\BatteryBar.exe"))
 
-            # Ako mašina ima bateriju (ili uvek za programski paket), proveriti i BatteryBarSetup-3.6.6.exe
+            # Ako mašina ima bateriju, proveriti prenosivi Floating paket BatteryBar\BatteryBar.exe
             $deviceHasBattery = $false
             try {
                 if (Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) { $deviceHasBattery = $true }
@@ -749,7 +758,7 @@ function Sync-ProgramiFromNas {
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $rc = Start-Process "robocopy.exe" -ArgumentList @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS") -Wait -PassThru -WindowStyle Hidden
+        $rc = Start-Process "robocopy.exe" -ArgumentList @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll") -Wait -PassThru -WindowStyle Hidden
         $sw.Stop()
         $dur = $sw.Elapsed.TotalSeconds.ToString("F1")
         Write-ServisLog "Robocopy prenos sa NAS-a zavrsen za ${dur}s. ExitCode: $($rc.ExitCode)" -Level "INFO" -Component "NasProgrami"

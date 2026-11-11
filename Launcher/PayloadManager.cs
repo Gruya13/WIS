@@ -1297,11 +1297,11 @@ namespace WIS.Launcher
 
                 string[] candidateDirs = new string[]
                 {
-                    string.Format(@"\\{0}\WIS", host),
-                    string.Format(@"\\{0}\WIS\storage\cache", host),
+                    string.Format(@"\\{0}\servis", host),
                     string.Format(@"\\{0}\servis\storage\cache", host),
                     string.Format(@"\\{0}\servis\servis-hub\storage\cache", host),
-                    string.Format(@"\\{0}\servis", host)
+                    string.Format(@"\\{0}\WIS", host),
+                    string.Format(@"\\{0}\WIS\storage\cache", host)
                 };
 
                 for (int i = 0; i < candidateDirs.Length; i++)
@@ -1369,11 +1369,11 @@ namespace WIS.Launcher
 
                 string[] candidateDirs = new string[]
                 {
-                    string.Format(@"\\{0}\WIS", host),
-                    string.Format(@"\\{0}\WIS\storage\cache", host),
+                    string.Format(@"\\{0}\servis", host),
                     string.Format(@"\\{0}\servis\storage\cache", host),
                     string.Format(@"\\{0}\servis\servis-hub\storage\cache", host),
-                    string.Format(@"\\{0}\servis", host)
+                    string.Format(@"\\{0}\WIS", host),
+                    string.Format(@"\\{0}\WIS\storage\cache", host)
                 };
 
                 string foundZipSource = null;

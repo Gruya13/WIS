@@ -193,8 +193,38 @@
                                Foreground="#888888" />
                 </StackPanel>
 
-                <!-- Fleksibilni prazan prostor (bedževi CPU/RAM/Disk uklonjeni prema PRD v2.15.0) -->
-                <Border Grid.Column="1" />
+                <!-- Indikator Pozadinskog Windows Update-a u Headeru (vidljiv od kraja Koraka 2) -->
+                <Border Tag="BgWuHeaderBadge"
+                        Grid.Column="1"
+                        HorizontalAlignment="Right"
+                        VerticalAlignment="Center"
+                        Margin="0,0,12,0"
+                        Background="#1E1E1E"
+                        BorderBrush="{Binding BackgroundWuBorderBrush}"
+                        BorderThickness="1"
+                        CornerRadius="4"
+                        Padding="10,5"
+                        Visibility="{Binding IsBackgroundWuVisible, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Background="{Binding BackgroundWuBadgeBrush}"
+                                CornerRadius="3"
+                                Padding="6,2"
+                                Margin="0,0,8,0"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="{Binding BackgroundWuBadgeText}"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFFF" />
+                        </Border>
+                        <TextBlock Text="{Binding BackgroundWuDisplayText}"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"
+                                   Foreground="#E0E0E0"
+                                   VerticalAlignment="Center"
+                                   MaxWidth="320"
+                                   TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                </Border>
 
                 <!-- Jezički Selektor: [ 🇷🇸 SRB | 🇨🇳 中文 ] -->
                 <Border Grid.Column="2"
@@ -389,39 +419,96 @@
                                                     BorderThickness="1"
                                                     CornerRadius="5"
                                                     Padding="8,6"
-                                                    Margin="3">
-                                                <Grid>
-                                                    <Grid.ColumnDefinitions>
-                                                        <ColumnDefinition Width="Auto" />
-                                                        <ColumnDefinition Width="*" />
-                                                    </Grid.ColumnDefinitions>
-                                                    <!-- Circle Icon / Number -->
-                                                    <Border Grid.Column="0"
-                                                            Width="24" Height="24"
-                                                            CornerRadius="12"
-                                                            Background="{Binding BadgeBackground}"
-                                                            VerticalAlignment="Center"
-                                                            Margin="0,0,8,0">
-                                                        <TextBlock Text="{Binding IconText}"
-                                                                   Foreground="{Binding BadgeForeground}"
-                                                                   FontWeight="Bold"
-                                                                   FontSize="11"
-                                                                   HorizontalAlignment="Center"
-                                                                   VerticalAlignment="Center" />
-                                                    </Border>
-                                                    <!-- Phase title & subtitle -->
-                                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                        <TextBlock Text="{Binding Title}"
-                                                                   FontSize="11"
-                                                                   FontWeight="Bold"
-                                                                   Foreground="#FFFFFF"
-                                                                   TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Text="{Binding Subtitle}"
-                                                                   FontSize="9"
-                                                                   Foreground="#888888"
-                                                                   TextTrimming="CharacterEllipsis" />
-                                                    </StackPanel>
-                                                </Grid>
+                                                    Margin="3"
+                                                    VerticalAlignment="Top">
+                                                <StackPanel>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="*" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <!-- Circle Icon / Number -->
+                                                        <Border Grid.Column="0"
+                                                                Width="24" Height="24"
+                                                                CornerRadius="12"
+                                                                Background="{Binding BadgeBackground}"
+                                                                VerticalAlignment="Center"
+                                                                Margin="0,0,8,0">
+                                                            <TextBlock Text="{Binding IconText}"
+                                                                       Foreground="{Binding BadgeForeground}"
+                                                                       FontWeight="Bold"
+                                                                       FontSize="11"
+                                                                       HorizontalAlignment="Center"
+                                                                       VerticalAlignment="Center" />
+                                                        </Border>
+                                                        <!-- Phase title & subtitle -->
+                                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding Title}"
+                                                                       FontSize="11"
+                                                                       FontWeight="Bold"
+                                                                       Foreground="#FFFFFF"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                            <TextBlock Text="{Binding Subtitle}"
+                                                                       FontSize="9"
+                                                                       Foreground="#888888"
+                                                                       TextTrimming="CharacterEllipsis" />
+                                                        </StackPanel>
+                                                    </Grid>
+
+                                                    <!-- Expander sa koracima (prikazuje se kada faza ima korake) -->
+                                                    <Expander IsExpanded="{Binding IsExpanded, Mode=TwoWay}"
+                                                              Margin="0,6,0,0"
+                                                              Background="Transparent"
+                                                              BorderThickness="0"
+                                                              Foreground="#AAAAAA"
+                                                              FontSize="9">
+                                                        <Expander.Style>
+                                                            <Style TargetType="Expander">
+                                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding HasSteps}" Value="True">
+                                                                        <Setter Property="Visibility" Value="Visible" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Expander.Style>
+                                                        <Expander.Header>
+                                                            <TextBlock Text="{Binding Loc[PhaseStepsTitle], FallbackValue='Koraci'}" FontSize="9" Foreground="#888888" />
+                                                        </Expander.Header>
+                                                        <ItemsControl ItemsSource="{Binding Steps}" Margin="0,4,0,0">
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Margin="0,2" Padding="4,2" Background="#252528" CornerRadius="3" BorderBrush="{Binding BorderBrush}" BorderThickness="1" ToolTip="{Binding Reason}">
+                                                                        <Grid>
+                                                                            <Grid.ColumnDefinitions>
+                                                                                <ColumnDefinition Width="Auto" />
+                                                                                <ColumnDefinition Width="*" />
+                                                                            </Grid.ColumnDefinitions>
+                                                                            <Border Grid.Column="0" Width="14" Height="14" CornerRadius="7" Background="{Binding BadgeBackground}" Margin="0,0,4,0" VerticalAlignment="Center">
+                                                                                <TextBlock Text="{Binding IconText}" Foreground="{Binding BadgeForeground}" FontSize="8" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                                            </Border>
+                                                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                                                <TextBlock Text="{Binding Title}" FontSize="9" Foreground="#DDDDDD" TextTrimming="CharacterEllipsis" />
+                                                                                <TextBlock Text="{Binding Reason}" FontSize="8" Foreground="#888888" TextTrimming="CharacterEllipsis">
+                                                                                    <TextBlock.Style>
+                                                                                        <Style TargetType="TextBlock">
+                                                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                                                            <Style.Triggers>
+                                                                                                <DataTrigger Binding="{Binding HasReason}" Value="True">
+                                                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                                                </DataTrigger>
+                                                                                            </Style.Triggers>
+                                                                                        </Style>
+                                                                                    </TextBlock.Style>
+                                                                                </TextBlock>
+                                                                            </StackPanel>
+                                                                        </Grid>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </Expander>
+                                                </StackPanel>
                                             </Border>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
@@ -464,6 +551,48 @@
                                              Style="{StaticResource DetailedProgressBarStyle}"
                                              Height="22" />
                             </StackPanel>
+                        </Border>
+
+                        <!-- POZADINSKI WINDOWS UPDATE TRAKA (Pokreće se odmah nakon Koraka 2) -->
+                        <Border Tag="BgWuOverviewCard"
+                                Background="#1E262C"
+                                BorderBrush="{Binding BackgroundWuBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="6"
+                                Padding="16,10"
+                                Margin="0,0,0,12"
+                                Visibility="{Binding IsBackgroundWuVisible, Converter={StaticResource BoolToVis}}">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Border Grid.Column="0"
+                                        Background="{Binding BackgroundWuBadgeBrush}"
+                                        CornerRadius="4"
+                                        Padding="8,4"
+                                        Margin="0,0,12,0"
+                                        VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding BackgroundWuBadgeText}"
+                                               FontWeight="Bold"
+                                               FontSize="11"
+                                               Foreground="#FFFFFF"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Loc[BgWuTitle]}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="#4EC9B0" />
+                                    <TextBlock Text="{Binding BackgroundWuDisplayText}"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#FFFFFF"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                            </Grid>
                         </Border>
 
                         <!-- USB FREE BANNER (Prikazuje se kada je USB oslobodjen) -->

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.Update.psm1
 .DESCRIPTION
@@ -519,8 +519,8 @@ function Invoke-ModelDriversPreInstall {
             }
         } finally {
             if ($smbMapped) {
-                & net.exe use "$uncShare" /delete /y >$null 2>&1
-                & net.exe use * /delete /y >$null 2>&1
+                $null = & cmd.exe /c "net.exe use `"$uncShare`" /delete /y >nul 2>&1"
+                $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Mrezna SMB sesija sa NAS serverom ($uncShare) je bezbedno zatvorena." -Level "DEBUG" -Component "NAS"
                 }
@@ -744,8 +744,8 @@ function Invoke-NasUpdatePrePatch {
             }
         } finally {
             # Obavezno zatvaranje mrezne sesije radi bezbednosti
-            & net.exe use "$uncShare" /delete /y >$null 2>&1
-            & net.exe use * /delete /y >$null 2>&1
+            $null = & cmd.exe /c "net.exe use `"$uncShare`" /delete /y >nul 2>&1"
+            $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Mrezna SMB sesija sa NAS serverom ($uncShare) je bezbedno zatvorena." -Level "DEBUG" -Component "NAS"
             }
@@ -1011,8 +1011,8 @@ function Export-ServisHardwareDrivers {
         }
         # Garantovano raskidanje SMB sesije radi bezbednosti
         if ($smbMapped -and $uncShare) {
-            & net.exe use "$uncShare" /delete /y >$null 2>&1
-            & net.exe use * /delete /y >$null 2>&1
+            $null = & cmd.exe /c "net.exe use `"$uncShare`" /delete /y >nul 2>&1"
+            $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Mrezna SMB sesija sa NAS serverom ($uncShare) je bezbedno zatvorena." -Level "DEBUG" -Component "DriverHarvest"
             }
@@ -1544,37 +1544,84 @@ function Invoke-Phase2Drivers {
         Wait-ServisUICooperativePause -CheckpointName "Faza 2 - Pocetak"
     }
 
-    # 1. Detekcija modela i hardverskih parametara
+    # Uvoz StepGuard modula ukoliko funkcija Invoke-WisStep nije registrovana u sesiji
+    if (-not (Get-Command Invoke-WisStep -ErrorAction SilentlyContinue)) {
+        $stepGuardMod = @(
+            (Join-Path $PSScriptRoot "WIS.StepGuard.psm1"),
+            (Join-Path $PSScriptRoot "..\Modules\WIS.StepGuard.psm1"),
+            (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
+            "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($stepGuardMod) { Import-Module $stepGuardMod -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Uvoz Hardware modula ukoliko funkcija Test-WisDeviceManagerClean nije registrovana
+    if (-not (Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue)) {
+        $hwMod = @(
+            (Join-Path $PSScriptRoot "WIS.Hardware.psm1"),
+            (Join-Path $PSScriptRoot "..\Modules\WIS.Hardware.psm1"),
+            (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Hardware.psm1"),
+            "C:\setup\Skripte\Modules\WIS.Hardware.psm1"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($hwMod) { Import-Module $hwMod -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Emitovanje liste svih koraka u stanju WAIT da bi UI odmah iscrtao listu koraka
+    $phase2StepCatalog = @(
+        @{ Id = "P2.Identify";  Title = "Identifikacija računara i hardvera" },
+        @{ Id = "P2.NasCache";  Title = "TrueNAS model drajveri i pre-patch zakrpe" },
+        @{ Id = "P2.Vmd";       Title = "Intel VMD / RST skladišni drajveri" },
+        @{ Id = "P2.Pnp";       Title = "PnP instalacija lokalnih drajvera" },
+        @{ Id = "P2.Diag";      Title = "Dijagnostika preostalih uređaja" },
+        @{ Id = "P2.WuDrivers"; Title = "Hardverski drajveri preko Windows Update-a" }
+    )
+    foreach ($sc in $phase2StepCatalog) {
+        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+            Send-IpcStep -Phase 2 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+        }
+    }
+
     $modelName = "Standardni PC"
     $serialNum = "N/A"
-    try {
-        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-        $bios = Get-CimInstance Win32_Bios -ErrorAction SilentlyContinue
-        if ($cs -and $cs.Model) { $modelName = ($cs.Model -replace '\s+', ' ').Trim() }
-        if ($bios -and $bios.SerialNumber) { $serialNum = $bios.SerialNumber.Trim() }
-    } catch {}
 
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Detektovan racunar: $modelName (Serijski broj: $serialNum)" -Level "INFO" -Component "Hardware"
+    # =========================================================================
+    # 1. IDENTIFIKACIJA MODELA I HARDVERSKIH PARAMETARA - P2.Identify (-NoSkip)
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.Identify" -Title "Identifikacija računara i hardvera" -NoSkip -Test {
+        return @{ Done = $true; Reason = "Identifikacija računara obavezna" }
+    } -Action {
+        try {
+            $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+            $bios = Get-CimInstance Win32_Bios -ErrorAction SilentlyContinue
+            if ($cs -and $cs.Model) { $modelName = ($cs.Model -replace '\s+', ' ').Trim() }
+            if ($bios -and $bios.SerialNumber) { $serialNum = $bios.SerialNumber.Trim() }
+        } catch {}
+
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Detektovan racunar: $modelName (Serijski broj: $serialNum)" -Level "INFO" -Component "Hardware"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 15 -Phase 2 -PhaseName "Drajveri" -SubPhase "Identifikacija" -StatusMessage "Identifikovan model: $modelName"
+        }
+
+        try { Optimize-WUPerformance } catch {}
     }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 15 -Phase 2 -PhaseName "Drajveri" -SubPhase "Identifikacija" -StatusMessage "Identifikovan model: $modelName"
+
+    # =========================================================================
+    # 2. TRUENAS MODEL DRAJVERI I PRE-PATCH - P2.NasCache
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.NasCache" -Title "TrueNAS model drajveri i pre-patch zakrpe" -Test {
+        Test-WisDeviceManagerClean
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 20 -Phase 2 -PhaseName "Drajveri" -SubPhase "TrueNAS Keš" -StatusMessage "Provera single-stream drajvera (<Model>.tar) i zakrpa na TrueNAS-u..."
+        }
+        try {
+            Invoke-NasUpdatePrePatch
+        } catch {}
     }
 
-    # 1A. Optimizacija Windows Update, Delivery Optimization LAN Peeringa i Defender izuzetaka za Servicing Stack
-    try {
-        Optimize-WUPerformance
-    } catch {}
-
-    # 1B. Brza pre-instalacija drajvera modela (<Model>.tar) i lokalnih zakrpa sa TrueNAS servera
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 20 -Phase 2 -PhaseName "Drajveri" -SubPhase "TrueNAS Keš" -StatusMessage "Provera single-stream drajvera (<Model>.tar) i zakrpa na TrueNAS-u..."
-    }
-    try {
-        Invoke-NasUpdatePrePatch
-    } catch {}
-
-    # 2. Pronalazenje lokalnih i staged paketa drajvera
+    # Pronalazenje lokalnih i staged paketa drajvera
     $driverFolders = @(
         (Join-Path $LocalSetupDir "Drivers"),
         (Join-Path $LocalSetupDir "Programi\Drivers"),
@@ -1588,135 +1635,178 @@ function Invoke-Phase2Drivers {
         if ($driverFolders -notcontains $cand2) { $driverFolders += $cand2 }
     }
 
-    # 3. Prioritetna instalacija Intel VMD / RST Storage drajvera (Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 25 -Phase 2 -PhaseName "Drajveri" -SubPhase "Intel VMD / RST" -StatusMessage "Provera i instalacija Intel VMD/RST drajvera..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 2 - Intel VMD"
-    }
-
-    $vmdCandidates = @()
-    foreach ($df in $driverFolders) {
-        if (Test-Path $df) {
-            try {
-                $vmdDirs = Get-ChildItem -Path $df -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Name -match '(?i)vmd|rst|storage|f6flpy'
+    # =========================================================================
+    # 3. INTEL VMD / RST STORAGE DRAJVERI - P2.Vmd
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.Vmd" -Title "Intel VMD / RST skladišni drajveri" -Test {
+        try {
+            $storageDevs = Get-CimInstance Win32_PnPEntity -Filter "PNPClass = 'SCSIAdapter' or PNPClass = 'HDC'" -ErrorAction SilentlyContinue
+            $hasVmd = $false
+            $vmdOk = $false
+            foreach ($sd in $storageDevs) {
+                if ($sd.Name -match '(?i)vmd|rst|optane|raid' -or $sd.DeviceID -match 'VEN_8086&(DEV_9A0B|DEV_A77F|DEV_7D0B)') {
+                    $hasVmd = $true
+                    if ($sd.ConfigManagerErrorCode -eq 0) {
+                        $vmdOk = $true
+                    }
                 }
-                foreach ($vd in $vmdDirs) { $vmdCandidates += $vd.FullName }
-            } catch {}
+            }
+            if (-not $hasVmd) {
+                return @{ Done = $true; Reason = "Nema Intel VMD/RST kontrolera na sistemu (standardni NVMe/AHCI)" }
+            } elseif ($vmdOk) {
+                return @{ Done = $true; Reason = "Intel VMD/RST kontroler radi ispravno (ConfigManagerErrorCode = 0)" }
+            } else {
+                return @{ Done = $false; Reason = "Intel VMD kontroler zahteva instalaciju drajvera" }
+            }
+        } catch {
+            return @{ Done = $false; Reason = "Greška pri proveri VMD kontrolera: $($_.Exception.Message)" }
+        }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 25 -Phase 2 -PhaseName "Drajveri" -SubPhase "Intel VMD / RST" -StatusMessage "Provera i instalacija Intel VMD/RST drajvera..."
+        }
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 2 - Intel VMD"
+        }
+
+        $vmdCandidates = @()
+        foreach ($df in $driverFolders) {
+            if (Test-Path $df) {
+                try {
+                    $vmdDirs = Get-ChildItem -Path $df -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object {
+                        $_.Name -match '(?i)vmd|rst|storage|f6flpy'
+                    }
+                    foreach ($vd in $vmdDirs) { $vmdCandidates += $vd.FullName }
+                } catch {}
+            }
+        }
+
+        if ($vmdCandidates.Count -gt 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Pronadjeni namenski Intel VMD/RST storage drajveri ($($vmdCandidates.Count) lokacija). Pokrecem pnputil..." -Level "INFO" -Component "Drivers"
+            }
+            foreach ($vPath in $vmdCandidates) {
+                if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Preskocena instalacija VMD drajvera na zahtev servisera." -Level "WARN" -Component "Drivers"
+                    }
+                    break
+                }
+                try {
+                    $vInfs = Get-ChildItem -Path $vPath -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue
+                    if ($vInfs -and $vInfs.Count -gt 0) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Instaliram VMD drajvere iz: $vPath ($($vInfs.Count) .inf fajlova)" -Level "STEP" -Component "Drivers"
+                        }
+                        $null = & pnputil.exe /add-driver "$vPath\*.inf" /subdirs /install 2>&1
+                    }
+                } catch {}
+            }
         }
     }
 
-    if ($vmdCandidates.Count -gt 0) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Pronadjeni namenski Intel VMD/RST storage drajveri ($($vmdCandidates.Count) lokacija). Pokrecem pnputil..." -Level "INFO" -Component "Drivers"
+    # =========================================================================
+    # 4. OPŠTA PNP INSTALACIJA PREOSTALIH DRAJVERA - P2.Pnp
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.Pnp" -Title "PnP instalacija lokalnih drajvera" -Test {
+        Test-WisDeviceManagerClean
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 40 -Phase 2 -PhaseName "Drajveri" -SubPhase "PnP Instalacija" -StatusMessage "Instalacija PnP drajvera preko pnputil.exe..."
         }
-        foreach ($vPath in $vmdCandidates) {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 2 - PnP Drajveri"
+        }
+
+        $pnpInstalledCount = 0
+        foreach ($df in $driverFolders) {
             if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Preskocena instalacija VMD drajvera na zahtev servisera." -Level "WARN" -Component "Drivers"
+                    Write-ServisLog "Preskocena PnP instalacija na zahtev servisera." -Level "WARN" -Component "Drivers"
                 }
                 break
             }
-            try {
-                $vInfs = Get-ChildItem -Path $vPath -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue
-                if ($vInfs -and $vInfs.Count -gt 0) {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Instaliram VMD drajvere iz: $vPath ($($vInfs.Count) .inf fajlova)" -Level "STEP" -Component "Drivers"
+            if (Test-Path $df) {
+                try {
+                    $allInfs = Get-ChildItem -Path $df -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue
+                    if ($allInfs -and $allInfs.Count -gt 0) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Pronadjen paket drajvera u: $df ($($allInfs.Count) .inf datoteka). Pokrecem pnputil..." -Level "INFO" -Component "Drivers"
+                        }
+                        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                            Send-IpcProgress -Progress 50 -Phase 2 -PhaseName "Drajveri" -SubPhase "PnP Instalacija" -StatusMessage "Instaliram drajvere iz $($df)..."
+                        }
+                        $null = & pnputil.exe /add-driver "$df\*.inf" /subdirs /install 2>&1
+                        $pnpInstalledCount += $allInfs.Count
                     }
-                    $pnpOut = & pnputil.exe /add-driver "$vPath\*.inf" /subdirs /install 2>&1
-                }
-            } catch {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Upozorenje pri instalaciji VMD drajvera iz $($vPath): $($_.Exception.Message)" -Level "WARN" -Component "Drivers"
-                }
+                } catch {}
             }
         }
-    } else {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Nisu pronadjeni namenski offline VMD paketi (standardni NVMe/SATA kontroler)." -Level "DEBUG" -Component "Drivers"
+            Write-ServisLog "Lokalna PnP instalacija zavrsena (obradjeno ukupno $pnpInstalledCount drajver profila)." -Level "SUCCESS" -Component "Drivers"
         }
     }
 
-    # 4. Opsta PnP instalacija svih preostalih lokalnih drajvera (Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 40 -Phase 2 -PhaseName "Drajveri" -SubPhase "PnP Instalacija" -StatusMessage "Instalacija PnP drajvera preko pnputil.exe..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 2 - PnP Drajveri"
-    }
+    # =========================================================================
+    # 5. DIJAGNOSTIKA I SERVISHUB DRAJVERI - P2.Diag (-NoSkip)
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.Diag" -Title "Dijagnostika preostalih uređaja" -NoSkip -Test {
+        return @{ Done = $true; Reason = "Dijagnostičko skeniranje uređaja" }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 65 -Phase 2 -PhaseName "Drajveri" -SubPhase "Dijagnostika uredjaja" -StatusMessage "Skeniranje neprepoznatih PnP uređaja..."
+        }
+        $problemDevices = @()
+        try {
+            $problemDevices = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
+                $_.Status -in @("Error", "Degraded", "Unknown") -or $_.Problem -ne 0
+            }
+        } catch {}
 
-    $pnpInstalledCount = 0
-    foreach ($df in $driverFolders) {
-        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+        if ($problemDevices -and $problemDevices.Count -gt 0) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Preskocena PnP instalacija na zahtev servisera." -Level "WARN" -Component "Drivers"
+                Write-ServisLog "Detektovano $($problemDevices.Count) uredjaja sa nedostajucim ili nekompletnim drajverima." -Level "WARN" -Component "Drivers"
             }
-            break
-        }
-        if (Test-Path $df) {
-            try {
-                $allInfs = Get-ChildItem -Path $df -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue
-                if ($allInfs -and $allInfs.Count -gt 0) {
+            if (-not $SkipWindowsUpdate -and (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue)) {
+                $hubRes = Resolve-MissingDriversFromHub
+                if ($hubRes -and $hubRes.AllResolved -and $hubRes.TotalProblematic -gt 0) {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Pronadjen paket drajvera u: $df ($($allInfs.Count) .inf datoteka). Pokrecem pnputil..." -Level "INFO" -Component "Drivers"
+                        Write-ServisLog "Svi problematični uređaji su uspešno rešeni preko ServisHub-a. Preskačem Windows Update pretragu." -Level "SUCCESS" -Component "Drivers"
                     }
-                    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                        Send-IpcProgress -Progress 50 -Phase 2 -PhaseName "Drajveri" -SubPhase "PnP Instalacija" -StatusMessage "Instaliram drajvere iz $($df)..."
-                    }
-                    $pnpOut = & pnputil.exe /add-driver "$df\*.inf" /subdirs /install 2>&1
-                    $pnpInstalledCount += $allInfs.Count
-                }
-            } catch {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Upozorenje pri PnP instalaciji iz $($df): $($_.Exception.Message)" -Level "WARN" -Component "Drivers"
+                    $SkipWindowsUpdate = $true
                 }
             }
-        }
-    }
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Lokalna PnP instalacija zavrsena (obradjeno ukupno $pnpInstalledCount drajver profila)." -Level "SUCCESS" -Component "Drivers"
-    }
-
-    # 5. Skeniranje nedostajucih i neprepoznatih uredjaja
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 65 -Phase 2 -PhaseName "Drajveri" -SubPhase "Dijagnostika uredjaja" -StatusMessage "Skeniranje neprepoznatih PnP uređaja..."
-    }
-    $problemDevices = @()
-    try {
-        $problemDevices = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
-            $_.Status -in @("Error", "Degraded", "Unknown") -or $_.Problem -ne 0
-        }
-    } catch {}
-
-    if ($problemDevices -and $problemDevices.Count -gt 0) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Detektovano $($problemDevices.Count) uredjaja sa nedostajucim ili nekompletnim drajverima." -Level "WARN" -Component "Drivers"
-        }
-        if (-not $SkipWindowsUpdate -and (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue)) {
-            $hubRes = Resolve-MissingDriversFromHub
-            if ($hubRes -and $hubRes.AllResolved -and $hubRes.TotalProblematic -gt 0) {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Svi problematični uređaji su uspešno rešeni preko ServisHub-a. Preskačem Windows Update pretragu." -Level "SUCCESS" -Component "Drivers"
-                }
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Svi PnP hardverski uredjaji su prepoznati i funkcionalni." -Level "SUCCESS" -Component "Drivers"
+            }
+            if (-not $SkipWindowsUpdate) {
                 $SkipWindowsUpdate = $true
             }
         }
-    } else {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Svi PnP hardverski uredjaji su prepoznati i funkcionalni." -Level "SUCCESS" -Component "Drivers"
-        }
-        if (-not $SkipWindowsUpdate) {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Nema preostalih neprepoznatih uređaja. Preskačem Windows Update pretragu drajvera." -Level "INFO" -Component "Drivers"
-            }
-            $SkipWindowsUpdate = $true
-        }
     }
 
-    # 6. Selektivno povlacenje drajvera preko Windows Update-a (Best-Effort)
-    if (-not $SkipWindowsUpdate) {
+    # =========================================================================
+    # 6. DRAJVERI PREKO WINDOWS UPDATE-A - P2.WuDrivers (-JournalTtlHours 6)
+    # =========================================================================
+    Invoke-WisStep -Phase 2 -StepId "P2.WuDrivers" -Title "Hardverski drajveri preko Windows Update-a" -JournalTtlHours 6 -Test {
+        $dmRes = Test-WisDeviceManagerClean
+        if (-not $dmRes.Clean) {
+            return @{ Done = $false; Reason = "Device Manager nije čist: $($dmRes.Reason)" }
+        }
+        $pReboot = Get-WisPendingRebootState
+        if ($pReboot.Pending) {
+            return @{ Done = $false; Reason = "Pending reboot aktivan: $($pReboot.Reasons -join ', ')" }
+        }
+        return @{ Done = $true; Reason = "Device Manager je čist, nema pending reboot-a i WU krug je obavljen unutar 6h" }
+    } -Action {
+        if ($SkipWindowsUpdate) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Windows Update drajveri preskočeni jer su svi uređaji već prepoznati ili rešeni preko ServisHub-a." -Level "INFO" -Component "WinUpdate"
+            }
+            return
+        }
+
         if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
             Send-IpcProgress -Progress 75 -Phase 2 -PhaseName "Drajveri" -SubPhase "Windows Update" -StatusMessage "Provera drajvera kroz Windows Update servis..."
         }
@@ -1730,21 +1820,16 @@ function Invoke-Phase2Drivers {
             }
             $uSession = New-Object -ComObject Microsoft.Update.Session
             $uSearcher = $uSession.CreateUpdateSearcher()
-            $uSearcher.ServerSelection = 2 # Windows Update Catalog
-            
+            $uSearcher.ServerSelection = 2
             $searchResult = $uSearcher.Search("IsInstalled=0 and Type='Driver'")
             $driverUpdates = $searchResult.Updates
-            
+
             if ($driverUpdates -and $driverUpdates.Count -gt 0) {
                 $totalDrv = $driverUpdates.Count
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Pronadjeno $totalDrv drajverskih azuriranja na Windows Update-u. Pripremam batch preuzimanje i instalaciju..." -Level "STEP" -Component "WinUpdate"
-                }
                 if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
                     Send-IpcProgress -Progress 80 -Phase 2 -PhaseName "Drajveri" -SubPhase "Windows Update" -StatusMessage "Preuzimanje i instalacija $totalDrv drajvera..."
                 }
 
-                # Prihvatanje EULA licenci i grupno (Batch) preuzimanje svih nepreuzetih drajvera u jednom prolazu
                 $batchDlColl = New-Object -ComObject Microsoft.Update.UpdateColl
                 for ($bIdx = 0; $bIdx -lt $totalDrv; $bIdx++) {
                     $bDrv = $driverUpdates[$bIdx]
@@ -1767,16 +1852,6 @@ function Invoke-Phase2Drivers {
                     $drv = $driverUpdates[$dIdx]
                     $drvNum = $dIdx + 1
 
-                    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-                        Wait-ServisUICooperativePause -CheckpointName "Faza 2 - Drajver ($drvNum/$totalDrv): $($drv.Title)"
-                    }
-                    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Preskocen drajver na zahtev servisera: $($drv.Title)" -Level "WARN" -Component "WinUpdate"
-                        }
-                        continue
-                    }
-
                     $drvPct = [math]::Min(94, 80 + [math]::Round(($dIdx / $totalDrv) * 14))
                     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
                         Send-IpcProgress -Progress $drvPct -Phase 2 -PhaseName "Drajveri" -SubPhase "Windows Update ($drvNum/$totalDrv)" -StatusMessage "Instaliram: $($drv.Title)"
@@ -1785,7 +1860,7 @@ function Invoke-Phase2Drivers {
                     try {
                         $singleColl = New-Object -ComObject Microsoft.Update.UpdateColl
                         $singleColl.Add($drv) | Out-Null
-                        
+
                         if (-not $drv.IsDownloaded) {
                             $downloader = $uSession.CreateUpdateDownloader()
                             $downloader.Updates = $singleColl
@@ -1794,65 +1869,23 @@ function Invoke-Phase2Drivers {
 
                         $installer = $uSession.CreateUpdateInstaller()
                         $installer.Updates = $singleColl
-                        $installResult = $installer.Install()
-
-                        $resCode = if ($installResult) { $installResult.ResultCode } else { -1 }
-                        $resText = switch ($resCode) {
-                            2 { "Uspesno" }
-                            3 { "Uspesno sa greskama" }
-                            4 { "Neuspesno" }
-                            5 { "Prekinuto" }
-                            default { "Kod: $resCode" }
-                        }
-                        $logLvl = if ($resCode -eq 2) { "SUCCESS" } else { "WARN" }
-
-                        if ($resCode -eq 4 -and $installResult) {
-                            try {
-                                $subRes = $installResult.GetUpdateResult(0)
-                                if ($subRes) {
-                                    $hresInt = $subRes.HResult
-                                    $hexHres = "0x{0:x8}" -f ($hresInt -band 0xFFFFFFFF)
-                                    if ($hexHres -eq "0x8024200b" -or $hexHres -eq "0x80070103") {
-                                        $resText = "Noviji drajver vec prisutan na sistemu ($hexHres)"
-                                        $logLvl = "INFO"
-                                    }
-                                }
-                            } catch {}
-                        }
-
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Drajver ($drvNum/$totalDrv): $($drv.Title) -> $resText" -Level $logLvl -Component "WinUpdate"
-                        }
-                    } catch {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Upozorenje pri instalaciji drajvera $($drv.Title): $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
-                        }
-                        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                            Send-IpcLog -Message "Drajver $($drv.Title) nije uspeo, nastavljam..." -Level "WARN" -Phase 2
-                        }
-                    }
-                }
-            } else {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Nema dodatnih drajvera na Windows Update servisu." -Level "INFO" -Component "WinUpdate"
+                        $null = $installer.Install()
+                    } catch {}
                 }
             }
         } catch {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Windows Update pretraga drajvera nije uspela ili je servis nedostupan: $($_.Exception.Message). Nastavljam u Best-Effort režimu." -Level "WARN" -Component "WinUpdate"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "Windows Update drajveri nisu dostupni (nastavljam sa postojećim PnP drajverima)..." -Level "WARN" -Phase 2
+                Write-ServisLog "Windows Update pretraga drajvera nije uspela: $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
             }
         }
     }
 
-    # 6B. Samouceca berba hardverskih drajvera u <Model>.tar na TrueNAS serveru
+    # Samouceca berba hardverskih drajvera u <Model>.tar na TrueNAS serveru
     try {
         Export-ServisHardwareDrivers
     } catch {}
 
-    # 7. Slanje azuriranog hardverskog statusa ka UI-ju
+    # Slanje azuriranog hardverskog statusa ka UI-ju
     $hwData = [ordered]@{
         model  = $modelName
         serial = $serialNum
@@ -1868,34 +1901,447 @@ function Invoke-Phase2Drivers {
         }
     } catch {}
 
+    # Pokretanje pozadinskog Windows Update radnika odmah nakon Koraka 2
+    try {
+        Start-BackgroundWindowsUpdateWorker
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Upozorenje pri pokretanju pozadinskog Windows Update radnika nakon Faze 2: $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
+        }
+    }
+
     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 100 -Phase 2 -PhaseName "Drajveri" -SubPhase "Završeno" -StatusMessage "Faza 2 uspešno završena. Drajveri su obrađeni."
+        Send-IpcProgress -Progress 100 -Phase 2 -PhaseName "Drajveri" -SubPhase "Završeno" -StatusMessage "Faza 2 uspešno završena. Pozadinski Windows Update nastavlja rad u pozadini."
     }
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "=== FAZA 2 USPESNO ZAVRSENA: Drajveri i PnP komponente su integrisani (Best-Effort prolaz) ===" -Level "SUCCESS" -Component "Phase2"
+        Write-ServisLog "=== FAZA 2 USPESNO ZAVRSENA: Drajveri su integrisani, pozadinski Windows Update pokrenut ===" -Level "SUCCESS" -Component "Phase2"
     }
 
     $global:LASTEXITCODE = 0
 }
 
 
+function Write-BackgroundWuStatus {
+    [CmdletBinding()]
+    param(
+        [string]$Status = "IDLE",
+        [string]$PhaseText = "",
+        [string]$PhaseTextZh = "",
+        [int]$FoundCount = 0,
+        [int]$DownloadedCount = 0,
+        [int]$InstalledCount = 0,
+        [bool]$RebootRequired = $false,
+        [int]$WorkerPid = 0
+    )
+
+    try {
+        $setupDir = "C:\setup"
+        if (-not (Test-Path $setupDir)) {
+            New-Item -Path $setupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        $statusFile = Join-Path $setupDir "wu-bg-status.json"
+        $tempFile = Join-Path $setupDir "wu-bg-status.tmp"
+
+        $effectivePid = if ($WorkerPid -gt 0) { $WorkerPid } else { $PID }
+        $payload = [ordered]@{
+            status           = $Status
+            phase_text       = $PhaseText
+            phase_text_zh    = $(if ($PhaseTextZh) { $PhaseTextZh } else { $PhaseText })
+            found_count      = $FoundCount
+            downloaded_count = $DownloadedCount
+            installed_count  = $InstalledCount
+            reboot_required  = [bool]$RebootRequired
+            pid              = $effectivePid
+            updated_at       = [datetime]::UtcNow.ToString("o")
+        }
+
+        $json = $payload | ConvertTo-Json -Depth 4 -Compress
+        [System.IO.File]::WriteAllText($tempFile, $json, [System.Text.Encoding]::UTF8)
+        Move-Item -Path $tempFile -Destination $statusFile -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+function Start-BackgroundWindowsUpdateWorker {
+    <#
+    .SYNOPSIS
+        Pokrece asinhroni pozadinski Windows Update proces odmah nakon Faze 2.
+    .DESCRIPTION
+        Proces radi u pozadini dok se izvrsavaju Faze 3 (Optimizacija), 4 (Programi) i 5 (Stres test).
+        Vrsi Search i Download zakrpa/drajvera bez drzanja MSI mutexa, a samu instalaciju koordinisano
+        izvodi kada MSI instalator nije zauzet, cime se eliminise cekanje na kraju u Fazi 6.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $statusFile = "C:\setup\wu-bg-status.json"
+    if (Test-Path $statusFile) {
+        try {
+            $raw = Get-Content -Path $statusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($raw) {
+                $existing = ConvertFrom-Json -InputObject $raw -ErrorAction SilentlyContinue
+                if ($existing) {
+                    if ($existing.status -in @("COMPLETED", "SKIPPED")) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update je vec zavrsen ($($existing.status))." -Level "INFO" -Component "BgWinUpdate"
+                        }
+                        return $true
+                    }
+                    if ($existing.pid -gt 0 -and $existing.status -in @("STARTING", "SEARCHING", "DOWNLOADING", "WAITING_MSI", "INSTALLING")) {
+                        $alive = Get-Process -Id ([int]$existing.pid) -ErrorAction SilentlyContinue
+                        if ($alive) {
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update radnik je vec aktivan (PID: $($existing.pid), Status: $($existing.status))." -Level "INFO" -Component "BgWinUpdate"
+                            }
+                            return $true
+                        }
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    $modDir = $PSScriptRoot
+    if (-not $modDir -or -not (Test-Path (Join-Path $modDir "WIS.Update.psm1"))) {
+        $modDirCandidates = @(
+            "C:\setup\Skripte\Modules",
+            "C:\setup\Modules"
+        )
+        $modDir = $modDirCandidates | Where-Object { Test-Path (Join-Path $_ "WIS.Update.psm1") } | Select-Object -First 1
+    }
+
+    if (-not $modDir) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Direktorijum modula nije pronadjen." -Level "WARN" -Component "BgWinUpdate"
+        }
+        return $false
+    }
+
+    Write-BackgroundWuStatus -Status "STARTING" -PhaseText "Pokretanje pozadinskog Windows Update-a..."
+
+    $workerCmd = @"
+`$ErrorActionPreference = 'Continue'
+try {
+    Import-Module '$modDir\WIS.Core.psm1' -Force -DisableNameChecking -ErrorAction SilentlyContinue
+    Import-Module '$modDir\WIS.Apps.psm1' -Force -DisableNameChecking -ErrorAction SilentlyContinue
+    Import-Module '$modDir\WIS.Update.psm1' -Force -DisableNameChecking -ErrorAction SilentlyContinue
+    Invoke-BackgroundWindowsUpdateWorker
+} catch {
+    Write-BackgroundWuStatus -Status 'WARN' -PhaseText ('Upozorenje u pozadinskom WU: ' + `$_.Exception.Message)
+}
+"@
+
+    $encodedCmd = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($workerCmd))
+    try {
+        $bgProc = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", $encodedCmd) -WindowStyle Hidden -PassThru -ErrorAction Stop
+        if ($bgProc) {
+            Write-BackgroundWuStatus -Status "STARTING" -PhaseText "Pozadinski Windows Update pokrenut (pretraga kataloga)..." -WorkerPid $bgProc.Id
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Pokrenut pozadinski Windows Update radnik nakon Faze 2 (PID: $($bgProc.Id))." -Level "SUCCESS" -Component "BgWinUpdate"
+            }
+            return $true
+        }
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Greska pri pokretanju pozadinskog Windows Update procesa: $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
+        }
+    }
+    return $false
+}
+
+function Invoke-BackgroundWindowsUpdateWorker {
+    <#
+    .SYNOPSIS
+        Izvrsava pozadinski Windows Update (Search -> Download -> MSI-safe Install) paralelno sa Fazama 3, 4 i 5.
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-BackgroundWuStatus -Status "SEARCHING" -PhaseText "Pozadinski WU: Pretraga kataloga..." -WorkerPid $PID
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Zapocinjem pozadinsku pretragu Windows Update kataloga (PID: $PID)..." -Level "STEP" -Component "BgWinUpdate"
+    }
+
+    $hasNet = $false
+    try {
+        if (Get-Command Test-Internet -ErrorAction SilentlyContinue) {
+            $hasNet = Test-Internet
+        } else {
+            $hasNet = [bool](Test-Connection -ComputerName "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue)
+        }
+    } catch {
+        $hasNet = $false
+    }
+
+    if (-not $hasNet) {
+        Write-BackgroundWuStatus -Status "SKIPPED" -PhaseText "Pozadinski WU: Preskoceno (nema internet veze)" -WorkerPid $PID
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Nema internet konekcije, preskacem pozadinski Windows Update." -Level "WARN" -Component "BgWinUpdate"
+        }
+        return
+    }
+
+    try {
+        Start-Process "usoclient.exe" -ArgumentList "StartInteractiveScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
+    } catch {}
+    Start-Sleep -Seconds 2
+
+    $uSession = $null
+    $searchResult = $null
+    try {
+        $uSession = New-Object -ComObject Microsoft.Update.Session
+        $uSearcher = $uSession.CreateUpdateSearcher()
+        $uSearcher.ServerSelection = 2
+        $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
+    } catch {
+        try {
+            $uSearcher.ServerSelection = 0
+            $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
+        } catch {
+            $errStr = $_.Exception.Message
+            Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Katalog trenutno nedostupan (preskoceno)" -WorkerPid $PID
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pretraga kataloga nije uspela ($errStr)." -Level "WARN" -Component "BgWinUpdate"
+            }
+            return
+        }
+    }
+
+    $rawCount = if ($searchResult -and $searchResult.Updates) { $searchResult.Updates.Count } else { 0 }
+    if ($rawCount -eq 0) {
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Sistem je azuran (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -WorkerPid $PID
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Sistem je u potpunosti azuran (0 zaostalih zakrpa)." -Level "SUCCESS" -Component "BgWinUpdate"
+        }
+        return
+    }
+
+    $wuMode = Get-WUConfigMode
+    $filteredUpdates = @()
+    for ($i = 0; $i -lt $rawCount; $i++) {
+        $u = $searchResult.Updates.Item($i)
+        $isDrv = Test-IsDriverUpdate -UpdateItem $u
+        $isCum = Test-IsCumulativeUpdate -UpdateItem $u
+
+        $includeItem = $false
+        if ($wuMode -eq "DriversOnly") {
+            if ($isDrv -and (-not $isCum)) { $includeItem = $true }
+        } elseif ($wuMode -eq "SkipCumulative") {
+            if (-not $isCum) { $includeItem = $true }
+        } else {
+            $includeItem = $true
+        }
+
+        if ($includeItem) {
+            if (-not $u.EulaAccepted) {
+                try { $u.AcceptEula() } catch {}
+            }
+            $filteredUpdates += $u
+        }
+    }
+
+    $totalCount = $filteredUpdates.Count
+    if ($totalCount -eq 0) {
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Azurno za rezim $wuMode (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -WorkerPid $PID
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Nakon filtera ($wuMode) nema dodatnih zakrpa (0)." -Level "SUCCESS" -Component "BgWinUpdate"
+        }
+        return
+    }
+
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pronadjeno $totalCount stavki (rezim: $wuMode). Zapocinjem pozadinsko preuzimanje (Download)..." -Level "INFO" -Component "BgWinUpdate"
+    }
+
+    # FAZA A: Pozadinsko preuzimanje (Download ne drzi MSI mutex - radi 100% paralelno sa Fazama 3 i 4)
+    $downloadedCount = 0
+    for ($idx = 0; $idx -lt $totalCount; $idx++) {
+        $item = $filteredUpdates[$idx]
+        $num = $idx + 1
+        Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzimanje ($num/$totalCount)..." -FoundCount $totalCount -DownloadedCount $downloadedCount -InstalledCount 0 -WorkerPid $PID
+
+        if (-not $item.IsDownloaded) {
+            try {
+                $dlColl = New-Object -ComObject Microsoft.Update.UpdateColl
+                $dlColl.Add($item) | Out-Null
+                $downloader = $uSession.CreateUpdateDownloader()
+                $downloader.Updates = $dlColl
+                $downloader.Download() | Out-Null
+            } catch {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri preuzimanju '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
+                }
+            }
+        }
+        $downloadedCount = $num
+        Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzeto ($downloadedCount/$totalCount)" -FoundCount $totalCount -DownloadedCount $downloadedCount -InstalledCount 0 -WorkerPid $PID
+    }
+
+    # FAZA B: Koordinisana instalacija (ceka slobodan MSI instalator da ne izazove Error 1618 u Fazi 4)
+    $installedOk = 0
+    $rebootReq = $false
+
+    for ($idx = 0; $idx -lt $totalCount; $idx++) {
+        $item = $filteredUpdates[$idx]
+        $num = $idx + 1
+
+        # Proveri da li je u toku instalacija MSI aplikacije iz Faze 4 (msiexec / Acrobat / Chrome / DotNet)
+        $waitCycles = 0
+        while ($waitCycles -lt 60) {
+            $msiBusy = $false
+            try {
+                $activeAppInstallers = Get-Process -Name "msiexec", "AcroPro*", "ChromeSetup*", "windowsdesktop-runtime*", "aspnetcore-runtime*", "VC_redist*" -ErrorAction SilentlyContinue
+                if ($activeAppInstallers -and @($activeAppInstallers).Count -gt 1) {
+                    $msiBusy = $true
+                }
+            } catch {}
+
+            if (-not $msiBusy) {
+                try {
+                    $mutex = $null
+                    if ([System.Threading.Mutex]::TryOpenExisting("Global\_MSIExecute", [ref]$mutex)) {
+                        $msiBusy = $true
+                        $mutex.Close()
+                    }
+                } catch {}
+            }
+
+            if (-not $msiBusy) { break }
+            Write-BackgroundWuStatus -Status "WAITING_MSI" -PhaseText "Pozadinski WU: Preuzeto ($totalCount/$totalCount) - ceka MSI instalator..." -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -WorkerPid $PID
+            Start-Sleep -Seconds 3
+            $waitCycles++
+        }
+
+        Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalacija ($num/$totalCount)..." -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -WorkerPid $PID
+
+        try {
+            if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) {
+                New-Item -Path "HKLM:\SOFTWARE\WIS" -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+
+            $instColl = New-Object -ComObject Microsoft.Update.UpdateColl
+            $instColl.Add($item) | Out-Null
+            $installer = $uSession.CreateUpdateInstaller()
+            $installer.Updates = $instColl
+            $installer.ForceQuiet = $true
+            $instRes = $installer.Install()
+
+            if ($instRes) {
+                if ($instRes.RebootRequired) { $rebootReq = $true }
+                if ($instRes.ResultCode -in @(2, 3)) { $installedOk++ }
+            }
+        } catch {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri instalaciji '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
+            }
+        } finally {
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        }
+
+        Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalirano ($installedOk/$totalCount)" -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -RebootRequired $rebootReq -WorkerPid $PID
+    }
+
+    Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($installedOk/$totalCount instalirano)" -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -RebootRequired $rebootReq -WorkerPid $PID
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $installedOk/$totalCount, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
+    }
+}
+
+
 function Invoke-WindowsUpdateSecondPass {
     <#
     .SYNOPSIS
-        Dvoprolazno (Dual-Pass) Windows Update skeniranje i instalacija zaostalih kumulativnih zakrpi.
+        Proverava status pozadinskog Windows Update radnika (pokrenutog nakon Faze 2) ili vrsi dopunsku proveru.
     .DESCRIPTION
-        Pokrece se pre zavrsnog ciscenja sistema (u Fazi 5).
-        Vrsi brzi re-scan Windows Update kataloga za zaostale kumulativne nadogradnje oslobodjene
-        nakon instalacije drajvera i Servicing Stack Update-a (SSU).
-        Ukoliko postoje nove zakrpe, preuzima ih i instalira automatski.
-        Ako nema novih zakrpi, odmah vraca status: Sistem je u potpunosti azuriran (0 zaostalih zakrpi).
+        U novom redizajniranom toku, pozadinski Windows Update krece odmah nakon Faze 2 i radi tokom Faza 3, 4 i 5.
+        Kada proces stigne u Fazu 6, ova funkcija proverava C:\setup\wu-bg-status.json:
+        - Ako je pozadinski WU vec zavrsen (COMPLETED / SKIPPED / WARN), odmah vraca rezultat bez ponovnog skeniranja.
+        - Ako pozadinski WU upravo privodi kraju instalaciju, saceka njegovo kompletiranje (do 90s) bez pokretanja novog ciklusa.
     .COMPATIBILITY
         Windows PowerShell 5.1+
     #>
     [CmdletBinding()]
     param(
-        [int]$TimeoutSeconds = 600
+        [int]$TimeoutSeconds = 90
     )
+
+    $bgStatusFile = "C:\setup\wu-bg-status.json"
+    if (Test-Path $bgStatusFile) {
+        $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($waitSw.Elapsed.TotalSeconds -lt 90) {
+            if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-WindowsUpdateSecondPass: Operater zatrazio preskakanje cekanja na pozadinski WU." -Level "WARN" -Component "Update"
+                }
+                break
+            }
+
+            try {
+                $rawBg = Get-Content -Path $bgStatusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($rawBg) {
+                    $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
+                    if ($bgObj) {
+                        $st = "$($bgObj.status)".ToUpperInvariant()
+                        $instCnt = if ($null -ne $bgObj.installed_count) { [int]$bgObj.installed_count } else { 0 }
+                        $fndCnt = if ($null -ne $bgObj.found_count) { [int]$bgObj.found_count } else { 0 }
+                        $rebReq = [bool]$bgObj.reboot_required
+                        $pText = "$($bgObj.phase_text)"
+
+                        if ($st -in @("COMPLETED", "SKIPPED", "WARN")) {
+                            $doneMsg = "Pozadinski Windows Update (pokrenut nakon Faze 2) je vec zavrsen ($($st): instalirano $instCnt/$fndCnt). Nema potrebe za ponovnim pokretanjem na kraju."
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: $doneMsg" -Level "SUCCESS" -Component "Update"
+                            }
+                            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                                Send-IpcLog -Message $doneMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 6
+                            }
+                            return @{
+                                Success        = $true
+                                InstalledCount = $instCnt
+                                RebootRequired = $rebReq
+                                Message        = $doneMsg
+                            }
+                        }
+
+                        # Proveri da li je pozadinski proces jos uvek aktivan
+                        $bgPid = if ($null -ne $bgObj.pid) { [int]$bgObj.pid } else { 0 }
+                        $procAlive = if ($bgPid -gt 0) { [bool](Get-Process -Id $bgPid -ErrorAction SilentlyContinue) } else { $false }
+                        if (-not $procAlive) {
+                            Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($instCnt/$fndCnt)" -FoundCount $fndCnt -DownloadedCount $fndCnt -InstalledCount $instCnt -RebootRequired $rebReq
+                            $doneMsg2 = "Pozadinski Windows Update proces je zavrsio rad (instalirano $instCnt/$fndCnt)."
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: $doneMsg2" -Level "SUCCESS" -Component "Update"
+                            }
+                            return @{
+                                Success        = $true
+                                InstalledCount = $instCnt
+                                RebootRequired = $rebReq
+                                Message        = $doneMsg2
+                            }
+                        }
+
+                        $el = [int]$waitSw.Elapsed.TotalSeconds
+                        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                            Send-IpcProgress -Progress 9 -Phase 6 -PhaseName "Zavrsetak" -SubPhase "Pozadinski WU (${el}s)" -StatusMessage "$pText"
+                        }
+                    }
+                }
+            } catch {}
+
+            Start-Sleep -Seconds 2
+        }
+
+        $timeoutBgMsg = "Pozadinski Windows Update privodi rad kraju u pozadini - nastavljam finalizaciju bez zadrzavanja."
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-WindowsUpdateSecondPass: $timeoutBgMsg" -Level "INFO" -Component "Update"
+        }
+        return @{
+            Success        = $true
+            InstalledCount = 0
+            RebootRequired = $false
+            Message        = $timeoutBgMsg
+        }
+    }
 
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "=== POKRECEM DRUGI PROLAZ (DUAL-PASS) WINDOWS UPDATE-A ===" -Level "STEP" -Component "Update"
@@ -2196,6 +2642,28 @@ function Wait-WindowsUpdateCompletionBarrier {
         [switch]$Force
     )
 
+    # Ako je pozadinski Windows Update (pokrenut odmah nakon Faze 2) vec zavrsio, preskoci dugo cekanje u Fazi 6
+    $bgStatusFile = "C:\setup\wu-bg-status.json"
+    if ((-not $Force) -and (Test-Path $bgStatusFile)) {
+        try {
+            $rawBg = Get-Content -Path $bgStatusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($rawBg) {
+                $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
+                if ($bgObj -and ("$($bgObj.status)".ToUpperInvariant() -in @("COMPLETED", "SKIPPED", "WARN"))) {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Pozadinski Windows Update nakon Faze 2 je vec kompletiran ($($bgObj.status)). Preskacem zavrsnu WU barijeru." -Level "SUCCESS" -Component "Update"
+                    }
+                    return @{
+                        Success       = $true
+                        WaitedSeconds = 0
+                        TimedOut      = $false
+                        Skipped       = $false
+                    }
+                }
+            }
+        } catch {}
+    }
+
     $wuMode = Get-WUConfigMode
     if ($wuMode -eq "DriversOnly" -and (-not $Force) -and $TimeoutSeconds -gt 45) {
         $TimeoutSeconds = 45
@@ -2325,6 +2793,9 @@ Export-ModuleMember -Function `
     Invoke-WindowsUpdateCycle, `
     Invoke-WindowsUpdatePhase, `
     Invoke-Phase2Drivers, `
+    Write-BackgroundWuStatus, `
+    Start-BackgroundWindowsUpdateWorker, `
+    Invoke-BackgroundWindowsUpdateWorker, `
     Invoke-WindowsUpdateSecondPass, `
     Wait-WindowsUpdateCompletionBarrier
 

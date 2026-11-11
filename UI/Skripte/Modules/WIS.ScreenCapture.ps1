@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.ScreenCapture.ps1
 .DESCRIPTION

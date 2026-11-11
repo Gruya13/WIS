@@ -2,7 +2,7 @@
 title: "Pregled Arhitekture Sistema (Architecture Overview)"
 type: architecture
 created: 2026-09-14
-updated: 2026-10-26
+updated: 2026-11-11
 tags:
   - architecture
   - overview
@@ -11,20 +11,20 @@ tags:
 
 # Pregled Arhitekture Sistema: WIS (Windows Installation Assistant)
 
-**WIS** (*Windows Installation Assistant*, ranije inženjerski poznat kao **GWADT**) je modularni, autonomni servisni inženjerski sistem za automatizaciju instalacije, konfiguracije, ažuriranja drajvera, instalacije aplikacija, termalne dijagnostike, Autopilot forenzike i brendiranja operativnog sistema **Windows 11 24H2** (verzija paketa **v2.17.0** — `ISO 2.17.0` | `Launcher 2.2.17` | `UI 2.1.0` | `ServiceHub 3.2.0` | `AutopilotAuditor 2.0`).
+**WIS** (*Windows Installation Assistant*, **WIS Service / IG-Systems**) je modularni, autonomni servisni inženjerski sistem za automatizaciju instalacije, konfiguracije, ažuriranja drajvera, instalacije aplikacija, termalne dijagnostike, Autopilot forenzike i brendiranja operativnog sistema **Windows 11 24H2** (verzija paketa **v2.19.0** — `ISO 2.18.0` | `Launcher 2.2.17` | `UI 2.3.0` | `ServiceHub 3.2.0` | `AutopilotAuditor 2.0.0`).
 
 ---
 
-## Važeća Arhitektura i Organizacija Monorepo-a — v2.17.0 (WIS-TASK-141 .. WIS-TASK-167)
+## Važeća Arhitektura i Organizacija Monorepo-a — v2.19.0 (WIS-TASK-141 .. WIS-TASK-185)
 
-Kanonski Git monorepo u `/home/gru/Projects/WIS` organizovan je u **četiri glavne razvojne celine** (`ISO/`, `Launcher/`, `UI/`, `ServiceHub/`), samostalni forenzički alat `Tools/AutopilotAuditor/` (`WIS-AutopilotAuditor.exe` v2.0, `442,368 B`) i zajednički `.workspace/` direktorijum (dok klijentski runtime raspored u `C:\setup\` ostaje 100% očuvan).
+Kanonski Git monorepo u `/home/gru/Projects/WIS` organizovan je u **četiri glavne razvojne celine** (`ISO/`, `Launcher/`, `UI/`, `ServiceHub/`), samostalni forenzički alat `Tools/AutopilotAuditor/` (`WIS-AutopilotAuditor.exe` v2.0.0, `442,368 B`, `8` `.cs` fajlova / `1,989` linija) i zajednički `.workspace/` direktorijum (dok klijentski runtime raspored u `C:\setup\` ostaje 100% očuvan).
 
-- **Potpisana izdanja i verzionisanje:** Korenski `version.json` je jedini kanonski izvor verzija (`Sync-Versions.py`). `ServiceHub` (`v3.2.0`, 259/259 unit testova) služi isključivo RSA-2048 PKCS#1 v1.5 potpisana izdanja (`wis-payload.zip` + `payload_meta.json`). `WIS.Launcher.exe` (`v2.2.17`, `466,944 B`, 30/30 behavioral testova) verifikuje potpis i kompletan manifest i u offline režimu, uz Zip-Slip zaštitu i transakcioni rollback (`.update_tx.json` / `.backup_prev\`).
-- **Grafički panel i Autopilot forenzika:** `WIS.UI.exe` (`v2.1.0`, `1,165,312 B`, 8 kartica, 383 simetrična ključa SR/ZH) orkestrira 6 PowerShell 5.1 faza (`Phase1-Network.ps1`..`Phase6-Finalize.ps1`) i dvostepenu Autopilot proveru (`FindAutopilotTool`: prioritet nativni C# `WIS-AutopilotAuditor.exe --json` sa Silent OOBE motorom, fallback `Provera_autopilota.ps1 -JsonOutput` uz automatski TrueNAS SMB prenos).
+- **Potpisana izdanja i verzionisanje:** Korenski `version.json` je jedini kanonski izvor verzija (`Sync-Versions.py`). `ServiceHub` (`v3.2.0`, `32` modula / `12,080` linija, `27` test fajlova / `259` unittest metoda — `239 PASS, 20 skipped` u baznom Linux okruženju bez `Pillow`/`FastAPI`/`Node`) služi isključivo RSA-2048 PKCS#1 v1.5 potpisana izdanja (`wis-payload.zip` `64,674,440 B` + `payload_meta.json`). `WIS.Launcher.exe` (`v2.2.17`, `468,480 B`, `31/31` behavioral testova) verifikuje potpis i manifest (prioritetno proveravajući `\\host\servis` i `storage\cache` uz fallback na `\\host\WIS`), sa `StartMasterUIAndExit` proverom postojeće instance i transakcionim rollback-om.
+- **Grafički panel `v2.3.0`, StepGuard i Autopilot forenzika:** `WIS.UI.exe` (`v2.3.0`, `1,200,128 B`, `13` fajlova / `18,515` linija, dual `App.config` `<supportedRuntime>`, `HardwareIdentityService.cs`, `414` SR/ZH ključa u `LocalizationService.cs`) orkestrira **6 PowerShell 5.1 faza** (`1,788` linija) i **13 datoteka** u `UI/Skripte/Modules/` (`19,863` linije, uključujući **21 StepGuard korak** u `WIS.StepGuard.psm1` sa `step-journal.json` žurnalom, pozadinski WU radnik `wu-bg-status.json`, obavezni međurestart `HandleInterimReboot()` posle Faze 3, BOM-free lokalni SSD `SourcePath` za Office ODT i dvostepenu Autopilot proveru).
 - **Kanonski statusni ugovor (`WIS.StatusContract.psm1`):** Status završene instalacije (`DONE`) odvojen je od verifikacije hlađenja (`cooling_verified = true` samo kada su senzori dostupni i 30s stres test `PASS`; za `UNKNOWN` senzore instalacija ne blokira predaju već postavlja `manual_check_required = true`).
-- **Zlatni Lean ISO v2.17.0:** `WIS-Win11-Pro-10.0.26200.8037-Lean.iso` (`6,531,049,472 B` / `6.08 GB`, SHA-256: `52c7e697...`, UDF ECMA-167 + UEFI `0xEF` + BIOS `0x00`), distribuiran na TrueNAS iVentoy PXE (`:26000`) i SMB deljenja `WIS` i `Servis`.
+- **Zlatni Lean ISO v2.18.0:** `WIS-Win11-Pro-10.0.26200.8037-Lean.iso` (`6,522,753,024 B` / `6.07 GB`, SHA-256 `80ef4593...`, UDF ECMA-167 + UEFI `0xEF` + BIOS `0x00`) sa optimizovanim LAN-only `boot.wim` (`609,758,089 B` / `~582 MiB`), `000_wis_net1ix64.inf_guard` (`DEV_15FB`), **32 provere** u `Patch-BootWim.py` (`1,313` linija) i `autounattend.xml` (`Order 7/8 & ver >nul`).
 
-[[operations/build-release-media-2.17|Runbook]], [[decisions/ADR-0141-canonical-signed-release-and-status-contract|ADR-0141]], [[decisions/ADR-0158-autopilot-active-cloud-trigger-and-nas-fallback|ADR-0158]] i [[../TEHNICKI_OPIS_SISTEMA|TEHNICKI_OPIS_SISTEMA.md]] detaljno opisuju sve komponente.
+[[architecture/pipeline]], [[architecture/hardware-bypass]], [[architecture/silent-applications]], [[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]], [[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]] i [[../TEHNICKI_OPIS_SISTEMA_WIS|TEHNICKI_OPIS_SISTEMA_WIS.md]] detaljno opisuju sve komponente.
 
 ---
 
@@ -342,10 +342,19 @@ flowchart TD
     - **RSA-2048 Potpisani Payload:** `wis-payload.zip` (tačno **4,140,723 B**, SHA-256: `1f8b5f694a618eac083a6ec4fbee9350a9c50e59b498e490f41bfbf537e33e30`) sa verifikovanim potpisom u `payload_meta.json`.
     - **QA Sertifikacija:** 35/35 položenih provera u `Test-Task138-Diagnostics-Policy-QA.py` i 41/41 regresionih provera u `Test-Task136-Remediation-QA.py` (100% PASS bez mock-ova).
 
+36. **StepGuard Idempotentnost, Intel I219-LM WinPE Guard i Sanacija Faze 4 (`v2.18.0 – v2.19.0`, `WIS-TASK-173 .. WIS-TASK-185`):**
+    Objedinjuje idempotentni `StepGuard` mehanizam, ojačanje WinPE PXE mreže za paralelni rad u servisu i duboku sanaciju Faze 4 (`ADR-0181`, `ADR-0184`, `ADR-0185`):
+    - **StepGuard & `WIS.UI.exe v2.3.0` (`1,200,128 B`):** Novi modul `WIS.StepGuard.psm1` (`647` lin.) vodi **21 idempotentni korak** Faza 2–4 (`step-journal.json`, `Send-IpcStep` u UI ekspanderu), uz `HardwareIdentityService.cs` (`293` lin.), dual `App.config` (`v4.8`/`v4.0`), `HKLM`-only `EnsureRunOnceEntry()`, pozadinski WU progres (`wu-bg-status.json`), `RerunPhase4Command` (`force-rerun-phase4.flag`) i FIFO+scroll log bafer (`AllLogs.Insert(0, entry)`). `LocalizationService.cs` proširen je na `414` SR/ZH ključeva (i `72` EN).
+    - **WinPE DriverStore Guard (`boot.wim ~582 MiB` & Zlatni Lean ISO `6.07 GB`):** `Patch-BootWim.py` (`1,313` lin.) izostavlja `137.49 MiB` Wi-Fi drajvera iz WinPE-a (LAN-only `15` fajlova / `7.57 MiB`), briše `/Windows/System32/ventoy` i ugrađuje `000_wis_net1ix64.inf_guard` (`238,786 B`) da spreči `VTOYPE PNPHELP` obaranje Intel I219-LM (`DEV_15FB`), uz `32` automatske provere i PXE ugovor od `22` scenarija (`ISO/Tests/PxeZeroTouch/`, `NOT_RUN` bez laboratorijskog `LOCK.json`).
+    - **Obavezni Međurestart i Office 2024 ODT pod `SYSTEM` nalogom:** `WIS.UI.exe` obavezno izvršava `HandleInterimReboot()` posle Faze 3 (`interim_reboot_required`); `Phase4-Apps.ps1` uvozi `WIS.Core.psm1` (`Error 1219` zaštita); Chrome koristi lokalni MSI keš; `P4.Office` prepoznaje i `Configure.xml` i `configuration.xml`, skida UTF-8 BOM, kopira offline `Office\Data` na NVMe SSD i upisuje lokalni `SourcePath` (`C:\setup\Office2024_Install.xml`), dok `P4.Shortcuts` proverava prečice pojedinačno po aplikaciji (`wis-payload.zip` = `64,674,440 B`).
+
 ---
 
 ## 🔗 Povezane Beleške
 - Glavni Indeks: [[index]]
+- StepGuard, HardwareIdentityService & UI v2.3.0: [[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]]
+- WinPE I219-LM Guard & Paralelni PXE: [[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]]
+- Sanacija Faze 4 i Office 2024 ODT: [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]
 - Non-Blocking Diagnostics Policy i Soft Handover v2.16.2: [[decisions/ADR-0138-non-blocking-diagnostics-soft-handover]]
 - Potpuna Eliminacija GWADT Artefakata i Čisti WIS v2.16.1: [[decisions/ADR-0137-pure-wis-cleanup-and-gwadt-retirement]]
 - Sveobuhvatno Saniranje, RSA-2048 Payload i 6-Fazni Ugovor v2.16.0: [[decisions/ADR-0136-comprehensive-review-remediation-and-signed-payload]]

@@ -2705,6 +2705,105 @@ function Start-HardwareStressTest {
     return (Start-ServisStressTest -DurationSeconds $DurationSeconds -LocalSetupDir $LocalSetupDir)
 }
 
+function Test-WisDeviceManagerClean {
+    <#
+    .SYNOPSIS
+        Proverava da li su svi uredjaji u Device Manager-u ispravno instalirani
+        (nema ConfigManagerErrorCode razlicitog od 0, 22 ili 45, niti generickih Basic Display/Render adaptera).
+    .OUTPUTS
+        Hashtable sa kljucevima Done, Clean, Reason, ProblemDevices.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $problems = @()
+
+    # 1. PnP Entity provera (Get-CimInstance uz fallback na Get-WmiObject)
+    try {
+        $pnpEntities = $null
+        try {
+            $pnpEntities = Get-CimInstance -ClassName Win32_PnPEntity -OperationTimeoutSec 15 -ErrorAction Stop
+        } catch {
+            $pnpEntities = Get-WmiObject -Class Win32_PnPEntity -ErrorAction SilentlyContinue
+        }
+
+        if ($pnpEntities) {
+            foreach ($dev in $pnpEntities) {
+                $code = $dev.ConfigManagerErrorCode
+                if ($null -ne $code -and $code -ne 0 -and $code -ne 22 -and $code -ne 45) {
+                    $devName = if ($dev.Name) { $dev.Name.Trim() } else { "Nepoznat uredjaj" }
+                    $devId = if ($dev.DeviceID) { $dev.DeviceID.Trim() } else { "" }
+                    $problems += [PSCustomObject]@{
+                        Name      = $devName
+                        DeviceID  = $devId
+                        ErrorCode = [int]$code
+                        Type      = "PnPError"
+                    }
+                }
+            }
+        }
+    } catch {
+        return @{
+            Done           = $false
+            Clean          = $false
+            Reason         = "Greska pri ocitavanju PnP uredjaja: $($_.Exception.Message)"
+            ProblemDevices = @()
+        }
+    }
+
+    # 2. VideoController provera (da li je ostao Basic Display ili Render Driver)
+    try {
+        $gpus = $null
+        try {
+            $gpus = Get-CimInstance -ClassName Win32_VideoController -OperationTimeoutSec 10 -ErrorAction Stop
+        } catch {
+            $gpus = Get-WmiObject -Class Win32_VideoController -ErrorAction SilentlyContinue
+        }
+
+        if ($gpus) {
+            foreach ($gpu in $gpus) {
+                $gpuName = if ($gpu.Name) { $gpu.Name.Trim() } else { "" }
+                if ($gpuName -like "*Microsoft Basic Display Adapter*" -or $gpuName -like "*Microsoft Basic Render Driver*") {
+                    $problems += [PSCustomObject]@{
+                        Name      = $gpuName
+                        DeviceID  = if ($gpu.PNPDeviceID) { $gpu.PNPDeviceID.Trim() } else { "" }
+                        ErrorCode = -1
+                        Type      = "GenericDisplayDriver"
+                    }
+                }
+            }
+        }
+    } catch {
+        return @{
+            Done           = $false
+            Clean          = $false
+            Reason         = "Greska pri ocitavanju grafickog adaptera: $($_.Exception.Message)"
+            ProblemDevices = @()
+        }
+    }
+
+    $isClean = ($problems.Count -eq 0)
+    $reasonStr = ""
+    if ($isClean) {
+        $reasonStr = "Device Manager je cist (svi uredjaji prepoznati, nema zutih uzvicnika niti Basic Display adaptera)"
+    } else {
+        $sampleNames = ($problems | ForEach-Object { "$($_.Name) (Kod $($_.ErrorCode))" } | Select-Object -First 3) -join ", "
+        $count = $problems.Count
+        if ($count -gt 3) {
+            $reasonStr = "Pronadjeno $count neispravnih/generickih uredjaja ($sampleNames, ...)"
+        } else {
+            $reasonStr = "Pronadjeno $count neispravnih/generickih uredjaja ($sampleNames)"
+        }
+    }
+
+    return @{
+        Done           = $isClean
+        Clean          = $isClean
+        Reason         = $reasonStr
+        ProblemDevices = $problems
+    }
+}
+
 Export-ModuleMember -Function `
     Get-HardwareDiagnosticsInfo, `
     Get-HardwareHealthStatus, `
@@ -2720,7 +2819,8 @@ Export-ModuleMember -Function `
     Resolve-MissingDriversFromHub, `
     Start-ServisStressTest, `
     Invoke-ServisStressTest, `
-    Start-HardwareStressTest
+    Start-HardwareStressTest, `
+    Test-WisDeviceManagerClean
 
 
 

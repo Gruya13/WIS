@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SCRIPT
     Phase4-Apps.ps1
 .DESCRIPTION
@@ -37,7 +37,23 @@ $commonMod = @(
     "C:\setup\Skripte\Modules\WIS.Common.psm1"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if ($commonMod) { Import-Module $commonMod -Force }
+if ($commonMod) { Import-Module $commonMod -Force -DisableNameChecking }
+
+$stepGuardMod = @(
+    (Join-Path $PSScriptRoot "..\Modules\WIS.StepGuard.psm1"),
+    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
+    "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($stepGuardMod) { Import-Module $stepGuardMod -Force -DisableNameChecking }
+
+$coreMod = @(
+    (Join-Path $PSScriptRoot "..\Modules\WIS.Core.psm1"),
+    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Core.psm1"),
+    "C:\setup\Skripte\Modules\WIS.Core.psm1"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($coreMod) { Import-Module $coreMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
 
 $appsMod = @(
     (Join-Path $PSScriptRoot "..\Modules\WIS.Apps.psm1"),
@@ -45,7 +61,7 @@ $appsMod = @(
     "C:\setup\Skripte\Modules\WIS.Apps.psm1"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if ($appsMod) { Import-Module $appsMod -Force }
+if ($appsMod) { Import-Module $appsMod -Force -DisableNameChecking }
 
 # 2. Verifikacija administratorskih privilegija
 try {

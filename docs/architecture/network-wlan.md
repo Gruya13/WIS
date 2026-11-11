@@ -2,7 +2,7 @@
 title: "Mrežno Povezivanje, Servisni Wi-Fi i Anti-Leak Sanitizacija (Network & Wi-Fi Automation)"
 type: architecture
 created: 2026-09-14
-updated: 2026-10-26
+updated: 2026-11-11
 tags:
   - architecture
   - network
@@ -11,7 +11,7 @@ tags:
   - security
 ---
 
-# Mrežno Povezivanje, Servisni Wi-Fi i Anti-Leak Sanitizacija: WIS (v2.17.0)
+# Mrežno Povezivanje, Servisni Wi-Fi i Anti-Leak Sanitizacija: WIS (v2.19.0)
 
 Pouzdan i brz pristup servisnoj mreži (`192.168.170.0/24`) i internetu ključan je za preuzimanje potpisanog `wis-payload.zip` paketa sa `ServiceHub`-a, striming drajvera i programa sa TrueNAS servera (`192.168.170.254`) i izvršavanje Windows Update zakrpa. **WIS** obezbeđuje dvoslojno automatsko povezivanje uz strogo **Anti-Leak brisanje svih servisnih tajni** pre predaje računara klijentu.
 
@@ -38,10 +38,10 @@ Da bi klijentski računar imao aktivnu IP adresu već u prvoj sekundi ulaska na 
 
 ---
 
-## 🔧 3. Univerzalni PnP Fallback Mrežnih Drajvera i Otključavanje Mrežnog Steka (`WIS.Network.psm1`)
+## 🔧 3. Univerzalni PnP Fallback Mrežnih Drajvera i Otključavanje Mrežnog Steka (`WIS.Network.psm1` & `WIS.Core.psm1`)
 
-1. **`Install-NetDriverFallback`:** Ukoliko mrežni adapter nema ugrađen drajver u Windows 11 slici, modul automatski skenira lokalnu bazu `C:\setup\Drivers\Net` (Intel, Realtek, MediaTek) i instalira `.inf` pakete preko `pnputil.exe`.
-2. **Windows 11 24H2 SMB Hardening i Autentifikacija:** Otključava `LanmanWorkstation` registre (`AllowInsecureGuestAuth = 1`, `RequireSecuritySignature = 0`) i autentifikuje SMB sesije ka `\\192.168.170.254\WIS` i `\\192.168.170.254\Programi`.
+1. **`Install-NetDriverFallback` (`WIS.Network.psm1` — 1,249 linija, `55,195 B`):** Ukoliko mrežni adapter nema ugrađen drajver u Windows 11 slici, modul automatski skenira lokalnu bazu `C:\setup\Drivers\Net` (Intel, Realtek, MediaTek, Wi-Fi + LAN) i instalira `.inf` pakete preko `pnputil.exe`. U WinPE PXE slici (`boot.wim`) čuvaju se samo LAN drajveri (`15` fajlova, `7.57 MiB` + `000_wis_net1ix64.inf_guard`), dok puni Wi-Fi paketi stižu kroz `$OEM$\$1\setup\Drivers\Net` ([[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]]).
+2. **Windows 11 24H2 SMB Hardening i `Error 1219` Zaštita u Fazi 4:** Otključava `LanmanWorkstation` registre (`AllowInsecureGuestAuth = 1`, `RequireSecuritySignature = 0`) i autentifikuje SMB sesije ka `\\192.168.170.254\WIS` i `\\192.168.170.254\Programi`. `Phase4-Apps.ps1` eksplicitno uvozi `WIS.Core.psm1` kako bi `Sync-ProgramiFromNas` očistio prethodne sesije i sprečio Windows SMB `Error 1219` pri prebacivanju resursa ili pod `SYSTEM` nalogom ([[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
 3. **`Optimize-ServisNetworkStack`:** Postavlja `DisableBandwidthThrottling = 1`, `MaxCmds = 2048`, `EnableLargeMtu = $true` i TCP `InternetCustom` profil preko neblokirajućih poziva, omogućavajući pun gigabitni protok (**110–122 MB/s**).
 
 ---
@@ -49,8 +49,8 @@ Da bi klijentski računar imao aktivnu IP adresu već u prvoj sekundi ulaska na 
 ## 🔒 4. Stroga Anti-Leak Sanitizacija Servisnih Tajni u Fazi 6 (`Clear-ServisWifiSecrets`)
 
 U skladu sa strogim bezbednosnim pravilom projekta (`AGENTS.md` Pravilo 4 i [[decisions/ADR-0136-comprehensive-review-remediation-and-signed-payload]]), **servisni Wi-Fi profili i lozinke nikada ne smeju ostati na klijentskom računaru nakon završetka servisa**:
-- U Fazi 6 (`Phase6-Finalize.ps1` / `WIS.Cleanup.psm1`), funkcija `Clear-ServisWifiSecrets`:
-  1. Izvršava `netsh wlan delete profile` za sve SSID mreže definisane u `Wifi-Servis.ini`, trajno ih uklanjajući iz Windows WLAN registra.
+- U Fazi 6 (`Phase6-Finalize.ps1` / `WIS.Cleanup.psm1`), nakon slanja završnog servisnog kartona ka `ServiceHub`-u (`Send-FleetFinalReport`), funkcija `Clear-ServisWifiSecrets`:
+  1. Izvršava `netsh wlan delete profile` za sve SSID mreže definisane u `Wifi-Servis.ini`, trajno ih uklanjajući iz Windows WLAN registra *(operativna napomena: na uređajima priključenim isključivo preko servisnog Wi-Fi-ja brisanje profila odmah gasi bežičnu vezu po završetku Faze 6, što je namerno bezbednosno ponašanje)*.
   2. Trajno briše `C:\setup\Wifi-Servis.ini` i sve privremene `.xml` profile sa klijentskog diska (uz zaštitu priključenih USB diskova).
   3. Raskida sve aktivne SMB konekcije ka TrueNAS serveru (`net.exe use * /delete /y`).
 - **Anti-Leak Gate:** Ukoliko verifikaciona provera u Fazi 6 detektuje da je `Wifi-Servis.ini` ili servisni WLAN profil preostao na sistemu, završetak servisa i predaja računara se **blokiraju** (`handover_ready = false`, `exit 2`).

@@ -1,7 +1,7 @@
 {
   "manifest_version": "2.17.0",
   "schema_version": 1,
-  "description": "Jedinstveni kanonski manifest deployment komponenti za WIS Service WIS (GUI sync, CLI sync, OEM i payload).",
+  "description": "Jedinstveni kanonski manifest deployment komponenti za WIS Service (GUI sync, CLI sync, OEM i payload).",
   "components": [
     {
       "id": "autounattend_xml",
@@ -250,6 +250,16 @@
       "destinations": [
         "Skripte/Modules/WIS.ScreenCapture.ps1",
         "sources/$OEM$/$1/setup/Skripte/Modules/WIS.ScreenCapture.ps1"
+      ],
+      "required": true,
+      "type": "file"
+    },
+    {
+      "id": "mod_wis_stepguard",
+      "source": "../UI/Skripte/Modules/WIS.StepGuard.psm1",
+      "destinations": [
+        "Skripte/Modules/WIS.StepGuard.psm1",
+        "sources/$OEM$/$1/setup/Skripte/Modules/WIS.StepGuard.psm1"
       ],
       "required": true,
       "type": "file"

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.Network.psm1
 .DESCRIPTION
@@ -832,7 +832,7 @@ function Invoke-Phase1Network {
                 $finalStatusMessage = "ServisHub dostupan lokalno (latencija: {0} ms). Nastavljam sa lokalnog skladišta..." -f $hubLatencyMs
             } else {
                 # ServisHub nije pronađen na lokalnoj mreži, ali računar ima internet konekciju
-                $finalStatusMessage = "Mreža aktivna (Internet režim). ServisHub nije detektovan — koristi se Internet/Winget fallback."
+                $finalStatusMessage = "Mreža aktivna (Internet režim). ServisHub nije detektovan - koristi se Internet/Winget fallback."
             }
             break
         }
@@ -845,11 +845,11 @@ function Invoke-Phase1Network {
     if (-not $fastPathSuccess) {
         if ($hasInternet) {
             $fastPathSuccess = $true
-            $finalStatusMessage = "Mreža aktivna (Internet režim). ServisHub nije detektovan — koristi se Internet/Winget fallback."
+            $finalStatusMessage = "Mreža aktivna (Internet režim). ServisHub nije detektovan - koristi se Internet/Winget fallback."
         } elseif ($linkOk) {
             # Uređaj ima mrežni link (kabl ili Wi-Fi) iako ServisHub i javni internet nisu odgovorili
             $fastPathSuccess = $true
-            $finalStatusMessage = "Mreža aktivna (Lokalna mreža). ServisHub i Internet nisu detektovani — koristi se lokalni keš paketa."
+            $finalStatusMessage = "Mreža aktivna (Lokalna mreža). ServisHub i Internet nisu detektovani - koristi se lokalni keš paketa."
         }
     }
 

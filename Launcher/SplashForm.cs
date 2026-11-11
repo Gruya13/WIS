@@ -244,7 +244,7 @@ namespace WIS.Launcher
             // Verzija oznaka
             lblVersionTag = new Label
             {
-                Text = "v2.17.0 (.NET 4.0 / Zero-Touch)",
+                Text = "v2.18.0 (.NET 4.0 / Zero-Touch)",
                 Location = new Point(430, 40),
                 Size = new Size(150, 18),
                 ForeColor = Color.FromArgb(139, 148, 158),
@@ -1241,13 +1241,19 @@ namespace WIS.Launcher
 
                     PayloadVersionInfo remoteVer = PayloadManager.GetRemoteVersion(hubUrl);
                     string effectiveHubUrl = hubUrl;
-                    if ((remoteVer == null || !remoteVer.IsSignatureValid || string.IsNullOrEmpty(remoteVer.Version)) && !string.IsNullOrEmpty(nasHost))
+                    if (!string.IsNullOrEmpty(nasHost))
                     {
                         PayloadVersionInfo smbVer = PayloadManager.GetRemoteSmbVersion(nasHost);
                         if (smbVer != null && smbVer.IsSignatureValid && !string.IsNullOrEmpty(smbVer.Version))
                         {
-                            remoteVer = smbVer;
-                            effectiveHubUrl = null;
+                            if (remoteVer == null ||
+                                !remoteVer.IsSignatureValid ||
+                                string.IsNullOrEmpty(remoteVer.Version) ||
+                                PayloadManager.CompareVersions(smbVer.Version, remoteVer.Version) >= 0)
+                            {
+                                remoteVer = smbVer;
+                                effectiveHubUrl = null;
+                            }
                         }
                     }
 
@@ -1319,6 +1325,18 @@ namespace WIS.Launcher
 
         private static void StartMasterUIAndExit()
         {
+            try
+            {
+                Process[] existingUi = Process.GetProcessesByName("WIS.UI");
+                if (existingUi != null && existingUi.Length > 0)
+                {
+                    // WIS.UI je već aktivan na sistemu — izađi tiho bez ponovnog pokretanja
+                    Environment.Exit(0);
+                    return;
+                }
+            }
+            catch { }
+
             string error;
             if (!PayloadManager.TryStartVerifiedLocalUi(out error))
             {

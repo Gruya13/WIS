@@ -81,12 +81,140 @@ namespace WIS.UI
         }
     }
 
+    public class StepItem : BaseViewModel
+    {
+        private string _id;
+        private string _title;
+        private string _status = "WAIT"; // WAIT, RUNNING, OK, SKIPPED_DONE, SKIPPED_USER, WARN, ERROR
+        private string _reason;
+
+        public string Id
+        {
+            get { return _id; }
+            set { SetProperty(ref _id, value); }
+        }
+
+        public string Title
+        {
+            get { return _title; }
+            set { SetProperty(ref _title, value); }
+        }
+
+        public string Reason
+        {
+            get { return _reason; }
+            set
+            {
+                if (SetProperty(ref _reason, value))
+                {
+                    OnPropertyChanged("HasReason");
+                }
+            }
+        }
+
+        public bool HasReason
+        {
+            get { return !string.IsNullOrWhiteSpace(_reason); }
+        }
+
+        public string Status
+        {
+            get { return _status; }
+            set
+            {
+                string norm = (value ?? "WAIT").Trim().ToUpperInvariant();
+                if (norm == "SUCCESS" || norm == "COMPLETED" || norm == "DONE") norm = "OK";
+                else if (norm == "FAILED") norm = "ERROR";
+                else if (norm == "WARNING") norm = "WARN";
+                else if (norm == "PENDING" || norm == "QUEUED") norm = "WAIT";
+
+                if (SetProperty(ref _status, norm))
+                {
+                    OnPropertyChanged("IsRunning");
+                    OnPropertyChanged("IsCompleted");
+                    OnPropertyChanged("IsSkipped");
+                    OnPropertyChanged("IsWarning");
+                    OnPropertyChanged("IsError");
+                    OnPropertyChanged("BadgeBackground");
+                    OnPropertyChanged("BadgeForeground");
+                    OnPropertyChanged("BorderBrush");
+                    OnPropertyChanged("IconText");
+                }
+            }
+        }
+
+        public bool IsRunning { get { return string.Equals(Status, "RUNNING", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsCompleted { get { return string.Equals(Status, "OK", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsSkipped { get { return string.Equals(Status, "SKIPPED_DONE", StringComparison.OrdinalIgnoreCase) || string.Equals(Status, "SKIPPED_USER", StringComparison.OrdinalIgnoreCase) || string.Equals(Status, "SKIPPED", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsWarning { get { return string.Equals(Status, "WARN", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsError { get { return string.Equals(Status, "ERROR", StringComparison.OrdinalIgnoreCase); } }
+
+        public Brush BadgeBackground
+        {
+            get
+            {
+                if (IsCompleted) return CreateFrozenBrush(46, 204, 113);     // #2ecc71
+                if (IsSkipped) return CreateFrozenBrush(62, 107, 84);        // #3e6b54 sivo-zeleni bedž
+                if (IsWarning) return CreateFrozenBrush(230, 126, 34);       // #e67e22 narandžasto
+                if (IsError) return CreateFrozenBrush(231, 76, 60);          // #e74c3c crveno
+                if (IsRunning) return CreateFrozenBrush(0, 122, 204);        // #007acc plavo
+                return CreateFrozenBrush(50, 50, 55);                         // #323237 sivo
+            }
+        }
+
+        public Brush BadgeForeground
+        {
+            get
+            {
+                if (IsCompleted || IsRunning || IsSkipped || IsWarning || IsError) return Brushes.White;
+                return CreateFrozenBrush(150, 150, 150);
+            }
+        }
+
+        public Brush BorderBrush
+        {
+            get
+            {
+                if (IsCompleted) return CreateFrozenBrush(39, 174, 96);       // #27ae60
+                if (IsSkipped) return CreateFrozenBrush(46, 204, 113);       // #2ecc71
+                if (IsWarning) return CreateFrozenBrush(211, 84, 0);         // #d35400
+                if (IsError) return CreateFrozenBrush(192, 57, 43);          // #c0392b
+                if (IsRunning) return CreateFrozenBrush(78, 201, 176);       // #4ec9b0
+                return CreateFrozenBrush(70, 70, 75);                        // #46464b
+            }
+        }
+
+        public string IconText
+        {
+            get
+            {
+                if (IsCompleted) return "✓";
+                if (IsSkipped) return "»";
+                if (IsWarning) return "⚠";
+                if (IsError) return "✗";
+                if (IsRunning) return "▶";
+                return "·";
+            }
+        }
+    }
+
     public class PhaseItem : BaseViewModel
     {
         private int _number;
         private string _title;
         private string _subtitle;
-        private string _status = "Pending"; // "Pending", "Active", "Completed"
+        private string _status = "Pending"; // "Pending", "Active", "Completed", "Skipped", "Warning"
+        private ObservableCollection<StepItem> _steps;
+        private bool _isExpanded;
+
+        public PhaseItem()
+        {
+            _steps = new ObservableCollection<StepItem>();
+            _steps.CollectionChanged += delegate
+            {
+                OnPropertyChanged("HasSteps");
+            };
+        }
 
         public int Number
         {
@@ -106,6 +234,29 @@ namespace WIS.UI
             set { SetProperty(ref _subtitle, value); }
         }
 
+        public ObservableCollection<StepItem> Steps
+        {
+            get { return _steps; }
+            set
+            {
+                if (SetProperty(ref _steps, value))
+                {
+                    OnPropertyChanged("HasSteps");
+                }
+            }
+        }
+
+        public bool HasSteps
+        {
+            get { return _steps != null && _steps.Count > 0; }
+        }
+
+        public bool IsExpanded
+        {
+            get { return _isExpanded; }
+            set { SetProperty(ref _isExpanded, value); }
+        }
+
         public string Status
         {
             get { return _status; }
@@ -116,6 +267,8 @@ namespace WIS.UI
                     OnPropertyChanged("IsPending");
                     OnPropertyChanged("IsActive");
                     OnPropertyChanged("IsCompleted");
+                    OnPropertyChanged("IsSkipped");
+                    OnPropertyChanged("IsWarning");
                     OnPropertyChanged("BadgeBackground");
                     OnPropertyChanged("BadgeForeground");
                     OnPropertyChanged("BorderBrush");
@@ -127,12 +280,16 @@ namespace WIS.UI
         public bool IsPending { get { return string.Equals(Status, "Pending", StringComparison.OrdinalIgnoreCase); } }
         public bool IsActive { get { return string.Equals(Status, "Active", StringComparison.OrdinalIgnoreCase); } }
         public bool IsCompleted { get { return string.Equals(Status, "Completed", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsSkipped { get { return string.Equals(Status, "Skipped", StringComparison.OrdinalIgnoreCase); } }
+        public bool IsWarning { get { return string.Equals(Status, "Warning", StringComparison.OrdinalIgnoreCase); } }
 
         public Brush BadgeBackground
         {
             get
             {
                 if (IsCompleted) return CreateFrozenBrush(46, 204, 113); // #2ecc71
+                if (IsSkipped) return CreateFrozenBrush(62, 107, 84);     // #3e6b54 zeleno-sivi bedž
+                if (IsWarning) return CreateFrozenBrush(230, 126, 34);    // #e67e22 narandžasto
                 if (IsActive) return CreateFrozenBrush(0, 122, 204);     // #007acc
                 return CreateFrozenBrush(50, 50, 55);                    // #323237
             }
@@ -142,7 +299,7 @@ namespace WIS.UI
         {
             get
             {
-                if (IsCompleted || IsActive) return Brushes.White;
+                if (IsCompleted || IsActive || IsSkipped || IsWarning) return Brushes.White;
                 return CreateFrozenBrush(150, 150, 150);
             }
         }
@@ -152,6 +309,8 @@ namespace WIS.UI
             get
             {
                 if (IsCompleted) return CreateFrozenBrush(39, 174, 96);
+                if (IsSkipped) return CreateFrozenBrush(46, 204, 113);
+                if (IsWarning) return CreateFrozenBrush(230, 126, 34);
                 if (IsActive) return CreateFrozenBrush(78, 201, 176); // #4ec9b0
                 return CreateFrozenBrush(70, 70, 75);
             }
@@ -162,6 +321,8 @@ namespace WIS.UI
             get
             {
                 if (IsCompleted) return "✓";
+                if (IsSkipped) return "»";
+                if (IsWarning) return "⚠";
                 if (IsActive) return "▶";
                 return Number.ToString();
             }
@@ -212,17 +373,26 @@ namespace WIS.UI
                 string norm = (value ?? "WAIT").ToUpperInvariant().Trim();
                 if (norm == "COMPLETED" || norm == "SUCCESS" || norm == "INSTALLED") norm = "OK";
                 else if (norm == "FAILED") norm = "ERROR";
-                else if (norm == "SKIPPED") norm = "SKIPPED";
+                else if (norm == "SKIPPED" || norm == "SKIPPED_DONE" || norm == "SKIPPED_USER") { }
                 else if (norm == "PENDING" || norm == "QUEUED") norm = "WAIT";
 
                 if (SetProperty(ref _status, norm))
                 {
+                    if (norm == "SKIPPED_DONE" && (string.IsNullOrEmpty(_detail) || _detail == "U redu čekanja"))
+                    {
+                        Detail = "Već instalirano";
+                    }
+                    else if (norm == "SKIPPED_USER" && (string.IsNullOrEmpty(_detail) || _detail == "U redu čekanja"))
+                    {
+                        Detail = "Preskočeno na zahtev servisera";
+                    }
                     OnPropertyChanged("BadgeBackground");
                     OnPropertyChanged("BadgeForeground");
                     OnPropertyChanged("StatusDisplay");
                     OnPropertyChanged("IconText");
                     OnPropertyChanged("IsRunning");
                     OnPropertyChanged("IsCompleted");
+                    OnPropertyChanged("IsSkipped");
                     OnPropertyChanged("IsError");
                 }
             }
@@ -238,6 +408,7 @@ namespace WIS.UI
 
         public bool IsRunning { get { return Status == "RUNNING"; } }
         public bool IsCompleted { get { return Status == "OK"; } }
+        public bool IsSkipped { get { return Status == "SKIPPED" || Status == "SKIPPED_DONE" || Status == "SKIPPED_USER"; } }
         public bool IsError { get { return Status == "ERROR"; } }
 
         public Brush BadgeBackground
@@ -252,6 +423,9 @@ namespace WIS.UI
                         return CreateFrozenBrush(243, 156, 18); // Orange #f39c12
                     case "ERROR":
                         return CreateFrozenBrush(231, 76, 60); // Red #e74c3c
+                    case "SKIPPED_DONE":
+                        return CreateFrozenBrush(62, 107, 84); // Sivo-zelena #3e6b54
+                    case "SKIPPED_USER":
                     case "SKIPPED":
                         return CreateFrozenBrush(52, 73, 94); // Plavo-siva #34495E
                     case "WAIT":
@@ -271,6 +445,8 @@ namespace WIS.UI
                     case "RUNNING":
                     case "ERROR":
                     case "SKIPPED":
+                    case "SKIPPED_DONE":
+                    case "SKIPPED_USER":
                         return Brushes.White;
                     default:
                         return CreateFrozenBrush(180, 180, 180);
@@ -288,6 +464,8 @@ namespace WIS.UI
                     case "OK": return isZh ? "✓ 完成" : "✓ OK";
                     case "RUNNING": return isZh ? "⚙ 正在进行" : "⚙ RAD";
                     case "ERROR": return isZh ? "✗ 错误" : "✗ GRESKA";
+                    case "SKIPPED_DONE": return isZh ? "» 已跳过" : "» PRESKOČENO";
+                    case "SKIPPED_USER":
                     case "SKIPPED": return isZh ? "⏭ 已跳过" : "⏭ PRESKOČENO";
                     case "WAIT":
                     default: return isZh ? "⏳ 等待中" : "⏳ ČEKA";
@@ -1568,6 +1746,135 @@ namespace WIS.UI
         public bool UsbFree { get { return _usbFree; } set { SetProperty(ref _usbFree, value); } }
         public string UsbBannerText { get { return _usbBannerText; } set { SetProperty(ref _usbBannerText, value); } }
 
+        // Pozadinski Windows Update indikator (pokreće se odmah nakon Koraka 2)
+        private bool _isBackgroundWuVisible = false;
+        private string _backgroundWuStatus = "IDLE";
+        private string _backgroundWuTextSr = "Pozadinski Windows Update: Pokretanje nakon Koraka 2...";
+        private string _backgroundWuTextZh = "后台 Windows 更新: 阶段 2 后正在启动...";
+
+        public bool IsBackgroundWuVisible
+        {
+            get { return _isBackgroundWuVisible; }
+            set { SetProperty(ref _isBackgroundWuVisible, value); }
+        }
+
+        public string BackgroundWuStatus
+        {
+            get { return _backgroundWuStatus; }
+            set
+            {
+                if (SetProperty(ref _backgroundWuStatus, (value ?? "IDLE").ToUpperInvariant().Trim()))
+                {
+                    OnPropertyChanged("BackgroundWuBadgeText");
+                    OnPropertyChanged("BackgroundWuBadgeBrush");
+                    OnPropertyChanged("BackgroundWuBorderBrush");
+                }
+            }
+        }
+
+        public string BackgroundWuDisplayText
+        {
+            get
+            {
+                return LocalizationService.Instance.IsChinese
+                    ? (!string.IsNullOrEmpty(_backgroundWuTextZh) ? _backgroundWuTextZh : _backgroundWuTextSr)
+                    : _backgroundWuTextSr;
+            }
+        }
+
+        public string BackgroundWuBadgeText
+        {
+            get
+            {
+                bool isZh = LocalizationService.Instance.IsChinese;
+                switch (_backgroundWuStatus)
+                {
+                    case "COMPLETED":
+                        return isZh ? "✓ 已完成" : "✓ ZAVRŠENO";
+                    case "SKIPPED":
+                        return isZh ? "⏭ 已跳过" : "⏭ PRESKOČENO";
+                    case "WAITING_MSI":
+                        return isZh ? "⏳ 等待 MSI" : "⏳ ČEKA MSI";
+                    case "DOWNLOADING":
+                        return isZh ? "⬇ 下载中" : "⬇ PREUZIMANJE";
+                    case "INSTALLING":
+                        return isZh ? "⚙ 安装中" : "⚙ INSTALACIJA";
+                    case "WARN":
+                        return isZh ? "⚠ 警告" : "⚠ UPOZORENJE";
+                    case "STARTING":
+                    case "SEARCHING":
+                    default:
+                        return isZh ? "🔄 搜索中" : "🔄 U TOKU";
+                }
+            }
+        }
+
+        public Brush BackgroundWuBadgeBrush
+        {
+            get
+            {
+                switch (_backgroundWuStatus)
+                {
+                    case "COMPLETED":
+                        return CreateFrozenBrush(39, 174, 96);   // Zelena #27AE60
+                    case "SKIPPED":
+                        return CreateFrozenBrush(52, 73, 94);    // Sivo-plava #34495E
+                    case "WAITING_MSI":
+                    case "WARN":
+                        return CreateFrozenBrush(243, 156, 18);  // Narandžasta #F39C12
+                    case "DOWNLOADING":
+                    case "INSTALLING":
+                    case "SEARCHING":
+                    case "STARTING":
+                    default:
+                        return CreateFrozenBrush(0, 122, 204);   // Plava #007ACC
+                }
+            }
+        }
+
+        public Brush BackgroundWuBorderBrush
+        {
+            get
+            {
+                switch (_backgroundWuStatus)
+                {
+                    case "COMPLETED":
+                        return CreateFrozenBrush(46, 204, 113);  // #2ECC71
+                    case "WAITING_MSI":
+                    case "WARN":
+                        return CreateFrozenBrush(241, 196, 15);  // #F1C40F
+                    default:
+                        return CreateFrozenBrush(78, 201, 176);  // #4EC9B0
+                }
+            }
+        }
+
+        public void UpdateBackgroundWuStatus(string status, string textSr, string textZh)
+        {
+            Action upd = delegate
+            {
+                IsBackgroundWuVisible = true;
+                BackgroundWuStatus = string.IsNullOrEmpty(status) ? "SEARCHING" : status;
+                if (!string.IsNullOrEmpty(textSr)) _backgroundWuTextSr = textSr;
+                if (!string.IsNullOrEmpty(textZh)) _backgroundWuTextZh = textZh;
+                else if (!string.IsNullOrEmpty(textSr)) _backgroundWuTextZh = textSr;
+                OnPropertyChanged("BackgroundWuDisplayText");
+                OnPropertyChanged("BackgroundWuBadgeText");
+                OnPropertyChanged("BackgroundWuBadgeBrush");
+                OnPropertyChanged("BackgroundWuBorderBrush");
+            };
+
+            var app = Application.Current;
+            if (app != null && app.Dispatcher != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(upd);
+            }
+            else
+            {
+                upd();
+            }
+        }
+
         // ------------------ TAB 2: DIJAGNOSTIKA ------------------
         private int _diskWear = 100;
         private string _diskWearText = "100% Zdravlje";
@@ -2279,6 +2586,8 @@ namespace WIS.UI
 
             UpdateAppsSummary();
             UpdatePhases();
+            OnPropertyChanged("BackgroundWuDisplayText");
+            OnPropertyChanged("BackgroundWuBadgeText");
             OnPropertyChanged(string.Empty);
         }
 
@@ -2392,16 +2701,16 @@ namespace WIS.UI
 
             Action addAction = delegate
             {
-                AllLogs.Add(entry);
+                AllLogs.Insert(0, entry);
                 while (AllLogs.Count > MaxLogCount)
                 {
-                    AllLogs.RemoveAt(0);
+                    AllLogs.RemoveAt(AllLogs.Count - 1);
                 }
 
-                RecentLogs.Add(entry);
+                RecentLogs.Insert(0, entry);
                 while (RecentLogs.Count > 5)
                 {
-                    RecentLogs.RemoveAt(0);
+                    RecentLogs.RemoveAt(RecentLogs.Count - 1);
                 }
             };
 
@@ -2495,7 +2804,10 @@ namespace WIS.UI
                 {
                     case "OK": completed++; break;
                     case "RUNNING": running++; break;
-                    case "SKIPPED": skipped++; break;
+                    case "SKIPPED":
+                    case "SKIPPED_DONE":
+                    case "SKIPPED_USER":
+                        skipped++; break;
                     case "ERROR": error++; break;
                     default: waiting++; break;
                 }

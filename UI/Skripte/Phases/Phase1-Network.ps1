@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SCRIPT
     Phase1-Network.ps1
 .DESCRIPTION

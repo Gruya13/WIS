@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SCRIPT
     Phase2-Drivers.ps1
 .DESCRIPTION
@@ -34,6 +34,14 @@ $commonMod = @(
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if ($commonMod) { Import-Module $commonMod -Force }
+
+$stepGuardMod = @(
+    (Join-Path $PSScriptRoot "..\Modules\WIS.StepGuard.psm1"),
+    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
+    "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($stepGuardMod) { Import-Module $stepGuardMod -Force }
 
 $hwMod = @(
     (Join-Path $PSScriptRoot "..\Modules\WIS.Hardware.psm1"),

@@ -6,6 +6,7 @@
 /ISO/boot/
 /ISO/efi/
 /ISO/sources/
+/sources/
 /ISO/support/
 /ISO/bootmgfw.efi
 /ISO/bootmgr.efi

@@ -252,6 +252,51 @@ function Send-IpcStatus {
     Send-IpcMessage -Data $payload
 }
 
+function Send-IpcStep {
+    <#
+    .SYNOPSIS
+        Emituje dogadjaj o stanju pojedinacnog koraka faze (StepGuard) ka UI Master Shell-u.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$Phase,
+        [Parameter(Mandatory = $true)]
+        [string]$StepId,
+        [Parameter(Mandatory = $true)]
+        [string]$Title,
+        [ValidateSet("WAIT", "RUNNING", "OK", "SKIPPED_DONE", "SKIPPED_USER", "WARN", "ERROR")]
+        [string]$State = "WAIT",
+        [string]$Reason = "",
+        [int]$Progress = -1
+    )
+    $stepData = [ordered]@{
+        phase   = $Phase
+        step_id = $StepId
+        id      = $StepId
+        title   = $Title
+        state   = $State
+        reason  = $Reason
+    }
+    $payload = [ordered]@{
+        type    = "step"
+        event   = "step"
+        phase   = $Phase
+        step_id = $StepId
+        title   = $Title
+        state   = $State
+        reason  = $Reason
+        step    = $stepData
+    }
+    if ($Progress -ge 0) {
+        $payload["progress"]         = $Progress
+        $payload["progress_percent"] = $Progress
+        $payload["worker_progress"]  = $Progress
+    }
+
+    Send-IpcMessage -Data $payload
+}
+
 # ------------------------------------------------------------------------------
 # 4. KOOPERATIVNA PAUZA I SIGURNE KONTROLNE TACKE
 # ------------------------------------------------------------------------------
@@ -966,6 +1011,7 @@ Export-ModuleMember -Function `
     Send-IpcLog, `
     Send-IpcProgress, `
     Send-IpcStatus, `
+    Send-IpcStep, `
     Wait-ServisUICooperativePause, `
     Test-ServisSkipRequested, `
     Format-ExitCodeDescription, `

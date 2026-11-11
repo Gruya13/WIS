@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Microsoft Autopilot Forensic Auditor v2.0
 .DESCRIPTION

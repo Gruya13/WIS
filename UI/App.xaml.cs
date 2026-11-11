@@ -13,10 +13,42 @@ namespace WIS.UI
 {
     public partial class App : Application
     {
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
         private static Mutex _appMutex;
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // 0. Striktna procesna provera: ako već postoji aktivan WIS.UI proces, dovedi ga u prvi plan i odmah ugasi ovu instancu
+            try
+            {
+                Process current = Process.GetCurrentProcess();
+                Process[] instances = Process.GetProcessesByName(current.ProcessName);
+                if (instances.Length > 1)
+                {
+                    foreach (Process p in instances)
+                    {
+                        if (p.Id != current.Id && p.MainWindowHandle != IntPtr.Zero)
+                        {
+                            try
+                            {
+                                ShowWindow(p.MainWindowHandle, 9); // SW_RESTORE
+                                SetForegroundWindow(p.MainWindowHandle);
+                            }
+                            catch { }
+                            break;
+                        }
+                    }
+                    Environment.Exit(0);
+                    return;
+                }
+            }
+            catch { }
+
             if (!IsRunningAsAdministrator())
             {
                 try

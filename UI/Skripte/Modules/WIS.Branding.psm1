@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.Branding.psm1
 .DESCRIPTION
@@ -6,6 +6,42 @@
 .COMPATIBILITY
     Windows PowerShell 5.1+
 #>
+
+$Global:WisBloatPatterns = @(
+    "*Clipchamp*",
+    "*TikTok*",
+    "*CandyCrush*",
+    "*Facebook*",
+    "*Instagram*",
+    "*Spotify*",
+    "*Disney*",
+    "*PrimeVideo*",
+    "*Netflix*",
+    "*MicrosoftSolitaireCollection*",
+    "*BingNews*",
+    "*BingWeather*",
+    "*GetHelp*",
+    "*Getstarted*",
+    "*MicrosoftTeams*",
+    "*Todos*",
+    "*PowerAutomateDesktop*",
+    "*LinkedIn*",
+    "*Xbox*",
+    "*ZuneMusic*",
+    "*ZuneVideo*"
+)
+
+$Global:WisTelemetryConfig = @{
+    RegValues = @(
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; Name = "AllowTelemetry"; Value = 0; Type = "DWord" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; Name = "MaxTelemetryAllowed"; Value = 0; Type = "DWord" },
+        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"; Name = "DisableLocation"; Value = 1; Type = "DWord" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo"; Name = "Enabled"; Value = 0; Type = "DWord" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"; Name = "BingSearchEnabled"; Value = 0; Type = "DWord" },
+        @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"; Name = "CortanaConsent"; Value = 0; Type = "DWord" }
+    )
+    Services = @("DiagTrack", "dmwappushservice", "lfsvc")
+}
 
 function Set-OptimalDisplayScaling {
     <#
@@ -394,19 +430,45 @@ function Invoke-Phase3Optimization {
         Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Pocetak"
     }
 
+    # Uvoz StepGuard modula ukoliko funkcija Invoke-WisStep nije registrovana u sesiji
+    if (-not (Get-Command Invoke-WisStep -ErrorAction SilentlyContinue)) {
+        $stepGuardMod = @(
+            (Join-Path $PSScriptRoot "WIS.StepGuard.psm1"),
+            (Join-Path $PSScriptRoot "..\Modules\WIS.StepGuard.psm1"),
+            (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
+            "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($stepGuardMod) { Import-Module $stepGuardMod -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Emitovanje liste svih koraka u stanju WAIT da bi UI odmah iscrtao listu koraka
+    $phase3StepCatalog = @(
+        @{ Id = "P3.Debloat";   Title = "Debloat neželjenih aplikacija" },
+        @{ Id = "P3.Telemetry"; Title = "Gašenje telemetrije i praćenja" },
+        @{ Id = "P3.Oem";       Title = "OEM brending i regionalna podešavanja" },
+        @{ Id = "P3.Scaling";   Title = "Optimalno DPI skaliranje ekrana" },
+        @{ Id = "P3.VcRedist";  Title = "Visual C++ Runtime biblioteke" },
+        @{ Id = "P3.UsbFree";   Title = "Signal za oslobađanje USB medijuma" }
+    )
+    foreach ($sc in $phase3StepCatalog) {
+        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+            Send-IpcStep -Phase 3 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+        }
+    }
+
     # Odredjivanje OEM Brenda
     if (-not $Brand) {
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
             if ($cs -and $cs.Manufacturer) {
                 $m = $cs.Manufacturer.ToUpper()
-                if ($m -match 'HP|HEWLETT') { $Brand = "HP" }
-                elseif ($m -match 'DELL') { $Brand = "DELL" }
-                elseif ($m -match 'LENOVO') { $Brand = "LENOVO" }
-                elseif ($m -match 'ASUS') { $Brand = "ASUS" }
-                elseif ($m -match 'ACER') { $Brand = "ACER" }
-                elseif ($m -match 'TOSHIBA|DYNABOOK') { $Brand = "TOSHIBA" }
-                elseif ($m -match 'FUJITSU') { $Brand = "FUJITSU" }
+                if ($m -match "HP|HEWLETT") { $Brand = "HP" }
+                elseif ($m -match "DELL") { $Brand = "DELL" }
+                elseif ($m -match "LENOVO") { $Brand = "LENOVO" }
+                elseif ($m -match "ASUS") { $Brand = "ASUS" }
+                elseif ($m -match "ACER") { $Brand = "ACER" }
+                elseif ($m -match "TOSHIBA|DYNABOOK") { $Brand = "TOSHIBA" }
+                elseif ($m -match "FUJITSU") { $Brand = "FUJITSU" }
                 else { $Brand = "OEM" }
             }
         } catch {}
@@ -416,42 +478,39 @@ function Invoke-Phase3Optimization {
         Write-ServisLog "Identifikovan ciljni OEM brend za nalog: $Brand" -Level "INFO" -Component "Branding"
     }
 
-    # 1. DEBLOAT WINDOWS APLIKACIJA (Uklanjanje sponzorisanih Appx paketa - Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 15 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Debloat aplikacija" -StatusMessage "Uklanjanje neželjenih preinstaliranih Windows aplikacija..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Debloat"
-    }
+    # =========================================================================
+    # 1. DEBLOAT WINDOWS APLIKACIJA - P3.Debloat
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.Debloat" -Title "Debloat neželjenih aplikacija" -Test {
+        $foundBloat = @()
+        foreach ($pat in $Global:WisBloatPatterns) {
+            $pkgs = Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue
+            if ($pkgs) { foreach ($p in $pkgs) { $foundBloat += $p.Name } }
+            $provPkgs = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pat }
+            if ($provPkgs) { foreach ($pp in $provPkgs) { $foundBloat += $pp.DisplayName } }
+        }
+        if ($foundBloat.Count -eq 0) {
+            return @{ Done = $true; Reason = "Sve neželjene sponzorisane aplikacije su već uklonjene" }
+        } else {
+            return @{ Done = $false; Reason = "Pronađeno $($foundBloat.Count) preinstaliranih aplikacija" }
+        }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 15 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Debloat aplikacija" -StatusMessage "Uklanjanje neželjenih preinstaliranih Windows aplikacija..."
+        }
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Debloat"
+        }
 
-    $skipRequested = (Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)
-    if (-not $skipRequested) {
-        $bloatPatterns = @(
-            "*Clipchamp*",
-            "*TikTok*",
-            "*CandyCrush*",
-            "*Facebook*",
-            "*Instagram*",
-            "*Spotify*",
-            "*Disney*",
-            "*PrimeVideo*",
-            "*Netflix*",
-            "*MicrosoftSolitaireCollection*",
-            "*BingNews*",
-            "*BingWeather*",
-            "*GetHelp*",
-            "*Getstarted*",
-            "*MicrosoftTeams*",
-            "*Todos*",
-            "*PowerAutomateDesktop*",
-            "*LinkedIn*",
-            "*Xbox*",
-            "*ZuneMusic*",
-            "*ZuneVideo*"
-        )
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Debloat korak preskočen na zahtev servisera." -Level "WARN" -Component "Debloat"
+            }
+            return
+        }
 
         $removedCount = 0
-        foreach ($pat in $bloatPatterns) {
+        foreach ($pat in $Global:WisBloatPatterns) {
             try {
                 $pkgs = Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue
                 foreach ($p in $pkgs) {
@@ -467,69 +526,91 @@ function Invoke-Phase3Optimization {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Windows debloat zavrsen (uklonjeno bloat paketa: $removedCount)." -Level "SUCCESS" -Component "Debloat"
         }
-    } else {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Debloat korak preskočen na zahtev servisera." -Level "WARN" -Component "Debloat"
+    }
+
+    # =========================================================================
+    # 2. GAŠENJE TELEMETRIJE I PRAĆENJA - P3.Telemetry
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.Telemetry" -Title "Gašenje telemetrije i praćenja" -Test {
+        $allOk = $true
+        $unmatched = @()
+
+        foreach ($entry in $Global:WisTelemetryConfig.RegValues) {
+            $curr = (Get-ItemProperty -Path $entry.Path -Name $entry.Name -ErrorAction SilentlyContinue).$($entry.Name)
+            if ($null -eq $curr -or [int]$curr -ne [int]$entry.Value) {
+                $allOk = $false
+                $unmatched += "$($entry.Name) != $($entry.Value)"
+            }
         }
-    }
 
-    # 2. GASENJE TELEMETRIJE I PRACENJA (Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 35 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Gašenje telemetrije" -StatusMessage "Gašenje telemetrije, dijagnostičkih servisa i praćenja..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Telemetrija"
-    }
+        foreach ($sName in $Global:WisTelemetryConfig.Services) {
+            $svc = Get-Service -Name $sName -ErrorAction SilentlyContinue
+            if ($svc) {
+                $startType = (Get-CimInstance Win32_Service -Filter "Name = '$sName'" -ErrorAction SilentlyContinue).StartMode
+                if ($startType -and $startType -ine "Disabled") {
+                    $allOk = $false
+                    $unmatched += "Servis $sName ($startType)"
+                }
+            }
+        }
 
-    try {
-        # DataCollection & Telemetrija
-        $dcReg = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
-        if (-not (Test-Path $dcReg)) { New-Item -Path $dcReg -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $dcReg -Name "AllowTelemetry" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $dcReg -Name "MaxTelemetryAllowed" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+        if ($allOk) {
+            return @{ Done = $true; Reason = "Telemetrija i servisi za praćenje su već uspešno deaktivirani" }
+        } else {
+            return @{ Done = $false; Reason = "Telemetrija aktivna: $($unmatched -join ', ')" }
+        }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 35 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Gašenje telemetrije" -StatusMessage "Gašenje telemetrije, dijagnostičkih servisa i praćenja..."
+        }
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Telemetrija"
+        }
 
-        # Gasenje dijagnostickih servisa
-        Stop-Service -Name "DiagTrack" -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        Set-Service -Name "DiagTrack" -StartupType Disabled -ErrorAction SilentlyContinue
+        foreach ($entry in $Global:WisTelemetryConfig.RegValues) {
+            try {
+                if (-not (Test-Path $entry.Path)) {
+                    New-Item -Path $entry.Path -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Set-ItemProperty -Path $entry.Path -Name $entry.Name -Type $entry.Type -Value $entry.Value -Force -ErrorAction SilentlyContinue
+            } catch {}
+        }
 
-        Stop-Service -Name "dmwappushservice" -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        Set-Service -Name "dmwappushservice" -StartupType Disabled -ErrorAction SilentlyContinue
-
-        # Location & Senzori
-        $locReg = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"
-        if (-not (Test-Path $locReg)) { New-Item -Path $locReg -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $locReg -Name "DisableLocation" -Type DWord -Value 1 -Force -ErrorAction SilentlyContinue
-        Stop-Service -Name "lfsvc" -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        Set-Service -Name "lfsvc" -StartupType Disabled -ErrorAction SilentlyContinue
-
-        # Advertising ID & Bing Search u Start Meniju
-        $advReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo"
-        if (-not (Test-Path $advReg)) { New-Item -Path $advReg -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $advReg -Name "Enabled" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
-
-        $srchReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"
-        if (-not (Test-Path $srchReg)) { New-Item -Path $srchReg -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $srchReg -Name "BingSearchEnabled" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $srchReg -Name "CortanaConsent" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+        foreach ($sName in $Global:WisTelemetryConfig.Services) {
+            try {
+                Stop-Service -Name $sName -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
+                Set-Service -Name $sName -StartupType Disabled -ErrorAction SilentlyContinue
+            } catch {}
+        }
 
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Telemetrija i pracenje uspesno deaktivirani." -Level "SUCCESS" -Component "Telemetry"
         }
-    } catch {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Upozorenje pri gasenju telemetrije: $($_.Exception.Message)" -Level "WARN" -Component "Telemetry"
+    }
+
+    # =========================================================================
+    # 3. SERVISNI OEM BRENDING I REGIONALNA PODEŠAVANJA - P3.Oem
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.Oem" -Title "OEM brending i regionalna podešavanja" -Test {
+        $tz = (Get-TimeZone -ErrorAction SilentlyContinue).Id
+        $regIntl = "HKCU:\Control Panel\International"
+        $sTime = (Get-ItemProperty -Path $regIntl -Name "sTimeFormat" -ErrorAction SilentlyContinue).sTimeFormat
+        $isTzOk = ($tz -match "Central Europe")
+        $isTimeOk = ($sTime -eq "HH:mm")
+
+        if ($isTzOk -and $isTimeOk) {
+            return @{ Done = $true; Reason = "OEM brending i regionalna podešavanja (vremenska zona $tz, 24h sat) već primenjeni" }
+        } else {
+            return @{ Done = $false; Reason = "Regionalna podešavanja nisu kompletna (TZ: $tz, Vreme: $sTime)" }
         }
-    }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 55 -Phase 3 -PhaseName "Optimizacija" -SubPhase "OEM Brending" -StatusMessage "Primenjujem OEM brending ($Brand) i regionalna podešavanja..."
+        }
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Brending"
+        }
 
-    # 3. SERVISNI OEM BRENDING I REGIONALNA PODEŠAVANJA (Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 55 -Phase 3 -PhaseName "Optimizacija" -SubPhase "OEM Brending" -StatusMessage "Primenjujem OEM brending ($Brand) i regionalna podešavanja..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 3 - Brending"
-    }
-
-    try {
         if (Get-Command Invoke-SystemOptimizationAndBranding -ErrorAction SilentlyContinue) {
             Invoke-SystemOptimizationAndBranding -Brand $Brand -LocalSetupDir $LocalSetupDir -ProgramiDir (Join-Path $LocalSetupDir "Programi")
         } else {
@@ -555,109 +636,136 @@ function Invoke-Phase3Optimization {
                 }
             } catch {}
         }
-    } catch {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Upozorenje pri brendiranju: $($_.Exception.Message)" -Level "WARN" -Component "Branding"
-        }
     }
 
-    # DPI Skaliranje (Best-Effort)
-    try {
-        if (Get-Command Set-OptimalDisplayScaling -ErrorAction SilentlyContinue) {
+    # =========================================================================
+    # 4. OPTIMALNO DPI SKALIRANJE EKRANA - P3.Scaling
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.Scaling" -Title "Optimalno DPI skaliranje ekrana" -Test {
+        $logPixels = (Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -ErrorAction SilentlyContinue).LogPixels
+        if ($null -ne $logPixels -and [int]$logPixels -ge 96) {
+            return @{ Done = $true; Reason = "DPI skaliranje je podešeno (LogPixels = $logPixels)" }
+        } else {
+            return @{ Done = $false; Reason = "DPI skaliranje još nije konfigurisano" }
+        }
+    } -Action {
+        try {
             Set-OptimalDisplayScaling
+        } catch {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Upozorenje pri podešavanju DPI skaliranja: $($_.Exception.Message)" -Level "DEBUG" -Component "Branding"
+            }
         }
-    } catch {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Upozorenje pri podešavanju DPI skaliranja: $($_.Exception.Message)" -Level "DEBUG" -Component "Branding"
-        }
     }
 
-    # 4. INSTALACIJA VISUAL C++ REDISTRIBUTABLES (2005-2022) (Striktni Best-Effort)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 75 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Visual C++ Runtime" -StatusMessage "Instalacija Microsoft Visual C++ Redistributable paketa..."
-    }
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 3 - VC++ Runtime"
-    }
+    # =========================================================================
+    # 5. INSTALACIJA VISUAL C++ REDISTRIBUTABLES - P3.VcRedist
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.VcRedist" -Title "Visual C++ Runtime biblioteke" -Test {
+        $uninstallKeys = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        )
+        $hasVc64 = $false
+        $hasVcx86 = $false
 
-    $vcDirs = @(
-        (Join-Path $LocalSetupDir "Programi\VCRedist"),
-        (Join-Path $LocalSetupDir "Programi\VC"),
-        (Join-Path $LocalSetupDir "Programi\DotNet"),
-        "C:\setup\Programi\VCRedist",
-        "C:\setup\Programi\DotNet"
-    )
-    foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
-        $cand = Join-Path "$($d.Root)" "Programi\VCRedist"
-        if ($vcDirs -notcontains $cand) { $vcDirs += $cand }
-    }
-
-    $vcInstallers = @()
-    foreach ($vcd in $vcDirs) {
-        if (Test-Path $vcd) {
-            try {
-                $exes = Get-ChildItem -Path $vcd -Filter "*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Name -match '(?i)vcredist|vc_redist|visual_c'
+        foreach ($uk in $uninstallKeys) {
+            if (Test-Path $uk) {
+                $subKeys = Get-ChildItem -Path $uk -ErrorAction SilentlyContinue
+                foreach ($sk in $subKeys) {
+                    $dn = (Get-ItemProperty -Path $sk.PSPath -Name "DisplayName" -ErrorAction SilentlyContinue).DisplayName
+                    if ($dn -and $dn -match "Visual C\+\+.*(2015-2022|2015-2019|2022)") {
+                        if ($dn -match "x64") { $hasVc64 = $true }
+                        if ($dn -match "x86") { $hasVcx86 = $true }
+                    }
                 }
-                foreach ($e in $exes) { $vcInstallers += $e }
+            }
+        }
+
+        if ($hasVc64 -and $hasVcx86) {
+            return @{ Done = $true; Reason = "Visual C++ 2015-2022 (x86 i x64) biblioteke su već instalirane" }
+        } else {
+            return @{ Done = $false; Reason = "Nedostaju VC++ biblioteke (x64: $hasVc64, x86: $hasVcx86)" }
+        }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 75 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Visual C++ Runtime" -StatusMessage "Instalacija Microsoft Visual C++ Redistributable paketa..."
+        }
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 3 - VC++ Runtime"
+        }
+
+        $vcDirs = @(
+            (Join-Path $LocalSetupDir "Programi\VCRedist"),
+            (Join-Path $LocalSetupDir "Programi\VC"),
+            (Join-Path $LocalSetupDir "Programi\DotNet"),
+            "C:\setup\Programi\VCRedist",
+            "C:\setup\Programi\DotNet"
+        )
+        foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+            $cand = Join-Path "$($d.Root)" "Programi\VCRedist"
+            if ($vcDirs -notcontains $cand) { $vcDirs += $cand }
+        }
+
+        $vcInstallers = @()
+        foreach ($vcd in $vcDirs) {
+            if (Test-Path $vcd) {
+                try {
+                    $exes = Get-ChildItem -Path $vcd -Filter "*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                        $_.Name -match '(?i)vcredist|vc_redist|visual_c'
+                    }
+                    foreach ($e in $exes) { $vcInstallers += $e }
+                } catch {}
+            }
+        }
+
+        if ($vcInstallers.Count -gt 0) {
+            foreach ($inst in $vcInstallers) {
+                try {
+                    $p = Start-Process -FilePath $inst.FullName -ArgumentList "/install /quiet /norestart /q" -Wait -PassThru -WindowStyle Hidden
+                } catch {}
+            }
+        } else {
+            try {
+                Start-Process -FilePath "winget.exe" -ArgumentList "install --id Microsoft.VCRedist.2015+.x64 --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+                Start-Process -FilePath "winget.exe" -ArgumentList "install --id Microsoft.VCRedist.2015+.x86 --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
             } catch {}
         }
     }
 
-    if ($vcInstallers.Count -gt 0) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Pronadjeno $($vcInstallers.Count) Visual C++ instalera. Pokrecem tihu instalaciju..." -Level "INFO" -Component "VCRedist"
+    # =========================================================================
+    # 6. OSLOBAĐANJE USB MEDIJUMA - P3.UsbFree (-NoSkip)
+    # =========================================================================
+    Invoke-WisStep -Phase 3 -StepId "P3.UsbFree" -Title "Signal za oslobađanje USB medijuma" -NoSkip -Test {
+        return @{ Done = $true; Reason = "Signal USB slobodan" }
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 90 -Phase 3 -PhaseName "Optimizacija" -SubPhase "USB Free" -StatusMessage "Optimizacije završene. USB fleš disk je slobodan za uklanjanje."
         }
-        foreach ($inst in $vcInstallers) {
-            if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-                Wait-ServisUICooperativePause -CheckpointName "Faza 3 - VC++ ($($inst.Name))"
-            }
-            if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Preskočen instaler $($inst.Name) na zahtev servisera." -Level "WARN" -Component "VCRedist"
-                }
-                continue
-            }
-
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Instaliram VC++: $($inst.Name)" -Level "STEP" -Component "VCRedist"
-            }
-            try {
-                $p = Start-Process -FilePath $inst.FullName -ArgumentList "/install /quiet /norestart /q" -Wait -PassThru -WindowStyle Hidden
-                $exitCode = if ($p) { $p.ExitCode } else { -1 }
-                $logLvl = if ($exitCode -eq 0 -or $exitCode -eq 3010) { "SUCCESS" } else { "WARN" }
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Instaler $($inst.Name) zavrsen (ExitCode: $exitCode)." -Level $logLvl -Component "VCRedist"
-                }
-            } catch {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Upozorenje pri instalaciji $($inst.Name): $($_.Exception.Message)" -Level "WARN" -Component "VCRedist"
-                }
-                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                    Send-IpcLog -Message "Upozorenje pri instalaciji VC++ paketa $($inst.Name), nastavljam..." -Level "WARN" -Phase 3
-                }
-            }
-        }
-    } else {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Nisu pronadjeni lokalni VC++ paketi. Proveravam Winget..." -Level "DEBUG" -Component "VCRedist"
-        }
-        try {
-            Start-Process -FilePath "winget.exe" -ArgumentList "install --id Microsoft.VCRedist.2015+.x64 --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-            Start-Process -FilePath "winget.exe" -ArgumentList "install --id Microsoft.VCRedist.2015+.x86 --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Winget fallback za VC++ nije dostupan." -Level "DEBUG" -Component "VCRedist"
-            }
+        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+            Send-IpcStatus -Phase 3 -Progress 95 -SubPhase "Spremno za programe" -StatusMessage "Sistem optimizovan i brendiran." -UsbFree
         }
     }
 
-    # 5. OSLOBAĐANJE USB MEDIJUMA (FLASH & RELEASE SIGNAL)
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 90 -Phase 3 -PhaseName "Optimizacija" -SubPhase "USB Free" -StatusMessage "Optimizacije završene. USB fleš disk je slobodan za uklanjanje."
-    }
-    if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
-        Send-IpcStatus -Phase 3 -Progress 95 -SubPhase "Spremno za programe" -StatusMessage "Sistem optimizovan i brendiran." -UsbFree
+    # =========================================================================
+    # 7. SNIMANJE STANJA ZA MEĐURESTART (ODLUKA 6)
+    # =========================================================================
+    # Na kraju Faze 3 snimamo Get-WisPendingRebootState u žurnal pre nego što Faza 4
+    # eventualno pozove Remove-PendingRebootLocks (koja briše iste ključeve).
+    try {
+        $pendingState = Get-WisPendingRebootState
+        $summaryP2 = Get-WisPhaseStepSummary -Phase 2
+        $summaryP3 = Get-WisPhaseStepSummary -Phase 3
+
+        $rebootNeeded = ($summaryP2.executed_any -or $summaryP3.executed_any -or $pendingState.Pending)
+        Write-WisStepJournal -InterimRebootRequired $rebootNeeded
+
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Faza 3 rezime za međurestart: P2.executed_any=$($summaryP2.executed_any), P3.executed_any=$($summaryP3.executed_any), pending_reboot=$($pendingState.Pending) -> InterimRebootRequired=$rebootNeeded" -Level "INFO" -Component "Lifecycle"
+        }
+    } catch {
+        # U slucaju greske pri citanju zurnala, postavi interim_reboot_required na $true radi opreza
+        Write-WisStepJournal -InterimRebootRequired $true
     }
 
     # Perzistencija stanja u deploy-state.json

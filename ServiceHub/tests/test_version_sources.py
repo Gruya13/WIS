@@ -19,6 +19,7 @@ class VersionSourceTests(unittest.TestCase):
     def change(self, mutate):
         p = self.root / 'version.json'; data = json.loads(p.read_text()); mutate(data); p.write_text(json.dumps(data))
     def test_ui_update_does_not_change_launcher(self):
+        expected_release = json.loads((self.root / 'version.json').read_text())['release_package']['version']
         path = self.root / 'Launcher/Properties/AssemblyInfo.cs'; before = path.read_bytes()
         self.change(lambda d: d['components']['ui'].update(version='2.1.1'))
         drift = versions.sync_versions(self.root, check=True)
@@ -27,7 +28,7 @@ class VersionSourceTests(unittest.TestCase):
         self.assertEqual(versions.sync_versions(self.root, check=True), [])
         self.assertEqual(before, path.read_bytes())
         data = json.loads((self.root / 'UI/version.json').read_text())
-        self.assertEqual(data['version'], '2.1.1'); self.assertEqual(data['wis_release_version'], '2.17.0')
+        self.assertEqual(data['version'], '2.1.1'); self.assertEqual(data['wis_release_version'], expected_release)
     def test_incompatible_minimum_rejected(self):
         self.change(lambda d: d['compatibility'].update(min_launcher_version='2.2.18'))
         with self.assertRaises(ValueError): versions.sync_versions(self.root)

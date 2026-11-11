@@ -2,7 +2,7 @@
 title: "Sistemske Optimizacije, Automatski DPI i OEM Brendiranje (Branding & Optimization)"
 type: architecture
 created: 2026-09-26
-updated: 2026-10-26
+updated: 2026-11-11
 tags:
   - architecture
   - branding
@@ -12,9 +12,9 @@ tags:
   - defender
 ---
 
-# Sistemske Optimizacije, Automatski DPI i OEM Brendiranje: WIS (v2.17.0)
+# Sistemske Optimizacije, Automatski DPI i OEM Brendiranje: WIS (v2.19.0)
 
-U okviru Faze 3 (`Phase3-Optimization.ps1`, `WIS.Branding.psm1` i `WIS.Core.psm1`), operativni sistem Windows 11 prolazi kroz prilagođavanje hardveru, ergonomsku optimizaciju radne površine, bezbednosno očvršćavanje i pripremu za kontrolisani međurestart pre Faze 4.
+U okviru Faze 3 (`Phase3-Optimization.ps1`, `WIS.Branding.psm1` sa **792 linije** / `39,869 B` i `WIS.Core.psm1`), operativni sistem Windows 11 prolazi kroz **6 idempotentnih `StepGuard` koraka** (`P3.*`): prilagođavanje hardveru, ergonomsku optimizaciju radne površine, bezbednosno očvršćavanje i obavezni kontrolisani međurestart pre Faze 4 ([[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
 
 ---
 
@@ -53,14 +53,16 @@ Putem Win32 P/Invoke poziva (`user32.dll`: `UpdatePerUserSystemParameters` i `Se
 
 ---
 
-## 🔄 5. Kontrolisani Međurestart (Interim Reboot Gate — `Invoke-ServisInterimReboot`)
+## 🔄 5. Obavezni Kontrolisani Međurestart (`HandleInterimReboot` & HKLM-Only `EnsureRunOnceEntry`)
 
-Na kraju Faze 3 proverava se marker `C:\setup\.stage_reboot_done`. Ukoliko međurestart još nije obavljen, sistem snima `phase = 4` u `C:\setup\deploy-state.json`, postavlja Winlogon AutoLogon i dvostruki RunOnce/Startup nastavak i izvršava kontrolisani restart kako bi Faza 4 (instalacija MSI aplikacija) počela sa potpuno čistim CBS i Windows Installer stekom ([[decisions/ADR-0039-two-pass-deployment-interim-reboot]]).
+Nakon uspešnog završetka Faze 3 (`phase == 3`), `WIS.Branding.psm1` upisuje autoritativno `interim_reboot_required` stanje u `C:\setup\step-journal.json`, a `WIS.UI.exe` obavezno izvršava `HandleInterimReboot()` (snima `phase = 4` u `deploy-state.json` i postavlja isključivo čisti `HKLM\...\RunOnce\WIS_Resume` zapis ka `WIS.Launcher.exe --master`, brišući stare `Startup` `.cmd` lansere i `HKCU` duplikate). Time se oslobađaju CBS, Installer i PendingRename brave kako bi Faza 4 (Chrome, Acrobat, Office ODT) radila u čistom okruženju bez grešaka `1603`/`1618` ([[decisions/ADR-0039-two-pass-deployment-interim-reboot]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
 
 ---
 
 ## 🔗 Povezane Beleške
 - Pregled Arhitekture: [[architecture/overview]]
 - Pajplajn Faza: [[architecture/pipeline]]
+- StepGuard i UI v2.3.0: [[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]]
+- Sanacija Faze 4 i Obavezni Međurestart: [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]
 - Automatsko DPI Skaliranje: [[decisions/ADR-0023-automatic-display-dpi-scaling]]
 - Dvoetapni Deployment i Međurestart: [[decisions/ADR-0039-two-pass-deployment-interim-reboot]]

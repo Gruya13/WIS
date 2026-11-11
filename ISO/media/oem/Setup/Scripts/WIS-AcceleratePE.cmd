@@ -1,140 +1,208 @@
 @echo off
-title WIS WinPE TrueNAS SMB 3.1.1 Accelerator
+setlocal EnableDelayedExpansion
+title WIS WinPE TrueNAS SMB 3.1.1 Multi-Client Media Mount
+set "WIS_LOG=X:\wis_preboot.log"
 echo =======================================================
-echo  [*] WIS Accelerator: Mrezna Akceleracija na SMB 3.1.1
+echo  [*] WIS WinPE: Inicijalizacija instalacionog medijuma
 echo =======================================================
+echo [%TIME%] === WIS WIS-AcceleratePE.cmd start === >> "%WIS_LOG%" 2>nul
 
-:: 1. Omogucavanje SMB Guest autentifikacije i iskljucivanje potpisa za maksimalni protok
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "AllowInsecureGuestAuth" /t REG_DWORD /d 1 /f >nul 2>&1
-reg add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "RequireSecuritySignature" /t REG_DWORD /d 0 /f >nul 2>&1
+:: 0. Idempotentnost: Ako su i Z:\win11 i Y:\ vec spremni za multi-client SMB rad
+set "HAS_Z_MEDIA="
+set "HAS_Y_MEDIA="
+if exist "Z:\win11\sources\install.esd" set "HAS_Z_MEDIA=1"
+if exist "Z:\win11\sources\install.wim" set "HAS_Z_MEDIA=1"
+if exist "Y:\sources\install.esd" set "HAS_Y_MEDIA=1"
+if exist "Y:\sources\install.wim" set "HAS_Y_MEDIA=1"
+if defined HAS_Z_MEDIA if defined HAS_Y_MEDIA (
+    echo [+] WIS: Z:\win11 i Y:\ su vec aktivni. >> "%WIS_LOG%" 2>nul
+    ver >nul
+    exit /b 0
+)
 
-:: 2. Inicijalizacija mreznog podsistema
-wpeutil InitializeNetwork >nul 2>&1
+:: 1. Registarske polise za SMB klijenta [Guest auth + potpisivanje]
+reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "AllowInsecureGuestAuth" /t REG_DWORD /d 1 /f >nul 2>&1
+reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "RequireSecuritySignature" /t REG_DWORD /d 0 /f >nul 2>&1
 
-:: 3. Robusna petlja cekanja (do 6 sekundi) dok mrezni interfejs ne dobije IP adresu od DHCP servera
+:: 2. Provera fizickog USB instalacionog medijuma [iskljucujuci CD-ROM, iVentoy T: i SMB]
+for %%d in (C D E F G H I J K L M N O P Q R S U V W) do (
+    if exist "%%d:\sources\install.esd" (
+        fsutil.exe fsinfo drivetype %%d: 2>nul | find.exe /I "CD-ROM" >nul 2>&1
+        if errorlevel 1 (
+            fsutil.exe fsinfo drivetype %%d: 2>nul | find.exe /I "Remote" >nul 2>&1
+            if errorlevel 1 (
+                echo [+] WIS: Detektovan fizicki USB instalacioni medijum %%d:!
+                echo [%TIME%] Detektovan fizicki USB %%d: >> "%WIS_LOG%" 2>nul
+                ver >nul
+                exit /b 0
+            )
+        )
+    )
+    if exist "%%d:\sources\install.wim" (
+        fsutil.exe fsinfo drivetype %%d: 2>nul | find.exe /I "CD-ROM" >nul 2>&1
+        if errorlevel 1 (
+            fsutil.exe fsinfo drivetype %%d: 2>nul | find.exe /I "Remote" >nul 2>&1
+            if errorlevel 1 (
+                echo [+] WIS: Detektovan fizicki USB instalacioni medijum %%d:!
+                echo [%TIME%] Detektovan fizicki USB %%d: >> "%WIS_LOG%" 2>nul
+                ver >nul
+                exit /b 0
+            )
+        )
+    )
+)
+
+:: 3. Brza provera IPv4 adrese [ako vec radi iz VTOYPE.BAT, preskacemo ucitavanje i DHCP cekanje]
+set "HAS_IPV4="
+ipconfig.exe 2>nul | find.exe /I "IPv4" >nul 2>&1
+if not errorlevel 1 set "HAS_IPV4=1"
+
+if not defined HAS_IPV4 (
+    echo [*] WIS: Adapter nema IPv4 adresu - ucitavam LAN drajvere iz X:\Drivers\Net...
+    echo [%TIME%] Ucitavam LAN drajvere iz X:\Drivers\Net... >> "%WIS_LOG%" 2>nul
+    for %%f in (
+        "X:\Drivers\Net\Intel_LAN\e1d.inf"
+        "X:\Drivers\Net\Intel_LAN\e2fn.inf"
+        "X:\Drivers\Net\Realtek_LAN\rt68cx21x64.inf"
+        "X:\Drivers\Net\Realtek_USB_LAN\rtu53cx22x64.inf"
+    ) do (
+        if exist "%%~f" (
+            drvload.exe "%%~f" >> "%WIS_LOG%" 2>&1
+            pnputil.exe /add-driver "%%~f" /install >> "%WIS_LOG%" 2>&1
+        )
+    )
+    pnputil.exe /scan-devices >nul 2>&1
+    wpeutil.exe InitializeNetwork >> "%WIS_LOG%" 2>&1
+
+    :: Cekanje na DHCP IPv4 adresu do 10s (bez viseminutnog zastoja)
+    set /a DHCP_WAIT=0
+    :WaitForDhcp
+    ipconfig.exe 2>nul | find.exe /I "IPv4" >nul 2>&1
+    if not errorlevel 1 (
+        set "HAS_IPV4=1"
+        goto :DhcpReady
+    )
+    set /a DHCP_WAIT+=1
+    if !DHCP_WAIT! leq 10 (
+        echo [*] Cekam DHCP IPv4 adresu [pokusaj !DHCP_WAIT!/10]...
+        ping.exe -n 2 127.0.0.1 >nul 2>&1
+        goto :WaitForDhcp
+    )
+    :DhcpReady
+    echo [%TIME%] DHCP provera zavrsena [DHCP_WAIT=!DHCP_WAIT!, HAS_IPV4=!HAS_IPV4!]. >> "%WIS_LOG%" 2>nul
+)
+
+:: Ako i dalje nema IPv4, ne gubimo vreme na ping/SMB timeout vec ostavljamo postojeci fallback medijum
+if not defined HAS_IPV4 (
+    echo [-] WIS: Nema aktivne IPv4 mreze - preskacem SMB povezivanje.
+    echo [%TIME%] Nema IPv4 - brz izlaz bez SMB cekanja. >> "%WIS_LOG%" 2>nul
+    goto :FinishAccelerate
+)
+
+:: 3b. Brza provera dostupnosti TrueNAS servera [192.168.170.254] (max 3 pokusaja / ~3s)
+set "NAS_REACHABLE="
 set /a NET_WAIT=0
 :WaitForNetwork
-ping -n 1 -w 1000 192.168.170.254 >nul 2>&1
-if %errorlevel% equ 0 goto :NetworkReady
+ping.exe -n 1 -w 800 192.168.170.254 >nul 2>&1
+if %errorlevel% equ 0 (
+    set "NAS_REACHABLE=1"
+    goto :NetworkReady
+)
 set /a NET_WAIT+=1
-if %NET_WAIT% leq 6 (
-    echo [*] Cekam DHCP mrezni link ka 192.168.170.254 (pokusaj %NET_WAIT%/6)...
-    timeout /t 1 /nobreak >nul 2>&1
+if %NET_WAIT% leq 3 (
+    echo [*] Cekam TrueNAS 192.168.170.254 [pokusaj %NET_WAIT%/3]...
+    ping.exe -n 2 127.0.0.1 >nul 2>&1
     goto :WaitForNetwork
 )
 :NetworkReady
+echo [%TIME%] TrueNAS ping zavrsen [NAS_REACHABLE=%NAS_REACHABLE%, pokusaji=%NET_WAIT%]. >> "%WIS_LOG%" 2>nul
 
-:: 4. Dodavanje hostname aliasa u HOSTS fajl radi sprecavanja kolizije sa iVentoy portom 10445
+if not defined NAS_REACHABLE (
+    echo [-] WIS: TrueNAS 192.168.170.254 nije dostupan - ostavljam postojeci lokalni/iVentoy medijum.
+    echo [%TIME%] TrueNAS nedostupan - ostavljen postojeci medijum. >> "%WIS_LOG%" 2>nul
+    goto :FinishAccelerate
+)
+
+:: Dodavanje HOSTS unosa radi sprecavanja NetBIOS/iVentoy kolizije
 set "HOSTS_FILE=%SystemRoot%\System32\drivers\etc\hosts"
-echo. >> "%HOSTS_FILE%" 2>nul
-echo 192.168.170.254 truenas.servis >> "%HOSTS_FILE%" 2>nul
-echo 192.168.170.254 TRUENAS >> "%HOSTS_FILE%" 2>nul
-
-:: 5. Bezuslovno mapiranje TrueNAS WIS deljenog resursa na disk Z:
-set "MAPPED_NAS="
-echo [*] Povezujem TrueNAS WIS SMB 3.1.1 na disk Z:...
-if exist "%~dp0WIS-ConnectNAS.cmd" (
-    call "%~dp0WIS-ConnectNAS.cmd" Z:
-) else (
-    if defined WIS_NAS_PASS (
-        net use Z: \\truenas.servis\WIS "%WIS_NAS_PASS%" /user:admin /persistent:no >nul 2>&1
-        if not exist "Z:\" net use Z: \\192.168.170.254\WIS "%WIS_NAS_PASS%" /user:admin /persistent:no >nul 2>&1
-        if not exist "Z:\" net use Z: \\TRUENAS\WIS "%WIS_NAS_PASS%" /user:admin /persistent:no >nul 2>&1
-    )
-    if not exist "Z:\" net use Z: \\truenas.servis\WIS /user:guest "" >nul 2>&1
-    if not exist "Z:\" net use Z: \\192.168.170.254\WIS /user:guest "" >nul 2>&1
-    if not exist "Z:\" net use Z: \\192.168.170.254\Servis /user:guest "" >nul 2>&1
+find.exe /I "truenas.servis" "%HOSTS_FILE%" >nul 2>&1
+if errorlevel 1 (
+    echo. >> "%HOSTS_FILE%" 2>nul
+    echo 192.168.170.254 truenas.servis >> "%HOSTS_FILE%" 2>nul
+    echo 192.168.170.254 TRUENAS >> "%HOSTS_FILE%" 2>nul
 )
 
-if exist "Z:\" (
-    set "MAPPED_NAS=1"
-    echo [+] TrueNAS WIS deljenje montirano na Z:\
-) else (
-    echo [-] NAS server nije dostupan na lokalnoj mrezi - rad se nastavlja sa lokalnog medijuma
+:: 4. Primarno montiranje diska Z: za TrueNAS SMB 3.1.1 [\\truenas.servis\WIS]
+if not defined HAS_Z_MEDIA (
+    echo [*] Povezujem TrueNAS SMB 3.1.1 [\\truenas.servis\WIS] na disk Z:\...
+    if exist "X:\Windows\System32\WIS-ConnectNAS.cmd" (
+        call "X:\Windows\System32\WIS-ConnectNAS.cmd" Z:
+    ) else if exist "%~dp0WIS-ConnectNAS.cmd" (
+        call "%~dp0WIS-ConnectNAS.cmd" Z:
+    )
 )
 
-:: 6. Provera da li instalacija koristi spori iVentoy virtuelni CD-ROM (Y:)
-set "IS_IVENTOY="
-set "WIS_SOURCE="
-if exist "T:\iventoy.iso" set "IS_IVENTOY=1"
-set "HAS_Y_IMAGE="
-if exist "Y:\sources\install.esd" set "HAS_Y_IMAGE=1"
-if exist "Y:\sources\install.wim" set "HAS_Y_IMAGE=1"
-if not defined IS_IVENTOY if defined HAS_Y_IMAGE (
-    fsutil fsinfo drivetype Y: 2>nul | findstr /I "CD-ROM" >nul 2>&1
-    if not errorlevel 1 set "IS_IVENTOY=1"
-)
+:: 5. Ako je Z:\ uspesno montiran i sadrzi win11, oslobadjamo iVentoy port 10445 i prebacujemo Y:\ na TrueNAS SMB 3.1.1
+set "Z_READY="
+if exist "Z:\win11\sources\install.esd" set "Z_READY=1"
+if exist "Z:\win11\sources\install.wim" set "Z_READY=1"
 
-if defined IS_IVENTOY (
-    echo [*] WIS Accelerator: Detektovan spori iVentoy virtuelni CD-ROM (10-12 MB/s).
+if defined Z_READY (
+    echo [+] TrueNAS SMB 3.1.1 montiran na Z:\ [Z:\win11\sources je spreman]!
+    echo [%TIME%] TrueNAS uspesno montiran na Z:\. >> "%WIS_LOG%" 2>nul
 
-    :: Zastita od samoubistva procesa: ako je skripta pokrenuta sa diska Y:
-    if /I "%~d0"=="Y:" (
-        echo [*] WIS Accelerator: Skripta se izvrsava sa diska Y: - preskacem demontiranje diska Y: radi stabilnosti.
-        goto :SkipDetachY
+    :: Ako postoji iVentoy T:\iventoy.iso virtualni disk, sada ga bezbedno demontiramo
+    if exist "T:\iventoy.iso" (
+        echo select vdisk file="T:\iventoy.iso" > "X:\wis_detach.txt" 2>nul
+        echo detach vdisk >> "X:\wis_detach.txt" 2>nul
+        diskpart.exe /s "X:\wis_detach.txt" >nul 2>&1
+        del /f /q "X:\wis_detach.txt" >nul 2>&1
+        net.exe use T: /delete /y >nul 2>&1
     )
 
-    :: Ako je startnet.cmd vec aktivirao Z:\win11 i postavio WIS_PreBoot_Done.tag,
-    :: cuvaj Y: netaknutim kako bi setup.exe preneo svezi /m:"Y:\sources\$OEM$" sa butovanog ISO-a!
-    if exist "X:\WIS_PreBoot_Done.tag" if exist "Z:\win11\sources\install.esd" (
-        echo [*] WIS Accelerator: startnet.cmd je vec aktivirao Z:\win11 SMB 3.1.1 - cuvam Y: za $OEM$ paket.
-        goto :SkipDetachY
-    )
-    if exist "X:\WIS_PreBoot_Done.tag" if exist "Z:\win11\sources\install.wim" (
-        echo [*] WIS Accelerator: startnet.cmd je vec aktivirao Z:\win11 SMB 3.1.1 - cuvam Y: za $OEM$ paket.
-        goto :SkipDetachY
-    )
-
-    echo [*] WIS Accelerator: Preusmeravam instalaciju na brzi TrueNAS SMB 3.1.1 (115 MB/s)...
-
-    :: Demontiranje sporog iVentoy diska Y: i oslobadjanje resursa
-    (
-    echo select vdisk file="T:\iventoy.iso"
-    echo detach vdisk
-    ) | diskpart >nul 2>&1
-    mountvol Y: /D >nul 2>&1
-    mountvol Y: /P >nul 2>&1
-    net use T: /delete /y >nul 2>&1
-
-    :: Povezivanje brzog SMB 3.1.1 share-a na disk Y:\
-    if exist "%~dp0WIS-ConnectNAS.cmd" (
-        call "%~dp0WIS-ConnectNAS.cmd" Y:
-    ) else (
-        if defined WIS_NAS_PASS (
-            net use Y: \\truenas.servis\WIS\win11 "%WIS_NAS_PASS%" /user:admin /persistent:no >nul 2>&1
-            set "HAS_IMAGE=" & if exist "Y:\sources\install.esd" set "HAS_IMAGE=1" & if exist "Y:\sources\install.wim" set "HAS_IMAGE=1"
-            if not defined HAS_IMAGE (
-                net use Y: \\192.168.170.254\WIS\win11 "%WIS_NAS_PASS%" /user:admin /persistent:no >nul 2>&1
-                set "HAS_IMAGE=" & if exist "Y:\sources\install.esd" set "HAS_IMAGE=1" & if exist "Y:\sources\install.wim" set "HAS_IMAGE=1"
+    :: Mapiraj Y: ka \\truenas.servis\WIS\win11 deljenju ako vec nije mapiran na taj SMB share
+    set "Y_IS_NAS="
+    net.exe use Y: 2>nul | find.exe /I "win11" >nul 2>&1 && set "Y_IS_NAS=1"
+    if not defined Y_IS_NAS (
+        echo [*] Povezujem TrueNAS SMB 3.1.1 [\\truenas.servis\WIS\win11] na disk Y:\...
+        if exist "X:\Windows\System32\WIS-ConnectNAS.cmd" (
+            call "X:\Windows\System32\WIS-ConnectNAS.cmd" Y:
+        ) else if exist "%~dp0WIS-ConnectNAS.cmd" (
+            call "%~dp0WIS-ConnectNAS.cmd" Y:
+        )
+        if not exist "Y:\sources\install.esd" if not exist "Y:\sources\install.wim" (
+            ping.exe -n 2 127.0.0.1 >nul 2>&1
+            if exist "X:\Windows\System32\WIS-ConnectNAS.cmd" (
+                call "X:\Windows\System32\WIS-ConnectNAS.cmd" Y:
+            ) else if exist "%~dp0WIS-ConnectNAS.cmd" (
+                call "%~dp0WIS-ConnectNAS.cmd" Y:
             )
         )
-        if not defined HAS_IMAGE (
-            net use Y: \\truenas.servis\WIS\win11 /user:guest "" >nul 2>&1
-            set "HAS_IMAGE=" & if exist "Y:\sources\install.esd" set "HAS_IMAGE=1" & if exist "Y:\sources\install.wim" set "HAS_IMAGE=1"
-        )
-        if not defined HAS_IMAGE (
-            net use Y: \\192.168.170.254\WIS\win11 /user:guest "" >nul 2>&1
-            set "HAS_IMAGE=" & if exist "Y:\sources\install.esd" set "HAS_IMAGE=1" & if exist "Y:\sources\install.wim" set "HAS_IMAGE=1"
-        )
-    )
-
-:SkipDetachY
-    set "HAS_IMAGE=" & if exist "Y:\sources\install.esd" set "HAS_IMAGE=1" & if exist "Y:\sources\install.wim" set "HAS_IMAGE=1"
-    if defined HAS_IMAGE (
-        set "WIS_SOURCE=Y:"
-        echo =======================================================
-        echo  [+] WIS Accelerator: TrueNAS SMB 3.1.1 USPESNO AKTIVIRAN na Y:\!
-        echo  [+] Protok: ~115 MB/s ^| Ocekivano trajanje: ~58 sekundi!
-        echo =======================================================
-    ) else (
-        set "WIS_SOURCE=Z:\win11"
-        echo [*] WIS Accelerator: Slovo Y: zauzeto, ali Z:\win11 je spreman za Setup.
     )
 ) else (
-    echo [*] WIS Accelerator: Rad se nastavlja sa lokalnog medijuma (USB/NVMe) uz aktivan TrueNAS disk Z:\.
+    echo [-] UPOZORENJE: TrueNAS SMB 3.1.1 nije dostupan - cuvam iVentoy virtualni disk kao fallback!
+    echo [%TIME%] TrueNAS nije dostupan - cuvam iVentoy disk na Y:. >> "%WIS_LOG%" 2>nul
 )
 
-if exist "X:\" echo 1 > "X:\WIS_PreBoot_Done.tag"
+:FinishAccelerate
+:: 6. Zavrsna verifikacija instalacionog medijuma
+if exist "Z:\win11\sources\install.esd" (
+    echo =======================================================
+    echo  [+] USPEH: TrueNAS SMB 3.1.1 [Z:\win11\sources\install.esd] aktivan!
+    echo  [+] Podrzano do 20 istovremenih instalacija u paraleli!
+    echo =======================================================
+) else if exist "Y:\sources\install.esd" (
+    echo =======================================================
+    echo  [+] USPEH: Instalacioni medijum [Y:\sources\install.esd] aktivan!
+    echo =======================================================
+) else if exist "Y:\sources\install.wim" (
+    echo =======================================================
+    echo  [+] USPEH: Instalacioni medijum [Y:\sources\install.wim] aktivan!
+    echo =======================================================
+) else (
+    echo [-] UPOZORENJE: Nijedan medijum nije potvrdjen u AcceleratePE fazi.
+)
 
-:Done
+echo [%TIME%] === WIS WIS-AcceleratePE.cmd zavrsen === >> "%WIS_LOG%" 2>nul
+ver >nul
 exit /b 0

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .MODULE
     WIS.UI.psm1
 .DESCRIPTION

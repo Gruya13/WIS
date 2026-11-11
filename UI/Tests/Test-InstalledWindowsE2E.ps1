@@ -1,4 +1,4 @@
-<#
+﻿<#
     Provera ishoda CELOG stvarno izvrsenog Windows Setup/WIS toka u namenskoj VM.
     Pokrenuti posle instalacije sa novog test ISO-a i automatskog zavrsetka.
     Ne izvrsava instalaciju, ne menja profile, ne pravi lazne rezultate.

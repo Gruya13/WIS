@@ -2,7 +2,7 @@
 title: "Pajplajn Izvršavanja i Upravljanje Stanjem (Pipeline & State Management)"
 type: architecture
 created: 2026-09-14
-updated: 2026-10-26
+updated: 2026-11-11
 tags:
   - architecture
   - pipeline
@@ -10,24 +10,25 @@ tags:
   - phases
 ---
 
-# Pajplajn Izvršavanja i Upravljanje Stanjem: WIS (v2.17.0)
+# Pajplajn Izvršavanja i Upravljanje Stanjem: WIS (v2.19.0)
 
-U savremenoj arhitekturi sistema **WIS** (*Windows Installation Assistant*, [[decisions/ADR-0131-diagnostics-redesign-6phase-pipeline-and-wis-cleanup]], [[decisions/ADR-0138-non-blocking-diagnostics-soft-handover]], [[decisions/ADR-0141-canonical-signed-release-and-status-contract]]), glavni orkestrator celokupnog post-OOBE toka je **C# WPF Master Task Runner (`WIS.UI.exe`, v2.1.0)**.
+U savremenoj arhitekturi sistema **WIS** (*Windows Installation Assistant*, [[decisions/ADR-0131-diagnostics-redesign-6phase-pipeline-and-wis-cleanup]], [[decisions/ADR-0138-non-blocking-diagnostics-soft-handover]], [[decisions/ADR-0141-canonical-signed-release-and-status-contract]], [[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]), glavni orkestrator celokupnog post-OOBE toka je **C# WPF Master Task Runner (`WIS.UI.exe`, v2.3.0, `1,200,128 B`)**.
 
-`WIS.UI.exe` direktno i sekvencijalno podiže **6 procesno izolovanih PowerShell 5.1 skripti** iz direktorijuma `C:\setup\Skripte\Phases\` (`Phase1-Network.ps1` do `Phase6-Finalize.ps1`). Sve skripte faza oslanjaju se na deljene module `WIS.Common.psm1` i `WIS.StatusContract.psm1`, koji obezbeđuju strukturirano JSON IPC strimovanje na STDOUT, kooperativnu kontrolu toka (pauza/preskakanje), rotaciju logova i kanonski statusni ugovor.
+`WIS.UI.exe` direktno i sekvencijalno podiže **6 procesno izolovanih PowerShell 5.1 skripti** iz direktorijuma `C:\setup\Skripte\Phases\` (`Phase1-Network.ps1` do `Phase6-Finalize.ps1`). Sve skripte faza oslanjaju se na deljene module `WIS.Common.psm1`, `WIS.StepGuard.psm1` i `WIS.StatusContract.psm1`, koji obezbeđuju strukturirano JSON IPC strimovanje na STDOUT (`Send-IpcStep`), idempotentni `Pre-Check -> Action -> Journal -> Verify` ugovor za **21 StepGuard korak** Faza 2–4 (`step-journal.json`), kooperativnu kontrolu toka (pauza/preskakanje), ponovno pokretanje Faze 4 iz UI-ja (`force-rerun-phase4.flag`), pozadinsko praćenje Windows Update-a (`wu-bg-status.json`), rotaciju logova i kanonski statusni ugovor.
 
 ---
 
-## 💾 1. Upravljanje Stanjem (`C:\setup\deploy-state.json`)
+## 💾 1. Upravljanje Stanjem (`C:\setup\deploy-state.json` i `step-journal.json`)
 
-Sistem perzistira svoje radno stanje na disku u datoteci `C:\setup\deploy-state.json`:
+Sistem perzistira svoje radno stanje na disku u datoteci `C:\setup\deploy-state.json`, dok svaki pojedinačni korak Faza 2–4 dobija sopstveni idempotentni zapis u `C:\setup\step-journal.json`:
 
 ```json
 {
   "phase": 4,
   "update_cycle": 1,
   "max_cycles": 3,
-  "initial_start_time": "2026-10-26T10:15:00Z",
+  "interim_reboot_required": true,
+  "initial_start_time": "2026-11-11T10:15:00Z",
   "session_id": "TK-LAPTOP-PF2X98ZA",
   "deployment_status": "ACTIVE",
   "handover_ready": false,
@@ -38,9 +39,10 @@ Sistem perzistira svoje radno stanje na disku u datoteci `C:\setup\deploy-state.
 ```
 
 ### Mehanizam Otpornosti i Kontinuiteta:
-1. **Učitavanje stanja i Kumulativni Tajmer:** Pri svakom pokretanju `WIS.UI.exe` čita `deploy-state.json` i `HKLM\SOFTWARE\WIS\InitialStartTime`, čime kumulativni tajmer u zaglavlju prozora neprekidno meri ukupno vreme servisa kroz sve međurestarte.
-2. **Atomski upis:** Svaki prelazak iz faze u fazu ili odlaganje restarta (+10 min) odmah se serijalizuje u JSON fajl.
-3. **Dvostruki Fail-Safe Resume:** Ukoliko računar izvrši planirani međurestart (Interim Reboot) ili doživi prekid napajanja, sistem se automatski prijavljuje (`AutoAdminLogon = 1`) i ponovo podiže orkestrator preko `HKLM\...\RunOnce` ključa i `Startup` foldera, nastavljajući tačno od zapamćene faze.
+1. **Učitavanje stanja i Kumulativni Tajmer:** Pri svakom pokretanju `WIS.UI.exe` čita `deploy-state.json`, `step-journal.json` i `HKLM\SOFTWARE\WIS\InitialStartTime`, čime kumulativni tajmer u zaglavlju prozora neprekidno meri ukupno vreme servisa kroz sve međurestarte.
+2. **Idempotentni StepGuard (`WIS.StepGuard.psm1`):** Svih 21 korak kroz Faze 2 (`P2.*`), 3 (`P3.*`) i 4 (`P4.*`) pre izvršavanja proverava realno stanje na disku/sistemu i preskače već uspešne korake (`SKIPPED_DONE`) osim ako nije aktivan `--force` / `force-rerun-phase4.flag`.
+3. **Čisti HKLM `RunOnce` Resume:** `EnsureRunOnceEntry()` upisuje jedinstveni `HKLM\...\RunOnce\WIS_Resume` ključ ka `C:\setup\WIS.Launcher.exe --master`, uklanjajući stare `Startup` `.cmd` lansere i `HKCU` duplikate kako bi se izbeglo dvostruko podizanje.
+4. **Obavezni Kontrolisani Međurestart:** Posle završetka Faze 3 (`phase == 3`), `ExecutePhase` obavezno poziva `HandleInterimReboot()` (uz čuvanje `interim_reboot_required` u `step-journal.json`) kako bi se CBS/Installer brave oslobodile pre Faze 4.
 
 ---
 
@@ -50,13 +52,13 @@ U `UI/MainWindow.xaml.cs` (`GetPhaseTimeoutMinutes`), svaka faza poseduje strogo
 
 | Faza | Skripta (`UI/Skripte/Phases/`) | Linije / Veličina | Zaštitni Timeout | Ključna Uloga |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pre-Phase** | `WIS.Launcher.exe` (v2.2.17) | 466,944 B | Reaktivni | Wi-Fi spajanje, UDP :8888 / SMB otkrivanje, RSA-2048 verifikacija `wis-payload.zip`, transakciona ekstrakcija u `C:\setup` i start `WIS.UI.exe --master`. |
-| **Faza 1** | `Phase1-Network.ps1` | 134 lin. (5,736 B) | **15 min** | Mrežna povezanost (Fast-Pass), PnP fallback mrežnih drajvera, NVMe/SATA S.M.A.R.T. i baterija trijaža, Autopilot/MDM detekcija. |
-| **Faza 2** | `Phase2-Drivers.ps1` | 96 lin. (4,230 B) | **60 min** | NAS `.msu` Pre-Patch, Single-Stream `<Model>.tar` drajveri, Windows Update COM API, MS Catalog fallback, Driver Harvesting i paralelni Non-MSI radnik. |
-| **Faza 3** | `Phase3-Optimization.ps1` | 68 lin. (2,616 B) | **20 min** | Sistemska optimizacija, debloat, SRB/US tastatura, 24h sat, automatsko DPI skaliranje po rezoluciji, OEM brendiranje i **Interim Reboot Gate**. |
-| **Faza 4** | `Phase4-Apps.ps1` | 77 lin. (3,067 B) | **60 min** | Sekvencijalni MSI Mutex Gate, direktni SMB 3.1.1 stream sa `\\192.168.170.254\Programi`, tiha instalacija 8 aplikacija, Reality Check i OEM licenca. |
-| **Faza 5** | `Phase5-Stress.ps1` | 690 lin. (38,728 B) | **5 min** | WU Completion Barijera, 30s Multi-Core 100% CPU `RunspacePool` stres test, 98°C Emergency Abort i Non-Blocking Diagnostics Policy (`stress-test-result.json`). |
-| **Faza 6** | `Phase6-Finalize.ps1` | 697 lin. (37,716 B) | **45 min** | Asinhroni WU Second Pass, gašenje Screen Mirror radnika, slanje DMTF servisnog kartona na ServiceHub, Anti-Leak brisanje tajni, UAC restore i brisanje `C:\setup`. |
+| **Pre-Phase** | `WIS.Launcher.exe` (v2.2.17) | 468,480 B | Reaktivni | Wi-Fi spajanje, UDP :8888 / SMB otkrivanje (`WIS` / `Servis` i `storage\cache`), RSA-2048 verifikacija `wis-payload.zip`, transakciona ekstrakcija u `C:\setup` i start `WIS.UI.exe --master` (sa zaštitom od duple instance). |
+| **Faza 1** | `Phase1-Network.ps1` | 133 lin. (5,727 B) | **15 min** | Mrežna povezanost (Fast-Pass), PnP fallback mrežnih drajvera, NVMe/SATA S.M.A.R.T. i baterija trijaža, `HardwareIdentityService` profil, Autopilot/MDM detekcija. |
+| **Faza 2** | `Phase2-Drivers.ps1` | 103 lin. (4,541 B) | **60 min** | `6 StepGuard` koraka (`P2.*`): NAS `.msu` Pre-Patch, Single-Stream `<Model>.tar` drajveri, Windows Update COM API (6h TTL + pozadinski radnik `wu-bg-status.json`), `Test-WisDeviceManagerClean` + MS Catalog fallback, Driver Harvesting. |
+| **Faza 3** | `Phase3-Optimization.ps1` | 75 lin. (2,927 B) | **20 min** | `6 StepGuard` koraka (`P3.*`): sistemska optimizacija, debloat, SRB/US tastatura, 24h sat, automatsko DPI skaliranje po rezoluciji, OEM brendiranje i obavezni **Interim Reboot Gate** (`HandleInterimReboot`). |
+| **Faza 4** | `Phase4-Apps.ps1` | 92 lin. (3,783 B) | **60 min** | Uvozi `WIS.Core.psm1`; `9 StepGuard` koraka (`P4.*`): MSI Mutex Gate, direktni SMB 3.1.1 stream sa `\\192.168.170.254\Programi` (`Error 1219` zaštita), Chrome keš, Office ODT BOM-free lokalni SSD `SourcePath`, 6-stepeni PDF lock, per-app `P4.Shortcuts`, Reality Check i OEM licenca. |
+| **Faza 5** | `Phase5-Stress.ps1` | 689 lin. (38,716 B) | **5 min** | WU Completion Barijera, 30s Multi-Core 100% CPU `RunspacePool` stres test, 98°C Emergency Abort i Non-Blocking Diagnostics Policy (`stress-test-result.json`). |
+| **Faza 6** | `Phase6-Finalize.ps1` | 696 lin. (37,704 B) | **45 min** | Asinhroni WU Second Pass, gašenje Screen Mirror radnika, slanje DMTF servisnog kartona na ServiceHub, Anti-Leak brisanje tajni, UAC restore i brisanje `C:\setup`. |
 
 ---
 
@@ -83,18 +85,20 @@ U `UI/MainWindow.xaml.cs` (`GetPhaseTimeoutMinutes`), svaka faza poseduje strogo
 ---
 
 ### Faza 3: Sistemska Optimizacija, Automatski DPI, OEM Brendiranje i Međurestart (`Phase3-Optimization.ps1`)
-- **Optimizacija i privatnost:** Gasi telemetrijske servise (`DiagTrack`, `dmwappushservice`), Consumer Features, hibernaciju i QuickEdit mod.
+- **Optimizacija i privatnost (`P3.*` StepGuard):** Gasi telemetrijske servise (`DiagTrack`, `dmwappushservice`), Consumer Features, hibernaciju i QuickEdit mod.
 - **Regionalna ergonomija i DPI (`Set-ServisAutoDpiScaling`):** Postavlja srpsku (latinica) i US tastaturu, 24h sat i automatsko Win32 DPI skaliranje prema rezoluciji monitora (100% / 125% / 150% / 200%).
 - **OEM Brendiranje:** Preimenuje korisnički nalog prema detektovanom brendu računara i upisuje `OEMInformation`.
-- **Pre-Reboot Gate (`Invoke-ServisInterimReboot`):** Ako marker `C:\setup\.stage_reboot_done` ne postoji, postavlja `Phase = 4` u `deploy-state.json` i vrši kontrolisani restart kako bi oslobodio CBS i MSI brave pre Faze 4.
+- **Pre-Reboot Gate (`HandleInterimReboot`):** Posle Faze 3 (`phase == 3`), `WIS.UI.exe` obavezno poziva `HandleInterimReboot()` (uz upis autoritativnog `interim_reboot_required` stanja u `step-journal.json` i `Phase = 4` u `deploy-state.json`) kako bi oslobodio zaključane CBS i MSI resurse pre Faze 4.
 
 ---
 
 ### Faza 4: Tiha Instalacija Aplikacija i Licenciranje (`Phase4-Apps.ps1`)
-- **Sekvencijalni MSI Gate:** Čeka oslobađanje `Global\_MSIExecute` mutexa (`Wait-MsiMutexAvailable -TimeoutSec 180`) i čisti `PendingFileRenameOperations`.
-- **Direktni SMB 3.1.1 Stream (`Get-ServisProgramiRoot`):** Strimuje instalere sa `\\192.168.170.254\Programi` (uz fallback na `\WIS` i `C:\setup\Programi`).
-- **8 standardnih paketa:** Google Chrome Enterprise MSI (~8s), Adobe Acrobat Pro 2024 (sa 6-stepenim PDF zaključavanjem), Microsoft Office 2024 LTSC (ODT direktno sa SMB-a), WinRAR 7.01, BatteryBar Pro 3.6.6 (Win11 Floating Toolbar na laptopovima; `SKIPPED` na desktopu), .NET Desktop Runtime, Visual C++ AIO Runtimes i OEM licenca (`/HWID` + `/Volume`).
-- **Post-Execution Reality Check:** `Assert-InstalledApplicationsReality` proverava stvarno prisustvo izvršnih fajlova na disku.
+- **Uvoz `WIS.Core.psm1` i MSI Gate:** `Phase4-Apps.ps1` eksplicitno uvozi `WIS.Core.psm1` (čime je obezbeđen `Sync-ProgramiFromNas` i zaštita od SMB `Error 1219`), čeka oslobađanje `Global\_MSIExecute` mutexa (`Wait-MsiMutexAvailable -TimeoutSec 180`) i čisti `PendingFileRenameOperations`.
+- **9 `StepGuard` koraka (`P4.Runtimes..P4.Activation`):**
+  - `P4.Chrome` kešira i instalira offline Enterprise MSI (`~8s`).
+  - `P4.Office` automatski prepoznaje i `Configure.xml` i `configuration.xml`, uklanja UTF-8 BOM, kopira offline `Office\Data` preko `Sync-ProgramiFromNas -Force` na lokalni SSD i upisuje lokalni `SourcePath` u `C:\setup\Office2024_Install.xml` (neophodno pod `NT AUTHORITY\SYSTEM`), uz `420s + 120s` C2R čekanje.
+  - `P4.BatteryBar` konfiguriše Win11 Floating Toolbar na laptopovima (`SKIPPED` na desktopu); `P4.Shortcuts` proverava `.lnk` prečice za svaku stvarno instaliranu aplikaciju posebno (`Adobe Acrobat.lnk`, `Word.lnk`, `Excel.lnk`).
+- **Post-Execution Reality Check i UI Rerun:** `Assert-InstalledApplicationsReality` proverava fizičko prisustvo aplikacija na disku, a operater po potrebi može iz UI-ja ponovo pokrenuti Fazu 4 (`RerunPhase4Command` / `force-rerun-phase4.flag`).
 
 ---
 
@@ -124,6 +128,8 @@ U `UI/MainWindow.xaml.cs` (`GetPhaseTimeoutMinutes`), svaka faza poseduje strogo
 ## 🔗 Povezane Beleške
 - Pregled Arhitekture: [[architecture/overview]]
 - PowerShell Moduli i Build: [[architecture/modules]]
+- StepGuard, Hardware Identity & UI v2.3.0: [[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]]
+- Sanacija Faze 4 i Office 2024 ODT: [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]
 - Non-Blocking Diagnostics Policy: [[decisions/ADR-0138-non-blocking-diagnostics-soft-handover]]
 - Kanonski Statusni Ugovor: [[decisions/ADR-0141-canonical-signed-release-and-status-contract]]
 - Poznate Zamke: [[memory/gotchas]]

@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "suite": "WIS-PXE-ZERO-TOUCH-v1",
+  "status": "FROZEN_ON_LOCK",
+  "scope": "Testovi prihvatanja pre implementacije; nisu dokaz izvršenih PXE testova.",
+  "timeouts_seconds": {
+    "network": 60,
+    "media": 30,
+    "storage": 30,
+    "preflight_total": 120
+  },
+  "timeout_scope": "Od završetka wpeinit do pokretanja Setup-a; budžet uključuje podprocese, retry i čekanja. wpeinit i sama instalacija imaju zasebnu implementacionu politiku.",
+  "rules": [
+    "Normalan tok nema meni ili ručnu potvrdu. Laboratorijska priprema i ubrizgavanje grešaka su dozvoljeni.",
+    "Svaki scenario je obavezan. Nema skip/xfail izuzetaka.",
+    "Laboratorijski rezultati moraju uključiti ISO hash, računar/VM, verzije WinPE/Setup/iVentoy, datum i stvarne logove.",
+    "Podvarijante jednog scenarija moraju sve proći.",
+    "PASS u evidence gate-u potvrđuje kompletnost prijave i postojanje dokaza; sadržaj logova i ponašanje proverava QA."
+  ],
+  "scenarios": [
+    {
+      "id": "PXE-01",
+      "name": "USB/PXE kontrolni par",
+      "setup": "Isti računar, BIOS podešavanja i identičan SHA-256 ISO-a; USB instalacija uspeva.",
+      "expected": "Oba toka imaju zapis porekla medijuma; USB ostaje uspešan, PXE prođe bez ručnog učitavanja drajvera i podigne Windows.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-02",
+      "name": "Zdrav PXE",
+      "setup": "Ispravan NIC/DHCP i dostupan usklađen izvor.",
+      "expected": "Bez tastature od izbora PXE stavke do prvog Windows boota; Setup jednom, nema prozora za drajver medijuma.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-03",
+      "name": "Nedostaje mrežni drajver",
+      "setup": "WinPE nema kompatibilni NIC paket ni funkcionalni instalacioni izvor.",
+      "expected": "NETWORK_FAILED u budžetu; Setup nije pokrenut, nema zapisa preflight-a na ciljne diskove.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-04",
+      "name": "Kasni DHCP",
+      "setup": "DHCP postaje dostupan 20 sekundi posle početka mrežne faze.",
+      "expected": "Ograničeni ponovni pokušaji, automatski nastavak nakon stvarne provere izvora, bez menija.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-05",
+      "name": "DHCP nedostupan",
+      "setup": "NIC je detektovan, DHCP odgovor izostaje.",
+      "expected": "NETWORK_TIMEOUT do 60 s; Setup 0 puta, bez beskonačne petlje i bez izmena ciljnih diskova.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-06",
+      "name": "SMB pristup odbijen",
+      "setup": "Server odgovara, ali kredencijali/prava ne daju pristup; nema alternativnog validnog izvora.",
+      "expected": "SOURCE_FAILED; ping nije dokaz spremnosti; nema Setup-a ni lozinke u logu.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-07",
+      "name": "Slika ne postoji",
+      "setup": "Izvor ima setup.exe, ali nema instalacione slike.",
+      "expected": "SOURCE_FAILED pre Setup-a; ne postavlja se SOURCE_READY.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-08",
+      "name": "Slika postoji ali nije čitljiva",
+      "setup": "Putanja postoji, otvaranje/čitanje ili DISM Get-WimInfo ne uspeva.",
+      "expected": "SOURCE_FAILED; provera postojanja fajla ne donosi READY.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-09",
+      "name": "Nepodudaranje izvora",
+      "setup": "Setup, image ili unattend/OEM nisu usklađeni sa odabranim manifestom izdanja.",
+      "expected": "Izvor se odbija ili se automatski bira kompletan validan izvor pre Setup-a; nema tihog mešanja.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-10",
+      "name": "Očuvanje montiranja",
+      "setup": "Setup koristi iVentoy Y: ili potvrđenu NAS putanju.",
+      "expected": "Od provere izvora do završetka kopiranja nema demontiranja, premapiranja ni zamene korišćenog izvora; nema media-driver dijaloga.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-11",
+      "name": "Dupli boot ulaz",
+      "setup": "Autorun i startnet pozovu inicijalizaciju uzastopno i preklopljeno.",
+      "expected": "Jedna aktivna inicijalizacija i jedan Setup; marker RUNNING/FAILED ne tretira se kao READY.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-12",
+      "name": "Nativni NVMe/AHCI",
+      "setup": "Funkcionalan nativni kontroler bez VMD-a.",
+      "expected": "Nijedan Intel VMD paket nije učitan; automatska instalacija i prvi boot uspevaju.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-13",
+      "name": "Validiran VMD v19",
+      "setup": "Kontroler i OEM profil odgovaraju stvarnom v19 INF paketu.",
+      "expected": "Tačno validirani paket, potvrđen binding i interni disk; prvi Windows boot uspeva.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-14",
+      "name": "Validiran VMD v20",
+      "setup": "Kontroler i OEM profil odgovaraju stvarnom v20 INF paketu.",
+      "expected": "Tačno validirani paket, potvrđen binding i interni disk; prvi Windows boot uspeva.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-15",
+      "name": "Kasna PCI enumeracija",
+      "setup": "Kontroler se pojavljuje 10 sekundi posle početka storage faze.",
+      "expected": "Automatski rescan/ponovna enumeracija pre isteka 30 s; ne zaključuje odsustvo VMD-a prerano.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-16",
+      "name": "Nepoznat ili nejednoznačan kontroler",
+      "setup": "Dve podvarijante: nepodržan PCI ID; više kandidata bez determinističkog validiranog prioriteta.",
+      "expected": "Obe podvarijante daju STORAGE_UNSUPPORTED/AMBIGUOUS; nema nasumičnog ili slepog učitavanja i nema Setup-a.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-17",
+      "name": "Drvload neuspeh",
+      "setup": "Izabrani drajver vraća nenulti kod ili proces ne završava.",
+      "expected": "STORAGE_FAILED/TIMEOUT do 30 s; nema automatskog slaganja druge iaStorVD verzije, nema Setup-a.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-18",
+      "name": "Lažno uspešno učitavanje",
+      "setup": "Drvload vraća 0, ali binding nije potvrđen ili interni disk nije dostupan; USB disk je vidljiv.",
+      "expected": "STORAGE_FAILED; USB/RAM disk i exit 0 nisu dovoljan dokaz; nema Setup-a.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-19",
+      "name": "Boot-critical drajver",
+      "setup": "VMD instalacija završi kopiranje i dođe do prvog restarta.",
+      "expected": "Drajver instaliran u ciljnom OS-u pre restarta i uspešan prvi boot; samo C:\\setup kopija ne prolazi. /InstallDrivers samo uz podržan Setup.",
+      "execution": "lab",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-20",
+      "name": "Dijagnostika i tajne",
+      "setup": "Uspešan i neuspešan tok, sa/bez mreže; koristi sintetičke test kredencijale.",
+      "expected": "Log ima faze/vreme/izvor/PCI/paket/kodove, Panther i vtoype kada postoje ili razlog odsustva; lokalni RAM zapis i pokušaj odobrenog izvoza. Nema lozinki ni klijentskih XML sadržaja.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-21",
+      "name": "Prekid izvora",
+      "setup": "Dve podvarijante: prekid tokom preflight čitanja; prekid tokom Setup kopiranja.",
+      "expected": "Preflight prekid ne pokreće Setup i ne menja diskove; tokom Setup-a nema novog Setup-a, premapiranja izvora ni lažnog uspeha; greška/log bez nekontrolisanog automatskog restarta.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    },
+    {
+      "id": "PXE-22",
+      "name": "Budžeti i disk bez izmena",
+      "setup": "Blokiraj spoljne komande u svakoj fazi; poredi particione metapodatke pre/posle neuspešnog preflight-a.",
+      "expected": "Mreža <=60 s, medijum <=30 s, storage <=30 s, ukupno <=120 s posle wpeinit a pre Setup-a. Timeout obuhvata blokirane procese; bez clean/format/online-all/SAN promene i bez promene particionih metapodataka.",
+      "execution": "fault",
+      "status": "NOT_RUN"
+    }
+  ]
+}

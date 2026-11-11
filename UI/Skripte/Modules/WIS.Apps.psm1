@@ -1,4 +1,4 @@
-# SEE_MASK_NOZONECHECKS - Globalno onemogucavanje sigurnosnih dijaloga za pokretanje izvrsnih datoteka (Open File - Security Warning)
+﻿# SEE_MASK_NOZONECHECKS - Globalno onemogucavanje sigurnosnih dijaloga za pokretanje izvrsnih datoteka (Open File - Security Warning)
 $env:SEE_MASK_NOZONECHECKS = '1'
 try { [Environment]::SetEnvironmentVariable("SEE_MASK_NOZONECHECKS", "1", "Process") } catch {}
 
@@ -570,142 +570,345 @@ function Test-BatteryPresent {
     return $false
 }
 
-function Test-AllServisProgramsInstalled {
+function Get-WisAppPresence {
+    <#
+    .SYNOPSIS
+        Proverava prisustvo i status instalacije zadate aplikacije (fajlovi na disku, registar i konfiguracija).
+    .PARAMETER AppId
+        Identifikator aplikacije (Chrome, WinRAR, Acrobat, Office, BatteryBar, DotNet/Runtimes, Shortcuts, PdfDefault, Activation).
+    .OUTPUTS
+        Hashtable sa kljucevima Installed, Done, Version, Path, Message, Reason, Required, IsLaptop.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AppId
+    )
+
+    $id = $AppId.Trim()
     $isLaptop = Test-BatteryPresent
 
+    $result = @{
+        Installed = $false
+        Done      = $false
+        Version   = ""
+        Path      = ""
+        Message   = ""
+        Reason    = ""
+        Required  = $true
+        IsLaptop  = $isLaptop
+    }
+
+    switch -Regex ($id) {
+        '(?i)^(Chrome|Google Chrome)$' {
+            $chromePaths = @(
+                "C:\Program Files\Google\Chrome\Application\chrome.exe",
+                "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+            )
+            $chPath = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($chPath) {
+                $ver = ""
+                try { $ver = (Get-Item $chPath).VersionInfo.ProductVersion } catch { $ver = "OK" }
+                $msg = "Instaliran Google Chrome $(if ($ver) { '(v' + $ver + ')' } else { '' })"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Path      = $chPath
+                $result.Version   = $ver
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $result.Message   = "NEDOSTAJE (chrome.exe nije pronađen)"
+                $result.Reason    = "Google Chrome nije pronađen na disku"
+            }
+            return $result
+        }
+
+        '(?i)^WinRAR$' {
+            $winrarPaths = @(
+                "C:\Program Files\WinRAR\WinRAR.exe",
+                "C:\Program Files (x86)\WinRAR\WinRAR.exe"
+            )
+            $wrPath = $winrarPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($wrPath) {
+                $ver = ""
+                try { $ver = (Get-Item $wrPath).VersionInfo.ProductVersion } catch { $ver = "OK" }
+                $msg = "Instaliran WinRAR $(if ($ver) { '(v' + $ver + ')' } else { '' })"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Path      = $wrPath
+                $result.Version   = $ver
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $result.Message   = "NEDOSTAJE (WinRAR.exe nije pronađen)"
+                $result.Reason    = "WinRAR arhiver nije pronađen na disku"
+            }
+            return $result
+        }
+
+        '(?i)^(Acrobat|Adobe Acrobat|Adobe Acrobat Pro)$' {
+            $acroPaths = @(
+                "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat\Acrobat.exe"
+            )
+            $acPath = $acroPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($acPath) {
+                $ver = ""
+                try { $ver = (Get-Item $acPath).VersionInfo.ProductVersion } catch { $ver = "OK" }
+                $msg = "Instaliran Adobe Acrobat $(if ($ver) { '(v' + $ver + ')' } else { '' })"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Path      = $acPath
+                $result.Version   = $ver
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $result.Message   = "NEDOSTAJE (Acrobat.exe nije pronađen)"
+                $result.Reason    = "Adobe Acrobat nije pronađen na disku"
+            }
+            return $result
+        }
+
+        '(?i)^(Office|Microsoft Office|MS Office)$' {
+            $wordPaths = @(
+                "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+                "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+                "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE"
+            )
+            $excelPaths = @(
+                "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+                "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+                "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE"
+            )
+            $wPath = $wordPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            $ePath = $excelPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+            if ($wPath -or $ePath) {
+                $wVer = ""
+                $eVer = ""
+                try { if ($wPath) { $wVer = (Get-Item $wPath).VersionInfo.ProductVersion } } catch {}
+                try { if ($ePath) { $eVer = (Get-Item $ePath).VersionInfo.ProductVersion } } catch {}
+                $verStr = if ($wVer) { "v$wVer" } elseif ($eVer) { "v$eVer" } else { "2024" }
+                $msg = "Instaliran Microsoft Office ($verStr)"
+                $result.Installed    = $true
+                $result.Done         = $true
+                $result.Path         = if ($wPath) { $wPath } else { $ePath }
+                $result.Version      = $verStr
+                $result.WordVersion  = $wVer
+                $result.ExcelVersion = $eVer
+                $result.Message      = $msg
+                $result.Reason       = $msg
+            } else {
+                $result.Message   = "NEDOSTAJE (WINWORD.EXE i EXCEL.EXE nisu pronađeni)"
+                $result.Reason    = "Microsoft Office nije pronađen na disku"
+            }
+            return $result
+        }
+
+        '(?i)^BatteryBar$' {
+            if (-not $isLaptop) {
+                $result.Required  = $false
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Message   = "Nije potrebno (Desktop računar bez baterije)"
+                $result.Reason    = "Nije primenljivo — Desktop računar bez baterije"
+                return $result
+            }
+
+            $bbPaths = @(
+                "C:\Program Files\BatteryBar\BatteryBar.exe",
+                "C:\Program Files (x86)\BatteryBar\BatteryBar.exe"
+            )
+            $bbPath = $bbPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+            $runReg = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "BatteryBar" -ErrorAction SilentlyContinue).BatteryBar
+            if (-not $runReg) {
+                $runReg = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" -Name "BatteryBar" -ErrorAction SilentlyContinue).BatteryBar
+            }
+
+            if ($bbPath) {
+                $msg = "Instaliran BatteryBar ($bbPath$(if ($runReg) { ', autostart konfigurisan' } else { '' }))"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Path      = $bbPath
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $result.Message   = "NEDOSTAJE (BatteryBar.exe nije pronađen na laptopu)"
+                $result.Reason    = "BatteryBar.exe nije pronađen na laptopu sa baterijom"
+            }
+            return $result
+        }
+
+        '(?i)^(DotNet|Runtimes)$' {
+            $dotnetDesktopDir = "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App"
+            $hasDotNetDesktop = $false
+            $dnVersions = @()
+            if (Test-Path $dotnetDesktopDir) {
+                $dnVersions = Get-ChildItem -Path $dotnetDesktopDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+                if ($dnVersions.Count -gt 0) { $hasDotNetDesktop = $true }
+            }
+            if ($hasDotNetDesktop) {
+                $verStr = $dnVersions -join ", "
+                $msg = "Instaliran (.NET Desktop: $verStr)"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Version   = $verStr
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $regDn = (Get-ItemProperty "HKLM:\SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost" -ErrorAction SilentlyContinue).Version
+                if ($regDn) {
+                    $msg = "Instaliran (.NET Shared Host: $regDn)"
+                    $result.Installed = $true
+                    $result.Done      = $true
+                    $result.Version   = $regDn
+                    $result.Message   = $msg
+                    $result.Reason    = $msg
+                } else {
+                    $result.Message   = "NEDOSTAJE (.NET Desktop Runtime nije pronađen)"
+                    $result.Reason    = ".NET Desktop Runtime nije pronađen"
+                }
+            }
+            return $result
+        }
+
+        '(?i)^Shortcuts$' {
+            $publicDesktop = [Environment]::GetFolderPath("CommonDesktopDirectory")
+            $userDesktop   = [Environment]::GetFolderPath("Desktop")
+
+            $expectedShortcuts = [System.Collections.Generic.List[string]]::new()
+            $acroInstalled = (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or `
+                             (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or `
+                             (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe") -or `
+                             (Test-Path "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")
+            $wordInstalled = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                             (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                             (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
+            $excelInstalled = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
+                              (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or `
+                              (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE")
+
+            if ($acroInstalled)  { $expectedShortcuts.Add("Adobe Acrobat.lnk") }
+            if ($wordInstalled)  { $expectedShortcuts.Add("Word.lnk") }
+            if ($excelInstalled) { $expectedShortcuts.Add("Excel.lnk") }
+
+            if ($expectedShortcuts.Count -eq 0) {
+                $expectedShortcuts.Add("Google Chrome.lnk")
+                $expectedShortcuts.Add("Adobe Acrobat.lnk")
+                $expectedShortcuts.Add("Word.lnk")
+                $expectedShortcuts.Add("Excel.lnk")
+            }
+
+            $foundCount = 0
+            $missingLnks = [System.Collections.Generic.List[string]]::new()
+            foreach ($lnk in $expectedShortcuts) {
+                $p1 = Join-Path $publicDesktop $lnk
+                $p2 = Join-Path $userDesktop $lnk
+                if ((Test-Path $p1) -or (Test-Path $p2)) {
+                    $foundCount++
+                } else {
+                    $missingLnks.Add($lnk)
+                }
+            }
+
+            if ($foundCount -ge $expectedShortcuts.Count -and $expectedShortcuts.Count -gt 0) {
+                $msg = "Radne prečice postoje na radnoj površini ($foundCount/$($expectedShortcuts.Count))"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $missText = if ($missingLnks.Count -gt 0) { " (" + ($missingLnks -join ", ") + ")" } else { "" }
+                $result.Message   = "Nedostaju prečice na radnoj površini$missText"
+                $result.Reason    = "Prečice programa nisu pronađene na radnoj površini$missText"
+            }
+            return $result
+        }
+
+        '(?i)^PdfDefault$' {
+            $pdfProgId = ""
+            try {
+                $userChoiceKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice"
+                $pdfProgId = (Get-ItemProperty -Path $userChoiceKey -Name "ProgId" -ErrorAction SilentlyContinue).ProgId
+            } catch {}
+
+            if ($pdfProgId -like "*Acrobat*" -or $pdfProgId -like "*AcroExch*") {
+                $msg = "Adobe Acrobat je podešen kao podrazumevani PDF čitač ($pdfProgId)"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $result.Message   = "Acrobat nije podrazumevani PDF čitač ($pdfProgId)"
+                $result.Reason    = "Acrobat nije podešen kao podrazumevani PDF čitač"
+            }
+            return $result
+        }
+
+        '(?i)^(Activation|WindowsActivation|OfficeActivation)$' {
+            $winAct = Test-WindowsActivated
+            $offAct = Test-OfficeActivated
+
+            $result.WindowsActivated = $winAct
+            $result.OfficeActivated  = $offAct
+
+            if ($winAct -and $offAct) {
+                $msg = "Windows i Microsoft Office su trajno licencirani i aktivirani"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            } else {
+                $parts = @()
+                if (-not $winAct) { $parts += "Windows nije aktiviran" }
+                if (-not $offAct) { $parts += "Office nije aktiviran" }
+                $msg = $parts -join "; "
+                $result.Message   = $msg
+                $result.Reason    = $msg
+            }
+            return $result
+        }
+
+        default {
+            $result.Message = "Nepoznata aplikacija: $AppId"
+            $result.Reason  = "Nepoznat identifikator aplikacije: $AppId"
+            return $result
+        }
+    }
+}
+
+function Test-AllServisProgramsInstalled {
+    $chromeRes  = Get-WisAppPresence -AppId "Chrome"
+    $winrarRes  = Get-WisAppPresence -AppId "WinRAR"
+    $acrobatRes = Get-WisAppPresence -AppId "Acrobat"
+    $officeRes  = Get-WisAppPresence -AppId "Office"
+    $dotnetRes  = Get-WisAppPresence -AppId "DotNet"
+    $bbRes      = Get-WisAppPresence -AppId "BatteryBar"
+
+    $missingList = [System.Collections.Generic.List[string]]::new()
+    if (-not $chromeRes.Installed)  { $missingList.Add("Google Chrome") }
+    if (-not $winrarRes.Installed)  { $missingList.Add("WinRAR x64") }
+    if (-not $acrobatRes.Installed) { $missingList.Add("Adobe Acrobat Pro") }
+    if (-not $officeRes.Installed)  { $missingList.Add("Microsoft Office") }
+    if (-not $dotnetRes.Installed)  { $missingList.Add("Microsoft .NET Runtime") }
+    if ($bbRes.Required -and -not $bbRes.Installed) { $missingList.Add("BatteryBar (Laptop)") }
+
     $results = @{
-        Chrome = @{ Installed = $false; Version = ""; Path = ""; Message = "" }
-        WinRAR = @{ Installed = $false; Version = ""; Path = ""; Message = "" }
-        Acrobat = @{ Installed = $false; Version = ""; Path = ""; Message = "" }
-        Office = @{ Installed = $false; WordVersion = ""; ExcelVersion = ""; Path = ""; Message = "" }
-        DotNet = @{ Installed = $false; Version = ""; Message = "" }
-        BatteryBar = @{ Installed = $false; IsLaptop = $isLaptop; Required = $false; Path = ""; Message = "" }
-        WindowsActivation = @{ Activated = (Test-WindowsActivated) }
-        OfficeActivation = @{ Activated = (Test-OfficeActivated) }
-        AllRequiredInstalled = $false
-        MissingList = [System.Collections.Generic.List[string]]::new()
-    }
-
-    # 1. Google Chrome
-    $chromePaths = @(
-        "C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
-    )
-    $chPath = $chromePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($chPath) {
-        $results.Chrome.Installed = $true
-        $results.Chrome.Path = $chPath
-        try { $results.Chrome.Version = (Get-Item $chPath).VersionInfo.ProductVersion } catch { $results.Chrome.Version = "OK" }
-        $results.Chrome.Message = "Instaliran (v$($results.Chrome.Version))"
-    } else {
-        $results.Chrome.Message = "NEDOSTAJE (chrome.exe nije pronadjen)"
-        $results.MissingList.Add("Google Chrome")
-    }
-
-    # 2. WinRAR x64
-    $winrarPaths = @(
-        "C:\Program Files\WinRAR\WinRAR.exe",
-        "C:\Program Files (x86)\WinRAR\WinRAR.exe"
-    )
-    $wrPath = $winrarPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($wrPath) {
-        $results.WinRAR.Installed = $true
-        $results.WinRAR.Path = $wrPath
-        try { $results.WinRAR.Version = (Get-Item $wrPath).VersionInfo.ProductVersion } catch { $results.WinRAR.Version = "OK" }
-        $results.WinRAR.Message = "Instaliran (v$($results.WinRAR.Version))"
-    } else {
-        $results.WinRAR.Message = "NEDOSTAJE (WinRAR.exe nije pronadjen)"
-        $results.MissingList.Add("WinRAR x64")
-    }
-
-    # 3. Adobe Acrobat Pro 2024
-    $acroPaths = @(
-        "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
-        "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
-        "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
-        "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe"
-    )
-    $acPath = $acroPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($acPath) {
-        $results.Acrobat.Installed = $true
-        $results.Acrobat.Path = $acPath
-        try { $results.Acrobat.Version = (Get-Item $acPath).VersionInfo.ProductVersion } catch { $results.Acrobat.Version = "OK" }
-        $results.Acrobat.Message = "Instaliran (v$($results.Acrobat.Version))"
-    } else {
-        $results.Acrobat.Message = "NEDOSTAJE (Acrobat.exe nije pronadjen)"
-        $results.MissingList.Add("Adobe Acrobat Pro")
-    }
-
-    # 4. Microsoft Office
-    $wordPaths = @(
-        "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-        "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE"
-    )
-    $excelPaths = @(
-        "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-        "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE"
-    )
-    $wPath = $wordPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    $ePath = $excelPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($wPath -or $ePath) {
-        $results.Office.Installed = $true
-        $results.Office.Path = if ($wPath) { $wPath } else { $ePath }
-        try { if ($wPath) { $results.Office.WordVersion = (Get-Item $wPath).VersionInfo.ProductVersion } } catch {}
-        try { if ($ePath) { $results.Office.ExcelVersion = (Get-Item $ePath).VersionInfo.ProductVersion } } catch {}
-        $results.Office.Message = "Instaliran (Word & Excel $(if ($results.Office.WordVersion) { 'v' + $results.Office.WordVersion } else { '' }))"
-    } else {
-        $results.Office.Message = "NEDOSTAJE (WINWORD.EXE i EXCEL.EXE nisu pronadjeni)"
-        $results.MissingList.Add("Microsoft Office")
-    }
-
-    # 5. Microsoft .NET Runtimes
-    $dotnetDesktopDir = "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App"
-    $hasDotNetDesktop = $false
-    $dnVersions = @()
-    if (Test-Path $dotnetDesktopDir) {
-        $dnVersions = Get-ChildItem -Path $dotnetDesktopDir -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
-        if ($dnVersions.Count -gt 0) { $hasDotNetDesktop = $true }
-    }
-    if ($hasDotNetDesktop) {
-        $results.DotNet.Installed = $true
-        $results.DotNet.Version = ($dnVersions -join ", ")
-        $results.DotNet.Message = "Instaliran (.NET Desktop: $($results.DotNet.Version))"
-    } else {
-        $regDn = (Get-ItemProperty "HKLM:\SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost" -ErrorAction SilentlyContinue).Version
-        if ($regDn) {
-            $results.DotNet.Installed = $true
-            $results.DotNet.Version = $regDn
-            $results.DotNet.Message = "Instaliran (.NET Shared Host: $regDn)"
-        } else {
-            $results.DotNet.Message = "NEDOSTAJE (.NET Desktop Runtime nije pronadjen)"
-            $results.MissingList.Add("Microsoft .NET Runtime")
-        }
-    }
-
-    # 6. BatteryBar
-    if ($results.BatteryBar.IsLaptop) {
-        $results.BatteryBar.Required = $true
-        $bbPaths = @(
-            "C:\Program Files\BatteryBar\BatteryBar.exe",
-            "C:\Program Files (x86)\BatteryBar\BatteryBar.exe"
-        )
-        $bbPath = $bbPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($bbPath) {
-            $results.BatteryBar.Installed = $true
-            $results.BatteryBar.Path = $bbPath
-            $results.BatteryBar.Message = "Instaliran (Laptop sa baterijom konfigurisan - $bbPath)"
-        } else {
-            $results.BatteryBar.Message = "NEDOSTAJE (BatteryBar.exe nije pronadjen na laptopu)"
-            $results.MissingList.Add("BatteryBar (Laptop)")
-        }
-    } else {
-        $results.BatteryBar.Required = $false
-        $results.BatteryBar.Installed = $true
-        $results.BatteryBar.Message = "Nije potrebno (Desktop racunar bez baterije)"
-    }
-
-    if ($results.MissingList.Count -eq 0) {
-        $results.AllRequiredInstalled = $true
+        Chrome               = $chromeRes
+        WinRAR               = $winrarRes
+        Acrobat              = $acrobatRes
+        Office               = $officeRes
+        DotNet               = $dotnetRes
+        BatteryBar           = $bbRes
+        WindowsActivation    = @{ Activated = (Test-WindowsActivated) }
+        OfficeActivation     = @{ Activated = (Test-OfficeActivated) }
+        AllRequiredInstalled = ($missingList.Count -eq 0)
+        MissingList          = $missingList
     }
 
     return $results
@@ -797,14 +1000,47 @@ function Get-ServisProgramiRoot {
             }
         }
     }
-    $nasShares = $nasShares | Select-Object -Unique
 
     $nasUser = "admin"
     $nasPass = ""
     if ($nasIni) {
         if (-not [string]::IsNullOrWhiteSpace($nasIni.Username)) { $nasUser = $nasIni.Username }
-        if (-not [string]::IsNullOrWhiteSpace($nasIni.Password) -and $nasIni.Password -ne "promeni_lozinku") { $nasPass = $nasIni.Password }
+        if (-not [string]::IsNullOrWhiteSpace($nasIni.Password) -and $nasIni.Password -ne "promeni_lozinku" -and $nasIni.Password -ne "CHANGE_ME") { $nasPass = $nasIni.Password }
     }
+
+    # Direktni fallback citač za Wifi-Servis.ini ako WIS.Core nije uvezen u sesiju
+    if ([string]::IsNullOrWhiteSpace($nasPass)) {
+        $iniCandidates = @(
+            (Join-Path $LocalSetupDir "Wifi-Servis.ini"),
+            "C:\setup\Wifi-Servis.ini",
+            (Join-Path $PSScriptRoot "..\..\Wifi-Servis.ini"),
+            (Join-Path $PSScriptRoot "..\Wifi-Servis.ini")
+        )
+        foreach ($ic in ($iniCandidates | Select-Object -Unique)) {
+            if ($ic -and (Test-Path $ic -ErrorAction SilentlyContinue)) {
+                try {
+                    $rawIni = Get-Content -Path $ic -Raw -ErrorAction SilentlyContinue
+                    if ($rawIni -and $rawIni -match '(?mi)^\s*\[ServisNas\]([\s\S]*?)(?:^\s*\[|\Z)') {
+                        $sec = $matches[1]
+                        if ($sec -match '(?mi)^[ \t]*Username[ \t]*=[ \t]*([^\r\n#;]+)') {
+                            $uVal = $matches[1].Trim()
+                            if ($uVal) { $nasUser = $uVal }
+                        }
+                        if ($sec -match '(?mi)^[ \t]*Password[ \t]*=[ \t]*([^\r\n#;]+)') {
+                            $pVal = $matches[1].Trim()
+                            if ($pVal -and $pVal -ne "promeni_lozinku" -and $pVal -ne "CHANGE_ME") { $nasPass = $pVal }
+                        }
+                        if ($sec -match '(?mi)^[ \t]*NasHost[ \t]*=[ \t]*([^\r\n#;]+)') {
+                            $hVal = $matches[1].Trim()
+                            if ($hVal -and ($nasHosts -notcontains $hVal)) { $nasHosts = @($hVal) + $nasHosts }
+                        }
+                        break
+                    }
+                } catch {}
+            }
+        }
+    }
+    $nasShares = $nasShares | Select-Object -Unique
 
     foreach ($h in $nasHosts) {
         # Brza TCP provera porta 445 (SMB) sa kratkim timeout-om (1500 ms)
@@ -836,16 +1072,29 @@ function Get-ServisProgramiRoot {
         foreach ($sh in $nasShares) {
             $uncShare = "\\$h\$sh"
 
-            # 1. Osiguraj SMB autentifikovanu sesiju iz konfiguracije (uz guest fallback)
-            if (-not [string]::IsNullOrWhiteSpace($nasPass)) {
-                $userArg = if ($nasUser -match "\\") { $nasUser } else { "$h\$nasUser" }
-                & net.exe use $uncShare $nasPass "/user:$userArg" /persistent:no >$null 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    & net.exe use $uncShare $nasPass "/user:$nasUser" /persistent:no >$null 2>&1
+            # 1. Osiguraj SMB autentifikovanu sesiju bez Error 1219 i bez PowerShell ErrorRecord prekida
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
+                    if (-not [string]::IsNullOrWhiteSpace($nasPass)) {
+                        $userArg = if ($nasUser -match "\\") { $nasUser } else { "$h\$nasUser" }
+                        $null = & cmd.exe /c "net.exe use `"$uncShare`" `"$nasPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
+                        if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
+                            $null = & cmd.exe /c "net.exe use `"$uncShare`" `"$nasPass`" /user:`"$nasUser`" /persistent:no >nul 2>&1"
+                        }
+                        # Ako postoji konfliktna SMB sesija (Error 1219, npr. prethodna guest sesija ka istom serveru), raskini i ponovi
+                        if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
+                            $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
+                            $null = & cmd.exe /c "net.exe use `"$uncShare`" `"$nasPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
+                        }
+                    }
+                    if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
+                        $null = & cmd.exe /c "net.exe use `"$uncShare`" `"`" /user:guest /persistent:no >nul 2>&1"
+                    }
                 }
-            }
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($nasPass)) {
-                & net.exe use $uncShare '""' /user:guest /persistent:no >$null 2>&1
+            } catch {} finally {
+                $ErrorActionPreference = $prevEap
             }
 
             # 2. Detekcija gde su paketi: na deljenju 'Programi' paketi su u korenu,
@@ -957,7 +1206,7 @@ function Invoke-InstallerWithLocalFallback {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "[$AppName] Preuzimam mrežni paket u lokalni keš: $appCacheDir..." -Level "INFO" -Component $AppName
                 }
-                & robocopy.exe "$PackageSourceDir" "$appCacheDir" /E /MT:16 /R:2 /W:2 /NDL /NFL /NJH /NJS >$null 2>&1
+                $null = & cmd.exe /c "robocopy.exe `"$PackageSourceDir`" `"$appCacheDir`" /E /MT:16 /R:2 /W:2 /NDL /NFL /NJH /NJS >nul 2>&1"
                 $fileName = Split-Path $InstallerPath -Leaf
                 $foundLocal = Get-ChildItem -Path $appCacheDir -Filter $fileName -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
                 $localInstaller = if ($foundLocal) { $foundLocal.FullName } else { Join-Path $appCacheDir $fileName }
@@ -1340,9 +1589,38 @@ function Set-BatteryBarConfiguration {
     }
 
     try {
-        # 1. HKLM Run registarski kljuc
-        $regRun = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
-        Set-ItemProperty -Path $regRun -Name "BatteryBar" -Value "`"$InstalledExe`"" -Force -ErrorAction SilentlyContinue
+        $bbInstallDir = Split-Path $InstalledExe -Parent
+
+        # 1. Eliminacija klasične (DeskBand / taskbar) verzije i duplih autostart ključeva
+        Get-Process -Name "ShowBatteryBar*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+        $legacyDll = Join-Path $bbInstallDir "BatteryBar.dll"
+        if (Test-Path $legacyDll) {
+            try {
+                Start-Process -FilePath "regsvr32.exe" -ArgumentList "/u /s `"$legacyDll`"" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+            } catch {}
+        }
+
+        foreach ($legacyFile in @("ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll", "BatteryBarSetup-3.6.6.exe")) {
+            $lfPath = Join-Path $bbInstallDir $legacyFile
+            if (Test-Path $lfPath) {
+                Remove-Item -Path $lfPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # Uklanjanje duplih Run registarskih ključeva (kako se ne bi pokretao dva puta uz All Users Startup prečicu)
+        $runPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        )
+        foreach ($rp in $runPaths) {
+            if (Test-Path $rp) {
+                Remove-ItemProperty -Path $rp -Name "BatteryBar" -Force -ErrorAction SilentlyContinue
+                Remove-ItemProperty -Path $rp -Name "ShowBatteryBar" -Force -ErrorAction SilentlyContinue
+                Remove-ItemProperty -Path $rp -Name "BatteryBarSolo" -Force -ErrorAction SilentlyContinue
+            }
+        }
 
         # 2. .NET Runtime konfiguracija (BatteryBar.exe.config)
         $configPath = "$InstalledExe.config"
@@ -1382,7 +1660,7 @@ function Set-BatteryBarConfiguration {
         Set-Content -Path (Join-Path $bbDefaultDir "BatteryBar.Settings.xml") -Value $bbXmlContent -Encoding UTF8 -Force -ErrorAction SilentlyContinue
         Remove-Item -Path (Join-Path $bbDefaultDir "BatteryBar.ini") -Force -ErrorAction SilentlyContinue
 
-        # 5. Distribucija XML-a u sve postojece profile na sistemu
+        # 5. Distribucija XML-a u sve postojece profile na sistemu i uklanjanje per-user duplih Startup prečica
         Get-ChildItem -Path "C:\Users" -Directory -Force -ErrorAction SilentlyContinue | Where-Object {
             $_.Name -notmatch '^(Public|Default User|All Users)$'
         } | ForEach-Object {
@@ -1390,9 +1668,21 @@ function Set-BatteryBarConfiguration {
             if (-not (Test-Path $userBbDir)) { New-Item -Path $userBbDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
             Set-Content -Path (Join-Path $userBbDir "BatteryBar.Settings.xml") -Value $bbXmlContent -Encoding UTF8 -Force -ErrorAction SilentlyContinue
             Remove-Item -Path (Join-Path $userBbDir "BatteryBar.ini") -Force -ErrorAction SilentlyContinue
+
+            $userStartup = Join-Path $_.FullName "AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+            if (Test-Path $userStartup) {
+                Get-ChildItem -Path $userStartup -Filter "*BatteryBar*.lnk" -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
         }
 
-        # 6. Kreiranje Startup precice za sve korisnike (All Users Startup)
+        if ($env:APPDATA) {
+            $curAppDataBb = Join-Path $env:APPDATA "BatteryBar"
+            if (-not (Test-Path $curAppDataBb)) { New-Item -Path $curAppDataBb -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
+            Set-Content -Path (Join-Path $curAppDataBb "BatteryBar.Settings.xml") -Value $bbXmlContent -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path (Join-Path $curAppDataBb "BatteryBar.ini") -Force -ErrorAction SilentlyContinue
+        }
+
+        # 6. Kreiranje JEDINSTVENE Startup precice za sve korisnike (All Users Startup)
         $startupDir = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
         if (-not (Test-Path $startupDir)) { New-Item -Path $startupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
         $startupLnk = Join-Path $startupDir "BatteryBar.lnk"
@@ -1400,12 +1690,12 @@ function Set-BatteryBarConfiguration {
             $wshShell = New-Object -ComObject WScript.Shell
             $shortcut = $wshShell.CreateShortcut($startupLnk)
             $shortcut.TargetPath = $InstalledExe
-            $shortcut.WorkingDirectory = Split-Path $InstalledExe -Parent
+            $shortcut.WorkingDirectory = $bbInstallDir
             $shortcut.Description = "BatteryBar Floating Toolbar"
             $shortcut.Save()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wshShell) | Out-Null
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Kreirana BatteryBar Startup precica: $startupLnk" -Level "SUCCESS" -Component "BatteryBar"
+                Write-ServisLog "Kreirana jedinstvena BatteryBar Floating Startup precica: $startupLnk" -Level "SUCCESS" -Component "BatteryBar"
             }
         } catch {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -1413,18 +1703,27 @@ function Set-BatteryBarConfiguration {
             }
         }
 
-        # 7. Pokretanje procesa ako nije aktivan (normalno, BEZ -WindowStyle Hidden)
-        $existingProc = Get-Process -Name "BatteryBar*" -ErrorAction SilentlyContinue
-        if ($existingProc) {
+        # 7. Pokretanje isključivo jedne Floating instance (normalno, BEZ -WindowStyle Hidden)
+        $existingProcs = @(Get-Process -Name "BatteryBar*" -ErrorAction SilentlyContinue)
+        if ($existingProcs.Count -gt 1) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "BatteryBar proces je već aktivan, preskačem pokretanje procesa." -Level "INFO" -Component "BatteryBar"
+                Write-ServisLog "Detektovano više BatteryBar procesa ($($existingProcs.Count)). Gasim duplikate radi pokretanja jedne Floating instance..." -Level "WARN" -Component "BatteryBar"
+            }
+            $existingProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 500
+            $existingProcs = @()
+        }
+
+        if ($existingProcs.Count -eq 1) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Jedna Floating BatteryBar instanca je već aktivna, preskačem ponovno pokretanje." -Level "INFO" -Component "BatteryBar"
             }
         } else {
             if (Test-Path $InstalledExe) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Pokrećem BatteryBar proces: $InstalledExe" -Level "STEP" -Component "BatteryBar"
+                    Write-ServisLog "Pokrećem čistu Floating BatteryBar instancu: $InstalledExe" -Level "STEP" -Component "BatteryBar"
                 }
-                Start-Process -FilePath $InstalledExe -ErrorAction SilentlyContinue
+                Start-Process -FilePath $InstalledExe -WorkingDirectory $bbInstallDir -ErrorAction SilentlyContinue
             }
         }
 
@@ -1668,10 +1967,10 @@ function Install-AllServisPrograms {
                 $copiedPortable = $false
                 if ($bbDir) {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Pronadjen BatteryBar folder: $bbDir. Kopiram u Program Files..." -Level "STEP" -Component "BatteryBar"
+                        Write-ServisLog "Pronadjen BatteryBar folder: $bbDir. Kopiram Floating paket u Program Files..." -Level "STEP" -Component "BatteryBar"
                     }
                     if (-not (Test-Path $targetDir)) { New-Item -Path $targetDir -ItemType Directory -Force | Out-Null }
-                    Copy-Item -Path "$bbDir\*" -Destination $targetDir -Recurse -Force -ErrorAction SilentlyContinue
+                    Copy-Item -Path "$bbDir\*" -Destination $targetDir -Exclude @("ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll", "BatteryBarSetup*.exe") -Recurse -Force -ErrorAction SilentlyContinue
                     if (Test-Path (Join-Path $targetDir "BatteryBar.exe")) {
                         $copiedPortable = $true
                         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -2885,8 +3184,14 @@ function Assert-InstalledApplicationsReality {
         $acrobatPaths = @(
             "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
             "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+            "C:\Program Files\Adobe\Acrobat\Acrobat.exe",
+            "C:\Program Files (x86)\Adobe\Acrobat\Acrobat.exe",
             "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe",
+            "C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe",
+            "C:\Program Files\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe",
+            "C:\Program Files (x86)\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe",
             "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+            "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
             "C:\Program Files (x86)\Adobe\Acrobat 2020\Acrobat\Acrobat.exe",
             "C:\Program Files\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe",
             "C:\Program Files (x86)\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"
@@ -2984,6 +3289,35 @@ function Invoke-Phase4Apps {
         Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Pocetak"
     }
 
+    # Uvoz StepGuard modula ukoliko funkcija Invoke-WisStep nije registrovana u sesiji
+    if (-not (Get-Command Invoke-WisStep -ErrorAction SilentlyContinue)) {
+        $stepGuardMod = @(
+            (Join-Path $PSScriptRoot "WIS.StepGuard.psm1"),
+            (Join-Path $PSScriptRoot "..\Modules\WIS.StepGuard.psm1"),
+            (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
+            "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($stepGuardMod) { Import-Module $stepGuardMod -Force -ErrorAction SilentlyContinue }
+    }
+
+    # Emitovanje liste svih koraka u stanju WAIT da bi UI odmah iscrtao listu koraka
+    $phase4StepCatalog = @(
+        @{ Id = "P4.Runtimes";   Title = "Sistemski runtime paketi (VC++ / .NET)" },
+        @{ Id = "P4.WinRAR";     Title = "WinRAR arhiver" },
+        @{ Id = "P4.Chrome";     Title = "Google Chrome pregledač" },
+        @{ Id = "P4.Acrobat";    Title = "Adobe Acrobat Pro" },
+        @{ Id = "P4.Office";     Title = "Microsoft Office 2024" },
+        @{ Id = "P4.BatteryBar"; Title = "BatteryBar indikator baterije" },
+        @{ Id = "P4.Shortcuts";  Title = "Radne prečice na radnoj površini" },
+        @{ Id = "P4.PdfDefault"; Title = "Podrazumevani PDF pregledač" },
+        @{ Id = "P4.Activation"; Title = "Aktivacija Windows i Office paketa" }
+    )
+    foreach ($sc in $phase4StepCatalog) {
+        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+            Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+        }
+    }
+
     # Pronalazenje foldera sa programima (Prioritet 1: Lokalni C:\setup\Programi, Prioritet 2: SMB 3.1.1 TrueNAS)
     $detectedProgDir = Get-ServisProgramiRoot -LocalSetupDir $LocalSetupDir -PreferredDir $ProgramiDir
     $localCandidates = @(
@@ -3013,7 +3347,7 @@ function Invoke-Phase4Apps {
         Write-ServisLog "Aktivni direktorijum sa programima: $activeProgDir" -Level "INFO" -Component "Apps"
     }
 
-    # Rekurzivna deblokada svih instalacionih fajlova ako je skladište lokalno (sprečava Open File - Security Warning dijaloge)
+    # Rekurzivna deblokada svih instalacionih fajlova ako je skladište lokalno
     if ($activeProgDir -and -not ($activeProgDir -like "\\*") -and (Test-Path $activeProgDir)) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Deblokiram sve instalacione fajlove u lokalnom direktorijumu: $activeProgDir" -Level "DEBUG" -Component "Apps"
@@ -3040,102 +3374,593 @@ function Invoke-Phase4Apps {
         License    = "WAIT"
     }
 
-    # 1. WINRAR
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - WinRAR"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 15 -Phase 4 -PhaseName "Programi" -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
-    }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "WinRAR" -Status "RUNNING" -Detail "Instalacija u toku..."
-    }
-
-    $winrarOk = $false
-    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Instalacija WinRAR preskočena na zahtev servisera." -Level "WARN" -Component "WinRAR"
-        }
-        $appsStatusMap["WinRAR"] = "WARN"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "WinRAR" -Status "WARN" -Detail "Preskočeno"
-        }
-    } else {
-        try {
-            $winrarInstalled = (Test-Path "C:\Program Files\WinRAR\WinRAR.exe") -or (Test-Path "C:\Program Files (x86)\WinRAR\WinRAR.exe")
-            if ($winrarInstalled) {
-                $winrarOk = $true
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "WinRAR je već instaliran na sistemu." -Level "SUCCESS" -Component "WinRAR"
-                }
-            } else {
-                $rarCandidates = Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue
-                if ($rarCandidates -and $rarCandidates.Count -gt 0) {
-                    $rarExe = $rarCandidates[0].FullName
-                    Unblock-File -Path $rarExe -ErrorAction SilentlyContinue
-                    Remove-Item -Path "$($rarExe):Zone.Identifier" -ErrorAction SilentlyContinue
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Instaliram WinRAR iz: $rarExe" -Level "STEP" -Component "WinRAR"
-                    }
-                    $resWinrar = Invoke-InstallerWithLocalFallback -InstallerPath $rarExe -ArgumentList "/s" -AppName "WinRAR" -WaitSeconds 60
-                    if ($resWinrar.Success -or (Test-Path "C:\Program Files\WinRAR\WinRAR.exe") -or (Test-Path "C:\Program Files (x86)\WinRAR\WinRAR.exe")) {
-                        $winrarOk = $true
-                    }
-                } else {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "WinRAR lokalni instaler nije pronadjen. Pokusavam Winget fallback..." -Level "DEBUG" -Component "WinRAR"
-                    }
-                    try {
-                        Start-Process -FilePath "winget.exe" -ArgumentList "install --id RARLab.WinRAR --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-                    } catch {}
-                    if ((Test-Path "C:\Program Files\WinRAR\WinRAR.exe") -or (Test-Path "C:\Program Files (x86)\WinRAR\WinRAR.exe")) {
-                        $winrarOk = $true
-                    }
-                }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri instalaciji WinRAR: $($_.Exception.Message)" -Level "WARN" -Component "WinRAR"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "WinRAR instalacija nije uspela: $($_.Exception.Message), nastavljam dalje..." -Level "WARN" -Phase 4
-            }
-        }
-
-        try {
-            Remove-WinRARDesktopShortcut
-        } catch {}
-
-        $appsStatusMap["WinRAR"] = if ($winrarOk) { "OK" } else { "WARN" }
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "WinRAR" -Status $appsStatusMap["WinRAR"] -Detail $(if ($winrarOk) { "Instaliran" } else { "Neuspešno - Nastavak" })
-        }
-    }
-
-    # 2. BATTERYBAR
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - BatteryBar"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 28 -Phase 4 -PhaseName "Programi" -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
-    }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "BatteryBar" -Status "RUNNING" -Detail "Provera baterije i instalacija..."
-    }
-
-    $batteryOk = $false
     $isLaptop = Test-BatteryPresent
 
-    if (-not $isLaptop) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Uređaj nema bateriju niti laptop šasiju (Desktop / All-in-One). BatteryBar nije potreban." -Level "INFO" -Component "BatteryBar"
+    # =========================================================================
+    # 1. SISTEMSKI RUNTIME PAKETI (VC++ / .NET) - P4.Runtimes
+    # =========================================================================
+    $stepRuntimes = Invoke-WisStep -Phase 4 -StepId "P4.Runtimes" -Title "Sistemski runtime paketi (VC++ / .NET)" -Test {
+        Get-WisAppPresence -AppId "DotNet"
+    } -Action {
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
         }
-        $appsStatusMap["BatteryBar"] = "OK"
+        $null = Install-ServisVCRedist -ProgramiRoot $activeProgDir
+        $null = Install-ServisDotNet -ProgramiRoot $activeProgDir
+    }
+
+    # =========================================================================
+    # 2. WINRAR - P4.WinRAR
+    # =========================================================================
+    $stepWinrar = Invoke-WisStep -Phase 4 -StepId "P4.WinRAR" -Title "WinRAR arhiver" -Test {
+        Get-WisAppPresence -AppId "WinRAR"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - WinRAR"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 20 -Phase 4 -PhaseName "Programi" -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
+        }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "BatteryBar" -Status "OK" -Detail "Preskočeno (Desktop)"
+            Send-IpcAppUpdate -AppId "WinRAR" -Status "RUNNING" -Detail "Instalacija u toku..."
         }
-    } else {
-        # Detektovan prenosni računar (Laptop / Notebook)
+
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instalacija WinRAR preskočena na zahtev servisera." -Level "WARN" -Component "WinRAR"
+            }
+            return
+        }
+
+        $rarCandidates = Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue
+        if ($rarCandidates -and $rarCandidates.Count -gt 0) {
+            $rarExe = $rarCandidates[0].FullName
+            Unblock-File -Path $rarExe -ErrorAction SilentlyContinue
+            Remove-Item -Path "$($rarExe):Zone.Identifier" -ErrorAction SilentlyContinue
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instaliram WinRAR iz: $rarExe" -Level "STEP" -Component "WinRAR"
+            }
+            $resWinrar = Invoke-InstallerWithLocalFallback -InstallerPath $rarExe -ArgumentList "/s" -AppName "WinRAR" -WaitSeconds 60
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "WinRAR lokalni instaler nije pronadjen. Pokusavam Winget fallback..." -Level "DEBUG" -Component "WinRAR"
+            }
+            try {
+                Start-Process -FilePath "winget.exe" -ArgumentList "install --id RARLab.WinRAR --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+            } catch {}
+        }
+        try { Remove-WinRARDesktopShortcut } catch {}
+    }
+
+    $appsStatusMap["WinRAR"] = if ($stepWinrar.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+        $wrDetail = if ($stepWinrar.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepWinrar.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
+        Send-IpcAppUpdate -AppId "WinRAR" -Status $appsStatusMap["WinRAR"] -Detail $wrDetail
+    }
+
+    # =========================================================================
+    # 3. GOOGLE CHROME - P4.Chrome
+    # =========================================================================
+    $stepChrome = Invoke-WisStep -Phase 4 -StepId "P4.Chrome" -Title "Google Chrome pregledač" -Test {
+        Get-WisAppPresence -AppId "Chrome"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Google Chrome"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 35 -Phase 4 -PhaseName "Programi" -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
+        }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            Send-IpcAppUpdate -AppId "Chrome" -Status "RUNNING" -Detail "Instalacija Chrome pretraživača..."
+        }
+
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instalacija Google Chrome preskočena na zahtev servisera." -Level "WARN" -Component "Chrome"
+            }
+            return
+        }
+
+        # 1. Prioritetna pretraga za GoogleChromeStandaloneEnterprise64.msi (*chrome*.msi)
+        $chromeMsiCandidates = @(
+            (Join-Path $activeProgDir "GoogleChromeStandaloneEnterprise64.msi"),
+            (Join-Path $activeProgDir "Programi\GoogleChromeStandaloneEnterprise64.msi"),
+            "C:\setup\Programi\GoogleChromeStandaloneEnterprise64.msi",
+            "C:\setup\Programi\Programi\GoogleChromeStandaloneEnterprise64.msi"
+        )
+        if ($Global:SourceRoot) {
+            $chromeMsiCandidates += (Join-Path $Global:SourceRoot "Programi\GoogleChromeStandaloneEnterprise64.msi")
+            $chromeMsiCandidates += (Join-Path $Global:SourceRoot "GoogleChromeStandaloneEnterprise64.msi")
+        }
+        $msiPath = $chromeMsiCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $msiPath -and (Test-Path $activeProgDir)) {
+            $foundMsi = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($foundMsi) { $msiPath = $foundMsi.FullName }
+        }
+
+        $installedOk = $false
+        if ($msiPath) {
+            $effectiveMsiPath = $msiPath
+            if ($msiPath -like "\\*") {
+                $chromeCacheDir = if (Test-Path "C:\setup") { "C:\setup\Cache\Chrome" } else { Join-Path $env:TEMP "WIS\Cache\Chrome" }
+                if (-not (Test-Path $chromeCacheDir)) {
+                    New-Item -Path $chromeCacheDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                $localMsi = Join-Path $chromeCacheDir (Split-Path $msiPath -Leaf)
+                try {
+                    Copy-Item -Path $msiPath -Destination $localMsi -Force -ErrorAction Stop
+                    if (Test-Path $localMsi) { $effectiveMsiPath = $localMsi }
+                } catch {}
+            }
+            Unblock-File -Path $effectiveMsiPath -ErrorAction SilentlyContinue
+            Remove-Item -Path "$($effectiveMsiPath):Zone.Identifier" -ErrorAction SilentlyContinue
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instaliram Chrome preko Enterprise MSI: $effectiveMsiPath" -Level "STEP" -Component "Chrome"
+            }
+            $null = Wait-MsiMutexAvailable -TimeoutSec 180
+            $chDir = Split-Path $effectiveMsiPath -Parent
+            if ($chDir -like "\\*") { $chDir = "C:\setup" }
+
+            $msiRes = Invoke-SafeMsi -Arguments "/i `"$effectiveMsiPath`" /qn /norestart ALLUSERS=1 /l*v `"C:\setup\chrome_msi.log`"" -WorkingDirectory $chDir -MaxWaitSec 300
+            $mCode = if ($msiRes) { $msiRes.ExitCode } else { -1 }
+            $chromeInstalledAfterMsi = (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
+            if ($mCode -eq 0 -or $mCode -eq 3010 -or $chromeInstalledAfterMsi) {
+                $installedOk = $true
+            }
+        }
+
+        # 2. Fallback na ChromeSetup.exe ili Winget ukoliko MSI nije instalirao
+        if (-not $installedOk) {
+            $chromeCandidates = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "(?i)chrome.*(standalone|setup|install)" -or $_.Name -eq "ChromeStandaloneSetup64.exe" }
+            if ($chromeCandidates -and $chromeCandidates.Count -gt 0) {
+                $cExe = $chromeCandidates[0].FullName
+                Unblock-File -Path $cExe -ErrorAction SilentlyContinue
+                Remove-Item -Path "$($cExe):Zone.Identifier" -ErrorAction SilentlyContinue
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Instaliram Chrome iz: $cExe" -Level "STEP" -Component "Chrome"
+                }
+                $resChrome = Invoke-InstallerWithLocalFallback -InstallerPath $cExe -ArgumentList "/silent /install" -AppName "Chrome" -WaitSeconds 120
+                if ($resChrome.Success) { $installedOk = $true }
+            } else {
+                try {
+                    $null = Start-Process -FilePath "winget.exe" -ArgumentList "install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+                } catch {}
+            }
+        }
+    }
+
+    $appsStatusMap["Chrome"] = if ($stepChrome.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+        $chDetail = if ($stepChrome.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepChrome.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
+        Send-IpcAppUpdate -AppId "Chrome" -Status $appsStatusMap["Chrome"] -Detail $chDetail
+    }
+
+    # =========================================================================
+    # 4. ADOBE ACROBAT PRO - P4.Acrobat
+    # =========================================================================
+    $stepAcrobat = Invoke-WisStep -Phase 4 -StepId "P4.Acrobat" -Title "Adobe Acrobat Pro" -Test {
+        Get-WisAppPresence -AppId "Acrobat"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Adobe Acrobat Pro"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 50 -Phase 4 -PhaseName "Programi" -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
+        }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            Send-IpcAppUpdate -AppId "Acrobat" -Status "RUNNING" -Detail "Instalacija Adobe Acrobat Pro..."
+        }
+
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instalacija Adobe Acrobat preskočena na zahtev servisera." -Level "WARN" -Component "Acrobat"
+            }
+            return
+        }
+
+        $acroDirCandidates = @(
+            (Join-Path $activeProgDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro"),
+            (Join-Path $activeProgDir "Acrobat Pro 2024\Adobe Acrobat Pro"),
+            (Join-Path $activeProgDir "Adobe Acrobat Pro"),
+            "C:\setup\Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro",
+            "C:\setup\Programi\Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro",
+            "C:\setup\Programi\Acrobat Pro 2024\Adobe Acrobat Pro"
+        )
+        if ($Global:SourceRoot) {
+            $acroDirCandidates += (Join-Path $Global:SourceRoot "Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro")
+            $acroDirCandidates += (Join-Path $Global:SourceRoot "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro")
+        }
+        $acroDir = $acroDirCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "AcroPro.msi")) } | Select-Object -First 1
+
+        if (-not $acroDir -and (Test-Path $activeProgDir)) {
+            $foundMsi = Get-ChildItem -Path $activeProgDir -Filter "AcroPro.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($foundMsi) { $acroDir = $foundMsi.DirectoryName }
+        }
+
+        if ($acroDir -and (Test-Path (Join-Path $acroDir "AcroPro.msi"))) {
+            $acroMsi = Join-Path $acroDir "AcroPro.msi"
+            $acroMst = Join-Path $acroDir "AcroPro.mst"
+            $acroMsp = Join-Path $acroDir "AcrobatDCx64Upd2400120604.msp"
+            $setupExe = Join-Path $acroDir "Setup.exe"
+
+            Get-ChildItem -Path $acroDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+                Unblock-File -Path $_.FullName -ErrorAction SilentlyContinue
+                Remove-Item -Path "$($_.FullName):Zone.Identifier" -ErrorAction SilentlyContinue
+            }
+
+            $null = Wait-MsiMutexAvailable -TimeoutSec 180
+            $acroInstalled = $false
+
+            if (Test-Path $setupExe) {
+                $setupProc = Start-Process -FilePath $setupExe -ArgumentList "/sPB /rs" -WorkingDirectory $acroDir -PassThru -WindowStyle Hidden
+                if ($setupProc) { $null = $setupProc.WaitForExit(60000) }
+
+                $swWait = [System.Diagnostics.Stopwatch]::StartNew()
+                while ($swWait.Elapsed.TotalSeconds -lt 300) {
+                    Start-Sleep -Seconds 3
+                    $hasAcroNow = (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or `
+                                  (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or `
+                                  (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe") -or `
+                                  (Test-Path "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe") -or `
+                                  (Test-Path "C:\Program Files\Adobe\Acrobat\Acrobat.exe")
+                    $msiActive = [bool](Get-Process -Name "msiexec" -ErrorAction SilentlyContinue)
+                    if ($hasAcroNow -and -not $msiActive) {
+                        $acroInstalled = $true
+                        break
+                    }
+                    if (-not $msiActive -and ($swWait.Elapsed.TotalSeconds -ge 15)) {
+                        if ($hasAcroNow) { $acroInstalled = $true }
+                        break
+                    }
+                }
+            }
+
+            if (-not $acroInstalled) {
+                $msiArgs = "/i `"$acroMsi`""
+                if (Test-Path $acroMst) { $msiArgs += " TRANSFORMS=`"$acroMst`"" }
+                if (Test-Path $acroMsp) { $msiArgs += " PATCH=`"$acroMsp`"" }
+                $msiArgs += " /qn /norestart ALLUSERS=1 /l*v `"C:\setup\acrobat_msi.log`""
+                $null = Invoke-SafeMsi -Arguments $msiArgs -WorkingDirectory $acroDir -MaxWaitSec 600
+            }
+        }
+    }
+
+    $appsStatusMap["Acrobat"] = if ($stepAcrobat.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+        $acDetail = if ($stepAcrobat.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepAcrobat.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
+        Send-IpcAppUpdate -AppId "Acrobat" -Status $appsStatusMap["Acrobat"] -Detail $acDetail
+    }
+
+    # =========================================================================
+    # 5. MICROSOFT OFFICE 2024 - P4.Office
+    # =========================================================================
+    $stepOffice = Invoke-WisStep -Phase 4 -StepId "P4.Office" -Title "Microsoft Office 2024" -Test {
+        Get-WisAppPresence -AppId "Office"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Office 2024"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 65 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
+        }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            Send-IpcAppUpdate -AppId "Office" -Status "RUNNING" -Detail "Instalacija Office 2024 paketa..."
+        }
+
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Instalacija Office 2024 preskočena na zahtev servisera." -Level "WARN" -Component "Office"
+            }
+            return
+        }
+
+        $officeCandidates = [System.Collections.Generic.List[string]]::new()
+        $seedPaths = @(
+            "C:\setup\Programi\Office 2024\files",
+            "C:\setup\Programi\Office 2024",
+            "C:\setup\Programi\Programi\Office 2024\files",
+            "C:\setup\Programi\Programi\Office 2024"
+        )
+        if ($activeProgDir -and -not ($activeProgDir -like "\\*")) {
+            $seedPaths += @(
+                (Join-Path $activeProgDir "Office 2024\files"),
+                (Join-Path $activeProgDir "Office 2024"),
+                (Join-Path $activeProgDir "Programi\Office 2024\files"),
+                (Join-Path $activeProgDir "Programi\Office 2024")
+            )
+        }
+        foreach ($sp in $seedPaths) {
+            if ($sp -and -not $officeCandidates.Contains($sp)) { $officeCandidates.Add($sp) }
+        }
+        $removableDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -ne 'C:\' -and $_.Root -ne 'c:\' }
+        foreach ($drv in $removableDrives) {
+            $dRoot = $drv.Root.TrimEnd('\')
+            foreach ($rp in @(
+                (Join-Path $dRoot "Programi\Office 2024\files"),
+                (Join-Path $dRoot "Programi\Office 2024"),
+                (Join-Path $dRoot "Office 2024\files"),
+                (Join-Path $dRoot "Office 2024")
+            )) {
+                if ($rp -and -not $officeCandidates.Contains($rp)) { $officeCandidates.Add($rp) }
+            }
+        }
+        if ($Global:SourceRoot) {
+            foreach ($sr in @(
+                (Join-Path $Global:SourceRoot "Programi\Office 2024\files"),
+                (Join-Path $Global:SourceRoot "Office 2024\files"),
+                (Join-Path $Global:SourceRoot "Office 2024")
+            )) {
+                if ($sr -and -not $officeCandidates.Contains($sr)) { $officeCandidates.Add($sr) }
+            }
+        }
+        if ($activeProgDir -and ($activeProgDir -like "\\*")) {
+            foreach ($up in @(
+                (Join-Path $activeProgDir "Office 2024\files"),
+                (Join-Path $activeProgDir "Office 2024"),
+                (Join-Path $activeProgDir "Programi\Office 2024\files"),
+                (Join-Path $activeProgDir "Programi\Office 2024")
+            )) {
+                if ($up -and -not $officeCandidates.Contains($up)) { $officeCandidates.Add($up) }
+            }
+        }
+
+        $officeSourcePath = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+        $officeFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+        if (-not $officeFilesDir) {
+            $officeFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
+        }
+
+        if ((-not $officeSourcePath -or -not $officeFilesDir) -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Lokalni Office 2024 offline paket nije potpun (SourcePath=$officeSourcePath, FilesDir=$officeFilesDir). Preuzimam sa NAS-a..." -Level "WARN" -Component "Office"
+            }
+            Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force | Out-Null
+            $officeSourcePath = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+            $officeFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+            if (-not $officeFilesDir) {
+                $officeFilesDir = $officeCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
+            }
+        }
+        if (-not $officeSourcePath) {
+            $officeSourcePath = $officeCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+        }
+
+        $runOfficeOdtAttempt = {
+            param(
+                [string]$ExecDir,
+                [string]$DataDir,
+                [bool]$UseCleanFallbackXml
+            )
+
+            if (-not $ExecDir) { return }
+            $setupExe = Join-Path $ExecDir "setup.exe"
+            if (-not (Test-Path $setupExe)) { return }
+
+            Unblock-File -Path $setupExe -ErrorAction SilentlyContinue
+            Remove-Item -Path "$($setupExe):Zone.Identifier" -ErrorAction SilentlyContinue
+
+            $effectiveDataDir = $DataDir
+            if (-not $effectiveDataDir -or -not (Test-Path (Join-Path $effectiveDataDir "Office\Data"))) {
+                if (Test-Path (Join-Path $ExecDir "Office\Data")) {
+                    $effectiveDataDir = $ExecDir
+                }
+            }
+
+            $officeVersion = "16.0.14334.20848"
+            if ($effectiveDataDir -and (Test-Path (Join-Path $effectiveDataDir "Office\Data"))) {
+                $vDir = Get-ChildItem -Path (Join-Path $effectiveDataDir "Office\Data") -Directory -Filter "16.0.*" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($vDir) {
+                    $officeVersion = $vDir.Name
+                } else {
+                    $vCab = Get-ChildItem -Path (Join-Path $effectiveDataDir "Office\Data") -File -Filter "v*_16.0.*.cab" -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($vCab -and ($vCab.Name -match '(16\.0\.\d+\.\d+)')) {
+                        $officeVersion = $matches[1]
+                    }
+                }
+            }
+
+            $xmlSearchDirs = @(
+                $ExecDir,
+                $effectiveDataDir,
+                (Split-Path $ExecDir -Parent),
+                "C:\setup\Programi\Office 2024\files",
+                "C:\setup\Programi\Office 2024"
+            ) | Where-Object { $_ } | Select-Object -Unique
+
+            $foundXmlPath = $null
+            foreach ($xDir in $xmlSearchDirs) {
+                foreach ($xName in @("Configure.xml", "configuration.xml")) {
+                    $candXml = Join-Path $xDir $xName
+                    if (Test-Path $candXml) {
+                        $foundXmlPath = $candXml
+                        break
+                    }
+                }
+                if ($foundXmlPath) { break }
+            }
+
+            if (-not (Test-Path "C:\setup")) {
+                New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            $runtimeXmlPath = "C:\setup\Office2024_Install.xml"
+            $finalXmlContent = ""
+
+            if (-not $UseCleanFallbackXml -and $foundXmlPath -and (Test-Path $foundXmlPath)) {
+                try {
+                    Unblock-File -Path $foundXmlPath -ErrorAction SilentlyContinue
+                    Remove-Item -Path "$($foundXmlPath):Zone.Identifier" -ErrorAction SilentlyContinue
+                    $rawXml = [System.IO.File]::ReadAllText($foundXmlPath, [System.Text.Encoding]::UTF8)
+                    $rawXml = $rawXml.TrimStart([char]0xFEFF).Trim()
+                    [xml]$xmlDoc = $rawXml
+                    $addNode = $xmlDoc.SelectSingleNode("//Add")
+                    if ($addNode) {
+                        if ($effectiveDataDir -and (Test-Path (Join-Path $effectiveDataDir "Office\Data"))) {
+                            $addNode.SetAttribute("SourcePath", $effectiveDataDir)
+                        }
+                        $curVer = $addNode.GetAttribute("Version")
+                        if ([string]::IsNullOrWhiteSpace($curVer)) {
+                            if ($officeVersion) { $addNode.SetAttribute("Version", $officeVersion) }
+                        } elseif ($effectiveDataDir -and (Test-Path (Join-Path $effectiveDataDir "Office\Data")) -and -not (Test-Path (Join-Path $effectiveDataDir "Office\Data\$curVer"))) {
+                            if ($officeVersion -and (Test-Path (Join-Path $effectiveDataDir "Office\Data\$officeVersion"))) {
+                                $addNode.SetAttribute("Version", $officeVersion)
+                            }
+                        }
+                    }
+                    $finalXmlContent = $xmlDoc.OuterXml
+                } catch {
+                    $finalXmlContent = ""
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($finalXmlContent)) {
+                $srcAttr = if ($effectiveDataDir) { " SourcePath=`"$effectiveDataDir`"" } else { "" }
+                $finalXmlContent = @"
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="PerpetualVL2021" Version="$officeVersion"$srcAttr>
+    <Product ID="ProPlus2021Volume">
+      <Language ID="en-us" />
+      <ExcludeApp ID="Groove" />
+      <ExcludeApp ID="Lync" />
+      <ExcludeApp ID="OneDrive" />
+      <ExcludeApp ID="Teams" />
+    </Product>
+  </Add>
+  <Display Level="None" AcceptEULA="TRUE" />
+  <Updates Enabled="TRUE" />
+  <Property Name="AUTOACTIVATE" Value="1" />
+</Configuration>
+"@
+            }
+
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($runtimeXmlPath, $finalXmlContent, $utf8NoBom)
+            Unblock-File -Path $runtimeXmlPath -ErrorAction SilentlyContinue
+
+            # Zaustavljanje zaostalih Office / ClickToRun procesa
+            @("OfficeClickToRun", "OfficeC2RClient", "appvshnotify") | ForEach-Object {
+                Get-Process -Name $_ -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            Get-Process -Name "setup" -ErrorAction SilentlyContinue | Where-Object {
+                $_.Path -like "*Office*" -or $_.Path -like "*setup*"
+            } | Stop-Process -Force -ErrorAction SilentlyContinue
+
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                $origLabel = if ($foundXmlPath) { $foundXmlPath } else { "(generisan)" }
+                Write-ServisLog "Pokrecem offline ODT instalaciju: `"$setupExe`" /configure `"$runtimeXmlPath`" (SourcePath=$effectiveDataDir, Version=$officeVersion, OrigXml=$origLabel, Fallback=$UseCleanFallbackXml)" -Level "STEP" -Component "Office"
+            }
+
+            $cfgArg = "/configure `"$runtimeXmlPath`""
+            $p = Start-Process -FilePath $setupExe -ArgumentList $cfgArg -WorkingDirectory $ExecDir -PassThru -WindowStyle Hidden
+            if ($p) {
+                $odtWait = 0
+                while ((-not $p.HasExited) -and ($odtWait -lt 420)) {
+                    Start-Sleep -Seconds 5
+                    $odtWait += 5
+                    if (($odtWait % 30 -eq 0) -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+                        $offPct = [math]::Min(78, 65 + [int](($odtWait / 420) * 13))
+                        Send-IpcProgress -Progress $offPct -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024 (${odtWait}s)..."
+                    }
+                }
+                if (-not $p.HasExited) {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Office ODT setup.exe prekoracio timeout od 420s. Prekidam proces..." -Level "WARN" -Component "Office"
+                    }
+                    try { $p.Kill() } catch {}
+                } else {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        $oCode = $p.ExitCode
+                        $oLvl = if ($oCode -eq 0 -or $oCode -eq 3010) { "SUCCESS" } else { "WARN" }
+                        Write-ServisLog "Office ODT setup.exe zavrsen (ExitCode=$oCode, Trajanje=${odtWait}s)." -Level $oLvl -Component "Office"
+                    }
+                }
+            }
+
+            # Cekanje da ClickToRun zavrsi upis WINWORD.EXE / EXCEL.EXE i registraciju
+            $c2rWait = 0
+            while ($c2rWait -lt 120) {
+                $wordNow = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                           (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                           (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or `
+                           (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
+                           (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE")
+                $regNow = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" -Name "ProductReleaseIds" -ErrorAction SilentlyContinue) -or `
+                          (Test-Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\ProductReleaseIDs") -or `
+                          (Test-Path "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun\ProductReleaseIDs")
+                $setupActive = Get-Process -Name "setup" -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Path -like "*Office*" -or $_.Path -like "*setup*"
+                }
+
+                if ($wordNow -and $regNow -and (-not $setupActive)) {
+                    Start-Sleep -Seconds 3
+                    break
+                }
+                if ($wordNow -and (-not $setupActive) -and ($c2rWait -ge 10)) {
+                    Start-Sleep -Seconds 2
+                    break
+                }
+                Start-Sleep -Seconds 2
+                $c2rWait += 2
+            }
+        }
+
+        if ($officeFilesDir) {
+            & $runOfficeOdtAttempt $officeFilesDir $officeSourcePath $false
+
+            $postOfficeCheck = Get-WisAppPresence -AppId "Office"
+            if (-not $postOfficeCheck.Installed) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Prvi pokusaj instalacije Office 2024 nije stvorio WINWORD.EXE/EXCEL.EXE. Pokrecem prinudno NAS osvezavanje i ponovni pokusaj sa cistim XML-om..." -Level "WARN" -Component "Office"
+                }
+                if (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue) {
+                    Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force | Out-Null
+                    $retrySourcePath = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+                    $retryFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
+                    if (-not $retryFilesDir) {
+                        $retryFilesDir = $officeCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
+                    }
+                    if ($retryFilesDir) { $officeFilesDir = $retryFilesDir }
+                    if ($retrySourcePath) { $officeSourcePath = $retrySourcePath }
+                }
+                if ($officeFilesDir) {
+                    & $runOfficeOdtAttempt $officeFilesDir $officeSourcePath $true
+                }
+            }
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Office 2024 instalacioni paket (setup.exe) nije pronadjen ni lokalno ni na NAS-u." -Level "ERROR" -Component "Office"
+            }
+        }
+    }
+
+    $appsStatusMap["Office"] = if ($stepOffice.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+        $offDetail = if ($stepOffice.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepOffice.State -eq "OK") { "Instaliran Office 2024" } else { "Neuspešno - Nastavak" }
+        Send-IpcAppUpdate -AppId "Office" -Status $appsStatusMap["Office"] -Detail $offDetail
+    }
+
+    # =========================================================================
+    # 6. BATTERYBAR - P4.BatteryBar
+    # =========================================================================
+    $stepBattery = Invoke-WisStep -Phase 4 -StepId "P4.BatteryBar" -Title "BatteryBar indikator baterije" -Test {
+        Get-WisAppPresence -AppId "BatteryBar"
+    } -Action {
+        if (-not $isLaptop) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Uređaj nema bateriju (Desktop). BatteryBar nije potreban." -Level "INFO" -Component "BatteryBar"
+            }
+            return
+        }
+
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - BatteryBar"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 80 -Phase 4 -PhaseName "Programi" -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
+        }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            Send-IpcAppUpdate -AppId "BatteryBar" -Status "RUNNING" -Detail "Provera baterije i instalacija..."
+        }
+
         $targetBbDir = "C:\Program Files\BatteryBar"
         $targetBbExe = Join-Path $targetBbDir "BatteryBar.exe"
         $installedExe = @(
@@ -3143,841 +3968,107 @@ function Invoke-Phase4Apps {
             "C:\Program Files (x86)\BatteryBar\BatteryBar.exe"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-        try {
-            if ($installedExe -and (Test-Path $installedExe)) {
-                # BatteryBar već postoji na disku - preskačemo bilo kakav instaler ili raspakivanje paketa
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "BatteryBar je već prisutan na disku ($installedExe). Preskačem instaler i raspakivanje; primenjujem konfiguraciju." -Level "SUCCESS" -Component "BatteryBar"
-                }
-                $batteryConfigOk = Set-BatteryBarConfiguration -InstalledExe $installedExe
-                $batteryOk = [bool]$batteryConfigOk
-            } else {
-                # BatteryBar.exe ne postoji - tražimo isključivo prenosivi paket (nikada ne pokretati instaler ako je exe prisutan)
-                $bbFolderCandidates = @(
-                    (Join-Path $activeProgDir "BatteryBar"),
-                    (Join-Path $LocalSetupDir "Programi\BatteryBar"),
-                    "C:\setup\Programi\BatteryBar",
-                    "C:\setup\Programi\Programi\BatteryBar",
-                    "D:\Programi\BatteryBar",
-                    "E:\Programi\BatteryBar"
-                )
-                if (Get-Command Get-ServisProgramiRoot -ErrorAction SilentlyContinue) {
-                    $pRoot = Get-ServisProgramiRoot
-                    if ($pRoot) {
-                        $bbFolderCandidates += (Join-Path $pRoot "BatteryBar")
-                        $bbFolderCandidates += (Join-Path $pRoot "Programi\BatteryBar")
-                    }
-                }
-
-                $bbFoundDir = $bbFolderCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "BatteryBar.exe")) } | Select-Object -First 1
-
-                if (-not $bbFoundDir) {
-                    $foundItem = Get-ChildItem -Path $activeProgDir -Filter "BatteryBar.exe" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($foundItem) {
-                        $bbFoundDir = $foundItem.DirectoryName
-                    }
-                }
-
-                if (-not $bbFoundDir -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "BatteryBar paket nije pronađen u $activeProgDir. Pokrećem preuzimanje sa NAS-a..." -Level "INFO" -Component "BatteryBar"
-                    }
-                    Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" | Out-Null
-                    $bbFoundDir = $bbFolderCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "BatteryBar.exe")) } | Select-Object -First 1
-                }
-
-                if ($bbFoundDir -and (Test-Path (Join-Path $bbFoundDir "BatteryBar.exe"))) {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Pronađen BatteryBar prenosivi paket u: $bbFoundDir. Kopiram u $targetBbDir..." -Level "STEP" -Component "BatteryBar"
-                    }
-                    if (-not (Test-Path $targetBbDir)) {
-                        New-Item -Path $targetBbDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
-                    }
-                    Copy-Item -Path (Join-Path $bbFoundDir "*") -Destination $targetBbDir -Recurse -Force -ErrorAction SilentlyContinue
-
-                    # Rekurzivna deblokada i čišćenje Zone.Identifier za BatteryBar
-                    Get-ChildItem -Path $targetBbDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-                        Unblock-File -Path $_.FullName -ErrorAction SilentlyContinue
-                        Remove-Item -Path "$($_.FullName):Zone.Identifier" -ErrorAction SilentlyContinue
-                    }
-
-                    if (Test-Path $targetBbExe) {
-                        $installedExe = $targetBbExe
-                        $batteryConfigOk = Set-BatteryBarConfiguration -InstalledExe $installedExe
-                        $batteryOk = [bool]$batteryConfigOk
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "BatteryBar prenosivi fajlovi uspešno kopirani u $targetBbDir." -Level "SUCCESS" -Component "BatteryBar"
-                        }
-                    } else {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "BatteryBar prenosivi paket nije pronađen ili kopiranje nije uspelo, preskačem..." -Level "WARN" -Component "BatteryBar"
-                        }
-                    }
-                } else {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "BatteryBar prenosivi paket nije pronađen, preskačem..." -Level "WARN" -Component "BatteryBar"
-                    }
-                    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-                        Send-IpcAppUpdate -AppId "BatteryBar" -Status "WARN" -Detail "Preskočeno - paket nije pronađen"
-                    }
-                }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri obradi BatteryBar: $($_.Exception.Message), preskačem bez zaustavljanja sistema." -Level "WARN" -Component "BatteryBar"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "BatteryBar upozorenje: $($_.Exception.Message), nastavljam dalje..." -Level "WARN" -Phase 4
-            }
-            $batteryOk = $false
-        }
-
-        # Fizička provera - ako postoji na disku, označi status OK
-        $bbPhysical = (Test-Path "C:\Program Files\BatteryBar\BatteryBar.exe") -or (Test-Path "C:\Program Files (x86)\BatteryBar\BatteryBar.exe")
-        if ($bbPhysical) {
-            $appsStatusMap["BatteryBar"] = "OK"
-            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-                Send-IpcAppUpdate -AppId "BatteryBar" -Status "OK" -Detail "Podešen BatteryBar"
-            }
+        if ($installedExe -and (Test-Path $installedExe)) {
+            Set-BatteryBarConfiguration -InstalledExe $installedExe | Out-Null
         } else {
-            $appsStatusMap["BatteryBar"] = "WARN"
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "BatteryBar prenosivi paket nije pronađen ili BatteryBar.exe nedostaje, nastavljam dalje (status WARN)..." -Level "WARN" -Component "BatteryBar"
-            }
-            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-                Send-IpcAppUpdate -AppId "BatteryBar" -Status "WARN" -Detail "Preskočeno - paket nije pronađen"
+            $bbFolderCandidates = @(
+                (Join-Path $activeProgDir "BatteryBar"),
+                (Join-Path $LocalSetupDir "Programi\BatteryBar"),
+                "C:\setup\Programi\BatteryBar"
+            )
+            $bbFoundDir = $bbFolderCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "BatteryBar.exe")) } | Select-Object -First 1
+            if ($bbFoundDir) {
+                if (-not (Test-Path $targetBbDir)) {
+                    New-Item -Path $targetBbDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Copy-Item -Path (Join-Path $bbFoundDir "*") -Destination $targetBbDir -Exclude @("ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll", "BatteryBarSetup*.exe") -Recurse -Force -ErrorAction SilentlyContinue
+                if (Test-Path $targetBbExe) {
+                    Set-BatteryBarConfiguration -InstalledExe $targetBbExe | Out-Null
+                }
             }
         }
     }
 
-    # 3. MICROSOFT OFFICE 2024
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Office 2024"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 45 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
-    }
+    $appsStatusMap["BatteryBar"] = if ($stepBattery.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "Office" -Status "RUNNING" -Detail "Instalacija Office 2024 paketa..."
+        $bbDetail = if ($stepBattery.State -eq "SKIPPED_DONE") {
+            if (-not $isLaptop) { "Preskočeno (Desktop)" } else { "Već instalirano" }
+        } elseif ($stepBattery.State -eq "OK") {
+            "Podešen BatteryBar"
+        } else {
+            "Preskočeno - paket nije pronađen"
+        }
+        Send-IpcAppUpdate -AppId "BatteryBar" -Status $appsStatusMap["BatteryBar"] -Detail $bbDetail
     }
 
-    $officeOk = $false
-    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Instalacija Office 2024 preskočena na zahtev servisera." -Level "WARN" -Component "Office"
+    # =========================================================================
+    # 7. RADNE PREČICE NA RADNOJ POVRŠINI - P4.Shortcuts
+    # =========================================================================
+    $stepShortcuts = Invoke-WisStep -Phase 4 -StepId "P4.Shortcuts" -Title "Radne prečice na radnoj površini" -Test {
+        Get-WisAppPresence -AppId "Shortcuts"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Prečice"
         }
-        $appsStatusMap["Office"] = "WARN"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Office" -Status "WARN" -Detail "Preskočeno"
-        }
-    } else {
-        try {
-            $officeInstalled = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                               (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                               (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
-            $officeDetail = "Neuspešno - Nastavak"
-            if ($officeInstalled) {
-                $officeOk = $true
-                $officeDetail = "Instaliran Office 2024"
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Microsoft Office je već instaliran na sistemu." -Level "SUCCESS" -Component "Office"
-                }
-            } else {
-                # 1) Pretraga kandidata za Office folder (Lokalno u $activeProgDir\Office 2024 ili C:\setup\Programi\Office 2024)
-                $officeCandidates = @(
-                    (Join-Path $activeProgDir "Office 2024\files"),
-                    (Join-Path $activeProgDir "Office 2024"),
-                    (Join-Path $activeProgDir "Programi\Office 2024\files"),
-                    (Join-Path $activeProgDir "Programi\Office 2024"),
-                    "C:\setup\Programi\Office 2024\files",
-                    "C:\setup\Programi\Office 2024",
-                    "C:\setup\Programi\Programi\Office 2024\files",
-                    "C:\setup\Programi\Programi\Office 2024"
-                )
-
-                # 2) Pretraga na svim priključenim diskovima osim C:\ (Programi\Office 2024 ili oem\Programi\Office 2024)
-                $removableDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Root -ne 'C:\' -and $_.Root -ne 'c:\' }
-                foreach ($drv in $removableDrives) {
-                    $dRoot = $drv.Root.TrimEnd('\')
-                    $officeCandidates += (Join-Path $dRoot "Programi\Office 2024\files")
-                    $officeCandidates += (Join-Path $dRoot "Programi\Office 2024")
-                    $officeCandidates += (Join-Path $dRoot "oem\Programi\Office 2024\files")
-                    $officeCandidates += (Join-Path $dRoot "oem\Programi\Office 2024")
-                    $officeCandidates += (Join-Path $dRoot "Office 2024\files")
-                    $officeCandidates += (Join-Path $dRoot "Office 2024")
-                }
-                if ($Global:SourceRoot) {
-                    $officeCandidates += (Join-Path $Global:SourceRoot "Programi\Office 2024\files")
-                    $officeCandidates += (Join-Path $Global:SourceRoot "Programi\Office 2024")
-                    $officeCandidates += (Join-Path $Global:SourceRoot "oem\Programi\Office 2024\files")
-                    $officeCandidates += (Join-Path $Global:SourceRoot "oem\Programi\Office 2024")
-                }
-
-                $officeFilesDir = $officeCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
-
-                # 3) Ako paket nije pronađen, automatski pozovi Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" pretražujući Programi deljenje na 192.168.170.254
-                if (-not $officeFilesDir) {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Lokalni Office 2024 paketi nisu pronađeni na SSD/USB diskovima. Pokušavam NAS preuzimanje (Programi na 192.168.170.254)..." -Level "WARN" -Component "Office"
-                    }
-                    if (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue) {
-                        Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" | Out-Null
-                        $officeFilesDir = $officeCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
-                    }
-
-                    # Direktni fallback koristi zajednicku detekciju i autentifikaciju.
-                    if (-not $officeFilesDir) {
-                        $nasProgramiRoot = Get-ServisProgramiRoot -LocalSetupDir $LocalSetupDir
-                        $uncShares = @(
-                            "\\192.168.170.254\Programi",
-                            "\\truenas.servis\Programi",
-                            "\\192.168.170.254\WIS\Programi",
-                            "\\truenas.servis\WIS\Programi",
-                            "\\192.168.170.254\Servis\Programi",
-                            "\\truenas.servis\Servis\Programi"
-                        )
-                        if ($nasProgramiRoot -and $nasProgramiRoot.StartsWith('\\')) {
-                            $uncShares = @($nasProgramiRoot) + $uncShares
-                        }
-
-                        foreach ($programRoot in ($uncShares | Select-Object -Unique)) {
-                            $uncCandidates = @(
-                                (Join-Path $programRoot "Office 2024\files"),
-                                (Join-Path $programRoot "Office 2024")
-                            )
-                            $foundUnc = $uncCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "setup.exe")) } | Select-Object -First 1
-                            if ($foundUnc) {
-                                $officeFilesDir = $foundUnc
-                                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                    Write-ServisLog "Pronađen Office 2024 na direktnom NAS deljenju: $officeFilesDir" -Level "INFO" -Component "Office"
-                                }
-                                break
-                            }
-                        }
-                    }
-                }
-
-                # b) Ako je $officeFilesDir pronađen:
-                if ($officeFilesDir) {
-                    # Detektovati direktorijum koji sadrzi Office\Data ($officeSourcePath)
-                    $sourceCandidates = @(
-                        $officeFilesDir,
-                        (Split-Path $officeFilesDir -Parent),
-                        $activeProgDir,
-                        "C:\setup\Programi\Office 2024",
-                        "C:\setup\Programi\Office 2024\files",
-                        "C:\setup\Programi"
-                    )
-                    $officeSourcePath = $sourceCandidates | Where-Object { 
-                        $_ -and (Test-Path (Join-Path $_ "Office\Data")) 
-                    } | Select-Object -First 1
-
-                    if (-not $officeSourcePath) {
-                        $officeSourcePath = $officeFilesDir
-                    }
-
-                    # Detektovati offline verziju iz $officeSourcePath\Office\Data (pretražiti 16.0.*, default 16.0.14334.20848)
-                    $officeVersion = "16.0.14334.20848"
-                    $officeDataDir = Join-Path $officeSourcePath "Office\Data"
-                    if (Test-Path $officeDataDir) {
-                        $verDir = Get-ChildItem -Path $officeDataDir -Directory -Filter "16.0.*" -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($verDir) {
-                            $officeVersion = $verDir.Name
-                        } else {
-                            $verCab = Get-ChildItem -Path $officeDataDir -File -Filter "v64_16.0.*.cab" -ErrorAction SilentlyContinue | Select-Object -First 1
-                            if ($verCab -and ($verCab.Name -match 'v64_(16\.0\.[0-9]+(?:\.[0-9]+)?)\.cab')) {
-                                $officeVersion = $matches[1]
-                            }
-                        }
-                    }
-
-                    $odtSetup = Join-Path $officeFilesDir "setup.exe"
-                    $odtConfig = Join-Path $officeFilesDir "Configure.xml"
-
-                    if (-not (Test-Path $odtConfig)) {
-                        $cleanConfig = @"
-<Configuration>
-  <Add OfficeClientEdition="64" Channel="PerpetualVL2021" Version="$officeVersion" SourcePath="$officeSourcePath">
-    <Product ID="ProPlus2021Volume">
-      <Language ID="en-us" />
-      <ExcludeApp ID="Groove" />
-      <ExcludeApp ID="Lync" />
-      <ExcludeApp ID="OneDrive" />
-      <ExcludeApp ID="Teams" />
-    </Product>
-  </Add>
-  <Display Level="None" AcceptEULA="TRUE" />
-  <Updates Enabled="TRUE" />
-  <Property Name="AUTOACTIVATE" Value="1" />
-</Configuration>
-"@
-                        try {
-                            Set-Content -Path $odtConfig -Value $cleanConfig -Encoding UTF8 -Force -ErrorAction Stop
-                        } catch {
-                            $odtConfig = "C:\setup\Configure.xml"
-                            Set-Content -Path $odtConfig -Value $cleanConfig -Encoding UTF8 -Force
-                        }
-                    }
-
-                    $effectiveOdtSetup = $odtSetup
-                    $effectiveOdtConfig = $odtConfig
-
-                    # Ako je ODT setup na mreži, keširamo ga lokalno pre pokretanja radi garancije 0 sigurnosnih dijaloga
-                    if ($odtSetup -like "\\*") {
-                        $odtCacheDir = if (Test-Path "C:\setup") { "C:\setup\Cache\Office" } else { Join-Path $env:TEMP "WIS\Cache\Office" }
-                        if (-not (Test-Path $odtCacheDir)) { New-Item -ItemType Directory -Path $odtCacheDir -Force -ErrorAction SilentlyContinue | Out-Null }
-                        $cachedOdtSetup = Join-Path $odtCacheDir "setup.exe"
-                        try {
-                            Copy-Item -Path $odtSetup -Destination $cachedOdtSetup -Force -ErrorAction SilentlyContinue
-                            if (Test-Path $cachedOdtSetup) {
-                                $effectiveOdtSetup = $cachedOdtSetup
-                            }
-                        } catch {}
-                    }
-
-                    Unblock-File -Path $effectiveOdtSetup -ErrorAction SilentlyContinue
-                    Remove-Item -Path "$($effectiveOdtSetup):Zone.Identifier" -ErrorAction SilentlyContinue
-                    Unblock-File -Path $effectiveOdtConfig -ErrorAction SilentlyContinue
-                    Remove-Item -Path "$($effectiveOdtConfig):Zone.Identifier" -ErrorAction SilentlyContinue
-
-                    # 4) Provera postojanja setup.exe i Configure.xml pre pokretanja tihe instalacije
-                    if ((Test-Path $effectiveOdtSetup) -and (Test-Path $effectiveOdtConfig)) {
-                        # Zaustaviti eventualno zaglavljene ODT/ClickToRun procese
-                        @("setup", "officeclicktorun", "officec2rclient", "appvshnotify") | ForEach-Object {
-                            Get-Process -Name $_ -ErrorAction SilentlyContinue | Where-Object { 
-                                $_.Path -like "*Office*" -or $_.Path -like "*setup*" 
-                            } | Stop-Process -Force -ErrorAction SilentlyContinue
-                        }
-
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Pokrecem 100% offline Office instaler: $effectiveOdtSetup /configure `"$effectiveOdtConfig`" (Verzija: $officeVersion, Izvor: $officeSourcePath)" -Level "STEP" -Component "Office"
-                        }
-
-                        # Pokrenuti ODT
-                        $odtWorkDir = Split-Path $effectiveOdtSetup -Parent
-                        $p = Start-Process -FilePath $effectiveOdtSetup -ArgumentList "/configure `"$effectiveOdtConfig`"" -WorkingDirectory $odtWorkDir -PassThru -WindowStyle Hidden
-
-                    # Pratiti proces i cekati do 300 sekundi dok proces ne zavrsi uz IPC telemetriju
-                    $odtMaxWait = 300
-                    $elapsed = 0
-                    while ($elapsed -lt $odtMaxWait) {
-                        if ($p.HasExited) {
-                            break
-                        }
-
-                        $earlyWord = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                                     (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                                     (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
-                        $earlyExcel = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or
-                                      (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or
-                                      (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE")
-                        if ($earlyWord -and $earlyExcel -and ($elapsed -ge 60)) {
-                            $c2rProc = Get-Process -Name "OfficeClickToRun" -ErrorAction SilentlyContinue
-                            if (-not $c2rProc) {
-                                break
-                            }
-                        }
-
-                        Start-Sleep -Seconds 5
-                        $elapsed += 5
-
-                        if ($elapsed % 15 -eq 0) {
-                            $progVal = [Math]::Min(55, 45 + [int]($elapsed / 30))
-                            if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                                Send-IpcProgress -Progress $progVal -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Office 2024 ($elapsed s)..."
-                            }
-                            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-                                Send-IpcAppUpdate -AppId "Office" -Status "RUNNING" -Detail "Instalacija u toku ($elapsed s)..."
-                            }
-                        }
-                    }
-
-                    if (-not $p.HasExited) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Office setup proces ($($p.Id)) prekoračio 300s. Proveravam status servisa..." -Level "WARN" -Component "Office"
-                        }
-                    } else {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Office setup proces završen sa izlaznim kodom: $($p.ExitCode) nakon $elapsed s." -Level "INFO" -Component "Office"
-                        }
-                    }
-
-                    # U petlji do 60 sekundi proveravati WINWORD.EXE i registraciju u HKLM:\SOFTWARE\Microsoft\Office\ClickToRun
-                    $c2rWait = 0
-                    while ($c2rWait -lt 60) {
-                        $hasWord = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                                   (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or
-                                   (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
-                        $hasExcel = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or
-                                    (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or
-                                    (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE")
-
-                        if ($hasWord -and $hasExcel) {
-                            $officeOk = $true
-                            break
-                        }
-                        Start-Sleep -Seconds 3
-                        $c2rWait += 3
-                    }
-
-                    # Proveriti prisustvo WINWORD.EXE i EXCEL.EXE
-                    if ($officeOk) {
-                        $officeDetail = "Instaliran Office 2024"
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Microsoft Office 2024 uspešno verifikovan na disku (WINWORD.EXE i EXCEL.EXE pronađeni)." -Level "SUCCESS" -Component "Office"
-                        }
-                    } else {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Office instaler je završio, ali WINWORD.EXE ili EXCEL.EXE nisu pronađeni." -Level "WARN" -Component "Office"
-                        }
-                    }
-
-                    # 5) HIBRIDNI RETRY & LOCAL FALLBACK ZA OFFICE 2024
-                    # Ako direktno pokretanje sa SMB-a nije potvrdilo instalaciju, preuzimamo paket u C:\setup\temp\Office2024
-                    if (-not $officeOk -and ($officeFilesDir -like "\\*")) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Direktno SMB pokretanje za Office 2024 nije potvrdilo instalaciju. Pokrećem Retry & Local Fallback (preuzimanje u privremeni folder)..." -Level "WARN" -Component "Office"
-                        }
-                        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                            Send-IpcProgress -Progress 50 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024 (Fallback)" -StatusMessage "Preuzimanje Office paketa u C:\setup\temp (Local Fallback)..."
-                        }
-
-                        $tempOfficeDir = "C:\setup\temp\Office2024"
-                        try {
-                            if (Test-Path $tempOfficeDir) { Remove-Item -Path $tempOfficeDir -Recurse -Force -ErrorAction SilentlyContinue }
-                            New-Item -ItemType Directory -Path $tempOfficeDir -Force -ErrorAction SilentlyContinue | Out-Null
-
-                            $srcCopyDir = if ($officeSourcePath -and (Test-Path (Join-Path $officeSourcePath "Office\Data"))) { $officeSourcePath } else { $officeFilesDir }
-                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Kopiram Office fajlove iz: $srcCopyDir u: $tempOfficeDir" -Level "STEP" -Component "Office"
-                            }
-
-                            & robocopy.exe "$srcCopyDir" "$tempOfficeDir" /E /R:2 /W:3 /NP /NDL /NFL /NJH /NJS | Out-Null
-
-                            $localOdtSetup = Join-Path $tempOfficeDir "setup.exe"
-                            if (-not (Test-Path $localOdtSetup)) {
-                                $setupInFiles = Join-Path $tempOfficeDir "files\setup.exe"
-                                if (Test-Path $setupInFiles) { $localOdtSetup = $setupInFiles }
-                            }
-
-                            $localOdtConfig = "C:\setup\Configure.xml"
-                            $localConfigContent = @"
-<Configuration>
-  <Add OfficeClientEdition="64" Channel="PerpetualVL2021" Version="$officeVersion" SourcePath="$tempOfficeDir">
-    <Product ID="ProPlus2021Volume">
-      <Language ID="en-us" />
-      <ExcludeApp ID="Groove" />
-      <ExcludeApp ID="Lync" />
-      <ExcludeApp ID="OneDrive" />
-      <ExcludeApp ID="Teams" />
-    </Product>
-  </Add>
-  <Display Level="None" AcceptEULA="TRUE" />
-  <Updates Enabled="TRUE" />
-  <Property Name="AUTOACTIVATE" Value="1" />
-</Configuration>
-"@
-                            Set-Content -Path $localOdtConfig -Value $localConfigContent -Encoding UTF8 -Force
-                            Unblock-File -Path $localOdtSetup -ErrorAction SilentlyContinue
-                            Remove-Item -Path "$($localOdtSetup):Zone.Identifier" -ErrorAction SilentlyContinue
-                            Unblock-File -Path $localOdtConfig -ErrorAction SilentlyContinue
-                            Remove-Item -Path "$($localOdtConfig):Zone.Identifier" -ErrorAction SilentlyContinue
-
-                            if (Test-Path $localOdtSetup) {
-                                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                    Write-ServisLog "Pokrećem lokalni ODT fallback: $localOdtSetup /configure `"$localOdtConfig`"" -Level "STEP" -Component "Office"
-                                }
-                                $pFallback = Start-Process -FilePath $localOdtSetup -ArgumentList "/configure `"$localOdtConfig`"" -WorkingDirectory (Split-Path $localOdtSetup -Parent) -PassThru -WindowStyle Hidden
-                                $fElapsed = 0
-                                while ($fElapsed -lt 300) {
-                                    if ($pFallback.HasExited) { break }
-                                    $hasW = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE")
-                                    $hasE = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE")
-                                    if ($hasW -and $hasE -and ($fElapsed -ge 60)) { break }
-                                    Start-Sleep -Seconds 5
-                                    $fElapsed += 5
-                                }
-
-                                $hasWordFallback = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE")
-                                $hasExcelFallback = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE")
-                                if ($hasWordFallback -and $hasExcelFallback) {
-                                    $officeOk = $true
-                                    $officeDetail = "Instaliran Office 2024 (Local Fallback)"
-                                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                        Write-ServisLog "Microsoft Office 2024 uspešno instaliran kroz lokalni fallback." -Level "SUCCESS" -Component "Office"
-                                    }
-                                }
-                            }
-                        } catch {
-                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Upozorenje pri lokalnom Office fallback-u: $($_.Exception.Message)" -Level "WARN" -Component "Office"
-                            }
-                        } finally {
-                            # Obavezno ciscenje privremenog foldera
-                            if (Test-Path $tempOfficeDir) {
-                                Remove-Item -Path $tempOfficeDir -Recurse -Force -ErrorAction SilentlyContinue
-                            }
-                        }
-                    }
-                } else {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Office 2024 instaler ili Configure.xml nedostaje ($odtSetup / $odtConfig)." -Level "WARN" -Component "Office"
-                    }
-                }
-            } else {
-                # c) Ako $officeFilesDir nije pronađen:
-                    $officeDetail = "Nedostaju instalacioni paketi"
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Nedostaju instalacioni paketi: Office 2024 setup.exe nije pronađen ni na lokalnom disku ni na NAS resursu." -Level "ERROR" -Component "Office"
-                    }
-                    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                        Send-IpcLog -Message "Office 2024 paketi nisu pronađeni (ni lokalno ni na NAS-u)." -Level "ERROR" -Phase 4
-                    }
-                    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-                        Send-IpcAppUpdate -AppId "Office" -Status "WARN" -Detail "Nedostaju instalacioni paketi"
-                    }
-                }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri instalaciji Office: $($_.Exception.Message)" -Level "WARN" -Component "Office"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "Greška pri instalaciji Office: $($_.Exception.Message), nastavljam dalje..." -Level "WARN" -Phase 4
-            }
-        }
-        $appsStatusMap["Office"] = if ($officeOk) { "OK" } else { "WARN" }
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Office" -Status $appsStatusMap["Office"] -Detail $officeDetail
-        }
-    }
-
-    # 4. GOOGLE CHROME
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Google Chrome"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 62 -Phase 4 -PhaseName "Programi" -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
-    }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "Chrome" -Status "RUNNING" -Detail "Instalacija Chrome pretraživača..."
-    }
-
-    $chromeOk = $false
-    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Instalacija Google Chrome preskočena na zahtev servisera." -Level "WARN" -Component "Chrome"
-        }
-        $appsStatusMap["Chrome"] = "WARN"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Chrome" -Status "WARN" -Detail "Preskočeno"
-        }
-    } else {
-        try {
-            $chromeInstalled = (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
-                                (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
-            if ($chromeInstalled) {
-                $chromeOk = $true
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Google Chrome je već instaliran." -Level "SUCCESS" -Component "Chrome"
-                }
-            } else {
-                # 1. Prioritetna pretraga za GoogleChromeStandaloneEnterprise64.msi (*chrome*.msi)
-                $chromeMsiCandidates = @(
-                    (Join-Path $activeProgDir "GoogleChromeStandaloneEnterprise64.msi"),
-                    (Join-Path $activeProgDir "Programi\GoogleChromeStandaloneEnterprise64.msi"),
-                    "C:\setup\Programi\GoogleChromeStandaloneEnterprise64.msi",
-                    "C:\setup\Programi\Programi\GoogleChromeStandaloneEnterprise64.msi"
-                )
-                if ($Global:SourceRoot) {
-                    $chromeMsiCandidates += (Join-Path $Global:SourceRoot "Programi\GoogleChromeStandaloneEnterprise64.msi")
-                    $chromeMsiCandidates += (Join-Path $Global:SourceRoot "GoogleChromeStandaloneEnterprise64.msi")
-                }
-                $msiPath = $chromeMsiCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-                if (-not $msiPath -and (Test-Path $activeProgDir)) {
-                    $foundMsi = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($foundMsi) { $msiPath = $foundMsi.FullName }
-                }
-
-                if ($msiPath) {
-                    Unblock-File -Path $msiPath -ErrorAction SilentlyContinue
-                    Remove-Item -Path "$($msiPath):Zone.Identifier" -ErrorAction SilentlyContinue
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Instaliram Chrome preko Enterprise MSI: $msiPath" -Level "STEP" -Component "Chrome"
-                    }
-                    if (Get-Command Wait-MsiMutexAvailable -ErrorAction SilentlyContinue) {
-                        Wait-MsiMutexAvailable -TimeoutSec 180
-                    }
-                    $chDir = Split-Path $msiPath -Parent
-                    $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$msiPath`" /qn /norestart ALLUSERS=1" -WorkingDirectory $chDir -Wait -PassThru -WindowStyle Hidden
-                    $mCode = if ($msiProc) { $msiProc.ExitCode } else { -1 }
-                    if ($mCode -eq 0 -or $mCode -eq 3010 -or
-                        (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or
-                        (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
-                        $chromeOk = $true
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Chrome Enterprise MSI uspešno instaliran (ExitCode: $mCode)." -Level "SUCCESS" -Component "Chrome"
-                        }
-                    } else {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Chrome MSI vratio kod $mCode. Pokrećem fallback..." -Level "WARN" -Component "Chrome"
-                        }
-                    }
-                }
-
-                # 2. Fallback na ChromeSetup.exe / *chrome*.exe ili Winget ukoliko MSI nije instalirao
-                if (-not $chromeOk) {
-                    $chromeCandidates = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '(?i)chrome.*(standalone|setup|install)' -or $_.Name -eq 'ChromeStandaloneSetup64.exe' }
-                    if ($chromeCandidates -and $chromeCandidates.Count -gt 0) {
-                        $cExe = $chromeCandidates[0].FullName
-                        Unblock-File -Path $cExe -ErrorAction SilentlyContinue
-                        Remove-Item -Path "$($cExe):Zone.Identifier" -ErrorAction SilentlyContinue
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Instaliram Chrome iz: $cExe" -Level "STEP" -Component "Chrome"
-                        }
-                        $resChrome = Invoke-InstallerWithLocalFallback -InstallerPath $cExe -ArgumentList "/silent /install" -AppName "Chrome" -WaitSeconds 120
-                        if ($resChrome.Success -or (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
-                            $chromeOk = $true
-                        }
-                    } else {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Chrome lokalni instaler nije pronadjen. Pokusavam Winget..." -Level "DEBUG" -Component "Chrome"
-                        }
-                        try {
-                            Start-Process -FilePath "winget.exe" -ArgumentList "install --id Google.Chrome --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-                        } catch {}
-                        if ((Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")) {
-                            $chromeOk = $true
-                        }
-                    }
-                }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri instalaciji Chrome: $($_.Exception.Message)" -Level "WARN" -Component "Chrome"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "Greška pri instalaciji Chrome: $($_.Exception.Message), nastavljam dalje..." -Level "WARN" -Phase 4
-            }
-        }
-        $appsStatusMap["Chrome"] = if ($chromeOk) { "OK" } else { "WARN" }
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Chrome" -Status $appsStatusMap["Chrome"] -Detail $(if ($chromeOk) { "Instaliran" } else { "Neuspešno - Nastavak" })
-        }
-    }
-
-    # 5. ADOBE ACROBAT PRO
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Adobe Acrobat Pro"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 75 -Phase 4 -PhaseName "Programi" -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
-    }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "Acrobat" -Status "RUNNING" -Detail "Instalacija Adobe Acrobat Pro..."
-    }
-
-    $acrobatOk = $false
-    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Instalacija Adobe Acrobat preskočena na zahtev servisera." -Level "WARN" -Component "Acrobat"
-        }
-        $appsStatusMap["Acrobat"] = "WARN"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Acrobat" -Status "WARN" -Detail "Preskočeno"
-        }
-    } else {
-        try {
-            $acrobatInstalled = (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                                (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                                (Test-Path "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe")
-            if ($acrobatInstalled) {
-                $acrobatOk = $true
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Adobe Acrobat je već instaliran." -Level "SUCCESS" -Component "Acrobat"
-                }
-            } else {
-                # Pretraga za Setup.exe unutar podfoldera Adobe.Acrobat.Pro.2024.x64.Multilingual (posebno 'Adobe Acrobat Pro\Setup.exe' ili 'Setup.exe')
-                $acroSetupCandidates = @(
-                    (Join-Path $activeProgDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\Setup.exe"),
-                    (Join-Path $activeProgDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Setup.exe"),
-                    (Join-Path $activeProgDir "Acrobat Pro 2024\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\Setup.exe"),
-                    (Join-Path $activeProgDir "Adobe Acrobat Pro\Setup.exe"),
-                    "C:\setup\Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\Setup.exe",
-                    "C:\setup\Programi\Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\Setup.exe"
-                )
-                if ($Global:SourceRoot) {
-                    $acroSetupCandidates += (Join-Path $Global:SourceRoot "Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\Setup.exe")
-                    $acroSetupCandidates += (Join-Path $Global:SourceRoot "Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Setup.exe")
-                }
-                $aExe = $acroSetupCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-
-                # Dinamicka pretraga podfoldera ako nije na standardnoj lokaciji
-                if (-not $aExe -and (Test-Path $activeProgDir)) {
-                    $foundSetups = Get-ChildItem -Path $activeProgDir -Filter "Setup.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match '(?i)acrobat' }
-                    if ($foundSetups -and $foundSetups.Count -gt 0) {
-                        # Prioritet dajemo podfolderu 'Adobe Acrobat Pro\Setup.exe'
-                        $pref = $foundSetups | Where-Object { $_.FullName -match '(?i)Adobe Acrobat Pro[\\/]Setup\.exe' } | Select-Object -First 1
-                        $aExe = if ($pref) { $pref.FullName } else { $foundSetups[0].FullName }
-                    }
-                }
-
-                # Dodatni fallback na *acrobat*.exe ako Setup.exe nije pronadjen
-                if (-not $aExe -and (Test-Path $activeProgDir)) {
-                    $fallbackExe = Get-ChildItem -Path $activeProgDir -Filter "*acrobat*.exe" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
-                    if ($fallbackExe) { $aExe = $fallbackExe.FullName }
-                }
-
-                if ($aExe) {
-                    Unblock-File -Path $aExe -ErrorAction SilentlyContinue
-                    Remove-Item -Path "$($aExe):Zone.Identifier" -ErrorAction SilentlyContinue
-                    $aDir = Split-Path $aExe -Parent
-                    $mstPath = Join-Path $aDir "AcroPro.mst"
-                    $hasMst = Test-Path $mstPath
-
-                    $acroArgs = if ($hasMst) {
-                        '/sPB /rs /msi TRANSFORMS="AcroPro.mst"'
-                    } else {
-                        '/sAll /msi /norestart ALLUSERS=1'
-                    }
-
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Instaliram Adobe Acrobat iz: $aExe sa argumentima $acroArgs" -Level "STEP" -Component "Acrobat"
-                    }
-                    if (Get-Command Wait-MsiMutexAvailable -ErrorAction SilentlyContinue) {
-                        Wait-MsiMutexAvailable -TimeoutSec 180
-                    }
-
-                    $resAcro = Invoke-InstallerWithLocalFallback -InstallerPath $aExe -ArgumentList $acroArgs -AppName "Acrobat" -WorkingDirectory $aDir -IsDirectoryPackage:($aExe -like "\\*") -PackageSourceDir $aDir -WaitSeconds 300
-
-                    # Fallback na /sAll /msi /norestart ALLUSERS=1 ukoliko primarni pokusaj sa TRANSFORMS nije prosao
-                    $isInstalledNow = (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                                      (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                                      (Test-Path "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe") -or
-                                      (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")
-
-                    if (-not $resAcro.Success -and -not $isInstalledNow -and $hasMst) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Acrobat instalacija sa TRANSFORMS nije uspela. Pokrecem fallback /sAll /msi /norestart ALLUSERS=1..." -Level "WARN" -Component "Acrobat"
-                        }
-                        $resAcro = Invoke-InstallerWithLocalFallback -InstallerPath $aExe -ArgumentList "/sAll /msi /norestart ALLUSERS=1" -AppName "Acrobat" -WorkingDirectory $aDir -IsDirectoryPackage:($aExe -like "\\*") -PackageSourceDir $aDir -WaitSeconds 300
-                    }
-
-                    if ($resAcro.Success -or $resAcro.ExitCode -eq 0 -or $resAcro.ExitCode -eq 3010 -or
-                        (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")) {
-                        $acrobatOk = $true
-                    }
-                } else {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Adobe Acrobat lokalni instaler nije pronadjen. Pokusavam Winget..." -Level "DEBUG" -Component "Acrobat"
-                    }
-                    try {
-                        Start-Process -FilePath "winget.exe" -ArgumentList "install --id Adobe.Acrobat.Reader.64-bit --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-                    } catch {}
-                    if ((Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe") -or
-                        (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")) {
-                        $acrobatOk = $true
-                    }
-                }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri instalaciji Adobe Acrobat: $($_.Exception.Message)" -Level "WARN" -Component "Acrobat"
-            }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "Greška pri instalaciji Acrobat: $($_.Exception.Message), nastavljam dalje..." -Level "WARN" -Phase 4
-            }
-        }
-        $appsStatusMap["Acrobat"] = if ($acrobatOk) { "OK" } else { "WARN" }
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Acrobat" -Status $appsStatusMap["Acrobat"] -Detail $(if ($acrobatOk) { "Instaliran" } else { "Neuspešno - Nastavak" })
-        }
-    }
-
-    # 5.B VC++ RUNTIMES & .NET RUNTIMES
-    try {
         if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-            Send-IpcProgress -Progress 82 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
+            Send-IpcProgress -Progress 88 -Phase 4 -PhaseName "Programi" -SubPhase "Prečice" -StatusMessage "Kreiranje prečica na radnoj površini..."
         }
-        Install-ServisVCRedist -ProgramiRoot $activeProgDir
-        Install-ServisDotNet -ProgramiRoot $activeProgDir
-    } catch {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Upozorenje pri instalaciji VC++/DotNet paketa: $($_.Exception.Message)" -Level "WARN" -Component "Runtimes"
-        }
-    }
-
-    # 6. PREČICE NA RADNOJ POVRŠINI
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Prečice"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 88 -Phase 4 -PhaseName "Programi" -SubPhase "Prečice" -StatusMessage "Kreiranje prečica na radnoj površini..."
-    }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "Shortcuts" -Status "RUNNING" -Detail "Kreiranje ikonica..."
-    }
-
-    try {
         Create-ServisShortcuts
-        $appsStatusMap["Shortcuts"] = "OK"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Shortcuts" -Status "OK" -Detail "Prečice kreirane"
-        }
-    } catch {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Upozorenje pri kreiranju prečica: $($_.Exception.Message)" -Level "WARN" -Component "Shortcuts"
-        }
-        $appsStatusMap["Shortcuts"] = "OK"
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "Shortcuts" -Status "OK" -Detail "Delimično kreirano"
-        }
     }
 
-    # 7. PROVERA OEM I SISTEMSKIH LICENCI
-    if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
-        Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Provera licenci"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 93 -Phase 4 -PhaseName "Programi" -SubPhase "Provera licenci" -StatusMessage "Verifikacija OEM i sistemskih licenci..."
-    }
+    $appsStatusMap["Shortcuts"] = if ($stepShortcuts.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        Send-IpcAppUpdate -AppId "License" -Status "RUNNING" -Detail "Provera sistemskih licenci..."
+        $scDetail = if ($stepShortcuts.State -eq "SKIPPED_DONE") { "Već kreirano" } else { "Prečice kreirane" }
+        Send-IpcAppUpdate -AppId "Shortcuts" -Status $appsStatusMap["Shortcuts"] -Detail $scDetail
     }
 
-    $licOk = $false
-    if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Provera licenci preskočena na zahtev servisera." -Level "WARN" -Component "License"
+    # =========================================================================
+    # 8. PODRAZUMEVANI PDF PREGLEDAČ - P4.PdfDefault
+    # =========================================================================
+    $stepPdf = Invoke-WisStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -Test {
+        Get-WisAppPresence -AppId "PdfDefault"
+    } -Action {
+        Set-AcrobatDefaultPDF
+    }
+
+    # =========================================================================
+    # 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation
+    # =========================================================================
+    $stepActivation = Invoke-WisStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -Test {
+        Get-WisAppPresence -AppId "Activation"
+    } -Action {
+        if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
+            Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Provera licenci"
         }
-        $appsStatusMap["License"] = "OK"
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 93 -Phase 4 -PhaseName "Programi" -SubPhase "Provera licenci" -StatusMessage "Verifikacija OEM i sistemskih licenci..."
+        }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "License" -Status "OK" -Detail "Preskočeno"
+            Send-IpcAppUpdate -AppId "License" -Status "RUNNING" -Detail "Provera sistemskih licenci..."
         }
-    } else {
-        try {
-            Invoke-WindowsOfficeActivation -ProgramiDir $activeProgDir
-            $licOk = $true
-        } catch {
+
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Upozorenje pri proveri licenci: $($_.Exception.Message)" -Level "WARN" -Component "License"
+                Write-ServisLog "Provera licenci preskočena na zahtev servisera." -Level "WARN" -Component "License"
             }
-            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message "Provera licenci upozorenje: $($_.Exception.Message), nastavljam..." -Level "WARN" -Phase 4
-            }
+            return
         }
-        $appsStatusMap["License"] = if ($licOk) { "OK" } else { "WARN" }
-        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            Send-IpcAppUpdate -AppId "License" -Status $appsStatusMap["License"] -Detail $(if ($licOk) { "Verifikovano" } else { "Best-Effort nastavak" })
-        }
+
+        Invoke-WindowsOfficeActivation -ProgramiDir $activeProgDir
     }
 
-    # 8. Reality Check: Fizička verifikacija stvarnog postojanja aplikacija na disku
+    $appsStatusMap["License"] = if ($stepActivation.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+        $licDetail = if ($stepActivation.State -eq "SKIPPED_DONE") { "Već licencirano" } elseif ($stepActivation.State -eq "OK") { "Verifikovano" } else { "Best-Effort nastavak" }
+        Send-IpcAppUpdate -AppId "License" -Status $appsStatusMap["License"] -Detail $licDetail
+    }
+
+    # Uklanjanje flag datoteke za ponovno pokretanje Faze 4
+    if (Test-Path "C:\setup\force-rerun-phase4.flag") {
+        Remove-Item -Path "C:\setup\force-rerun-phase4.flag" -Force -ErrorAction SilentlyContinue
+    }
+
+    # 10. Reality Check: Fizička verifikacija stvarnog postojanja aplikacija na disku
     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
         Send-IpcProgress -Progress 96 -Phase 4 -PhaseName "Programi" -SubPhase "Reality Check" -StatusMessage "Verifikacija fizičkog prisustva aplikacija na disku..."
     }
@@ -4014,7 +4105,7 @@ function Invoke-Phase4Apps {
         throw "REALITY CHECK GREŠKA: Instalacija aplikacija nije kompletna! Fizički nedostaju na disku: $missingStr"
     }
 
-    # 9. Zavrsni status i perzistencija stanja u deploy-state.json
+    # 11. Zavrsni status i perzistencija stanja u deploy-state.json
     try {
         if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
             Send-IpcStatus -Phase 4 -Progress 98 -SubPhase "Završna verifikacija" -StatusMessage "Svi korisnički programi su obrađeni i verifikovani na disku." -Apps $appsStatusMap
@@ -4055,6 +4146,7 @@ Export-ModuleMember -Function `
     Test-WindowsActivated, `
     Test-OfficeActivated, `
     Test-AllServisProgramsInstalled, `
+    Get-WisAppPresence, `
     Test-BatteryPresent, `
     Install-AllServisPrograms, `
     Set-BatteryBarConfiguration, `
