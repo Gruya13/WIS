@@ -54,7 +54,7 @@ Tokom paralelnog PXE (iVentoy) testiranja na više modela poslovnih laptopova (u
 
 ### C. Infrastrukturni Watchdog i Zaključana PXE Matrica Testova (`ISO/Tests/PxeZeroTouch/`)
 1. **iVentoy Docker Watchdog (`entrypoint.sh` na TrueNAS-u):** Nadzire PID iVentoy procesa na svake 3 sekunde i automatski restartuje kontejner pri tihom padu (eliminisan `PXE-E99`).
-2. **PXE Ugovor Prihvatanja (`ISO/Tests/PxeZeroTouch/`):** Definisano je **22** zaključana scenarija (`acceptance.json`, `IMPLEMENTATION_PLAN.md`, `verify_acceptance.py`, `LOCK.json`) za laboratorijsku verifikaciju WinPE mreže (budžet 60s), čitanja medijuma (30s) i VMD skladišta (30s).
+2. **PXE Ugovor Prihvatanja (`ISO/Tests/PxeZeroTouch/`):** Paket definiše **22** scenarija (`PXE-01`..`PXE-22` u `acceptance.json`, `IMPLEMENTATION_PLAN.md`, `verify_acceptance.py`, `example-results.json`, `README.md`) za laboratorijsku verifikaciju WinPE mreže (budžet 60s), čitanja medijuma (30s) i VMD skladišta (30s). `LOCK.json` još nije generisan jer laboratorijsko zaključavanje sa fizičkog/QEMU-KVM testiranja tek sledi (`verify_acceptance.py --check-lock` zato vraća `GATE_FAILED`).
 
 ---
 

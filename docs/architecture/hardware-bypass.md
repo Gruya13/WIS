@@ -69,11 +69,11 @@ U prolazu `windowsPE` datoteke `ISO/autounattend.xml` (`180` linija) uklonjen je
     </RunSynchronousCommand>
     <RunSynchronousCommand wcm:action="add">
         <Order>7</Order>
-        <Path>cmd /c "for %d in (X C D E F G H I J K L M N O P Q R S T U V W Y Z) do @if exist %d:\Za\ load_vmd.cmd %d: >nul 2>&1" &amp; ver >nul</Path>
+        <Path>cmd.exe /c "call X:\Windows\System32\load_vmd.cmd &amp; ver &gt;nul"</Path>
     </RunSynchronousCommand>
     <RunSynchronousCommand wcm:action="add">
         <Order>8</Order>
-        <Path>cmd /c "if exist X:\Windows\System32\WIS-AcceleratePE.cmd call X:\Windows\System32\WIS-AcceleratePE.cmd" &amp; ver >nul</Path>
+        <Path>cmd.exe /c "call X:\Windows\System32\WIS-AcceleratePE.cmd &amp; ver &gt;nul"</Path>
     </RunSynchronousCommand>
 </RunSynchronous>
 ```
@@ -82,7 +82,7 @@ U prolazu `windowsPE` datoteke `ISO/autounattend.xml` (`180` linija) uklonjen je
 
 ## 🎯 3. Dual-Edition Solid LZMS `install.esd`, `ei.cfg` i Zlatni Lean ISO (`v2.18.0`, `6.07 GB`)
 
-1. **Dual-Edition Solid LZMS (`ISO/sources/install.esd`, `5.34 GB`):**
+1. **Dual-Edition Solid LZMS (`ISO/sources/install.esd`, `5,344,805,734 B` / `4.98 GiB` / `5.34 GB`):**
    - Pomoću `ISO/Skripte/Export-SlimWim.py` (`295` linija) fabrički WIM sa 11 edicija sveden je na tačno 2 edicije (**Index 1: Windows 11 Home**, **Index 2: Windows 11 Pro**) i kompresovan u Solid LZMS format (`lzms:100`).
    - Ukupna veličina hibridnog UDF (`ECMA-167`) + UEFI (`0xEF`) + BIOS (`0x00`) Zlatnog Lean ISO medijuma (`WIS-Win11-Pro-10.0.26200.8037-Lean.iso`, `v2.18.0`) iznosi **6.07 GB (`6,522,753,024 B`, SHA-256 `80ef4593...`)**.
 2. **Konfiguracioni fajl `ISO/sources/ei.cfg` i Generic Setup Ključ:**
