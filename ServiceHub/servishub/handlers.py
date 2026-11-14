@@ -10,6 +10,7 @@ import time
 import json
 import uuid
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs, unquote
 from http.server import BaseHTTPRequestHandler
 
@@ -181,16 +182,112 @@ class ServisHubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Payload-Version, X-WIS-Version, X-WIS-SHA256, X-Driver-ID, X-Client-Timestamp, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Payload-Version, X-WIS-Version, X-WIS-SHA256, X-Driver-ID, X-Client-Timestamp, X-Update-Filename, X-Update-KB, X-OS-Build, X-Model-Name, X-Model-Filename, Authorization")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _stream_file(self, file_path, filename, content_type="application/octet-stream", extra_headers=None):
+        file_size = os.path.getsize(file_path)
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                if v is not None:
+                    self.send_header(k, str(v))
+        self.end_headers()
+
+        with open(file_path, "rb") as f:
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        self.wfile.flush()
+
+    def _resolve_single_device_hwids(self, raw_hwids, device_name="UnknownDevice", manufacturer="", model=""):
+        clean_hwids = [str(h).strip() for h in (raw_hwids or []) if str(h).strip()]
+        results = []
+        if not clean_hwids:
+            return results
+
+        print(f"[*] [DriverResolve] Primljen upit za {len(clean_hwids)} HWID-ja (Uređaj: {device_name} / {manufacturer} {model})...")
+
+        # 1. Cache-first provera svih HWID kandidata uz early-stop na prvom pogotku
+        if self.driver_cache_mgr:
+            for hwid_str in clean_hwids:
+                cached = self.driver_cache_mgr.get_cached(hwid_str)
+                if cached:
+                    drv_id = cached.get("driver_id", "")
+                    print(f"  [+] [CACHE HIT] {hwid_str} -> {cached.get('title', 'Driver')} (ID: {drv_id[:12]}...)")
+                    results.append({
+                        "hwid": hwid_str,
+                        "status": "ready",
+                        "driver_id": drv_id,
+                        "download_url": f"/api/drivers/download?id={drv_id}",
+                        "title": cached.get("title", ""),
+                        "version": cached.get("version", ""),
+                        "date": cached.get("date", ""),
+                        "device_class": cached.get("device_class", ""),
+                        "size_bytes": cached.get("size_bytes", 0),
+                        "sha256": cached.get("sha256", ""),
+                        "source": "cache",
+                    })
+                    return results
+
+        # 2. Pretraga Microsoft Update Kataloga uz early-stop na prvom uspešno preuzetom drajveru
+        for hwid_str in clean_hwids:
+            print(f"  [*] [CACHE MISS] Pretražujem Microsoft Update Catalog za: {hwid_str}...")
+            resolved = self.ms_catalog_scraper.resolve_driver(hwid_str) if self.ms_catalog_scraper else None
+            if not resolved:
+                print(f"  [-] [NOT FOUND] Drajver nije pronađen na Microsoft katalogu: {hwid_str}")
+                results.append({
+                    "hwid": hwid_str,
+                    "status": "not_found",
+                    "error": "Drajver nije pronađen na Microsoft Update Katalogu za zadati hardver.",
+                })
+                continue
+
+            cab_url = resolved.get("download_url")
+            print(f"  [*] [DOWNLOAD] Preuzimam zvanični CAB drajver sa Microsoft CDN-a: {resolved.get('title')} ({str(cab_url)[:70]}...)...")
+            try:
+                cab_data = self.ms_catalog_scraper.download_cab(cab_url)
+                aliases = list(dict.fromkeys(clean_hwids + ([str(resolved.get("matched_query")).strip()] if resolved.get("matched_query") else [])))
+                saved = self.driver_cache_mgr.save_cache(hwid_str, cab_data, resolved, alias_hwids=aliases) if self.driver_cache_mgr else resolved
+                drv_id = saved.get("driver_id", "")
+                print(f"  [+] [RESOLVED & CACHED] {hwid_str} -> {saved.get('title')} ({saved.get('size_bytes')} B)")
+                results.append({
+                    "hwid": hwid_str,
+                    "status": "ready",
+                    "driver_id": drv_id,
+                    "download_url": f"/api/drivers/download?id={drv_id}",
+                    "title": saved.get("title", ""),
+                    "version": saved.get("version", ""),
+                    "date": saved.get("date", ""),
+                    "device_class": saved.get("device_class", ""),
+                    "size_bytes": saved.get("size_bytes", 0),
+                    "sha256": saved.get("sha256", ""),
+                    "source": "catalog_download",
+                })
+                return results
+            except Exception as ex:
+                print(f"  [!] [ERROR] Greška pri preuzimanju drajvera sa Microsoft CDN-a: {ex}", file=sys.stderr)
+                results.append({
+                    "hwid": hwid_str,
+                    "status": "error",
+                    "error": f"Greška pri preuzimanju ili verifikaciji drajvera: {str(ex)}",
+                })
+
+        return results
 
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Payload-Version, X-WIS-Version, X-WIS-SHA256, X-Driver-ID, X-Client-Timestamp, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Payload-Version, X-WIS-Version, X-WIS-SHA256, X-Driver-ID, X-Client-Timestamp, X-Update-Filename, X-Update-KB, X-OS-Build, X-Model-Name, X-Model-Filename, Authorization")
         self.end_headers()
 
     def do_GET(self):
@@ -214,15 +311,111 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "uptime_sec": uptime, "version": VERSION, "release_status": RELEASE_STATUS})
             return
 
+        if path == "/api/model-profile":
+            qs = parse_qs(parsed.query)
+            model_name = qs.get("model", [""])[0].strip()
+            if not model_name:
+                self._send_json({"error": "Nedostaje parametar 'model'"}, 400)
+                return
+            from servishub.model_profiles import load_model_profile
+            profile = load_model_profile(model_name)
+            self._send_json(profile, 200)
+            return
+
+        if path == "/api/keyboard-layout":
+            qs = parse_qs(parsed.query)
+            manufacturer = qs.get("manufacturer", [""])[0].strip()
+            model_name = qs.get("model", [""])[0].strip()
+            serial = qs.get("serial", [""])[0].strip()
+            sku = qs.get("sku", [""])[0].strip()
+            try:
+                screen_inches = float(qs.get("screen_inches", ["0"])[0] or 0)
+            except (ValueError, TypeError):
+                screen_inches = 0.0
+
+            def _qbool(key):
+                raw = qs.get(key, [""])[0].strip().lower()
+                if raw in ("1", "true", "yes", "da"):
+                    return True
+                if raw in ("0", "false", "no", "ne"):
+                    return False
+                return None
+
+            from servishub.keyboard_resolver import resolve_keyboard_layout
+            spec = resolve_keyboard_layout(
+                manufacturer=manufacturer,
+                model=model_name,
+                serial=serial,
+                sku=sku,
+                screen_inches=screen_inches,
+                is_desktop=_qbool("is_desktop"),
+                os_oem102=_qbool("os_oem102"),
+            )
+            self._send_json(spec, 200)
+            return
+
+        if path == "/api/hardware-spec":
+            qs = parse_qs(parsed.query)
+            manufacturer = qs.get("manufacturer", [""])[0].strip()
+            model_name = qs.get("model", [""])[0].strip()
+            serial = qs.get("serial", [""])[0].strip()
+            sku = qs.get("sku", [""])[0].strip()
+            is_desktop_raw = qs.get("is_desktop", [""])[0].strip().lower()
+            is_desktop = None
+            if is_desktop_raw in ("1", "true", "yes", "da"):
+                is_desktop = True
+            elif is_desktop_raw in ("0", "false", "no", "ne"):
+                is_desktop = False
+            from servishub.hardware_spec import resolve_hardware_spec
+            hw_spec = resolve_hardware_spec(
+                manufacturer=manufacturer,
+                model=model_name,
+                serial=serial,
+                sku=sku,
+                is_desktop=is_desktop,
+            )
+            self._send_json(hw_spec, 200)
+            return
+
         if path == "/api/updates/status":
             from servishub.api.updates import scan_updates_directory
             query_params = parse_qs(parsed.query)
             custom_dir = query_params.get("directory", [None])[0]
+            os_build = query_params.get("os_build", [None])[0]
             if not custom_dir:
                 custom_dir = getattr(self.config, "updates_dir", None)
-            status_data = scan_updates_directory(custom_dir)
+            status_data = scan_updates_directory(custom_dir, os_build=os_build)
             data = status_data.model_dump() if hasattr(status_data, "model_dump") else status_data.to_dict()
             self._send_json(data)
+            return
+
+        if path == "/api/updates/download":
+            from servishub.api.updates import find_update_package
+            query_params = parse_qs(parsed.query)
+            filename = query_params.get("filename", [None])[0]
+            kb = query_params.get("kb", [None])[0]
+            custom_dir = query_params.get("directory", [None])[0]
+            if not custom_dir:
+                custom_dir = getattr(self.config, "updates_dir", None)
+
+            lookup = filename or kb
+            if not lookup:
+                self._send_json({"error": "Nedostaje parametar 'filename' ili 'kb'."}, 400)
+                return
+
+            pkg = find_update_package(lookup, directory=custom_dir)
+            if not pkg or not pkg.path or not os.path.isfile(pkg.path):
+                self._send_json({"error": f"Paket '{lookup}' nije pronađen u skladištu."}, 404)
+                return
+
+            try:
+                content_type = "application/vnd.ms-cab-compressed" if pkg.file_type == "cab" else "application/octet-stream"
+                extra = {"X-Update-KB": pkg.kb} if pkg.kb else None
+                self._stream_file(pkg.path, pkg.filename, content_type=content_type, extra_headers=extra)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                print(f"[ERROR] Greška pri slanju paketa {pkg.filename}: {e}", file=sys.stderr)
             return
 
         if path == "/api/payload/version":
@@ -351,6 +544,50 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                             WIS_BURN_SUBSCRIBERS.remove((sub_queue, sub_lock))
                         except ValueError:
                             pass
+            return
+
+        if path == "/api/drivers/model-pack/status":
+            from servishub.api.updates import get_model_pack_status
+            query_params = parse_qs(parsed.query)
+            model_name = query_params.get("model", [None])[0]
+            custom_dir = query_params.get("directory", [None])[0]
+            if not model_name:
+                self._send_json({"error": "Nedostaje obavezni parametar 'model'."}, 400)
+                return
+            try:
+                status_info = get_model_pack_status(model_name, directory=custom_dir, active_config=self.config)
+                self._send_json(status_info)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            return
+
+        if path == "/api/drivers/model-pack/download":
+            from servishub.api.updates import get_model_pack_status
+            query_params = parse_qs(parsed.query)
+            model_name = query_params.get("model", [None])[0]
+            custom_dir = query_params.get("directory", [None])[0]
+            if not model_name:
+                self._send_json({"error": "Nedostaje obavezni parametar 'model'."}, 400)
+                return
+            try:
+                status_info = get_model_pack_status(model_name, directory=custom_dir, active_config=self.config)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+                return
+
+            pack_path = status_info.get("path")
+            if not status_info.get("available") or not pack_path or not os.path.isfile(pack_path):
+                self._send_json({"error": f"Model paket '{model_name}' nije pronađen u skladištu."}, 404)
+                return
+            try:
+                extra = {"X-Model-Name": status_info.get("model")}
+                if status_info.get("sha256"):
+                    extra["X-Model-SHA256"] = status_info.get("sha256")
+                self._stream_file(pack_path, status_info.get("filename"), content_type="application/x-tar", extra_headers=extra)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                print(f"[ERROR] Greška pri slanju model paketa {model_name}: {e}", file=sys.stderr)
             return
 
         if path == "/api/drivers/cache/list":
@@ -775,6 +1012,82 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+        # 2. Binarna ruta za prijem .msu / .cab zakrpi sa klijenta
+        if norm_path == "/api/updates/upload":
+            from servishub.api.updates import save_uploaded_update_package_stream
+            query_params = parse_qs(parsed.query)
+            filename = query_params.get("filename", [None])[0] or self.headers.get("X-Update-Filename")
+            kb = query_params.get("kb", [None])[0] or self.headers.get("X-Update-KB")
+            os_build = query_params.get("os_build", [None])[0] or self.headers.get("X-OS-Build")
+            title = query_params.get("title", [""])[0] or self.headers.get("X-Update-Title", "")
+            custom_dir = query_params.get("directory", [None])[0]
+            if not custom_dir:
+                custom_dir = getattr(self.config, "updates_dir", None)
+
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (ValueError, TypeError):
+                content_length = 0
+
+            if content_length <= 0:
+                self._send_json({"error": "Telo zahteva je prazno (Content-Length mora biti > 0)."}, 400)
+                return
+
+            try:
+                saved = save_uploaded_update_package_stream(
+                    filename=filename,
+                    stream=self.rfile,
+                    content_length=content_length,
+                    directory=custom_dir,
+                    kb=kb,
+                    os_build=os_build,
+                    title=title,
+                )
+                self._send_json({
+                    "status": "ok",
+                    "package": saved.to_dict(),
+                }, 200)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            except Exception as ex:
+                print(f"[ERROR] Greška pri snimanju zakrpe na server: {ex}", file=sys.stderr)
+                self._send_json({"error": f"Greška pri snimanju zakrpe: {ex}"}, 500)
+            return
+
+        # 3. Binarna ruta za prijem model-specifičnog <Model>.tar paketa drajvera sa klijenta
+        if norm_path == "/api/drivers/model-pack/upload":
+            from servishub.api.updates import save_uploaded_model_pack_stream
+            query_params = parse_qs(parsed.query)
+            model_name = query_params.get("model", [None])[0] or self.headers.get("X-Model-Name")
+            filename = query_params.get("filename", [None])[0] or self.headers.get("X-Model-Filename")
+            custom_dir = query_params.get("directory", [None])[0]
+
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (ValueError, TypeError):
+                content_length = 0
+
+            if content_length <= 0:
+                self._send_json({"error": "Telo zahteva je prazno (Content-Length mora biti > 0)."}, 400)
+                return
+
+            try:
+                saved = save_uploaded_model_pack_stream(
+                    model=model_name,
+                    stream=self.rfile,
+                    content_length=content_length,
+                    directory=custom_dir,
+                    filename=filename,
+                    active_config=self.config,
+                )
+                self._send_json(saved, 200)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            except Exception as ex:
+                print(f"[ERROR] Greška pri snimanju model paketa drajvera na server: {ex}", file=sys.stderr)
+                self._send_json({"error": f"Greška pri snimanju model paketa: {ex}"}, 500)
+            return
+
         # Standardne JSON POST rute
         content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
@@ -783,6 +1096,52 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             payload = json.loads(post_data.decode("utf-8"))
         except Exception:
             self._send_json({"error": "Nevalidan JSON"}, 400)
+            return
+
+        if path == "/api/model-profile/keyboard":
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            model_name = str(payload.get("model", "")).strip()
+            if not model_name:
+                self._send_json({"error": "Nedostaje polje 'model'"}, 400)
+                return
+            from servishub.model_profiles import update_keyboard_override
+            profile = update_keyboard_override(
+                model_name=model_name,
+                removed_keys=payload.get("removed_keys"),
+                added_keys=payload.get("added_keys"),
+                by=payload.get("by", "serviser"),
+                base_layout=payload.get("base_layout"),
+                is_iso=payload.get("is_iso"),
+                has_numpad=payload.get("has_numpad"),
+                confirmed=payload.get("confirmed", True),
+                source=payload.get("source"),
+            )
+            self._send_json({"status": "ok", "profile": profile}, 200)
+            return
+
+        if path == "/api/model-profile/usb":
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            model_name = str(payload.get("model", "")).strip()
+            port_count = payload.get("port_count")
+            if not model_name or port_count is None:
+                self._send_json({"error": "Nedostaje polje 'model' ili 'port_count'"}, 400)
+                return
+            try:
+                port_count_int = int(port_count)
+            except (ValueError, TypeError):
+                self._send_json({"error": "Polje 'port_count' mora biti ceo broj"}, 400)
+                return
+            from servishub.model_profiles import update_usb_override
+            profile = update_usb_override(
+                model_name=model_name,
+                port_count=port_count_int,
+                by=payload.get("by", "serviser")
+            )
+            self._send_json({"status": "ok", "profile": profile}, 200)
             return
 
         if path == "/api/wis/usb/burn":
@@ -839,13 +1198,19 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             elif not isinstance(raw_hwids, list):
                 raw_hwids = []
 
+            devices_payload = payload.get("devices")
+            if devices_payload is not None and not isinstance(devices_payload, list):
+                self._send_json({"error": "Polje 'devices' mora biti lista uređaja."}, 400)
+                return
+
             device_name = payload.get("device_name", "UnknownDevice")
             manufacturer = str(payload.get("manufacturer") or "").strip()
             model = str(payload.get("model") or "").strip()
             serial_number = str(payload.get("serial_number") or payload.get("serial") or "").strip()
 
-            if not raw_hwids and not (manufacturer and (serial_number or model)):
-                self._send_json({"error": "Polje 'hwids' mora sadržati listu hardverskih identifikatora (HWID) ili OEM parametre (manufacturer, serial_number/model)"}, 400)
+            has_devices_batch = isinstance(devices_payload, list) and len(devices_payload) > 0
+            if not raw_hwids and not has_devices_batch and not (manufacturer and (serial_number or model)):
+                self._send_json({"error": "Polje 'hwids' ili 'devices' mora sadržati bar jedan HWID ili OEM parametre (manufacturer, serial_number/model)"}, 400)
                 return
 
             warranty_info = None
@@ -877,79 +1242,63 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[!] [OEM] Greška pri radu sa OEM provajderom: {e}", file=sys.stderr)
 
-            print(f"[*] [DriverResolve] Primljen upit za {len(raw_hwids)} HWID-ja (Uređaj: {device_name} / {manufacturer} {model})...")
-
             results = []
-            for hwid in raw_hwids:
-                hwid_str = str(hwid).strip()
-                if not hwid_str:
-                    continue
+            device_entries_out = None
 
-                cached = self.driver_cache_mgr.get_cached(hwid_str) if self.driver_cache_mgr else None
-                if cached:
-                    drv_id = cached.get("driver_id", "")
-                    print(f"  [+] [CACHE HIT] {hwid_str} -> {cached.get('title', 'Driver')} (ID: {drv_id[:12]}...)")
-                    results.append({
-                        "hwid": hwid_str,
-                        "status": "ready",
-                        "driver_id": drv_id,
-                        "download_url": f"/api/drivers/download?id={drv_id}",
-                        "title": cached.get("title", ""),
-                        "version": cached.get("version", ""),
-                        "date": cached.get("date", ""),
-                        "device_class": cached.get("device_class", ""),
-                        "size_bytes": cached.get("size_bytes", 0),
-                        "sha256": cached.get("sha256", ""),
-                        "source": "cache"
-                    })
-                    continue
+            if has_devices_batch:
+                normalized_devices = []
+                for idx, dev in enumerate(devices_payload):
+                    if not isinstance(dev, dict):
+                        continue
+                    d_name = str(dev.get("device_name") or f"Device-{idx + 1}")
+                    d_hwids = dev.get("hwids", [])
+                    if isinstance(d_hwids, str):
+                        d_hwids = [d_hwids]
+                    elif not isinstance(d_hwids, list):
+                        d_hwids = []
+                    normalized_devices.append((d_name, d_hwids))
 
-                print(f"  [*] [CACHE MISS] Pretražujem Microsoft Update Catalog za: {hwid_str}...")
-                resolved = self.ms_catalog_scraper.resolve_driver(hwid_str) if self.ms_catalog_scraper else None
-                if not resolved:
-                    print(f"  [-] [NOT FOUND] Drajver nije pronađen na Microsoft katalogu: {hwid_str}")
-                    results.append({
-                        "hwid": hwid_str,
-                        "status": "not_found",
-                        "error": "Drajver nije pronađen na Microsoft Update Katalogu za zadati hardver."
-                    })
-                    continue
+                def _resolve_dev_task(item):
+                    d_name, d_hwids = item
+                    d_res = self._resolve_single_device_hwids(
+                        d_hwids,
+                        device_name=d_name,
+                        manufacturer=manufacturer,
+                        model=model,
+                    )
+                    resolved_item = next((r for r in d_res if r.get("status") == "ready"), None)
+                    return {
+                        "device_name": d_name,
+                        "count": len(d_res),
+                        "results": d_res,
+                        "resolved": resolved_item,
+                    }
 
-                cab_url = resolved.get("download_url")
-                print(f"  [*] [DOWNLOAD] Preuzimam zvanični CAB drajver sa Microsoft CDN-a: {resolved.get('title')} ({cab_url[:70]}...)...")
-                try:
-                    cab_data = self.ms_catalog_scraper.download_cab(cab_url)
-                    aliases = [hwid_str, resolved.get("matched_query")]
-                    saved = self.driver_cache_mgr.save_cache(hwid_str, cab_data, resolved, alias_hwids=aliases) if self.driver_cache_mgr else resolved
-                    drv_id = saved.get("driver_id", "")
-                    print(f"  [+] [RESOLVED & CACHED] {hwid_str} -> {saved.get('title')} ({saved.get('size_bytes')} B)")
-                    results.append({
-                        "hwid": hwid_str,
-                        "status": "ready",
-                        "driver_id": drv_id,
-                        "download_url": f"/api/drivers/download?id={drv_id}",
-                        "title": saved.get("title", ""),
-                        "version": saved.get("version", ""),
-                        "date": saved.get("date", ""),
-                        "device_class": saved.get("device_class", ""),
-                        "size_bytes": saved.get("size_bytes", 0),
-                        "sha256": saved.get("sha256", ""),
-                        "source": "catalog_download"
-                    })
-                except Exception as ex:
-                    print(f"  [!] [ERROR] Greška pri preuzimanju drajvera sa Microsoft CDN-a: {ex}", file=sys.stderr)
-                    results.append({
-                        "hwid": hwid_str,
-                        "status": "error",
-                        "error": f"Greška pri preuzimanju ili verifikaciji drajvera: {str(ex)}"
-                    })
+                if len(normalized_devices) > 1:
+                    with ThreadPoolExecutor(max_workers=min(4, len(normalized_devices))) as pool:
+                        device_entries_out = list(pool.map(_resolve_dev_task, normalized_devices))
+                else:
+                    device_entries_out = [_resolve_dev_task(item) for item in normalized_devices]
+
+                for dev_out in device_entries_out:
+                    results.extend(dev_out["results"])
+            else:
+                results = self._resolve_single_device_hwids(
+                    raw_hwids,
+                    device_name=device_name,
+                    manufacturer=manufacturer,
+                    model=model,
+                )
 
             resp_payload = {
                 "status": "ok",
                 "device_name": device_name,
                 "count": len(results),
-                "results": results
+                "results": results,
             }
+            if device_entries_out is not None:
+                resp_payload["devices"] = device_entries_out
+                resp_payload["resolved_count"] = sum(1 for d in device_entries_out if d.get("resolved"))
             if warranty_info is not None:
                 resp_payload["warranty"] = warranty_info
             if oem_info is not None:
@@ -1474,6 +1823,59 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             else:
                 self._send_json({"error": f"Nepoznat event: {event}"}, 400)
                 return
+
+        if path == "/api/updates/cache-kb":
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            kb_val = str(payload.get("kb", "")).strip()
+            if not kb_val:
+                self._send_json({"error": "Nedostaje obavezno polje 'kb'"}, 400)
+                return
+            title_val = str(payload.get("title", "")).strip()
+            os_build_val = str(payload.get("os_build", "")).strip() or None
+            custom_dir = payload.get("directory") or getattr(self.config, "updates_dir", None)
+            from servishub.api.updates import cache_kb_from_ms_catalog
+            try:
+                res = cache_kb_from_ms_catalog(
+                    kb=kb_val,
+                    title=title_val,
+                    directory=custom_dir,
+                    scraper=self.ms_catalog_scraper,
+                    os_build=os_build_val,
+                )
+                code = 404 if res.get("status") == "not_found" else (502 if res.get("status") == "error" else 200)
+                self._send_json(res, code)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri keširanju zakrpe {kb_val}: {ex}"}, 500)
+            return
+
+        if path == "/api/updates/prune":
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            custom_dir = payload.get("directory") or getattr(self.config, "updates_dir", None)
+            try:
+                max_per_build = int(payload.get("max_packages_per_build", 8))
+                min_temp_age = int(payload.get("min_temp_age_seconds", 600))
+            except (TypeError, ValueError):
+                self._send_json({"error": "Nevalidni numerički parametri za prune."}, 400)
+                return
+            from servishub.api.updates import prune_updates_cache
+            try:
+                res = prune_updates_cache(
+                    directory=custom_dir,
+                    max_packages_per_build=max_per_build,
+                    min_temp_age_seconds=min_temp_age,
+                )
+                self._send_json(res, 200)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri održavanju keša zakrpi: {ex}"}, 500)
+            return
 
         self.send_response(404)
         self.end_headers()

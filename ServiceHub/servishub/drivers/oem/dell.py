@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import datetime, date
 from typing import Any, Dict, Optional, List
 
-from servishub.drivers.oem.base import BaseOEMProvider
+from servishub.drivers.oem.base import BaseOEMProvider, build_keyboard_spec, make_keyboard_layout_name
 
 try:
     from servishub.drivers.version import parse_driver_date
@@ -200,6 +200,8 @@ class DellOEMProvider(BaseOEMProvider):
             os.makedirs(self.base_cache_dir, exist_ok=True)
             self.warranty_cache_dir = os.path.join(self.base_cache_dir, "warranty")
             os.makedirs(self.warranty_cache_dir, exist_ok=True)
+            self.keyboard_cache_dir = os.path.join(self.base_cache_dir, "keyboard")
+            os.makedirs(self.keyboard_cache_dir, exist_ok=True)
 
     # =========================================================================
     # Pomoćne metode za normalizaciju i parsiranje
@@ -737,3 +739,216 @@ class DellOEMProvider(BaseOEMProvider):
             "download_url": download_url,
             "release_date": release_date,
         }
+
+    # =========================================================================
+    # 4. Prepoznavanje fizičkog rasporeda tastature (lookup_keyboard_spec)
+    # =========================================================================
+
+    _ISO_REGIONS = (
+        "GER", "DE", "UK", "GB", "FRE", "FR", "SWI", "CH", "NOR", "NORD",
+        "EUR", "ADRIATIC", "ADR", "CRO", "SLV", "SRB", "SPA", "ITA", "BEL",
+        "CZE", "HUN", "POL", "TUR", "SLO", "DAN", "SWE", "FIN", "POR", "DUT",
+        "ISO",
+    )
+
+    @classmethod
+    def _parse_dell_kybd_description(cls, desc: str) -> Dict[str, Any]:
+        """
+        Parsira Dell opis / SKU tastature:
+        - 'KYBD,82,US-INTL' -> has_numpad=False, is_iso=False
+        - 'KYBD,83,GER,BL' -> has_numpad=False, is_iso=True
+        - 'KYBD,101,US' -> has_numpad=True, is_iso=False
+        - 'KYBD,102,UK' -> has_numpad=True, is_iso=True
+        """
+        text = (desc or "").upper()
+        has_copilot = "COPILOT" in text
+        has_numpad = None  # type: Optional[bool]
+        is_iso = None      # type: Optional[bool]
+
+        m = re.search(r'(?:KYBD|KEYBOARD)[,\s_-]*(\d{2,3})\b(?:\s*[,/_-]\s*([A-Z0-9-]+))?', text)
+        key_count = int(m.group(1)) if m else None
+        region_hint = (m.group(2) or "") if m else ""
+
+        if key_count is None:
+            m2 = re.search(r'\b(79|80|81|82|83|84|85|99|100|101|102|103|104|105)\b', text)
+            if m2:
+                key_count = int(m2.group(1))
+
+        if key_count is not None:
+            has_numpad = key_count >= 95
+            if key_count in (81, 83, 84, 85, 102, 103, 105):
+                is_iso = True
+            elif key_count in (79, 80, 82, 99, 100, 101, 104) and ("US" in region_hint or "ANSI" in text or not any(r in text for r in cls._ISO_REGIONS)):
+                is_iso = False
+
+        if is_iso is None:
+            tokens = set(re.findall(r'[A-Z0-9]+', text))
+            if tokens & set(cls._ISO_REGIONS):
+                is_iso = True
+            elif "US" in tokens or "US-INTL" in text or "ANSI" in text:
+                is_iso = False
+
+        return {
+            "has_numpad": has_numpad,
+            "is_iso": is_iso,
+            "has_copilot": has_copilot,
+            "key_count": key_count,
+        }
+
+    @classmethod
+    def _extract_dell_keyboard_part(cls, data: Any) -> Optional[str]:
+        """Izvlači KYBD stavku iz Dell Asset Parts JSON odgovora."""
+        candidates = []
+
+        def _walk(node: Any):
+            if isinstance(node, dict):
+                for key in ("partDescription", "description", "partName", "itemDescription", "componentName"):
+                    val = node.get(key)
+                    if isinstance(val, str) and val.strip():
+                        up = val.upper()
+                        if ("KYBD" in up or "KEYBOARD" in up) and "EXTERNAL" not in up and "MOUSE" not in up:
+                            candidates.append(val.strip())
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(data)
+        if not candidates:
+            return None
+        for cand in candidates:
+            if "KYBD" in cand.upper():
+                return cand
+        return candidates[0]
+
+    @classmethod
+    def _infer_dell_series_layout(cls, model: str) -> Dict[str, Any]:
+        """
+        Offline katalog Dell serija:
+        - Latitude/Precision/Vostro/Inspiron 4-cifreni broj: 2. cifra označava veličinu
+          (3/4 -> 13"/14" TKL; 5/6/7 -> 15.6"/16"/17" Numpad).
+        - XPS laptopovi -> TKL bez numpada.
+        - OptiPlex / Precision Tower -> Desktop.
+        """
+        up = (model or "").upper()
+        is_desktop = any(k in up for k in ("OPTIPLEX", "TOWER", "MINI", "MICRO", "SFF", "WORKSTATION T"))
+        has_numpad = None  # type: Optional[bool]
+
+        if is_desktop:
+            has_numpad = True
+        elif "XPS" in up:
+            has_numpad = False
+        else:
+            m_model = re.search(r'(?:LATITUDE|PRECISION|VOSTRO|INSPIRON|PRO)\s*(?:MAX\s*|PLUS\s*)?(\d)(\d)(\d{2})\b', up)
+            if not m_model:
+                m_model = re.search(r'\b([3579])([34567])(\d{2})\b', up)
+            if m_model:
+                second_digit = m_model.group(2)
+                if second_digit in ("2", "3", "4"):
+                    has_numpad = False
+                elif second_digit in ("5", "6", "7"):
+                    has_numpad = True
+
+        if has_numpad is None and not is_desktop:
+            return {"matched": False, "is_desktop": False, "has_numpad": None}
+
+        return {"matched": True, "is_desktop": is_desktop, "has_numpad": has_numpad}
+
+    def lookup_keyboard_spec(
+        self,
+        serial: str = "",
+        model: str = "",
+        product_number: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Određuje fizički raspored tastature za Dell uređaje:
+        1) Disk keš, 2) Dell Support Asset Parts API po Service Tag-u (timeout <= 5s), 3) Dell numeracija modela.
+        """
+        clean_tag = self._express_code_to_service_tag(serial)
+        cache_key = clean_tag or re.sub(r'[^A-Z0-9_-]', '_', (model or "").upper()).strip("_")
+
+        if cache_key:
+            cache_file = os.path.join(self.keyboard_cache_dir, f"{cache_key}.json")
+            with self.lock:
+                if os.path.isfile(cache_file):
+                    try:
+                        with open(cache_file, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                        if cached.get("status") == "ok":
+                            return cached
+                    except Exception:
+                        pass
+        else:
+            cache_file = ""
+
+        # Mrežni upit po validnom 7-karakternom Dell Service Tag-u
+        if len(clean_tag) == 7 and clean_tag.isalnum():
+            urls = [
+                f"https://apigtwb2c.us.dell.com/support/assetinfo/v4/getassetparts?servicetags={urllib.parse.quote(clean_tag)}",
+                f"https://www.dell.com/support/components/dashboard/api/Asset/GetAssetParts?serviceTag={urllib.parse.quote(clean_tag)}",
+            ]
+            for api_url in urls:
+                req = urllib.request.Request(
+                    api_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ServisHub-DellOEM/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            part_desc = self._extract_dell_keyboard_part(data)
+                            if part_desc:
+                                parsed = self._parse_dell_kybd_description(part_desc)
+                                series = self._infer_dell_series_layout(model)
+                                has_numpad = parsed["has_numpad"] if parsed["has_numpad"] is not None else series.get("has_numpad")
+                                is_iso = parsed["is_iso"]
+                                is_desktop = bool(series.get("is_desktop", False))
+                                base_layout = None
+                                if has_numpad is not None:
+                                    base_layout = make_keyboard_layout_name(has_numpad, bool(is_iso) if is_iso is not None else False, is_desktop)
+                                res = build_keyboard_spec(
+                                    status="ok",
+                                    source="dell_asset_parts_api",
+                                    confidence="high" if (has_numpad is not None and is_iso is not None) else "medium",
+                                    base_layout=base_layout,
+                                    has_numpad=has_numpad,
+                                    is_iso=is_iso,
+                                    has_copilot=parsed["has_copilot"],
+                                    oem_part_description=part_desc,
+                                    raw_data={"service_tag": clean_tag, "model": model},
+                                )
+                                if cache_file:
+                                    with self.lock:
+                                        tmp_file = cache_file + ".tmp"
+                                        with open(tmp_file, "w", encoding="utf-8") as f:
+                                            json.dump(res, f, indent=2, ensure_ascii=False)
+                                        os.replace(tmp_file, cache_file)
+                                return res
+                except Exception:
+                    pass
+
+        series = self._infer_dell_series_layout(model)
+        if series.get("matched"):
+            has_numpad = bool(series["has_numpad"])
+            is_desktop = bool(series["is_desktop"])
+            return build_keyboard_spec(
+                status="ok",
+                source="dell_series_catalog",
+                confidence="medium",
+                base_layout=make_keyboard_layout_name(has_numpad, False, is_desktop) if is_desktop else None,
+                has_numpad=has_numpad,
+                is_iso=None,
+                raw_data={"service_tag": clean_tag, "model": model, "is_desktop": is_desktop},
+            )
+
+        return build_keyboard_spec(
+            status="fallback",
+            source="dell_fallback",
+            confidence="low",
+            raw_data={"service_tag": clean_tag, "model": model},
+        )

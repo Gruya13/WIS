@@ -1,5 +1,5 @@
 {
-  "manifest_version": "2.17.0",
+  "manifest_version": "3.0.0",
   "schema_version": 1,
   "description": "Jedinstveni kanonski manifest deployment komponenti za WIS Service (GUI sync, CLI sync, OEM i payload).",
   "components": [
@@ -305,6 +305,18 @@
         "sources/$OEM$/$1/setup/Skripte/WIS.UI/WIS.UI.exe"
       ],
       "required": true,
+      "type": "file"
+    },
+    {
+      "id": "bin_wis_hwtest_exe",
+      "source": "../UI/HwTest/WIS.HwTest.exe",
+      "destinations": [
+        "WIS.HwTest.exe",
+        "Skripte/WIS.UI/WIS.HwTest.exe",
+        "sources/$OEM$/$1/setup/WIS.HwTest.exe",
+        "sources/$OEM$/$1/setup/Skripte/WIS.UI/WIS.HwTest.exe"
+      ],
+      "required": false,
       "type": "file"
     },
     {

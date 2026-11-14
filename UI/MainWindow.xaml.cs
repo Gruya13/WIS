@@ -93,6 +93,7 @@ namespace WIS.UI
         private DateTime _lastScreenWorkerCheckUtc = DateTime.MinValue;
         private DateTime _lastBgWuFileWriteUtc = DateTime.MinValue;
         private DeviceChangeMonitor _deviceMonitor = null;
+        private bool _autopilotRetriedAfterNetwork = false;
 
         public MainWindow()
         {
@@ -133,9 +134,16 @@ namespace WIS.UI
             ViewModel.RunThermalStressCommand = new RelayCommand(_ => StartThermalStressTest(), _ => !ViewModel.IsStressTestRunning);
             ViewModel.CancelThermalStressCommand = new RelayCommand(_ => CancelThermalStressTest(), _ => ViewModel.IsStressTestRunning);
             ViewModel.ResetCoreClocksCommand = new RelayCommand(_ => ResetCoreClockExtremes());
+            ViewModel.RunHwTestCommand = new RelayCommand(ExecuteRunHwTest);
 
             DataContext = ViewModel;
             EnsureBackgroundWuVisualElements();
+
+            // WIS-TASK-188: [Printer] konfiguracija se čita odmah (pre brisanja Wifi-Servis.ini u Fazi 6)
+            try { LabelPrinterConfig.Preload(); } catch { }
+            EnsureLabelPrintButtons();
+            EnsureHwTestButtons();
+            EnsureEmbeddedHwTestTab();
 
             // Inicijalizacija termalnog senzorskog motora (v2.15.0 - WIS-TASK-131)
             try
@@ -592,6 +600,11 @@ namespace WIS.UI
                     textSr = string.Format("Pozadinski WU: Instalacija ({0}/{1})...", installedCount, foundCount);
                     textZh = string.Format("后台更新: 正在安装 ({0}/{1})...", installedCount, foundCount);
                 }
+                else if (normStatus == "HARVESTING")
+                {
+                    textSr = "Pozadinski WU: Arhiviranje novih zakrpa na NAS...";
+                    textZh = "后台更新: 正在将新补丁归档到 NAS...";
+                }
                 else if (normStatus == "COMPLETED")
                 {
                     if (foundCount <= 0)
@@ -617,6 +630,318 @@ namespace WIS.UI
                 }
             }
             catch { }
+        }
+
+        // =====================================================================
+        // WIS-TASK-188: Dugme „Štampaj nalepnicu“ u završnom prozoru i gornjoj
+        // traci. Ubrizgava se iz koda (kao EnsureBackgroundWuVisualElements),
+        // jer Linux Build-UI.py ponovo koristi postojeći BAML i ne prevodi XAML.
+        // Dugme se umeće ispred svakog „Očisti i ugasi“ dugmeta, pa je vidljivo
+        // isključivo kada je servis završen (roditeljski panel je vezan za
+        // IsCompleted / IsServiceFinished).
+        // =====================================================================
+        private const string LabelPrintButtonTag = "WisLabelPrintButton";
+
+        private void EnsureLabelPrintButtons()
+        {
+            try
+            {
+                if (!LabelPrinterConfig.Current.Enabled) return; // [Printer] Enabled=0 isključuje funkciju
+
+                List<Button> anchors = new List<Button>();
+                CollectButtonsByCommandPath(this, "CleanAndShutdownCommand", anchors);
+
+                foreach (Button anchor in anchors)
+                {
+                    Panel parent = anchor.Parent as Panel;
+                    if (parent == null) continue;
+
+                    bool exists = false;
+                    foreach (object child in parent.Children)
+                    {
+                        FrameworkElement fe = child as FrameworkElement;
+                        if (fe != null && string.Equals(Convert.ToString(fe.Tag), LabelPrintButtonTag, StringComparison.Ordinal))
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (exists) continue;
+
+                    bool isLarge = anchor.FontSize >= 13;
+                    Button printBtn = new Button
+                    {
+                        Tag = LabelPrintButtonTag,
+                        Background = MainViewModel.CreateFrozenBrush(31, 111, 235),
+                        Foreground = Brushes.White,
+                        BorderBrush = MainViewModel.CreateFrozenBrush(56, 139, 253),
+                        BorderThickness = new Thickness(1),
+                        FontWeight = FontWeights.Bold,
+                        FontSize = isLarge ? 13 : 11,
+                        Padding = isLarge ? new Thickness(22, 12, 22, 12) : new Thickness(14, 6, 14, 6),
+                        Margin = isLarge ? new Thickness(0, 0, 12, 0) : new Thickness(0, 0, 8, 0),
+                        Cursor = Cursors.Hand
+                    };
+                    printBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("Loc[BtnPrintLabel]"));
+                    printBtn.ToolTip = LocalizationService.Get("TooltipPrintLabel", "Štampa nalepnice sa specifikacijom uređaja na USB štampaču Star TSP700II");
+                    printBtn.Click += (s, e) => ShowLabelPrintDialog();
+
+                    int idx = parent.Children.IndexOf(anchor);
+                    parent.Children.Insert(idx < 0 ? 0 : idx, printBtn);
+                }
+            }
+            catch (Exception ex)
+            {
+                try { ViewModel.AddLog("WARN", "LabelPrint", "Dugme za štampu nalepnice nije ubačeno: " + ex.Message); } catch { }
+            }
+        }
+
+        private static void CollectButtonsByCommandPath(DependencyObject node, string commandPath, List<Button> result)
+        {
+            if (node == null) return;
+            Button btn = node as Button;
+            if (btn != null)
+            {
+                System.Windows.Data.BindingExpression be = System.Windows.Data.BindingOperations.GetBindingExpression(btn, Button.CommandProperty);
+                if (be != null && be.ParentBinding != null && be.ParentBinding.Path != null &&
+                    string.Equals(be.ParentBinding.Path.Path, commandPath, StringComparison.Ordinal))
+                {
+                    result.Add(btn);
+                }
+            }
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null) CollectButtonsByCommandPath(dep, commandPath, result);
+            }
+        }
+
+        private void ShowLabelPrintDialog()
+        {
+            try
+            {
+                LabelPrintWindow dlg = new LabelPrintWindow(this, ViewModel);
+                dlg.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                ViewModel.AddLog("ERROR", "LabelPrint", "Greška pri otvaranju dijaloga za štampu nalepnice: " + ex.Message);
+            }
+        }
+
+        // =====================================================================
+        // WIS-TASK-189: Dugme „Hardverski test“ u završnom prozoru i traci
+        // =====================================================================
+        private const string HwTestButtonTag = "WisHwTestButton";
+
+        private void EnsureHwTestButtons()
+        {
+            try
+            {
+                List<Button> anchors = new List<Button>();
+                CollectButtonsByCommandPath(this, "CleanAndShutdownCommand", anchors);
+
+                foreach (Button anchor in anchors)
+                {
+                    Panel parent = anchor.Parent as Panel;
+                    if (parent == null) continue;
+
+                    bool exists = false;
+                    foreach (object child in parent.Children)
+                    {
+                        FrameworkElement fe = child as FrameworkElement;
+                        if (fe != null && string.Equals(Convert.ToString(fe.Tag), HwTestButtonTag, StringComparison.Ordinal))
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    if (exists) continue;
+
+                    bool isLarge = anchor.FontSize >= 13;
+                    Button hwBtn = new Button
+                    {
+                        Tag = HwTestButtonTag,
+                        Background = MainViewModel.CreateFrozenBrush(108, 117, 125),
+                        Foreground = Brushes.White,
+                        BorderBrush = MainViewModel.CreateFrozenBrush(140, 145, 155),
+                        BorderThickness = new Thickness(1),
+                        FontWeight = FontWeights.Bold,
+                        FontSize = isLarge ? 13 : 11,
+                        Padding = isLarge ? new Thickness(20, 12, 20, 12) : new Thickness(14, 6, 14, 6),
+                        Margin = isLarge ? new Thickness(0, 0, 12, 0) : new Thickness(0, 0, 8, 0),
+                        Cursor = Cursors.Hand
+                    };
+                    hwBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("Loc[BtnRunHwTest]"));
+                    hwBtn.ToolTip = LocalizationService.Get("TooltipRunHwTest", "Ručno ispitivanje hardverskih komponenti");
+                    hwBtn.Click += (s, e) => ExecuteRunHwTest(null);
+
+                    int idx = parent.Children.IndexOf(anchor);
+                    parent.Children.Insert(idx < 0 ? 0 : idx, hwBtn);
+                }
+            }
+            catch { }
+        }
+
+        private void ExecuteRunHwTest(object param)
+        {
+            EnsureEmbeddedHwTestTab();
+            if (_embeddedHwTestShell != null && _hwTestTabItem != null && MainTabControl != null)
+            {
+                RefreshEmbeddedHwTestIdentity();
+                ViewModel.ShutdownTimerActive = false;
+                ViewModel.IsCompleted = false;
+                MainTabControl.SelectedItem = _hwTestTabItem;
+                ViewModel.AddLog("INFO", "Hardver", "Otvoren ugrađeni tab za hardverske testove (WIS.HwTest).");
+                return;
+            }
+
+            string outJson = @"C:\setup\hwtest-result.json";
+            string exePath = FindHwTestExe();
+            if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
+            {
+                MessageBox.Show("Modul za hardversko testiranje (WIS.HwTest.exe) nije pronađen!", "WIS Greška", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            // Pauziraj tajmer gašenja dok traje testiranje
+            bool wasShutdownActive = ViewModel.ShutdownTimerActive;
+            ViewModel.ShutdownTimerActive = false;
+
+            string model = ViewModel != null && !string.IsNullOrEmpty(ViewModel.ComputerModel)
+                ? ViewModel.ComputerModel
+                : (ViewModel != null && ViewModel.HardwareInfo != null ? ViewModel.HardwareInfo.MotherboardModel : "Nepoznat model");
+            string serial = ViewModel != null && !string.IsNullOrEmpty(ViewModel.SerialNumber)
+                ? ViewModel.SerialNumber
+                : (ViewModel != null && ViewModel.HardwareInfo != null ? ViewModel.HardwareInfo.SerialNumber : "Nepoznat serijski");
+
+            string mfgArg = "";
+            string skuArg = "";
+            try
+            {
+                using (var biosReg = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS"))
+                {
+                    if (biosReg != null)
+                    {
+                        object sm = biosReg.GetValue("SystemManufacturer");
+                        if (sm != null) mfgArg = sm.ToString().Trim();
+                        object ss = biosReg.GetValue("SystemSKU");
+                        if (ss != null) skuArg = ss.ToString().Trim();
+                    }
+                }
+            }
+            catch { }
+
+            string args = string.Format("--out \"{0}\" --model \"{1}\" --serial \"{2}\"", outJson, model, serial);
+            if (!string.IsNullOrEmpty(mfgArg))
+                args += string.Format(" --manufacturer \"{0}\"", mfgArg.Replace("\"", ""));
+            if (!string.IsNullOrEmpty(skuArg))
+                args += string.Format(" --sku \"{0}\"", skuArg.Replace("\"", ""));
+
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = args,
+                UseShellExecute = false
+            };
+
+            ViewModel.AddLog("INFO", "Hardver", "Pokrenut WIS.HwTest.exe za ručno ispitivanje komponenti...");
+
+            try
+            {
+                Process p = Process.Start(psi);
+                if (p != null)
+                {
+                    p.WaitForExit();
+
+                    if (File.Exists(outJson))
+                    {
+                        string json = File.ReadAllText(outJson, Encoding.UTF8);
+                        var root = JsonHelper.Parse(json);
+                        if (root != null && root.ContainsKey("summary"))
+                        {
+                            var summary = root["summary"];
+                            string overall = summary["overall"].AsString("UNKNOWN");
+                            int pass = summary["pass"].AsInt(0);
+                            int fail = summary["fail"].AsInt(0);
+                            int skip = summary["skip"].AsInt(0);
+                            int na = summary["na"].AsInt(0);
+
+                            int totalApplicable = pass + fail + skip;
+                            if (totalApplicable <= 0) totalApplicable = pass + fail + skip + na;
+
+                            ViewModel.IsHwTestFinished = true;
+                            ViewModel.HwTestOverallStatus = overall;
+                            ViewModel.HwTestSummaryText = fail > 0
+                                ? string.Format("{0}/{1} PASS, {2} FAIL, {3} SKIP", pass, totalApplicable, fail, skip)
+                                : string.Format("{0}/{1} PASS, {2} SKIP", pass, totalApplicable, skip);
+
+                            if (overall == "PASS" || overall == "PASS_WITH_SKIP")
+                            {
+                                ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(40, 167, 69);
+                            }
+                            else if (overall == "FAIL")
+                            {
+                                ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(220, 53, 69);
+                            }
+
+                            ViewModel.AddLog(
+                                overall == "FAIL" ? "WARN" : "SUCCESS",
+                                "Hardver",
+                                string.Format("Hardverski test završen: {0} ({1}/{2} PASS, {3} SKIP, {4} FAIL)", overall, pass, totalApplicable, skip, fail)
+                            );
+
+                            SendIpcMessage(new Dictionary<string, object>
+                            {
+                                { "action", "hwtest_complete" },
+                                { "hwtest_overall", overall },
+                                { "hwtest_summary", ViewModel.HwTestSummaryText },
+                                { "pass", pass },
+                                { "fail", fail },
+                                { "skip", skip },
+                                { "na", na }
+                            });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ViewModel.AddLog("ERROR", "Hardver", "Greška pri pokretanju WIS.HwTest.exe: " + ex.Message);
+            }
+
+            EnsureHwTestButtons();
+        }
+
+        private static string FindHwTestExe()
+        {
+            string[] candidates = new string[]
+            {
+                @"C:\setup\WIS.HwTest.exe",
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WIS.HwTest.exe"),
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "HwTest", "WIS.HwTest.exe"),
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "UI", "HwTest", "WIS.HwTest.exe")
+            };
+            foreach (string p in candidates)
+            {
+                if (File.Exists(p)) return p;
+            }
+            return null;
+        }
+
+        private void TriggerHardwareTestAfterPhase6()
+        {
+            ThreadPool.QueueUserWorkItem(delegate(object _)
+            {
+                try
+                {
+                    System.Threading.Thread.Sleep(500);
+                    Dispatcher.Invoke((Action)(() => {
+                        ExecuteRunHwTest(null);
+                    }));
+                }
+                catch { }
+            });
         }
 
         private void EnsureBackgroundWuVisualElements()
@@ -960,9 +1285,9 @@ namespace WIS.UI
                         ViewModel.Progress = 70;
                         break;
                     case 5:
-                        ViewModel.PhaseName = "Faza 5: Termalni i stres test (30s)";
-                        ViewModel.SubPhase = "Automatski 30s stres test procesora...";
-                        ViewModel.LiveStatus = "Merenje termalnog hlađenja pod 100% opterećenjem (30s)...";
+                        ViewModel.PhaseName = "Faza 5: Hardverski test (Stres + Periferije)";
+                        ViewModel.SubPhase = "Automatska provera, 30s stres i testovi periferija...";
+                        ViewModel.LiveStatus = "Izvršavanje integrisanih hardverskih testova u tabu Hardverski testovi...";
                         ViewModel.Progress = 85;
                         break;
                     case 6:
@@ -1028,6 +1353,14 @@ namespace WIS.UI
             if (phaseNumber == 6 && string.IsNullOrEmpty(scriptPath))
             {
                 scriptPath = FindPhaseScriptPath(baseDir, "Phase5-Finalize.ps1");
+            }
+
+            // Za Fazu 5: u produkcionom toku pokrećemo ugrađeni hardverski test (stres + periferije);
+            // ukoliko je postavljen WIS_STRESS_TEST_INPUT_JSON (CI / ugovorni test), nastavljamo sa Phase5-Stress.ps1.
+            if (phaseNumber == 5 && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+            {
+                ExecutePhase5IntegratedHwTest();
+                return;
             }
 
             // Za Fazu 5 (Automatski 30s Termalni i Stres Test): ako skripta ne postoji na disku, izvrši C# 30s stres test direktno i pređi na Fazu 6
@@ -1869,7 +2202,7 @@ namespace WIS.UI
                 case 2: return 60; // Windows Update i drajveri
                 case 3: return 20; // Optimizacija i debloat
                 case 4: return 60; // Programi
-                case 5: return 5;  // Termalni i stres test (30s)
+                case 5: return 45; // Hardverski testovi (stres + periferije)
                 case 6: return 45; // Završetak i čišćenje
                 default: return 30;
             }
@@ -2207,6 +2540,12 @@ namespace WIS.UI
                         try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
                     }
                 });
+                EnsureLabelPrintButtons();
+                EnsureHwTestButtons();
+                if (!ViewModel.IsHwTestFinished)
+                {
+                    TriggerHardwareTestAfterPhase6();
+                }
             }));
         }
 
@@ -2972,6 +3311,18 @@ namespace WIS.UI
                             ViewModel.ConnectionStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                         }
                     }
+
+                    string currIp = (ViewModel.IpAddress ?? "").Trim();
+                    bool hasValidIp = !string.IsNullOrEmpty(currIp) &&
+                                      !string.Equals(currIp, "N/A", StringComparison.OrdinalIgnoreCase) &&
+                                      !string.Equals(currIp, "Nepoznato", StringComparison.OrdinalIgnoreCase) &&
+                                      !string.Equals(currIp, "0.0.0.0", StringComparison.OrdinalIgnoreCase) &&
+                                      !currIp.StartsWith("127.", StringComparison.OrdinalIgnoreCase) &&
+                                      !currIp.StartsWith("169.254.", StringComparison.OrdinalIgnoreCase);
+                    if (hasValidIp || netNode["internet_active"].AsBool(false))
+                    {
+                        TryRetryAutopilotOnNetworkReady();
+                    }
                 }
 
                 // 7. Aplikacije (apps)
@@ -3167,6 +3518,10 @@ namespace WIS.UI
                         _deviceMonitor.TriggerDebouncedRefresh(HwCategory.All);
                     }
                 }
+                if (stepId.StartsWith("P1.", StringComparison.OrdinalIgnoreCase) && string.Equals(state, "OK", StringComparison.OrdinalIgnoreCase))
+                {
+                    TryRetryAutopilotOnNetworkReady();
+                }
             });
         }
 
@@ -3307,6 +3662,12 @@ namespace WIS.UI
                             try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
                         }
                     });
+                    EnsureLabelPrintButtons();
+                    EnsureHwTestButtons();
+                    if (!ViewModel.IsHwTestFinished)
+                    {
+                        TriggerHardwareTestAfterPhase6();
+                    }
                     break;
 
                 case "USB_FREE":
@@ -3378,6 +3739,11 @@ namespace WIS.UI
         {
             if (e.Source == MainTabControl)
             {
+                if (_hwTestTabItem != null && object.ReferenceEquals(MainTabControl.SelectedItem, _hwTestTabItem))
+                {
+                    RefreshEmbeddedHwTestIdentity();
+                }
+
                 if (MainTabControl.SelectedIndex != 0)
                 {
                     if (_autoStartTimer != null && _autoStartTimer.IsEnabled)
@@ -3485,6 +3851,11 @@ namespace WIS.UI
 
             ViewModel.AddLog("WARN", "Korisnik", string.Format("Zahtev za PRESKAKANJE trenutne operacije u Fazi {0}.", ViewModel.CurrentPhase));
 
+            if (ViewModel.CurrentPhase == 5 && ForceSkipEmbeddedPhase5())
+            {
+                return;
+            }
+
             try
             {
                 string skipMarker = @"C:\setup\.skip";
@@ -3587,6 +3958,9 @@ namespace WIS.UI
         private void ExecuteShowCompletionSummary(object param)
         {
             ViewModel.IsCompleted = true;
+            EnsureLabelPrintButtons();
+            EnsureHwTestButtons();
+            EnsureEmbeddedHwTestTab();
         }
 
         private void ExecuteCancelShutdown(object param)
@@ -4147,14 +4521,92 @@ namespace WIS.UI
             return null;
         }
 
+        private bool IsAutopilotMatrixConfirmed(string code)
+        {
+            if (string.IsNullOrWhiteSpace(code)) return false;
+            string upper = code.Trim().ToUpperInvariant();
+            return upper == "LOCKED_TENANT" ||
+                   upper == "HIDDEN_LOCK" ||
+                   upper == "RELEASED_LOCAL_TRACES" ||
+                   upper == "CONFIRMED_CLEAN" ||
+                   upper == "CLEAN";
+        }
+
+        private JsonNode TryReadCachedAutopilotReport()
+        {
+            string[] candidates = new string[]
+            {
+                @"C:\Windows\Logs\WIS\autopilot_report.json",
+                @"C:\setup\autopilot_report.json"
+            };
+            for (int i = 0; i < candidates.Length; i++)
+            {
+                try
+                {
+                    if (!File.Exists(candidates[i])) continue;
+                    string raw = File.ReadAllText(candidates[i], Encoding.UTF8);
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+                    JsonNode parsed = JsonHelper.Parse(raw);
+                    if (parsed != null && !parsed.IsNull && parsed.IsObject)
+                    {
+                        return parsed;
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private void TryRetryAutopilotOnNetworkReady()
+        {
+            Action checkAndRetry = delegate
+            {
+                if (_autopilotRetriedAfterNetwork || ViewModel == null || ViewModel.Autopilot == null) return;
+                if (ViewModel.Autopilot.IsScanning) return;
+                if (IsAutopilotMatrixConfirmed(ViewModel.Autopilot.MatrixCode)) return;
+
+                _autopilotRetriedAfterNetwork = true;
+                ViewModel.AddLog("INFO", "Autopilot", "Mreža je postala aktivna — ponavljam proveru Autopilot ZTD oblaka...");
+                StartAutopilotScan();
+            };
+
+            var app = Application.Current;
+            if (app != null && app.Dispatcher != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(checkAndRetry);
+            }
+            else
+            {
+                checkAndRetry();
+            }
+        }
+
         private void ExecuteAutopilotScanWork()
         {
+            JsonNode cachedNode = null;
+            bool cachedConfirmed = false;
             try
             {
+                cachedNode = TryReadCachedAutopilotReport();
+                if (cachedNode != null)
+                {
+                    string cachedMatrix = cachedNode["matrix_code"].AsString(cachedNode["status"].AsString(cachedNode["MatrixCode"].AsString("")));
+                    cachedConfirmed = IsAutopilotMatrixConfirmed(cachedMatrix);
+                    if (cachedConfirmed)
+                    {
+                        Dispatcher.BeginInvoke(new Action(delegate
+                        {
+                            UpdateAutopilotFromData(cachedNode);
+                            ViewModel.AddLog("INFO", "Autopilot", "Učitan sačuvani Autopilot izveštaj (" + cachedMatrix + ").");
+                        }));
+                    }
+                }
+
                 bool isNativeAuditor;
                 string toolPath = FindAutopilotTool(out isNativeAuditor);
                 if (string.IsNullOrEmpty(toolPath))
                 {
+                    if (cachedConfirmed) return;
                     Dispatcher.BeginInvoke(new Action(delegate
                     {
                         ViewModel.Autopilot.IsScanning = false;
@@ -4247,6 +4699,7 @@ namespace WIS.UI
 
                 if (string.IsNullOrEmpty(jsonResult))
                 {
+                    if (cachedConfirmed) return;
                     Dispatcher.BeginInvoke(new Action(delegate
                     {
                         ViewModel.Autopilot.IsScanning = false;
@@ -4262,6 +4715,7 @@ namespace WIS.UI
                 JsonNode root = JsonHelper.Parse(jsonResult);
                 if (root == null || root.IsNull)
                 {
+                    if (cachedConfirmed) return;
                     Dispatcher.BeginInvoke(new Action(delegate
                     {
                         ViewModel.Autopilot.IsScanning = false;
@@ -4273,6 +4727,16 @@ namespace WIS.UI
                     return;
                 }
 
+                string newMatrix = root["matrix_code"].AsString(root["status"].AsString(root["MatrixCode"].AsString("")));
+                if (cachedConfirmed && !IsAutopilotMatrixConfirmed(newMatrix))
+                {
+                    Dispatcher.BeginInvoke(new Action(delegate
+                    {
+                        UpdateAutopilotFromData(cachedNode);
+                    }));
+                    return;
+                }
+
                 Dispatcher.BeginInvoke(new Action(delegate
                 {
                     UpdateAutopilotFromData(root);
@@ -4280,6 +4744,7 @@ namespace WIS.UI
             }
             catch (Exception ex)
             {
+                if (cachedConfirmed) return;
                 Dispatcher.BeginInvoke(new Action(delegate
                 {
                     ViewModel.Autopilot.IsScanning = false;
@@ -6120,6 +6585,7 @@ namespace WIS.UI
 
         private void Window_Closing(object sender, CancelEventArgs e)
         {
+            ShutdownEmbeddedHwTest();
             StopScreenCaptureWorker();
 
             if (_stressCts != null)

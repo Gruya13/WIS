@@ -1,6 +1,6 @@
 # ServisHub u WIS monorepo-u
 
-Komponentna razvojna verzija: **3.2.0**, u WIS paketu **2.17.0**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije. [Pravila verzionisanja](../.workspace/wiki/operations/component-versioning-2026-10-15.md).
+Komponentna razvojna verzija: **3.3.0**, u WIS paketu **3.0.0**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije. [Pravila verzionisanja](../.workspace/wiki/operations/component-versioning-2026-10-15.md).
 
 Aktivni razvoj servera nalazi se u `ServiceHub/` ovog repozitorijuma. Prethodni samostalni direktorijum je arhiva; produkcioni NAS nije menjan. Opis API-ja ispod čuva prethodne funkcionalnosti, dok je sledeći ugovor merodavan za release pipeline razvoja 2.17.
 
@@ -16,13 +16,13 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 ---
 
 # ⚡ WIS Service Centralni Servisni Hub (ServisHub)
-### Samostalni kontrolni server za telemetriju, proksiranje drajvera, OEM podsistem, WIS alate i nadzor radioničke flote (v3.2.0)
+### Samostalni kontrolni server za telemetriju, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.3.0)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-brightgreen.svg)]()
 [![Docker Ready](https://img.shields.io/badge/Docker-TrueNAS%20SCALE-blueviolet.svg)]()
 
-[![Version](https://img.shields.io/badge/Release-v3.2.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/Release-v3.3.0-orange.svg)]()
 
 ---
 
@@ -45,7 +45,7 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 
 **ServisHub** je centralni višenamenski kontrolni server, telemetrijski agregator, pametni keširajući proksi za drajvere, upravljač butabilnih instalacionih medija i OTA (Over-The-Air) distributivni repozitorijum razvijen za potrebe servisa računara **"WIS Service"**.
 
-U verziji **v3.2.0**, ServisHub zaokružuje radionički rad "iz fotelje" implementacijom:
+U verziji **v3.3.0** (`WIS v3.0.0`), pored **1 Hz Live Ogledala Ekrana**, daljinskih komandi, telemetrije i trozupca OEM provajdera (Lenovo, Dell, HP), ServisHub uvodi dvosmerni HTTP WU keš (`/api/updates/*`), dvosmerni `<Model>.tar` keš (`/api/drivers/model-pack/*`), profile modela (`model_profiles.py`), rezoluciju 12 OEM šablona tastatura (`keyboard_resolver.py`) i lookup fabričkih specifikacija (`hardware_spec.py`), pokriveno sa **279 unit testova** (`30` test modula: `259 PASS, 20 skipped`):
 - **1 Hz Live Ogledala Ekrana (Screen Mirror):** Uživo praćenje ekrana klijentskih mašina u radionici preko laganog in-memory JPEG bafera (5s TTL).
 - **Dvosmernog Daljinskog Upravljanja Radnim Stanicama:** Enqueue komandi (`reboot_uefi`, `reboot_pxe`, `cancel`, `abort`) i njihova asinhrona distribucija kroz odgovore na heartbeat puls radnika.
 - **Proširene Hardverske Telemetrije & NVMe Senzorike:** Real-time očitavanje opterećenja procesora, termike (°C), RAM zauzeća i NVMe S.M.A.R.T. zdravlja.
@@ -69,7 +69,10 @@ U verziji **v3.2.0**, ServisHub zaokružuje radionički rad "iz fotelje" impleme
 ```text
 /home/gru/Projects/WIS/ServiceHub/
 ├── servishub/                     # Glavni modularni Python paket (32 modula, 12,112 linija)
-│   ├── __init__.py & version.py   # Verzija (v3.2.0) i metapodaci
+│   ├── __init__.py & version.py   # Verzija (v3.3.0) i metapodaci
+│   ├── model_profiles.py          # Perzistencija profila modela (tastatura/USB)
+│   ├── keyboard_resolver.py       # Određivanje 12 OEM šablona tastatura
+│   ├── hardware_spec.py           # Fabričke hardverske specifikacije modela i keš
 │   ├── config.py                  # Upravljanje konfiguracijom i putanjama
 │   ├── server.py                  # Višenitni HTTP server i signal handler
 │   ├── handlers.py                # REST API ruter sa CORS i XSS zaštitom
@@ -104,7 +107,7 @@ U verziji **v3.2.0**, ServisHub zaokružuje radionički rad "iz fotelje" impleme
 │   └── web/                       # Korisnički interfejs
 │       ├── __init__.py
 │       └── dashboard.py           # Modern Enterprise Dark Mode Cockpit (Linear/Vercel, Stitch)
-├── tests/                         # Kompletna automatizovana testna pokrivenost (29 fajlova, 259 testova PASS)
+├── tests/                         # 30 testnih modula — 279 unittest metoda (259 PASS, 20 skipped bez opcionih paketa)
 │   ├── test_hwid.py               # Testovi normalizacije hardvera
 │   ├── test_driver_versions.py    # Testovi poređenja verzija
 │   ├── test_payload.py & test_payload_http.py # Testovi potpisanih izdanja i HTTP payload-a
@@ -218,6 +221,18 @@ Kada Windows prijavi nepoznat uređaj u Device Manager-u, njegov identifikator �
 | `/api/stream/<dev_id>` | `GET` | SSE živi prenos linija loga (`tail -f`) za mašinu | - | `text/event-stream` |
 | `/api/lifecycle` | `POST` | Dvotačkasti životni ciklus (`STARTED` i `COMPLETED`) | JSON događaja | `{"status": "ok", "event": str}` |
 | `/api/updates/status` | `GET` | Status i inventar Windows 11 kumulativnih zakrpi na NAS kešu | Query: `?directory=<path>` (opciono) | JSON status skladišta zakrpi (`UpdatesStatusResponse`) |
+| `/api/updates/download` | `GET` | Preuzimanje `.msu`/`.cab` paketa i `index.json` sa proverom `OSBuild` i SHA-256 | Query: `?build=<os_build>` / `?file=<name>` | Binarni fajl / JSON indeks |
+| `/api/updates/upload` | `POST` | Dvosmerno otpremanje novih `.msu`/`.cab` zakrpa sa klijenta u hub keš | Binarni upload + metapodaci | `{"status": "ok"}` |
+| `/api/updates/cache-kb` | `POST` | Indeksiranje i keširanje KB paketa u hub repozitorijumu | JSON zahtev sa KB podacima | `{"status": "ok"}` |
+| `/api/updates/prune` | `POST` | Čišćenje i rotacija zastarelih WU zakrpa iz keša | JSON filter / build politika | `{"status": "ok"}` |
+| `/api/drivers/model-pack/status` | `GET` | Provera postojanja i verzije `<Model>.tar` paketa u HTTP kešu | Query: `?model=<model>` | JSON status paketa |
+| `/api/drivers/model-pack/download` | `GET` | Stream preuzimanje `<Model>.tar` paketa drajvera | Query: `?model=<model>` | `application/x-tar` |
+| `/api/drivers/model-pack/upload` | `POST` | Dvosmerno otpremanje ubranog `<Model>.tar` paketa u hub keš | Binarni `.tar` stream | `{"status": "ok"}` |
+| `/api/model-profile` | `GET` | Čitanje profila modela (izostavljeni tasteri, USB portovi) za `WIS.HwTest` | Query: `?model=<model>` | JSON profil modela |
+| `/api/model-profile/keyboard` | `POST` | Snimanje prilagođenog rasporeda / skrivenih tastera za model | `{"model": str, ...}` | JSON ažurirani profil |
+| `/api/model-profile/usb` | `POST` | Snimanje mape fizičkih USB portova za model | `{"model": str, ...}` | JSON ažurirani profil |
+| `/api/keyboard-layout` | `GET` | Određivanje odgovarajućeg od 12 OEM šablona tastature (`keyboard_resolver.py`) | Query: `?model=<model>` | JSON raspored tastature |
+| `/api/hardware-spec` | `GET` | Lookup i keširanje fabričke hardverske specifikacije modela (`hardware_spec.py`) | Query: `?model=<model>` | JSON specifikacija |
 
 ---
 
@@ -805,4 +820,4 @@ Pokriveni scenariji (214 testova):
   - **Operativni Runbook:** `wiki/memory/ops-runbook.md`
   - **Glavni Indeks (MOC):** `wiki/index.md`
 
-`servishub.__version__` koristi generisani `VERSION=3.2.0`. Arhivski samostalni Hub ima potvrđen tag `v3.1.0`; 3.2.0 je trenutno slobodna razvojna oznaka, bez tvrdnje da je izdanje objavljeno.
+`servishub.__version__` koristi generisani `VERSION=3.3.0` (`WIS v3.0.0`). Arhivski samostalni Hub ima potvrđen tag `v3.1.0`; za razvoj i produkciono pakovanje `v3.3.0` u `WIS v3.0.0`, pogledajte [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).

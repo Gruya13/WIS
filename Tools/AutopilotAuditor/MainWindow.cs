@@ -42,7 +42,7 @@ namespace WIS.AutopilotAuditor
 
         private void InitializeComponent()
         {
-            Title = "WIS Autopilot Forensic Auditor v2.0";
+            Title = "WIS Autopilot Forensic Auditor v3.0";
             Width = 840;
             Height = 650;
             MinWidth = 760;
@@ -77,7 +77,7 @@ namespace WIS.AutopilotAuditor
             };
             TextBlock headerSub = new TextBlock
             {
-                Text = "WIS Service WIS Standalone Tool v2.0",
+                Text = "WIS Service Standalone Tool v3.0",
                 FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(148, 163, 184)),
                 HorizontalAlignment = HorizontalAlignment.Right
@@ -251,7 +251,9 @@ namespace WIS.AutopilotAuditor
                 HardwareDetails hw = HardwareInspector.Inspect();
                 LocalForensicsDetails local = LocalForensicsInspector.Inspect();
                 CloudZtdDetails cloud = CloudZtdInspector.Inspect(hw.SerialNumber);
-                return DecisionMatrix.Evaluate(hw, local, cloud);
+                AuditorResult evaluated = DecisionMatrix.Evaluate(hw, local, cloud);
+                CloudZtdInspector.SaveCachedReport(evaluated);
+                return evaluated;
             });
 
             _currentResult = res;

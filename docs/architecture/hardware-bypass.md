@@ -12,7 +12,7 @@ tags:
   - windows-11
 ---
 
-# Zaobilaženje Hardverskih Zahteva, WinPE Pre-Boot i Ultra-Lean ISO: WIS (v2.19.0)
+# Zaobilaženje Hardverskih Zahteva, WinPE Pre-Boot i Ultra-Lean ISO: WIS (v3.0.0)
 
 Kako bi se Windows 11 24H2 (Build `10.0.26200.8037`) instalirao na sve generacije računara u servisu (od starijih procesora bez TPM 2.0 do najnovijih Intel Gen 11–14 i Core Ultra laptopova sa VMD kontrolerima i Intel I219-LM PXE mrežom), **WIS** primenjuje višeslojnu WinPE Pre-Boot i Unattend arhitekturu ([[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]]).
 
@@ -87,6 +87,7 @@ U prolazu `windowsPE` datoteke `ISO/autounattend.xml` (`180` linija) uklonjen je
    - Ukupna veličina hibridnog UDF (`ECMA-167`) + UEFI (`0xEF`) + BIOS (`0x00`) Zlatnog Lean ISO medijuma (`WIS-Win11-Pro-10.0.26200.8037-Lean.iso`, `v2.18.0`) iznosi **6.07 GB (`6,522,753,024 B`, SHA-256 `80ef4593...`)**.
 2. **Konfiguracioni fajl `ISO/sources/ei.cfg` i Generic Setup Ključ:**
    - Sprečava da ugrađeni OEM Home ključ u UEFI MSDM tabeli nametne Home ediciju bez izbora, dok generički Pro ključ u `autounattend.xml` automatizuje izbor Pro edicije. Trajna aktivacija se obavlja u Fazi 4 preko OEM OA3x verifikacije.
+   - **Pre-OOBE Autopilot ZTD hvatanje (`v3.0.0`):** Pošto `autounattend.xml` automatizuje OOBE fazu, `PreOOBE-Network.ps1` (`144` linije) i `SetupComplete.ps1` (`669` linija, korak `6b`) pre OOBE-a podižu mrežu, kontaktiraju `ztd.dds.microsoft.com` preko `WIS-AutopilotAuditor.exe` i čuvaju `autopilot_report.json` i `AutopilotDDSZTDFile.preoobe.json` u `C:\Windows\Logs\WIS\` ([[decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot]]).
 
 ---
 

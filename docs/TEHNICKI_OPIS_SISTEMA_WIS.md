@@ -1,7 +1,7 @@
 # 🏛️ WIS — Sveobuhvatni Tehničko-Opisni Dokument i Specifikacija Arhitekture Sistema
 ### Windows Installation Assistant (WIS)
-**Verzija Paketa:** `v2.19.0` (`release_status: development`, `windows_validation: pending`; razvojna nadogradnja izdanja `v2.17.0` i `v2.18.0`)  
-**Komponentne Verzije (`version.json`):** `ISO 2.18.0` | `Launcher 2.2.17` | `UI 2.3.0` | `ServiceHub 3.2.0` | `AutopilotAuditor 2.0.0`  
+**Verzija Paketa:** `v3.0.0` (`release_status: development`, `windows_validation: pending`; razvojno izdanje `2026-11-14`)  
+**Komponentne Verzije (`version.json`):** `ISO 3.0.0` | `Launcher 3.0.0` (`min: 2.2.17`) | `UI 3.0.0` | `ServiceHub 3.3.0` | `AutopilotAuditor 3.0.0`  
 **Ciljna Platforma:** Windows 11 Home / Pro x64 (24H2 / Build `10.0.26200.8037`), Windows PowerShell 5.1, .NET Framework 4.0 / 4.8  
 **Datum Dokumenta:** 11. novembar 2026.  
 **Organizacija:** WIS Service (`IG-Systems`)  
@@ -15,7 +15,7 @@
    - 1.2. Koncept „Jedan klik" i Zero-Touch autonomija
    - 1.3. Ključne inženjerske metrike i ubrzanja
    - 1.4. Kvantitativni presek izvornog koda i binarnih artefakata
-2. [Organizacija Monorepo-a i Kanonsko Verzionisanje (`v2.19.0`)](#2-organizacija-monorepo-a-i-kanonsko-verzionisanje-v2190)
+2. [Organizacija Monorepo-a i Kanonsko Verzionisanje (`v3.0.0`)](#2-organizacija-monorepo-a-i-kanonsko-verzionisanje-v300)
    - 2.1. Razvojne celine (`ISO/`, `Launcher/`, `UI/`, `ServiceHub/`, `Tools/AutopilotAuditor/`) i `.workspace/`
    - 2.2. Kanonsko verzionisanje komponenti (`version.json` i `Sync-Versions.py`)
    - 2.3. Očuvanje klijentskog runtime rasporeda (`C:\setup\`)
@@ -33,21 +33,21 @@
 5. [Deklarativna Automatizacija Windows Setup-a i Post-OOBE Bootstrap](#5-deklarativna-automatizacija-windows-setup-a-i-post-oobe-bootstrap)
    - 5.1. `autounattend.xml` prolazi (`windowsPE`, `specialize`, `oobeSystem`)
    - 5.2. Čisto Thin-Client `$OEM$` integraciono stablo i `ei.cfg`
-   - 5.3. `SetupComplete.cmd` i `SetupComplete.ps1` (SYSTEM kontekst i rani Wi-Fi uvoz sa XML escaping-om)
+   - 5.3. `SetupComplete.cmd`, `SetupComplete.ps1` i `PreOOBE-Network.ps1` (SYSTEM kontekst, rani Wi-Fi uvoz i Pre-OOBE Autopilot keš)
    - 5.4. `FirstLogon.cmd` i `FirstLogon.ps1` (NTFS SID permisije, QuickEdit blokada, 12s Wi-Fi Fast-Exit i 1 Hz Screen Mirror radnik)
-6. [Thin-Client Pokretački Podsistem (`Launcher/` — `WIS.Launcher.exe` v2.2.17)](#6-thin-client-pokretački-podsistem-launcher--wislauncherexe-v2217)
+6. [Thin-Client Pokretački Podsistem (`Launcher/` — `WIS.Launcher.exe` v3.0.0)](#6-thin-client-pokretački-podsistem-launcher--wislauncherexe-v300)
    - 6.1. Tehnološki profil (C# 5.0 / .NET Framework 4.0, nulta spoljna zavisnost)
    - 6.2. Arhitektura C# klasa (`Program.cs`, `SplashForm.cs`, `WifiHelper.cs`, `HubDiscovery.cs`, `PayloadManager.cs`)
    - 6.3. Reaktivni mrežni osluškivač, `\\host\servis` SMB prioritet i procesna provera UI-ja
    - 6.4. Kriptografska RSA-2048 PKCS#1 v1.5 verifikacija, Zip-Slip zaštita i transakcioni rollback (`.update_tx.json`)
    - 6.5. Eliminacija Windows Shell „Security Warning" dijaloga (`:Zone.Identifier` unblock)
-7. [Klijentski Grafički Servisni Panel (`UI/` — `WIS.UI.exe` v2.3.0)](#7-klijentski-grafički-servisni-panel-ui--wisuiexe-v230)
+7. [Klijentski Grafički Servisni Panel (`UI/` — `WIS.UI.exe` v3.0.0, `WIS.HwTest` & `LabelPrintService`)](#7-klijentski-grafički-servisni-panel-ui--wisuiexe-v300-wishwtest--labelprintservice)
    - 7.1. WPF MVVM arhitektura, Task Runner, `StepGuard` (`Expander`) i `EnsureRunOnceEntry` (HKLM-only)
    - 7.2. Pregled svih 8 funkcionalnih kartica i kartice pozadinskog WU radnika (`wu-bg-status.json`)
    - 7.3. Višekanalni 5-minutni rolling Canvas grafikon (300s @ 1 Hz), Core Clocks i obrnuti dnevnik (`Insert(0)`)
    - 7.4. `HardwareIdentityService`, `DeviceChangeMonitor` i hibridni senzorski motor (`ThermalSensorEngine.cs`)
    - 7.5. Kumulativni tajmer kroz restarte i eliminacija mock podataka
-   - 7.6. Trojezični interfejs u realnom vremenu (SRB `414` / 中文 `414` / EN `72`) i `App.config` fallback
+   - 7.6. Trojezični interfejs u realnom vremenu (SRB `435` / 中文 `435` / EN `73`) i `App.config` fallback
    - 7.7. Dvosmerni JSON IPC cevovod (`Send-IpcStep`), kooperativna pauza i odlaganje restarta (+10 min)
 8. [Forenzički Podsistem za Microsoft Autopilot / Intune Detekciju (`Tools/AutopilotAuditor/` & `Provera_autopilota.ps1`)](#8-forenzički-podsistem-za-microsoft-autopilot--intune-detekciju-toolsautopilotauditor--provera_autopilotaps1)
    - 8.1. Dvostepena integracija u `WIS.UI.exe` (`FindAutopilotTool`)
@@ -62,7 +62,7 @@
    - 9.4. Pre-Reboot Gate: Autoritativni `interim_reboot_required` i kontrolisani međurestart (`HandleInterimReboot`)
    - 9.5. Faza 3 (`Phase3-Optimization.ps1` — 20 min): `StepGuard` optimizacija, debloat, VC++ AIO, DPI skaliranje i OEM brendiranje
    - 9.6. Faza 4 (`Phase4-Apps.ps1` — 60 min): Rani uvoz `WIS.Core.psm1`, lokalni Chrome keš, Office ODT lokalni `SourcePath` bez BOM-a, Reality Check i `[↻ Ponovi Fazu 4]`
-   - 9.7. Faza 5 (`Phase5-Stress.ps1` — 5 min): WU Barijera, 30s Multi-Core 100% CPU `RunspacePool` stres test, 98°C Abort i `WIS.StatusContract.psm1`
+   - 9.7. Faza 5 (`ExecutePhase5IntegratedHwTest` — 45 min, ugrađeni `WIS.HwTest` & `Phase5-Stress.ps1` fallback)
    - 9.8. Faza 6 (`Phase6-Finalize.ps1` — 45 min): Asinhroni WU Pass 2, DMTF servisni karton, Anti-Leak brisanje tajni i samouništenje `C:\setup`
 10. [Modularna PowerShell 5.1 Infrastruktura (`UI/Skripte/Modules/`)](#10-modularna-powershell-51-infrastruktura-uiskriptemodules)
     - 10.1. Pravila kompatibilnosti (PowerShell 5.1, UTF-8 BOM, eliminacija CP1252 `0x93`/`0x94`, bez 4-bajtnih emodžija)
@@ -70,7 +70,7 @@
 11. [Matrica Softverskog Paketa i Mehanizmi Tihe Instalacije](#11-matrica-softverskog-paketa-i-mehanizmi-tihe-instalacije)
     - 11.1. Izolacija Windows Installer servisa (`Global\_MSIExecute` mutex)
     - 11.2. Specifikacija 8 aplikacija i alata (Chrome MSI sa lokalnim kešom, Acrobat Pro 2024, Office 2024 LTSC sa lokalnim NVMe `SourcePath`-om, VC++ AIO, .NET, WinRAR, BatteryBar Solo, OEM Licenca)
-12. [Centralizovani Nadzorni i Distribucijski Server (`ServiceHub/` v3.2.0)](#12-centralizovani-nadzorni-i-distribucijski-server-servicehub-v320)
+12. [Centralizovani Nadzorni i Distribucijski Server (`ServiceHub/` v3.3.0)](#12-centralizovani-nadzorni-i-distribucijski-server-servicehub-v330)
     - 12.1. Modularna Python arhitektura (`servishub` paket, 32 modula) i Docker kontejnerizacija na TrueNAS-u (port 8080 i UDP 8888)
     - 12.2. Imutabilni potpisani release sistem (`releases/<release_id>/`, `current.json`, `payload_meta.json`)
     - 12.3. 1 Hz Live Screen Mirror u RAM-u (5s TTL), SSE telemetrija i daljinske komande (`reboot_uefi`, `reboot_pxe`)
@@ -125,18 +125,18 @@ Sve naredne etape odvijaju se bez ljudske intervencije (**100% Zero-Touch**), uz
 
 | Podsistem / Artefakt | Obim Izvornog Koda | Glavni Binarni / Izlazni Artefakt | Veličina i SHA-256 otisak (lokalni/produkcioni build) |
 |---|---|---|---|
-| **`UI/` (WPF Klijentski Panel)** | `13` fajlova (`18,515` linija C#/XAML, `935,738 B`) | `UI/WIS.UI.exe` (`v2.3.0`) | `1,200,128 B` \| SHA-256: `b240d510007dcf131790af95d9fda74f435d1601fc983c31b0e724489d873ff1` |
-| **`Launcher/` (Thin-Client Pokretač)** | `6` prod. `.cs` fajlova (`4,739` lin., `198,848 B`) + `LauncherBehaviorTests.cs` (`332` lin., `27,130 B`) | `Launcher/WIS.Launcher.exe` (`v2.2.17`) | `468,480 B` \| SHA-256: `431121e2fe3b08fa20bd223583db75ad4bf868069608755a018b69b68467c440` |
-| **`Tools/AutopilotAuditor/`** | `8` fajlova (`1,989` linija C#, `93,073 B`) | `WIS-AutopilotAuditor.exe` (`v2.0.0`) | `442,368 B` \| SHA-256: `32ad39c144e02415f99d15424c387a6b216c5af05afbe3f57dcdb70e9265990b` |
-| **`UI/Skripte/Modules/` (PS 5.1 Moduli)** | `13` fajlova (`19,863` linija PS, `971,808 B`) | `12` `.psm1` modula (sa `WIS.StepGuard.psm1`) + `WIS.ScreenCapture.ps1` | Ugrađeno u potpisani `wis-payload.zip` (`64,674,440 B` sa offline programima) |
-| **`UI/Skripte/Phases/` (PS 5.1 Faze)** | `6` fajlova (`1,788` linija PS, `93,398 B`) | `Phase1-Network.ps1` .. `Phase6-Finalize.ps1` | Ugrađeno u potpisani `wis-payload.zip` i `$OEM$` |
-| **`UI/Skripte/Provera_autopilota.ps1`** | `1` fajl (`799` linija PS, `45,853 B`) | `Provera_autopilota.ps1` | `45,853 B` \| SHA-256: `ac5aacd955da6eee83945875814f4f7ebd0cdf4b64e2b2bd01918205218d89ee` |
-| **`ServiceHub/` (Nadzorni Server)** | `32` modula (`12,080` linija Python, `517,373 B`) + `27` test fajlova (`6,505` linija, `259` test metoda) | `ServiceHub/hub_server.py` (`v3.2.0`) | Docker servis na `192.168.170.254:8080` (UDP `:8888`) |
-| **`ISO/` (WinPE, Unattend & Build)** | `boot.wim` (`609,758,089 B` / `~582 MiB`), `install.esd` (`~4.98 GiB`), build/patch skripte | `WIS-Win11-Pro-10.0.26200.8037-Lean.iso` (`v2.18.0`) | `6,522,753,024 B` (`6.07 GB`) \| SHA-256: `80ef459379925d27c71baf94a47366df57ee79b6f7f4dadb5dd27e3014579782` |
+| **`UI/` (WPF Panel + Ugrađeni `HwTest`)** | `14` korenskih fajlova (`21,124` lin. C#/XAML, `1,052,658 B`) + `21` fajl u `UI/HwTest/` (`21,284` lin. C#, `950,553 B`) | `UI/WIS.UI.exe` (`v3.0.0`) + standalone `WIS.HwTest.exe` | `2,977,280 B` (SHA-256: `253c7544fc7e3642894ac4ff97b18e1b86f2aebd40a5bae1ce8f7182df240824`) \| `WIS.HwTest.exe`: `1,736,704 B` (`74156a5b...`) |
+| **`Launcher/` (Thin-Client Pokretač)** | `6` prod. `.cs` fajlova (`4,739` lin., `198,843 B`) + `LauncherBehaviorTests.cs` (`332` lin., `27,129 B`) | `Launcher/WIS.Launcher.exe` (`v3.0.0`) | `468,480 B` \| SHA-256: `33ef900f4e30244bc551e89315c98f19de710b2f929df7e5198a7d6896fc7380` |
+| **`Tools/AutopilotAuditor/`** | `8` fajlova (`2,333` linija C#, `108,474 B`) | `WIS-AutopilotAuditor.exe` (`v3.0.0`) | `447,488 B` \| SHA-256: `c50fbe03ed89be8adbc6c718caf8cf9969b34487e460a6a15addfdb7bfafee21` |
+| **`UI/Skripte/Modules/` (PS 5.1 Moduli)** | `13` fajlova (`21,315` linija PS, `1,041,317 B`) | `12` `.psm1` modula (sa `WIS.StepGuard.psm1`) + `WIS.ScreenCapture.ps1` | Ugrađeno u potpisani `wis-payload.zip` (`68,475,013 B`, `78` fajlova, SHA-256: `ea2ca928...`) |
+| **`UI/Skripte/Phases/` (PS 5.1 Faze)** | `6` fajlova (`1,768` linija PS, `92,163 B`) | `Phase1-Network.ps1` .. `Phase6-Finalize.ps1` | Ugrađeno u potpisani `wis-payload.zip` i `$OEM$` |
+| **`UI/Skripte/Provera_autopilota.ps1`** | `1` fajl (`973` linija PS bez BOM-a, `56,662 B`) | `Provera_autopilota.ps1` | `56,662 B` \| SHA-256: `793bbee1e3fccad4bb9c05b159eca59b9b4693d0bba752808eaf84d473f42d5f` |
+| **`ServiceHub/` (Nadzorni Server)** | `35` modula (`15,112` linija Python, `643,465 B`) + `32` test fajla (`7,656` linija, `279` test metoda) | `ServiceHub/hub_server.py` (`v3.3.0`) | Docker servis na `192.168.170.254:8080` (UDP `:8888`) |
+| **`ISO/` (WinPE, Unattend, OEM & Build)** | `PreOOBE-Network.ps1` (`144` lin.), `SetupComplete.ps1` (`669` lin.), WIM/ISO i build/release skripte | `WIS-Win11-Pro-10.0.26200.8037-Lean.iso` (`v3.0.0` target) | UDF + UEFI/BIOS build pipeline (`Build-Iso.py` / `Prepare-WISMedia.py`) |
 
 ---
 
-## 2. Organizacija Monorepo-a i Kanonsko Verzionisanje (`v2.19.0`)
+## 2. Organizacija Monorepo-a i Kanonsko Verzionisanje (`v3.0.0`)
 
 ### 2.1. Razvojne celine (`ISO/`, `Launcher/`, `UI/`, `ServiceHub/`, `Tools/AutopilotAuditor/`) i `.workspace/`
 Kanonski monorepo nalazi se na putanji `/home/gru/Projects/WIS` i podeljen je u jasno razgraničene razvojne celine i skriveni radni direktorijum `.workspace/`:
@@ -146,7 +146,7 @@ Kanonski monorepo nalazi se na putanji `/home/gru/Projects/WIS` i podeljen je u 
 ├── ISO/                      # Instalacioni medijum, WinPE/OOBE bootstrap, USB Tool, build/release/media skripte i PxeZeroTouch test matrica
 ├── Launcher/                 # Thin-Client pokretač (C# 5.0 / .NET 4.0) i objedinjeni funkcionalni testovi (Tests/ - 31/31)
 ├── UI/                       # WPF grafički panel (C# / .NET 4.8 + v4.0 fallback), PowerShell moduli (13 fajlova) i faze (6 fajlova)
-├── ServiceHub/               # Kanonski Python HTTP/SSE/UDP nadzorni i release server (servishub paket i 259 testova)
+├── ServiceHub/               # Kanonski Python HTTP/SSE/UDP nadzorni i release server (servishub paket i 279 testova)
 ├── Tools/AutopilotAuditor/   # Samostalni C# .NET 4.8 forenzički alat za Autopilot detekciju (WIS-AutopilotAuditor.exe)
 ├── .workspace/               # Zajednička dokumentacija, Obsidian wiki, istorija izrade, Agent Bus, arhive i build artefakti
 ├── README.md                 # Krovni pregled projekta i operativnih ugovora
@@ -159,12 +159,12 @@ Korenski fajl `version.json` predstavlja jedini autoritativni izvor verzija za c
 
 | Stavka / Komponenta | Kanonska verzija (`version.json`) | Tehnološki okvir i binarni artefakt |
 |---|---|---|
-| **WIS paket izdanja (`release_package`)** | **2.19.0** | Celokupno potpisano izdanje (`wis-payload.zip`) |
-| **ISO medijum (`components.iso`)** | **2.18.0** | Butabilni Windows 11 24H2 medijum (`ISO/`, `embedded_launcher_version: 2.2.17`) |
-| **Launcher (`components.launcher`)** | **2.2.17** | WinForms / C# 5.0 .NET Framework 4.0 (`WIS.Launcher.exe`) |
-| **UI (`components.ui`)** | **2.3.0** | WPF / C# .NET Framework 4.8 (`WIS.UI.exe`) |
-| **ServiceHub (`components.servicehub`)** | **3.2.0** | Python 3 HTTP/SSE/UDP server (`ServiceHub/`) |
-| **AutopilotAuditor (`Tools/AutopilotAuditor`)** | **2.0.0** | WPF + CLI C# .NET Framework 4.8 (`WIS-AutopilotAuditor.exe`) |
+| **WIS paket izdanja (`release_package`)** | **3.0.0** | Celokupno potpisano izdanje (`wis-payload.zip`, `min_launcher_version: 2.2.17`) |
+| **ISO medijum (`components.iso`)** | **3.0.0** | Butabilni Windows 11 24H2+ medijum (`ISO/`, `embedded_launcher_version: 3.0.0`) |
+| **Launcher (`components.launcher`)** | **3.0.0** | WinForms / C# 5.0 .NET Framework 4.0 (`WIS.Launcher.exe`) |
+| **UI (`components.ui`)** | **3.0.0** | WPF / C# .NET Framework 4.8 (`WIS.UI.exe` + ugrađeni `WIS.HwTest`) |
+| **ServiceHub (`components.servicehub`)** | **3.3.0** | Python 3 HTTP/SSE/UDP server (`ServiceHub/`) |
+| **AutopilotAuditor (`Tools/AutopilotAuditor`)** | **3.0.0** | WPF + CLI C# .NET Framework 4.8 (`WIS-AutopilotAuditor.exe`) |
 
 Alat `python3 ISO/Skripte/Sync-Versions.py` automatski propagira verzije iz korenskog `version.json` u `AssemblyInfo.cs` fajlove C# projekata, konstante Launcher-a, `ServiceHub/servishub/version.py` i komponentne JSON manifeste, dok `python3 ISO/Skripte/Sync-Versions.py --check` služi kao obavezni verifikacioni korak (Build Gate) za detekciju bilo kakvog odstupanja (drift-a).
 
@@ -196,14 +196,14 @@ flowchart TD
 
     subgraph S2["2. Specialize, SetupComplete & OOBE Faza"]
         E --> F["Specialize: BypassNRO=1, LanmanWorkstation SMB 24H2 polise, privremeno utišavanje UAC-a"]
-        F --> SC["SetupComplete.cmd -> SetupComplete.ps1 (SYSTEM): wlansvc start, XML escaping Wi-Fi profila, RunOnce"]
+        F --> SC["SetupComplete.cmd -> SetupComplete.ps1 (SYSTEM): wlansvc start, XML escaping Wi-Fi profila, Pre-OOBE Autopilot keš, RunOnce"]
         SC --> G["OOBESystem: Kreiranje naloga 'Korisnik', AutoLogon i preskakanje čarobnjaka"]
         G --> FL["FirstLogon.cmd -> FirstLogon.ps1: SID NTFS permisije, QuickEdit=0, 12s Wi-Fi Fast-Exit, 1Hz ScreenCapture Job"]
     end
 
-    subgraph S3["3. Thin-Client Launcher (v2.2.17) & 6-Fazni C# Master Runner (WIS.UI.exe v2.3.0)"]
+    subgraph S3["3. Thin-Client Launcher (v3.0.0) & 6-Fazni C# Master Runner (WIS.UI.exe v3.0.0)"]
         FL --> L1["WIS.Launcher.exe: Wi-Fi konekcija, UDP :8888 Discovery / SMB \\host\servis & \WIS manifest prioritet"]
-        L1 --> L2["Preuzimanje wis-payload.zip + RSA-2048 verifikacija potpisa i SHA-256 heševa"]
+        L1 --> L2["Preuzimanje wis-payload.zip (v3.0.0) + RSA-2048 verifikacija potpisa i SHA-256 heševa"]
         L2 --> L3["Transakciono raspakivanje u C:\setup, brisanje :Zone.Identifier, provera aktivnog UI procesa i --master"]
         L3 --> P1["Faza 1 (Mreža): Fast-Pass provera, S.M.A.R.T. trijaža diska, baterija i Autopilot detekcija"]
         P1 --> P2["Faza 2 (Drajveri): StepGuard (6 koraka), .tar modeli, WU COM API + Pozadinski WU radnik (wu-bg-status.json)"]
@@ -212,7 +212,7 @@ flowchart TD
         RG -- "Obavezan restart / pending reboot" --> RB["Kontrolisani međurestart: deploy-state.json + HKLM RunOnce -> WIS.Launcher --master"]
         RB --> P4["Faza 4 (Programi): StepGuard (9 koraka), Chrome keš, Acrobat, Office ODT BOM-free lokalni SSD SourcePath, Shortcuts, Reality Check"]
         RG -- "Već odrađen (.stage_reboot_done)" --> P4
-        P4 --> P5["Faza 5 (Stres Test): WU Barijera, 30s Multi-Core 100% CPU RunspacePool, 98°C Abort, Non-Blocking Diagnostics"]
+        P4 --> P5["Faza 5 (45 min — Stres & HwTest): WU Barijera, 30s Multi-Core CPU RunspacePool, 7 auto + 9 interaktivnih HW testova, 98°C Abort"]
         P5 --> P6["Faza 6 (Završetak): Konsolidacija pozadinskog WU-a (45m timeout), DMTF karton, Anti-Leak brisanje tajni i C:\setup"]
     end
 
@@ -224,7 +224,7 @@ flowchart TD
 2. **Partition Selection Gate:** Jedina tačka u kojoj operater vrši interakciju (odabir ciljnog SSD diska).
 3. **Cryptographic Payload Gate (`WIS.Launcher.exe`):** Svaki preuzeti (HTTP ili SMB `\\host\servis` / `\WIS`) ili lokalni `wis-payload.zip` paket mora proći RSA-2048 PKCS#1 v1.5 verifikaciju digitalnog potpisa i SHA-256 kontrolu svih deklarisanih komponenti pre izvršavanja.
 4. **Interim Reboot Gate & StepGuard (`WIS.StepGuard.psm1`):** Faze 2, 3 i 4 izvršavaju se kroz **21 idempotentni `StepGuard` korak** zabeležen u `C:\setup\step-journal.json`, čime je omogućen siguran nastavak bez ponavljanja već uspešnih koraka i ručno ponavljanje Faze 4 (`force-rerun-phase4.flag` preko dugmeta `[↻ Ponovi Fazu 4]`). Po završetku Faze 3, kontrolisani međurestart (`HandleInterimReboot()` uz HKLM-only `EnsureRunOnceEntry`) oslobađa `PendingFileRenameOperations`, Component-Based Servicing (CBS) i Windows Installer (`msiexec.exe`) brave pre instalacije MSI/ODT programa u Fazi 4.
-5. **Thermal & Stability Gate (Faza 5):** 30-sekundni višenitni test opterećenja procesora. Fizičko pregrevanje ($\ge 95^\circ\text{C}$ ili Emergency Abort na $98^\circ\text{C}$) blokira predaju računara (`handover_ready = false`, `exit 2`), dok nedostatak senzora na specifičnoj ploči (`UNKNOWN` / `SENSOR_UNAVAILABLE`) ne blokira instalaciju već postavlja žuto upozorenje za ručnu proveru (`manual_check_required = true`, `cooling_verified = false`).
+5. **Thermal, Hardware & Stability Gate (Faza 5 — 45 min):** 30-sekundni višenitni test opterećenja procesora uz ugrađeni 9. tab za dijagnostiku hardvera (`WIS.HwTest`: 7 automatskih + 9 interaktivnih testova periferija, 12 OEM šablona tastatura, dual-mode LAN/USB test, bez ugrađenog `WinRing0`). Fizičko pregrevanje ($\ge 95^\circ\text{C}$ ili Emergency Abort na $98^\circ\text{C}$) blokira predaju računara (`handover_ready = false`, `exit 2`), dok nedostatak senzora na specifičnoj ploči (`UNKNOWN` / `SENSOR_UNAVAILABLE`) ne blokira instalaciju već postavlja žuto upozorenje za ručnu proveru (`manual_check_required = true`, `cooling_verified = false`). Za napredovanje bez lažnih blokada korišćena je i bazna Turbo referenca (`_baseMaxClockMHz`) i egzaktna filtracija BIOS sigurnosnih ključeva.
 6. **Anti-Leak & Handover Gate (Faza 6):** Pre proglašenja statusa `DONE`, sistem garantovano briše `Wifi-Servis.ini`, uklanja WLAN profile sa lozinkama sa klijentskog sistema (`netsh wlan delete profile`), raskida SMB veze, vraća UAC na fabrički nivo i zakazuje samouništenje foldera `C:\setup`.
 
 ---
@@ -266,7 +266,7 @@ Pri mrežnom PXE butovanju preko iVentoy-a, podrazumevani HTTP/CIFS virtuelni di
 5. Preko SMB 3.1.1 na portu 445 (`105 – 122 MB/s`) istovremeno podržava do 20 paralelnih klijenata uz očuvanje `$OEM$` foldera, skraćujući kopiranje slike sa 14+ minuta na **~3 minuta**.
 
 ### 4.7. Zlatni Ultra-Lean Solid LZMS ISO (`6.07 GB`, `sources/install.esd`, UDF + UEFI/BIOS)
-Korišćenjem alata `ISO/Skripte/Export-SlimWim.py` (**295** linija) i `ISO/Skripte/Build-Iso.py` (**1,103** linije), instalaciona slika sadrži tačno dve edicije (**Index 1: Windows 11 Home** i **Index 2: Windows 11 Pro**) kompresovane u `sources/install.esd` uz Solid LZMS kompresiju (`lzms:100`). Ukupna veličina butabilnog UDF (`ECMA-167`) + El Torito UEFI (`0xEF`) + Legacy BIOS (`0x00`) Zlatnog Lean ISO medijuma (`WIS-Win11-Pro-10.0.26200.8037-Lean.iso`) iznosi **6.07 GB (`6,522,753,024 B`, SHA-256: `80ef4593...`)**, uz 100% očuvane sve VMD i mrežne drajvere (Wi-Fi drajveri prebačeni u `$OEM$`, `boot.wim` sveden na `~582 MiB`) i ugrađene alate `WIS.UI.exe` (`v2.3.0`), `WIS.Launcher.exe` (`v2.2.17`), `WIS-AutopilotAuditor.exe` (`v2.0.0`) i `Provera_autopilota.ps1`.
+Korišćenjem alata `ISO/Skripte/Export-SlimWim.py` i `ISO/Skripte/Build-Iso.py`, instalaciona slika sadrži tačno dve edicije (**Index 1: Windows 11 Home** i **Index 2: Windows 11 Pro**) kompresovane u `sources/install.esd` uz Solid LZMS kompresiju (`lzms:100`). Butabilni UDF (`ECMA-167`) + El Torito UEFI (`0xEF`) + Legacy BIOS (`0x00`) Zlatni Lean ISO medijum (`WIS-Win11-Pro-10.0.26200.8037-Lean.iso`) čuva sve VMD i mrežne drajvere (Wi-Fi drajveri prebačeni u `$OEM$`) i ugrađuje ažurirane `v3.0.0` binarne alate `WIS.UI.exe`, `WIS.Launcher.exe`, `WIS-AutopilotAuditor.exe`, `Provera_autopilota.ps1` i `PreOOBE-Network.ps1`.
 
 ---
 
@@ -284,12 +284,12 @@ Datoteka `ISO/autounattend.xml` (**180** linija, **`11,395 B`**) upravlja sa 3 k
 ### 5.2. Čisto Thin-Client `$OEM$` integraciono stablo i `ei.cfg`
 - **`ISO/sources/ei.cfg`:** Definiše `[Channel] _Default` i `[VL] 0`, sprečavajući da ugrađeni OEM Home ključ u BIOS-u matične ploče nametne Home ediciju bez znanja servisera.
 - **`ISO/sources/$OEM$/`:** Tokom kopiranja sistemskih fajlova automatski prenosi:
-  - `$$/Setup/Scripts/SetupComplete.cmd` i `SetupComplete.ps1` $\rightarrow$ `C:\Windows\Setup\Scripts\`
-  - `$1/setup/` $\rightarrow$ `C:\setup\` (sadrži `WIS.Launcher.exe`, `WIS.UI.exe`, `WIS-AutopilotAuditor.exe`, `Provera_autopilota.ps1`, senzorske DLL biblioteke `LibreHardwareMonitorLib.dll` i `HidSharp.dll`, `FirstLogon.cmd`, `FirstLogon.ps1`, `Wifi-Servis.ini`, kompletne Wi-Fi + LAN mrežne drajvere u `Drivers/Net/`, potpisani `payload_meta.json` i kompletno `Skripte/` stablo od 13 PowerShell modula/radnika i 6 faza za 100% offline otpornost).
+  - `$$/Setup/Scripts/SetupComplete.cmd`, `SetupComplete.ps1` i `PreOOBE-Network.ps1` $\rightarrow$ `C:\Windows\Setup\Scripts\`
+  - `$1/setup/` $\rightarrow$ `C:\setup\` (sadrži `WIS.Launcher.exe`, `WIS.UI.exe`, `WIS.HwTest.exe`, `WIS-AutopilotAuditor.exe`, `Provera_autopilota.ps1`, senzorske i QR DLL biblioteke `LibreHardwareMonitorLib.dll`, `HidSharp.dll`, `zxing.dll`, `FirstLogon.cmd`, `FirstLogon.ps1`, `Wifi-Servis.ini`, kompletne Wi-Fi + LAN mrežne drajvere u `Drivers/Net/`, potpisani `payload_meta.json` i kompletno `Skripte/` stablo od 13 PowerShell modula/radnika i 6 faza za 100% offline otpornost).
 
-### 5.3. `SetupComplete.cmd` i `SetupComplete.ps1` (SYSTEM kontekst i rani Wi-Fi uvoz sa XML escaping-om)
+### 5.3. `SetupComplete.cmd`, `SetupComplete.ps1` i `PreOOBE-Network.ps1` (SYSTEM kontekst, rani Wi-Fi uvoz i Pre-OOBE Autopilot keš)
 Izvršava se pod `NT AUTHORITY\SYSTEM` nalogom pre pojave ekrana za prijavljivanje:
-1. Kratki `SetupComplete.cmd` (**32** linije, `1,813 B`) poziva kanonski `SetupComplete.ps1` (**465** linija, `22,960 B`) uz strukturirani `try/catch/finally` blok i logovanje u `C:\Windows\Logs\WIS\setupcomplete.log`.
+1. Kratki `SetupComplete.cmd` (**32** linije, `1,813 B`) poziva kanonski `SetupComplete.ps1` (**669** linija, `34,251 B`) uz strukturirani `try/catch/finally` blok i logovanje u `C:\Windows\Logs\WIS\setupcomplete.log`, dok `PreOOBE-Network.ps1` (**144** linije, `6,573 B`) priprema mrežu i Autopilot keš pre OOBE toka. Korak `6b` (`AutopilotPreOOBE`) u `SetupComplete.ps1` privremeno uklanja `SkipNetworkSetup`, kontaktira `ztd.dds.microsoft.com` preko `WIS-AutopilotAuditor.exe` i snima trajni keš `C:\Windows\Logs\WIS\autopilot_report.json` + `AutopilotDDSZTDFile.preoobe.json` pre obnavljanja offline OOBE zastavice.
 2. Konfiguriše i pokreće servis `wlansvc`, omogućava sve mrežne adaptere (`Enable-NetAdapter`), čita `C:\setup\Wifi-Servis.ini` i generiše WLAN XML profil uz obavezni XML escaping specijalnih karaktera (`[System.Security.SecurityElement]::Escape()`).
 3. Uvozi Wi-Fi profil na nivou cele mašine (`netsh wlan add profile ... user=all`) i inicira povezivanje u pozadini, tako da računar već ima aktivnu IP adresu pre prvog logovanja korisnika.
 4. Ukoliko na disku postoji arhiva `Programi.tar` (Full USB profil), raspakuje je preko `tar.exe -xf` (na Lean profilu ovaj korak traje 0 sekundi).
@@ -306,10 +306,10 @@ Pri prvom automatskom prijavljivanju naloga `Korisnik`:
 
 ---
 
-## 6. Thin-Client Pokretački Podsistem (`Launcher/` — `WIS.Launcher.exe` v2.2.17)
+## 6. Thin-Client Pokretački Podsistem (`Launcher/` — `WIS.Launcher.exe` v3.0.0)
 
 ### 6.1. Tehnološki profil (C# 5.0 / .NET Framework 4.0, nulta spoljna zavisnost)
-`WIS.Launcher.exe` (**`468,480 B`**) je samostalni WinForms izvršni program pisan u čistom C# 5.0 kodu (**`4,739`** linija produkcionog koda u 6 `.cs` fajlova + **`332`** linije u test paketu `LauncherBehaviorTests.cs`), ciljan na ugrađeni CLR `v4.0.30319`. Poseduje ugrađenu WIS Service ikonicu (`Assets/WIS.ico`), ugrađeni javni RSA-2048 ključ (`trusted_public_key.xml`) i prikazuje moderan tamni interfejs u GitHub Dark stilu.
+`WIS.Launcher.exe` (**`468,480 B`**) je samostalni WinForms izvršni program pisan u čistom C# 5.0 kodu (**`4,739`** linija produkcionog koda u 6 `.cs` fajlova + **`332`** linije u test paketu `LauncherBehaviorTests.cs`, verzija sklopa **`3.0.0`**), ciljan na ugrađeni CLR `v4.0.30319`. Poseduje ugrađenu WIS Service ikonicu (`Assets/WIS.ico`), ugrađeni javni RSA-2048 ključ (`trusted_public_key.xml`) i prikazuje moderan tamni interfejs u GitHub Dark stilu.
 
 ### 6.2. Arhitektura C# klasa (`Program.cs`, `SplashForm.cs`, `WifiHelper.cs`, `HubDiscovery.cs`, `PayloadManager.cs`)
 - **`Program.cs` (155 linija):** Ulazna tačka sa imenovanim sistemskim Mutex-om za sprečavanje duplog startovanja, podrškom za odvojeni self-update helper režim i globalnim hvatanjem izuzetaka.
@@ -339,27 +339,28 @@ Kako Windows ne bi pri pokretanju `WIS.UI.exe` izbacio blokirajući prozor *"Ope
 
 ---
 
-## 7. Klijentski Grafički Servisni Panel (`UI/` — `WIS.UI.exe` v2.3.0)
+## 7. Klijentski Grafički Servisni Panel (`UI/` — `WIS.UI.exe` v3.0.0)
 
 ### 7.1. WPF MVVM arhitektura, C# Master Task Runner i `TelemetryService.cs`
-`WIS.UI.exe` (**`1,200,128 B`**, SHA-256: `b240d510...`, verzija sklopa **`2.3.0.0`**, paket **`v2.19.0`**; napomena: engleski rečnik prikazuje `WIS v2.19.0`, dok srpski i kineski rečnik radi stabilnosti binarnog potpisa drže oznaku `WIS v2.18.0`) je centralni grafički interfejs i **Master Task Runner** sistema, izgrađen za **.NET Framework 4.8** (**`18,515` linija `.cs`/`.xaml` koda u `13` fajlova**: 11 `.cs` + 2 `.xaml`):
+`WIS.UI.exe` (**`2,977,280 B`**, SHA-256: `253c7544...`, verzija sklopa **`3.0.0.0`**, paket **`v3.0.0`**; sva tri rečnika — srpski, kineski i engleski — usklađena su na `WIS v3.0.0`) je centralni grafički interfejs i **Master Task Runner** sistema, izgrađen za **.NET Framework 4.8** (**`14` korenskih fajlova sa `21,124` linija** C#/XAML koda + **`21` fajl u `UI/HwTest/` sa `21,284` linije**, dok se standalone varijanta `WIS.HwTest.exe` kompajlira u `1,736,704 B`):
 - **Elastični `App.config` (`UI/App.config`):** Definiše `<supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8" />` uz automatski fallback `<supportedRuntime version="v4.0" />`, čime sprečava blokiranje startovanja na mašinama sa nestandardnim `.NET` SKU ključem u registru.
-- **Procesna & Mutex Single-Instance zaštita (`UI/App.xaml.cs`, 173 linije):** Pre provere sistemskog mutexa `Global\WIS_UI_SingleInstance_Mutex`, `OnStartup()` pronalazi postojeći aktivan `WIS.UI` proces, dovodi njegov prozor u prvi plan (`ShowWindow(SW_RESTORE)` + `SetForegroundWindow`) i trenutno gasi duplu instancu (`Environment.Exit(0)`).
+- **Procesna & Mutex Single-Instance zaštita (`UI/App.xaml.cs`, 201 linija):** Pre provere sistemskog mutexa `Global\WIS_UI_SingleInstance_Mutex`, `OnStartup()` pronalazi postojeći aktivan `WIS.UI` proces, dovodi njegov prozor u prvi plan (`ShowWindow(SW_RESTORE)` + `SetForegroundWindow`) i trenutno gasi duplu instancu (`Environment.Exit(0)`).
 - **HKLM-only RunOnce kontrola (`EnsureRunOnceEntry` u `UI/MainWindow.xaml.cs`):** Čisti zastarele Startup batch lansere (`WIS-AutoStart.cmd`, `WIS-Resume.cmd`, `GWADT-*`), briše konfliktne `HKLM`/`HKCU` ključeve i registruje primarno pokretanje `WIS_Resume` (`WIS.Launcher.exe --master`, sa fallback-om na `WIS.UI.exe --master`) isključivo u `HKLM\...\RunOnce`, uklanjajući `HKCU` unos čim je `HKLM` uspešan kako Windows Explorer ne bi pokretao dve paralelne sesije.
-- **Master Task Runner (`UI/MainWindow.xaml.cs`, 6,717 linija; `UI/MainWindow.Hardware.cs`, 1,823 linije; `UI/Models.cs`, 2,853 linije):** Nakon 5-sekundnog auto-start odbrojavanja, metoda `ExecutePhase(int phaseNumber)` sekvencijalno pokreće PowerShell 5.1 procese za svaku od 6 faza (`Phase1-Network.ps1` do `Phase6-Finalize.ps1`) u skrivenom prozoru (`-WindowStyle Hidden`), prihvata STDOUT JSON tok i prati izlazne kodove. Po završetku Faze 3 obavezno izvršava `HandleInterimReboot()` (čita i `interim_reboot_required` iz `step-journal.json`) kako bi Faza 4 započela sa čistim CBS i MSI stekom.
-- **Samostalni servisi identiteta i PnP nadzora (`UI/HardwareIdentityService.cs`, 293 linije & `UI/DeviceChangeMonitor.cs`, 223 linije):** Omogućavaju rano i od faza nezavisno prepoznavanje modela, serijskog broja, BIOS-a i SMBIOS UUID-a već u prvoj sekundi starta, uz osluškivanje Win32 `WM_DEVICECHANGE` događaja za automatsko prepoznavanje priključenih USB diskova i mrežnih adaptera.
+- **Master Task Runner (`UI/MainWindow.xaml.cs`, 7,183 linije; `UI/MainWindow.Hardware.cs`, 1,827 linija; `UI/MainWindow.HwTest.cs`, 425 linija; `UI/Models.cs`, 2,883 linije):** Nakon 5-sekundnog auto-start odbrojavanja, metoda `ExecutePhase(int phaseNumber)` sekvencijalno pokreće PowerShell 5.1 procese za svaku od 6 faza (`Phase1-Network.ps1` do `Phase6-Finalize.ps1`) u skrivenom prozoru (`-WindowStyle Hidden`), prihvata STDOUT JSON tok i prati izlazne kodove. Po završetku Faze 3 obavezno izvršava `HandleInterimReboot()` (čita i `interim_reboot_required` iz `step-journal.json`) kako bi Faza 4 započela sa čistim CBS i MSI stekom, dok u Fazi 5 orkestrira integrisani `HwTestShell` panel.
+- **Samostalni servisi identiteta, PnP nadzora i štampe nalepnica (`UI/HardwareIdentityService.cs`, 293 linije; `UI/DeviceChangeMonitor.cs`, 223 linije; `UI/LabelPrintService.cs`, 1,401 linija):** Omogućavaju rano i od faza nezavisno prepoznavanje modela, serijskog broja, BIOS-a i SMBIOS UUID-a već u prvoj sekundi starta, osluškivanje Win32 `WM_DEVICECHANGE` događaja i direktnu 80 mm USB raster štampu servisne nalepnice na štampaču **Star TSP700II** (podrazumevano *Star Line Mode*).
 - **Nativni `UI/TelemetryService.cs` (669 linija, Zero-Block):** Na zasebnim pozadinskim nitima održava komunikaciju sa `ServiceHub`-om (UDP discovery na `:8888`, 2s heartbeat na `/api/heartbeat`, slanje logova na `/api/log` i lifecycle događaja na `/api/lifecycle`) sa kratkim timeout-om, tako da eventualni prekid mreže nikada ne zamrzava korisnički interfejs.
 
-### 7.2. Pregled svih 8 funkcionalnih kartica (`UI/MainWindow.xaml`, 2,591 linija)
-Interfejs `WIS.UI.exe` organizovan je u **8 specijalizovanih kartica (TabItem)**:
+### 7.2. Pregled svih 9 funkcionalnih kartica (`UI/MainWindow.xaml`, 2,591 linija + dinamički `WisHwTestTab` iz `UI/MainWindow.HwTest.cs`)
+Interfejs `WIS.UI.exe` organizovan je u **9 specijalizovanih kartica (`TabItem`)**:
 1. **📊 Pregled (`TabOverviewHeader`):** Vizuelni 6-fazni tracker (`UniformGrid Columns="6"`), **`Expander` kartice pojedinačnih `StepGuard` koraka (`Steps`)** za živo praćenje svakog potkoraka faza (`WAIT`, `RUNNING`, `OK`, `SKIPPED_DONE`, `WARN`, `ERROR`), indikator **pozadinskog Windows Update radnika** (`PollBackgroundWuStatusFile` koji očitava `C:\setup\wu-bg-status.json`), glavni progres bar, statusni baner za bezbedno uklanjanje USB fleša („Flash & Release") i dugme **`[↻ Ponovi Fazu 4]`** (`RerunPhase4Command`, kreira `C:\setup\force-rerun-phase4.flag` radi prisilnog ponavljanja instalacije programa).
 2. **🖥️ Hardver (`TabHardwareHeader`):** Detaljna specifikacija računara: proizvođač i komercijalni naziv modela (`HardwareIdentityService`), CPU, RAM (Win32 `GlobalMemoryStatusEx`), GPU, NVMe/SATA disk S.M.A.R.T. zdravlje (Wear %, `PowerOnHours`, TBW, temperatura), dekodirani 128B EDID profil ekrana (proizvođač panela, tip IPS/OLED, rezolucija, `% sRGB`, `% NTSC`, procenjeno osvetljenje u `nits`), baterija laptopa (Wear %, kapacitet) i status periferija (kamera, mikrofon, zvučnici, biometrija, osvetljenje tastature).
-3. **⚙️ Drajveri (`TabDriversHeader`):** Pregled svih hardverskih uređaja (`Expander` po klasama uređaja), status instalacije WHQL i OEM drajvera, izvor drajvera (`Single-Stream .tar`, `Windows Update`, `ServiceHub MS Catalog`) i status samoučeće berbe drajvera.
+3. **⚙️ Drajveri (`TabDriversHeader`):** Pregled svih hardverskih uređaja (`Expander` po klasama uređaja), status instalacije WHQL i OEM drajvera, izvor drajvera (`Single-Stream .tar`, `Windows Update`, `ServiceHub MS Catalog`) i dvosmerni HTTP/SMB keš drajvera sa `ServiceHub`-om (`/api/drivers/model-pack/upload`).
 4. **🩺 Dijagnostika (`TabDiagnosticsHeader`):** Višekanalni 5-minutni rolling Canvas grafikon temperatura i trotlovanja (300s @ 1 Hz), kontrole `[ ▶ Start Stres ]` / `[ ⏹ Stop Stres ]` i tabela taktova procesorskih jezgara (`Core Clocks`).
 5. **🌐 Mreža (`TabNetworkHeader`):** Prikaz aktivnog interfejsa (LAN / Wi-Fi), SSID-ja, DHCP IPv4 i MAC adrese, Default Gateway-a, real-time ICMP latencije (ms) ka TrueNAS serveru (`192.168.170.254`), trenutnog mrežnog protoka (`MB/s`), ukupnog prenetog saobraćaja i aktivnog izvora paketa.
 6. **📦 Programi (`TabAppsHeader`):** Matrični `2×4 UniformGrid` prikaz 8 standardnih softverskih paketa sa namenskim glif ikonama, živim statusnim bedževima (`ČEKA`, `U TOKU`, `INSTALIRANO`, `PRESKOČENO`, `GREŠKA`) i pojedinačnim progres barovima.
 7. **📜 Logovi (`TabLogsHeader`):** Virtuelizovani preglednik servisnog loga u **obrnutom hronološkom poretku** (`AllLogs.Insert(0, entry)` — najnoviji zapisi uvek na vrhu uz kompenzaciju `ScrollViewer.ScrollToVerticalOffset` kada je `AutoScroll` isključen), ring bafer od 500 linija sa kolor-kodiranjem po ozbiljnosti (`INFO`, `SUCCESS`, `WARN`, `ERROR`), filterom i brzim kopiranjem.
-8. **🛡️ Autopilot (`TabAutopilotHeader`):** Forenzički panel za Microsoft Autopilot / Intune MDM proveru sa hero statusnim banerom (`CONFIRMED_CLEAN`, `UNVERIFIED_CLEAN`, `LOCKED_TENANT`, `HIDDEN_LOCK`, `RELEASED_LOCAL_TRACES`), karticama lokalnih registarskih/sertifikacionih tragova i ZTD oblaka, TPM 2.0 statusom i dugmetom za ponovno skeniranje.
+8. **🛡️ Autopilot (`TabAutopilotHeader`):** Forenzički panel za Microsoft Autopilot / Intune MDM proveru sa hero statusnim banerom (`CONFIRMED_CLEAN`, `UNVERIFIED_CLEAN`, `LOCKED_TENANT`, `HIDDEN_LOCK`, `RELEASED_LOCAL_TRACES`), podrškom za Pre-OOBE ZTD keš, karticama lokalnih registarskih/sertifikacionih tragova i ZTD oblaka, TPM 2.0 statusom i dugmetom za ponovno skeniranje.
+9. **🧪 Hardverski testovi (`WisHwTestTab` — `MainWindow.HwTest.cs` & `UI/HwTest/`):** Ugrađeni `HwTestShell` panel za objedinjenu hardversku dijagnostiku tokom Faze 5 (`ADR-0189`): **7 automatskih** provera (WMI/TPM/SecureBoot/BIOS sa filtracijom `PasswordControl`, S.M.A.R.T., memorija, uređaji, baterija) i **9 interaktivnih** testova (tastatura sa 12 OEM šablona, TrackPoint `WH_MOUSE_LL`, Touchscreen 3 koraka + Stylus, IR lice + QR `WIS-CAMTEST-v1` preko `zxing.dll`, zvuk, USB/LAN single-device replug, Wi-Fi/BT, `WINBIO_POOL_PRIVATE` otisak prsta sa 4.5s watchdog-om, ekran + `FAIL` tasteri i sinhronizacija rasporeda sa ServiceHub-om).
 
 ### 7.3. Višekanalni 5-minutni rolling Canvas grafikon (300s @ 1 Hz) i Core Clocks tabela
 - **5-Minutni Telemetrijski Grafikon:** Iscrtava 300 tačaka u realnom vremenu (uzorkovanje na 1 Hz) pomoću WPF `Canvas` i `Polyline` elemenata za 5 kanala:
@@ -370,15 +371,15 @@ Interfejs `WIS.UI.exe` organizovan je u **8 specijalizovanih kartica (TabItem)**
   - **Throttling (0–100%)** — magenta (`#E056FD`)
 - **Core Clocks Tabela:** Ispod grafikona prikazuje trenutnu, minimalnu i maksimalnu frekvenciju (MHz) za svako pojedinačno jezgro (`Core #0 .. #N`) uz vizuelni indikator opterećenja i dugme `[ ↺ Reset Min/Max ]`.
 
-### 7.4. Hibridni senzorski motor (`UI/ThermalSensorEngine.cs`, 1,191 linija)
-Klasa `ThermalSensorEngine.cs` kombinuje direktno hardversko očitavanje preko biblioteka `LibreHardwareMonitorLib.dll` (`666,624 B`) i `HidSharp.dll` (`242,608 B`) sa višeslojnim WMI/ACPI fallback upitima (`MSAcpi_ThermalZoneTemperature`, `Win32_PerfFormattedData_Counters_ThermalZoneInformation`, `MSStorageDriver_ATAPISmartData`). Svi pozivi su zaštićeni `try/catch` blokovima radi 100% stabilnosti na sistemima sa uključenom HVCI / Core Isolation zaštitom.
+### 7.4. Hibridni senzorski motor (`UI/ThermalSensorEngine.cs`, 1,426 linija)
+Klasa `ThermalSensorEngine.cs` kombinuje runtime refleksiju opciono prisutnih biblioteka `LibreHardwareMonitorLib.dll` (`666,624 B`) i `HidSharp.dll` (`242,608 B`) sa višeslojnim WMI/ACPI/OEM WMI fallback upitima (`MSAcpi_ThermalZoneTemperature`, `HighPrecisionTemperature`, `Win32_TemperatureProbe`, `Win32_PerfFormattedData_Counters_ThermalZoneInformation`, `MSStorageDriver_ATAPISmartData`). U v3.0.0 uklonjen je ugrađeni `WinRing0` drajver iz `WIS.HwTest.exe` radi kompatibilnosti sa HVCI i Defender zaštitom, a uvedena je bazna referentna frekvencija `_baseMaxClockMHz` radi tačnog razdvajanja All-Core Turbo rada od pravog termalnog trotlovanja. Svi pozivi su zaštićeni `try/catch` blokovima.
 
 ### 7.5. Kumulativni tajmer kroz restarte i eliminacija mock podataka
 - **Kumulativni tajmer (`DurationString`):** Početno vreme servisa (`initial_start_time`) upisuje se u `C:\setup\deploy-state.json` i `HKLM\SOFTWARE\WIS\InitialStartTime`. Nakon svakog međurestarta, UI nastavlja merenje ukupnog vremena od nultog trenutka.
 - **0% Mock podataka:** Uklonjeni su svi statički tekstovi. RAM se očitava u 0 ms preko Win32 `GlobalMemoryStatusEx`, CPU i BIOS direktno iz Registra, radni sati SSD-a (`PowerOnHours`) iz S.M.A.R.T. struktura, a na desktop računarima bez baterije kartica baterije prikazuje sivi status i automatski postavlja BatteryBar na `SKIPPED` (*„Nije primenjivo na desktopu"*).
 
-### 7.6. Trojezična lokalizacija u realnom vremenu (Srpski / Kineski 简体中文 — 414 ključeva & Engleski fallback — 72 ključa)
-`UI/LocalizationService.cs` (**1,301** linija, `79,380 B`) poseduje simetrične rečnike `_srDict` (**414** ključeva) i `_zhDict` (**414** ključeva) sa `Microsoft YaHei` font fallback-om, kao i osnovni engleski rečnik `_enDict` (**72** ključa sa automatskim fallback-om). Klikom na prekidač jezika u zaglavlju prozora, svih 8 kartica, `StepGuard` opisi koraka, indikatori pozadinskog WU radnika i svi statusi trenutno menjaju jezik putem `{Binding Loc[...]}` mehanizma bez restartovanja aplikacije, dok su tehničke oznake (`NVMe`, `DDR4/DDR5`, `GHz`, `MHz`, `°C`, `IPv4`, nazivi aplikacija) zaštićeni od pogrešnog prevođenja.
+### 7.6. Trojezična lokalizacija u realnom vremenu (Srpski / Kineski 简体中文 — 435 ključeva & Engleski fallback — 73 ključa)
+`UI/LocalizationService.cs` (**1,344** linije, `82,977 B`) poseduje simetrične rečnike `_srDict` (**435** ključeva) i `_zhDict` (**435** ključeva) sa `Microsoft YaHei` font fallback-om, kao i osnovni engleski rečnik `_enDict` (**73** ključa sa automatskim fallback-om). Klikom na prekidač jezika u zaglavlju prozora, svih 9 kartica, `StepGuard` opisi koraka, indikatori pozadinskog WU radnika i svi statusi trenutno menjaju jezik putem `{Binding Loc[...]}` mehanizma bez restartovanja aplikacije, dok su tehničke oznake (`NVMe`, `DDR4/DDR5`, `GHz`, `MHz`, `°C`, `IPv4`, nazivi aplikacija) zaštićeni od pogrešnog prevođenja.
 
 ### 7.7. Dvosmerni JSON IPC cevovod, `StepGuard` koraci, kooperativna pauza i akumulativno odlaganje restarta (+10 min)
 - **JSON IPC striming (`UI/JsonHelper.cs`, 512 linija):** PowerShell faze komuniciraju sa C# UI-jem slanjem strukturiranih JSON objekata na STDOUT (`Send-IpcMessage`, `Send-IpcProgress`, `Send-IpcStatus`, `Send-IpcStep` za 7 `StepGuard` stanja), dok su svi sporedni boolean izlazi u PowerShell-u potisnuti (`$null = ...`), sprečavajući zagađenje JSON toka.
@@ -394,8 +395,8 @@ Metod `FindAutopilotTool(out bool isNativeAuditor)` u `UI/MainWindow.xaml.cs` im
 1. **1. Prioritet — Nativni C# izvršni alat `WIS-AutopilotAuditor.exe`:** Pretražuje `C:\setup`, direktorijum aplikacije, sve aktivne USB diskove (`DriveInfo.GetDrives()`) i TrueNAS SMB deljenja (`\\192.168.170.254\Servis`, `\WIS`, `\\truenas.servis\WIS`). Ako se nalazi na mreži/USB-u, automatski ga kopira u `C:\setup\WIS-AutopilotAuditor.exe` i izvršava `WIS-AutopilotAuditor.exe --json`.
 2. **2. Fallback — PowerShell skripta `Provera_autopilota.ps1`:** Ukoliko `.exe` nije dostupan, pronalazi i kešira `Provera_autopilota.ps1` u `C:\setup\` i izvršava `powershell.exe -NoProfile -ExecutionPolicy Bypass -File Provera_autopilota.ps1 -JsonOutput` uz 60s timeout i `StringBuilder` JSON ekstrakciju.
 
-### 8.2. Samostalni C# izvršni alat `WIS-AutopilotAuditor.exe` v2.0 (`.NET 4.8`, GUI + CLI + JSON + HTML/CSV)
-Podsistem u `Tools/AutopilotAuditor/` (**1,989** linija C# koda u 8 fajlova, kompajliran preko `Build-AutopilotAuditor.py` u single-file PE32 `WIS-AutopilotAuditor.exe` od `442,368 B`, SHA-256: `32ad39c1...`) radi bez ikakve zavisnosti od PowerShell-a:
+### 8.2. Samostalni C# izvršni alat `WIS-AutopilotAuditor.exe` v3.0.0 (`.NET 4.8`, GUI + CLI + JSON + HTML/CSV)
+Podsistem u `Tools/AutopilotAuditor/` (**2,333** linije C# koda u 8 fajlova, `108,474 B`, kompajliran preko `Build-AutopilotAuditor.py` u single-file PE32 `WIS-AutopilotAuditor.exe` od `447,488 B`, SHA-256: `c50fbe03...`) radi bez ikakve zavisnosti od PowerShell-a:
 - **`Model.cs` (232 linije):** Strukture podataka i sopstveni JSON serijalizator.
 - **`HardwareInspector.cs` (134 linije):** Direktni WMI/CIM upiti za serijski broj, BIOS, SMBIOS UUID, TPM 2.0 (`Win32_Tpm`) i 4K Hardware Hash (`root\cimv2\mdm\dmmap:MDM_DevDetail_Ext01`).
 - **`LocalForensicsInspector.cs` (207 linija):** Inspekcija registarskih grana (`HKLM\SOFTWARE\Microsoft\Provisioning\Diagnostics\AutoPilot`, `PolicyJsonCache`, `Enrollments`, `CloudDomainJoin`), sertifikata u `Cert:\LocalMachine\My` (Microsoft Intune MDM Device CA) i `dsregcmd /status` izlaza.
@@ -404,8 +405,8 @@ Podsistem u `Tools/AutopilotAuditor/` (**1,989** linija C# koda u 8 fajlova, kom
 - **`ReportExporter.cs` (160 linija):** Izvoz u stilizovani Dark/Light HTML servisni izveštaj (`--export-html`), JSON (`--json`) i Microsoft Intune Hardware Hash CSV (`--export-hash`).
 - **`MainWindow.cs` (435 linija) & `Program.cs` (238 linija):** Samostalni WPF grafički interfejs pri dvokliku, konzolni CLI režim (`--cli`, `--json`) preko `AttachConsole(-1)`, automatski WinPE fallback na konzolu ako WPF nije dostupan i deterministički exit kodovi (`0` = Čisto, `1` = Zaključano, `2` = Lokalni tragovi, `3` = Offline/Nepotvrđeno).
 
-### 8.3. PowerShell skripta `Provera_autopilota.ps1` (799 linija) i TrueNAS SMB fallback
-Skripta `UI/Skripte/Provera_autopilota.ps1` (**`45,853 B`**) sinhronizovana je na svim projektnim i OEM lokacijama i implementira istu logiku (Event Log 806/807 brza provera, buđenje `wlidsvc`/`dmwappushservice` i Task Scheduler zadataka, 35s polling i 5-stupanjska matrica).
+### 8.3. PowerShell skripta `Provera_autopilota.ps1` (973 linije), Pre-OOBE keš i TrueNAS SMB fallback
+Skripta `UI/Skripte/Provera_autopilota.ps1` (**`56,662 B`**, UTF-8 bez BOM-a) sinhronizovana je na svim projektnim i OEM lokacijama i implementira istu logiku (Event Log 806/807 brza provera, Pre-OOBE keš fallback `C:\Windows\Logs\WIS\autopilot_report.json` / `AutopilotDDSZTDFile.preoobe.json`, prepoznavanje praznog `AutopilotDDSZTDFile.json` kao `ConfirmedFree`, buđenje `wlidsvc`/`dmwappushservice` i Task Scheduler zadataka, 35s polling i 5-stupanjska matrica).
 
 ### 8.4. 5-stupanjska deterministička matrica stanja
 
@@ -420,33 +421,33 @@ Skripta `UI/Skripte/Provera_autopilota.ps1` (**`45,853 B`**) sinhronizovana je n
 ### 8.5. Inženjerska verifikacija integriteta i arhitektonska ograničenja Microsoft ZTD protokola van OOBE-a (`WIS-TASK-165`)
 U okviru dubinske revizije koda (`WIS-TASK-165`), utvrđene su sledeće inženjerske činjenice o radu Autopilot provere:
 1. **100% Stvarno Izvršavanje (Nula Programerskih Mock-ova):** Ni `WIS-AutopilotAuditor.exe` ni `Provera_autopilota.ps1` nemaju lažne/mock podatke — zaista izvršavaju WMI/CIM upite, čitaju registar i sertifikate, otvaraju TCP/TLS konekciju ka `ztd.dds.microsoft.com:443`, podižu Windows servise i čitaju Event Log.
-2. **Arhitektonsko ograničenje Microsoft ZTD protokola van OOBE-a:** Microsoftov binarni modul `Autopilot.dll` (`CloudExperienceHost`) vrši stvarni ZTD mrežni upit (slanje hardverskog heša i generisanje `Event 806` ili `Event 807`) isključivo unutar aktivnog Windows OOBE čarobnjaka. Kada je Windows 11 instaliran pomoću `autounattend.xml` koji preskače OOBE (kako radi WIS), na već podignutom Desktopu alati poput `mdmdiagnosticstool.exe` samo sakupljaju postojeće logove i ne mogu naterati Microsoft ZTD oblak da izda novi Event 806/807 ako on već nije zabeležen u Event Log-u. Zbog toga na sveže instaliranim mašinama sa preskočenim OOBE-om 35-sekundni polling najčešće ističe bez ZTD odgovora i ispravno vraća **`UNVERIFIED_CLEAN`** (*„Lokalno čist — ZTD oblak nije eksplicitno potvrdio"*).
+2. **Arhitektonsko ograničenje Microsoft ZTD protokola van OOBE-a i v3.0.0 Pre-OOBE rešenje:** Microsoftov binarni modul `Autopilot.dll` (`CloudExperienceHost`) vrši stvarni ZTD mrežni upit (slanje hardverskog heša i generisanje `Event 806` ili `Event 807`) isključivo pre preskakanja OOBE-a. Zbog toga `WIS v3.0.0` kroz `PreOOBE-Network.ps1` i korak `6b` (`AutopilotPreOOBE`) u `SetupComplete.ps1` privremeno skida `SkipNetworkSetup`, poziva `WIS-AutopilotAuditor.exe` da kontaktira `ztd.dds.microsoft.com`, snima trajni izveštaj u `C:\Windows\Logs\WIS\autopilot_report.json` i `AutopilotDDSZTDFile.preoobe.json`, pa potom vraća offline OOBE zastavicu. Takođe, prazan `AutopilotDDSZTDFile.json` priznaje se kao `ConfirmedFree`, a po podizanju mreže UI može jednom ponoviti ZTD proveru (`TryRetryAutopilotOnNetworkReady`) ako početni rezultat nije bio potvrđen.
 3. **Poznata ograničenja prikaza i fallback-a:**
-   - U `UI/MainWindow.xaml.cs` (linija 3844), pod-polje `AutopilotCloudStatus` prikazuje zeleno *„Slobodan (Nije registrovan u oblaku)"* na osnovu `OnlineChecked && !IsRegistered` čak i kada je glavni status `UNVERIFIED_CLEAN` (gde je samo TCP port 443 bio dostupan, a ne i ZTD odgovor). Glavni hero baner (`UNVERIFIED_CLEAN`) pri tome tačno upozorava da oblak nije dao eksplicitan odgovor.
-   - U `Provera_autopilota.ps1` (linije 785–788), polje `ztd_inspection` radi unazadne kompatibilnosti upisuje `http_status = 200` kada prođe TCP test na portu 443.
+   - U `UI/MainWindow.xaml.cs`, kada je glavni status `UNVERIFIED_CLEAN`, pod-polje `AutopilotCloudStatus` služi kao brzi indikator dostupnosti porta 443 dok glavni hero baner tačno upozorava ako ZTD oblak nije vratio potvrdu (kada nije korišćen Pre-OOBE keš).
+   - U `Provera_autopilota.ps1`, polje `ztd_inspection` radi unazadne kompatibilnosti upisuje `http_status = 200` kada prođe TCP test na portu 443.
 
 ---
 
 ## 9. Šestofazni Orkestracioni Pajplajn (`UI/Skripte/Phases/`)
 
 ### 9.1. Pregled faza, `StepGuard` žurnala i zaštitnih tajmauta (`GetPhaseTimeoutMinutes`)
-Celokupan post-install proces podeljen je u **6 modularnih, procesno izolovanih PowerShell 5.1 skripti** (**`1,788`** linija koda, `93,398 B`), pri čemu Faze 2, 3 i 4 koriste **21 idempotentni `StepGuard` korak** zabeležen u `C:\setup\step-journal.json`:
+Celokupan post-install proces podeljen je u **6 modularnih, procesno izolovanih PowerShell 5.1 skripti** (**`1,768`** linija koda, `92,163 B`), pri čemu Faze 2, 3 i 4 koriste **21 idempotentni `StepGuard` korak** zabeležen u `C:\setup\step-journal.json`:
 
 | Faza | Skripta | Obim | Zaštitni Timeout u UI | Izlazni Kodovi / Napomene |
 |---|---|---|---|---|
 | **Faza 1** | `Phase1-Network.ps1` | 133 lin. (`5,727 B`) | **15 minuta** | `0` = Uspeh |
-| **Faza 2** | `Phase2-Drivers.ps1` | 103 lin. (`4,541 B`) | **60 minuta** | `0` = Uspeh (`6 StepGuard` koraka + pozadinski WU radnik `wu-bg-status.json`) |
+| **Faza 2** | `Phase2-Drivers.ps1` | 83 lin. (`3,306 B`) | **60 minuta** | `0` = Uspeh (`6 StepGuard` koraka + pozadinski WU radnik `wu-bg-status.json`) |
 | **Faza 3** | `Phase3-Optimization.ps1` | 75 lin. (`2,927 B`) | **20 minuta** | `0` = Uspeh (`6 StepGuard` koraka; okida obavezan `HandleInterimReboot()`) |
 | **Faza 4** | `Phase4-Apps.ps1` | 92 lin. (`3,783 B`) | **60 minuta** | `0` = Uspeh (`9 StepGuard` koraka, uvoz `WIS.Core.psm1`, Reality Check) |
-| **Faza 5** | `Phase5-Stress.ps1` | 689 lin. (`38,716 B`) | **5 minuta** | `0` = PASS / WARNING / UNKNOWN, `2` = THERMAL_CRITICAL |
+| **Faza 5** | `Phase5-Stress.ps1` | 689 lin. (`38,716 B`) | **45 minuta** | `0` = PASS / WARNING / UNKNOWN (stres + `HwTest`), `2` = THERMAL_CRITICAL |
 | **Faza 6** | `Phase6-Finalize.ps1` | 696 lin. (`37,704 B`) | **45 minuta** | `0` = DONE, `2` = Blokada predaje (Pregrevanje / Anti-Leak pad) |
 
 ### 9.2. Faza 1 (`Phase1-Network.ps1` — 15 min): Mreža, Fast-Pass, S.M.A.R.T. trijaža i Autopilot/MDM detekcija
 - **Fast-Pass mrežna provera:** Proverava aktivnu vezu i dostupnost `ServiceHub`-a. Ako mreža nije podignuta, pokreće `Install-NetDriverFallback` (skenira `C:\setup\Drivers\Net` preko `pnputil.exe`) i spaja Wi-Fi.
 - **Hardverska i S.M.A.R.T. trijaža:** Očitava model računara (uz hijerarhijsku normalizaciju komercijalnih imena za Lenovo `Win32_ComputerSystemProduct.Version`, Dell, HP i Asus), zdravlje NVMe/SATA diska (`PowerOnHours`, TBW, Wear %, temperaturu i realocirane sektore), EDID profil ekrana i stanje baterije.
-- **Autopilot / MDM detekcija:** Poziva `WIS-AutopilotAuditor.exe --json` / `Provera_autopilota.ps1 -JsonOutput` i šalje `STARTED` lifecycle događaj na `ServiceHub`.
+- **Autopilot / MDM detekcija:** Poziva `WIS-AutopilotAuditor.exe --json` / `Provera_autopilota.ps1 -JsonOutput` (uz prioritetno čitanje Pre-OOBE keša `C:\Windows\Logs\WIS\autopilot_report.json` i jednokratno ponavljanje po aktivaciji mreže) i šalje `STARTED` lifecycle događaj na `ServiceHub`.
 
-### 9.3. Faza 2 (`Phase2-Drivers.ps1` — 60 min): `StepGuard`, Single-Stream `.tar` drajveri, WU COM API i pozadinski WU radnik
+### 9.3. Faza 2 (`Phase2-Drivers.ps1` — 60 min): `StepGuard`, Single-Stream `.tar`, dvosmerni HTTP/SMB keš i pozadinski WU radnik
 Faza 2 izvršava **6 `StepGuard` koraka** (`P2.Identify`, `P2.NasCache`, `P2.Vmd`, `P2.Pnp`, `P2.Diag`, `P2.WuDrivers`):
 - **Lokalni NAS Pre-Patch (`Invoke-NasUpdatePrePatch`):** Povezuje se na `\\192.168.170.254\WIS\Updates\Win11` i instalira keširane kumulativne `.msu` zakrpe preko `wusa.exe` (poštujući `Mode=DriversOnly` iz `Wifi-Servis.ini`).
 - **Single-Stream `.tar` Pre-Install drajvera modela (`Invoke-ModelDriversPreInstall`):** Proverava da li na `\\192.168.170.254\WIS\Drivers\Harvested\Archives\` postoji `<Model>.tar` arhiva. Ako postoji, preuzima jedan linearni `.tar` fajl brzinom od ~110 MB/s, raspakuje ga lokalno preko `tar.exe -xf` za `< 1 s` i instalira sve drajvere preko `pnputil.exe`, eliminišući „SMB Small-File Latency Storm".
@@ -467,7 +468,7 @@ Faza 4 eksplicitno uvozi `WIS.Core.psm1`, poštuje `C:\setup\force-rerun-phase4.
 - **Office 2024 ODT bez BOM-a i sa lokalnim SSD `SourcePath`-om (`ADR-0185`):** Automatski pronalazi i **`Configure.xml`** i **`configuration.xml`**, uklanja vodeći UTF-8 BOM, zamenjuje UNC `SourcePath` verifikovanim lokalnim SSD direktorijumom sa `Office\Data` (pošto `OfficeClickToRun.exe` radi pod `NT AUTHORITY\SYSTEM` i nema korisničke SMB kredencijale), zapisuje BOM-free `C:\setup\Office2024_Install.xml` i čeka završetak (`420s` `setup.exe` + `120s` C2R flush uz `-Force` ponovni pokušaj).
 - **Granularne prečice (`P4.Shortcuts`) & Reality Check (`Assert-InstalledApplicationsReality`):** Korak `P4.Shortcuts` zasebno proverava prečice za svaku stvarno prisutnu aplikaciju (`Adobe Acrobat.lnk`, `Word.lnk`, `Excel.lnk`), dok finalna provera potvrđuje fizičko prisustvo svih izvršnih fajlova pre izlaza iz faze.
 
-### 9.6. Faza 5 (`Phase5-Stress.ps1` — 5 min): WU Barijera, 30s Multi-Core 100% CPU `RunspacePool` stres test, 98°C Abort i `WIS.StatusContract.psm1`
+### 9.6. Faza 5 (`Phase5-Stress.ps1` — 45 min): WU Barijera, 30s Multi-Core `RunspacePool` stres, ugrađeni `HwTest` i `WIS.StatusContract.psm1`
 - **Windows Update Barijera (`Wait-WindowsUpdateCompletionBarrier`):** Čeka završetak pozadinskih `TiWorker.exe` / `MoUsoCoreWorker.exe` procesa pre početka merenja.
 - **100% Multi-Core CPU Load Generator:** Kreira PowerShell `RunspacePool` sa onoliko paralelnih radnih niti koliko procesor ima logičkih jezgara (`[Environment]::ProcessorCount`), opterećujući procesor na 100% tokom tačno **30 sekundi** (mereno preko `Stopwatch`), uz garantovano zatvaranje i oslobađanje bazena u `finally` bloku.
 - **Termalni nadzor i kanonski ugovor (`stress-test-result.json` & `WIS.StatusContract.psm1`):** Svake sekunde očitava temperaturu procesora i zapisuje autoritativni rezultat u `C:\setup\stress-test-result.json`:
@@ -497,7 +498,7 @@ Sve PowerShell skripte i moduli pisani su u striktnoj kompatibilnosti sa fabrič
 - Svi fajlovi se obavezno čuvaju sa **UTF-8 with BOM (`\xEF\xBB\xBF`)** zaglavljem i `CRLF` završecima linija. Odsustvo BOM-a u fajlu sa UTF-8 „pametnim navodnicima“ (`“` `0x93` / `”` `0x94`) ili dijakriticima uzrokuje da Windows PowerShell 5.1 fajl tumači kao Windows-1252, polomi zatvaranje navodnika (`U+201D` $\rightarrow$ `â€` + kontrolni byte `0x9D`) i obori ceo modul `ParserError` greškom (`ADR-0185`). Stoga se u stringovima koriste čisti ASCII navodnici i izbegavaju 4-bajtni emodžiji.
 - Svi zastareli `GWADT.*.psm1` shimovi su trajno uklonjeni; koristi se isključivo čist `WIS.*` imenski prostor.
 
-### 10.2. Specifikacija 13 PowerShell datoteka (12 `.psm1` modula + 1 `WIS.ScreenCapture.ps1` radnik — 19,863 linije)
+### 10.2. Specifikacija 13 PowerShell datoteka (12 `.psm1` modula + 1 `WIS.ScreenCapture.ps1` radnik — 21,315 linija, `1,041,317 B`)
 
 | Modul / Skripta | Tačna Veličina / Linije | Primarna Uloga i Ključne Funkcije |
 |---|---|---|
@@ -505,9 +506,9 @@ Sve PowerShell skripte i moduli pisani su u striktnoj kompatibilnosti sa fabrič
 | **`WIS.StatusContract.psm1`** | `1,573 B` (29 lin.) | Kanonski statusni ugovor (`New-WISDiagnosticsContract`): validacija i sinteza završnog stanja, razdvajanje statusa instalacije (`DONE`, `NEEDS_ATTENTION`, `ABORTED`) od verifikacije hlađenja (`cooling_verified`, `manual_check_required`). |
 | **`WIS.StepGuard.psm1`** | `24,472 B` (647 lin.) | Idempotentni **StepGuard** mehanizam (`Invoke-WisStep`, `Test-WisForceRerun`, `Get-WisPendingRebootState`, `Read-WisStepJournal`, `Write-WisStepJournal`, `Get-WisPhaseStepSummary`): pre-check postojećeg stanja sistema, atomic upis žurnala `step-journal.json` i post-verifikacija za 21 korak Faza 2–4. |
 | **`WIS.Core.psm1`** | `105,117 B` (2,129 lin.) | Sistemsko jezgro: čitanje `Wifi-Servis.ini` (`Get-ServisNasSettings` sa podrškom za `ShareName=WIS` i `ProgramiShare=Programi`), SMB sinhronizacija (`Sync-ProgramiFromNas` uz `Error 1219` zaštitu), NTFS SID permisije (`Grant-SetupAclPermissions`), MSI mutex čekanje (`Wait-MsiMutexAvailable`), gašenje QuickEdit-a (`SetConsoleMode`) i preuzimanje instance (`Test-IsSingleInstance`). |
-| **`WIS.Hardware.psm1`** | `130,917 B` (2,826 lin.) | Hardverska dijagnostika: hibridno S.M.A.R.T. očitavanje NVMe/SATA diskova (`Get-HardwareDiagnosticsInfo`, `PowerOnHours`, wear level), dekodiranje 128B EDID matrice (`Get-MonitorEdidDetails`), provera čistoće Device Manager-a (`Test-WisDeviceManagerClean`), baterije, WMI/LHM senzori, višenitni `RunspacePool` 30s stres test (`Start-ServisStressTest`) i Microsoft Catalog HWID fallback (`Install-DriverFromMsCatalog`). |
+| **`WIS.Hardware.psm1`** | `136,306 B` (2,902 lin.) | Hardverska dijagnostika: hibridno S.M.A.R.T. očitavanje NVMe/SATA diskova (`Get-HardwareDiagnosticsInfo`, `PowerOnHours`, wear level), dekodiranje 128B EDID matrice (`Get-MonitorEdidDetails`), provera čistoće Device Manager-a (`Test-WisDeviceManagerClean`), baterije, WMI/LHM senzori, višenitni `RunspacePool` 30s stres test (`Start-ServisStressTest`) i Microsoft Catalog HWID fallback (`Install-DriverFromMsCatalog`). |
 | **`WIS.Network.psm1`** | `55,195 B` (1,249 lin.) | Mrežni stek: spajanje na servisni Wi-Fi (`Connect-ServisWifi`), univerzalni PnP fallback mrežnih drajvera (`Install-NetDriverFallback`), otključavanje SMB i TCP steka (`Optimize-ServisNetworkStack`). |
-| **`WIS.Update.psm1`** | `144,104 B` (2,801 lin.) | Ažuriranja i drajveri kroz `6 StepGuard` koraka: NAS `.msu` pre-patch, Single-Stream `.tar` (`Invoke-ModelDriversPreInstall`), samoučeći eksport drajvera na NAS (`Export-ServisHardwareDrivers` bez serijskih brojeva), Windows Update COM API (6h TTL), pozadinski WU radnik (`wu-bg-status.json`), `Wait-WindowsUpdateCompletionBarrier` i drugi prolaz (`Invoke-WindowsUpdateSecondPass`). |
+| **`WIS.Update.psm1`** | `208,224 B` (4,177 lin.) | Ažuriranja i drajveri kroz `6 StepGuard` koraka: dvosmerni HTTP/SMB keš i upload `.msu`/`.cab` zakrpi i `.tar` drajver paketa ka `ServiceHub`-u (`/api/updates/upload`, `/api/drivers/model-pack/upload`), Single-Stream `.tar` (`Invoke-ModelDriversPreInstall`), samoučeći eksport drajvera (`Export-ServisHardwareDrivers` bez serijskih brojeva), Windows Update COM API (6h TTL), pozadinski WU radnik (`wu-bg-status.json`), `Wait-WindowsUpdateCompletionBarrier` i drugi prolaz (`Invoke-WindowsUpdateSecondPass`). |
 | **`WIS.Apps.psm1`** | `232,223 B` (4,157 lin.) | Tiha instalacija softvera kroz `9 StepGuard` koraka: `Get-WisAppPresence` (uklj. pojedinačne prečice), `Get-ServisProgramiRoot` na `\\host\Programi`, lokalno keširanje Chrome/Office paketa, BOM-free lokalni SSD `SourcePath` za Office ODT (`Office2024_Install.xml`), 6-stepeni PDF lock za Acrobat, BatteryBar Solo XML i `Assert-InstalledApplicationsReality`. |
 | **`WIS.Branding.psm1`** | `39,869 B` (792 lin.) | Optimizacija i brendiranje kroz `6 StepGuard` koraka: debloat/telemetrijske tabele, regionalne postavke, automatsko DPI skaliranje (`Set-ServisAutoDpiScaling`), OEM brendiranje, upis autoritativnog `interim_reboot_required` stanja i orkestracija kontrolisanog međurestarta. |
 | **`WIS.Cleanup.psm1`** | `73,327 B` (1,332 lin.) | Završna higijena i bezbednost: `Invoke-Phase6Finalize`, `Clear-ServisWifiSecrets` (Anti-Leak brisanje Wi-Fi profila i `.ini` fajlova), generisanje lokalnog servisnog kartona (`Export-ServisSummaryReport`), vraćanje UAC-a (`Restore-ServisUacDefaults`) i samouništenje `C:\setup`. |
@@ -540,10 +541,10 @@ Da bi se u potpunosti sprečile greške `1618` (`ERROR_INSTALL_ALREADY_RUNNING`)
 
 ---
 
-## 12. Centralizovani Nadzorni i Distribucijski Server (`ServiceHub/` v3.2.0)
+## 12. Centralizovani Nadzorni i Distribucijski Server (`ServiceHub/` v3.3.0)
 
-### 12.1. Modularna Python arhitektura (`servishub` paket, 32 modula) i Docker kontejnerizacija na TrueNAS-u (port 8080 i UDP 8888)
-Kanonski server u direktorijumu `ServiceHub/` organizovan je kao čist, modularan Python 3 paket `servishub/` (**32 modula**, **`12,080`** linija izvornog koda, `517,373 B`, **0 obaveznih eksternih zavisnosti** za core server) i test paket `ServiceHub/tests/` (**27 test fajlova**, **`6,505`** linija, **`259`** unittest metoda):
+### 12.1. Modularna Python arhitektura (`servishub` paket, 35 modula) i Docker kontejnerizacija na TrueNAS-u (port 8080 i UDP 8888)
+Kanonski server u direktorijumu `ServiceHub/` organizovan je kao čist, modularan Python 3 paket `servishub/` (**35 modula**, **`15,112`** linija izvornog koda, `643,465 B`, **0 obaveznih eksternih zavisnosti** za core server) i test paket `ServiceHub/tests/` (**32 test fajla**, **`7,656`** linija, **`279`** unittest metoda):
 - **`server.py` (141 linija) & `main.py` (43 linije):** Višenitni `ThreadingHTTPServer` na TCP portu **8080** i UDP Auto-Discovery responder (`discovery.py`, 49 linija) na portu **8888** (fiksiran na 8080 kako nikada ne bi ušao u koliziju sa internim ERP sistemom servisa na portu 8000).
 - **`telemetry.py` (930 linija):** Thread-safe upravljanje sesijama, uređajima, FIFO redovima daljinskih komandi (max 20 po uređaju), 1 Hz JPEG RAM baferom (5s TTL) i ograničenim SSE redovima (`MAX_SSE_QUEUE_SIZE = 32`).
 - **`handlers.py` (1,480 linija) i `web/dashboard.py` (3,682 linije):** REST API ruter i **Modern Enterprise Dark Mode Cockpit** (Linear/Vercel estetika, `#0F172A` pozadina) sa potpunom XSS sanitizacijom (`escapeHtml`), pregledom aktivnih instalacija u realnom vremenu, 1 Hz ogledalom ekrana, WIS Centrom i katalogom zakrpa.
@@ -575,7 +576,7 @@ Modul `servishub/wis/usb.py` omogućava pripremu butabilnih USB fleševa (Partic
 | HTTP Metoda | Putanja (Endpoint) | Opis funkcionalnosti |
 |---|---|---|
 | `GET` | `/` ili `/index.html` | Modern Enterprise Dark Mode Web Cockpit (Flota, WIS Centar, Zakrpe) |
-| `GET` | `/api/health`, `/api/status` | Zdravlje servera, uptime, verzija ServiceHub-a (`3.2.0`) i sažetak aktivne flote |
+| `GET` | `/api/health`, `/api/status` | Zdravlje servera, uptime, verzija ServiceHub-a (`3.3.0`) i sažetak aktivne flote |
 | `GET` | `/api/payload/version` | Metapodaci aktivnog potpisanog izdanja (`version`, `sha256`, `size`, `signature`, `component_versions`) |
 | `GET` | `/api/payload/download` | Binarni stream potpisanog paketa `wis-payload.zip` |
 | `POST` | `/api/heartbeat` | Prijem 2s pulsa (faza, progres, CPU/GPU/SSD temperature, RAM, SMART) + isporuka `pending_commands` |
@@ -585,8 +586,10 @@ Modul `servishub/wis/usb.py` omogućava pripremu butabilnih USB fleševa (Partic
 | `POST` / `GET` | `/api/devices/<id>/report` | Prijem i trajno arhiviranje finalnog DMTF servisnog kartona (JSON + Markdown) |
 | `GET` | `/api/devices/by-serial/<sn>/history` | Istorijat ranijih servisnih intervencija po serijskom broju uređaja |
 | `POST` | `/api/devices/<id>/agy-session` | Arhiviranje dijagnostičke sesije Antigravity AI servisera u `SERVISNI_DNEVNIK.md` |
-| `POST` | `/api/drivers/resolve` | Rezolucija drajvera (MS Catalog + keš) + OEM garancija i fabrički paket (Lenovo, Dell, HP) |
-| `GET` | `/api/updates/status` | Status i inventar Windows 11 kumulativnih zakrpi (`.msu`/`.cab`) na NAS skladištu |
+| `POST` | `/api/drivers/resolve`, `/api/drivers/check_update` | Rezolucija drajvera (MS Catalog + keš) + OEM garancija i fabrički paket (Lenovo, Dell, HP) |
+| `GET` / `POST` | `/api/drivers/model-pack/status\|download\|upload`, `/api/drivers/cache/list` | Dvosmerni HTTP/SMB keš `.tar` model-pack drajvera (preuzimanje i upload sa klijenta) |
+| `GET` / `POST` | `/api/updates/status\|download\|upload\|cache-kb\|prune` | Status i dvosmerno HTTP/SMB keširanje `.msu`/`.cab` Windows 11 zakrpi i održavanje KB keša |
+| `GET` / `POST` | `/api/model-profile`, `/api/model-profile/keyboard\|usb`, `/api/keyboard-layout`, `/api/hardware-spec` | Profili hardvera modela, 12 OEM šablona tastatura i sačuvana USB port mapiranja za `HwTest` |
 | `GET` / `POST` | `/api/wis/iso/*`, `/api/wis/usb/*` | Informacije/preuzimanje WIS ISO slike, sigurna lista USB diskova, narezivanje i SSE progres |
 
 ---
@@ -598,7 +601,7 @@ Modul `servishub/wis/usb.py` omogućava pripremu butabilnih USB fleševa (Partic
 - **Centralni TrueNAS SCALE server:** `192.168.170.254` (DNS alias u WinPE i klijentima: `truenas.servis`)
 - **Aktivni mrežni portovi na TrueNAS serveru:**
   - `TCP 445`: Samba SMB 3.1.1 server za deljenja `WIS`, `Programi`, `ServiceHub`, `Servis` i `iVentoy`
-  - `TCP 8080`: `ServiceHub` v3.2.0 HTTP REST API, SSE telemetrija i Web Cockpit
+  - `TCP 8080`: `ServiceHub` v3.3.0 HTTP REST API, SSE telemetrija i Web Cockpit
   - `UDP 8888`: `ServiceHub` Zero-Config Auto-Discovery responder
   - `TCP 8000`: Interni ERP sistem servisa (strogo izolovan od WIS servisa)
   - `TCP 26000` (uz DHCP/TFTP/NBD): `iVentoy` PXE mrežni boot server
@@ -609,14 +612,15 @@ Mrežni resursi na TrueNAS serveru (`192.168.170.254`) organizovani su u namensk
 ```text
 \\192.168.170.254\
 ├── WIS\                                  # Primarno servisno i sistemsko deljenje
-│   ├── wis-payload.zip                   # Potpisani klijentski OTA paket (v2.19.0, 64,674,440 B)
+│   ├── wis-payload.zip                   # Potpisani klijentski OTA paket (v3.0.0, 68,475,013 B, 78 fajlova)
 │   ├── payload_meta.json                 # RSA-2048 potpisani manifest i kontrolne sume
-│   ├── version.json                      # Kanonska deklaracija verzija (release_package: 2.19.0)
-│   ├── WIS.UI.exe                        # Klijentski WPF panel v2.3.0 (1,200,128 B)
-│   ├── WIS.Launcher.exe                  # Thin-Client pokretač v2.2.17 (468,480 B)
-│   ├── WIS-AutopilotAuditor.exe          # Samostalni C# Autopilot forenzički alat v2.0.0 (442,368 B)
-│   ├── Provera_autopilota.ps1            # PowerShell Autopilot skripta (45,853 B)
-│   ├── WIS-Win11-Pro-10.0.26200.8037-Lean.iso # Zlatni Lean ISO v2.18.0 (6,522,753,024 B)
+│   ├── version.json                      # Kanonska deklaracija verzija (release_package: 3.0.0)
+│   ├── WIS.UI.exe                        # Klijentski WPF panel v3.0.0 (2,977,280 B)
+│   ├── WIS.HwTest.exe                    # Standalone hardverski dijagnostički alat v3.0.0 (1,736,704 B)
+│   ├── WIS.Launcher.exe                  # Thin-Client pokretač v3.0.0 (468,480 B)
+│   ├── WIS-AutopilotAuditor.exe          # Samostalni C# Autopilot forenzički alat v3.0.0 (447,488 B)
+│   ├── Provera_autopilota.ps1            # PowerShell Autopilot skripta (56,662 B)
+│   ├── WIS-Win11-Pro-10.0.26200.8037-Lean.iso # Zlatni Lean ISO v3.0.0
 │   ├── storage\cache\                    # Keš potpisanog izdanja
 │   ├── Skripte\                          # Kanonske PowerShell faze (Phases/) i moduli (Modules/)
 │   ├── win11\                            # Loop-montiran zlatni Windows 11 Ultra-Lean ISO (za WinPE Y:/Z: drajv)
@@ -657,8 +661,8 @@ Mrežni resursi na TrueNAS serveru (`192.168.170.254`) organizovani su u namensk
 1. **Sinhronizacija verzija (`ISO/Skripte/Sync-Versions.py`):** Generiše i proverava usklađenost svih komponentnih verzija sa korenskim `version.json`.
 2. **Kompilacija C# Binaraca:**
    - **Windows Build (`ISO/Skripte/Build-WIS.ps1`):** Kompajlira `WIS.Launcher.exe` i `WIS.UI.exe` u čistom Git radnom stablu pod Windows PowerShell 5.1 i MSBuild okruženjem i generiše `build-attestation.json`.
-   - **Deterministički Roslyn Build (`UI/Build-UI.py`, `Launcher/Build-Launcher.py` i `Tools/AutopilotAuditor/Build-AutopilotAuditor.py`):** Kompajlira `WIS.UI.exe` (`1,200,128 B`), `WIS.Launcher.exe` (`468,480 B`) i `WIS-AutopilotAuditor.exe` (`442,368 B`) pomoću Roslyn `csc.exe` 3.9.0 kompajlera sa `.NET Framework 4.8` referentnim sklopovima, `/deterministic+`, `/optimize+`, ugrađenim BAML resursima, `app.manifest` (`requireAdministrator`) i `WIS.ico` ikonicom.
-3. **Objavljivanje potpisanog izdanja (`ISO/Skripte/Release-WIS.py` i `ISO/Skripte/Build-PreviewMedia.py`):** Pakuje kanonski `wis-payload.zip` (`64,674,440 B` u `v2.19.0`) iz razvojnih direktorijuma, izračunava SHA-256 kontrolne sume svih fajlova i asimetrično potpisuje `payload_meta.json` privatnim RSA-2048 ključem (`~/.config/wis-signing/payload_signing_private.pem`).
+   - **Deterministički Roslyn Build (`UI/Build-UI.py`, `UI/HwTest/Build-HwTest.py`, `Launcher/Build-Launcher.py` i `Tools/AutopilotAuditor/Build-AutopilotAuditor.py`):** Kompajlira `WIS.UI.exe` (`2,977,280 B`), `WIS.HwTest.exe` (`1,736,704 B`), `WIS.Launcher.exe` (`468,480 B`) i `WIS-AutopilotAuditor.exe` (`447,488 B`) pomoću Roslyn `csc.exe` 3.9.0 kompajlera sa `.NET Framework 4.8` referentnim sklopovima, `/deterministic+`, `/optimize+`, ugrađenim BAML resursima, `app.manifest` (`requireAdministrator`) i `WIS.ico` ikonicom.
+3. **Objavljivanje potpisanog izdanja (`ISO/Skripte/Release-WIS.py` i `ISO/Skripte/Build-PreviewMedia.py`):** Pakuje kanonski `wis-payload.zip` (`68,475,013 B`, `78` fajlova u `v3.0.0`) iz razvojnih direktorijuma, izračunava SHA-256 kontrolne sume svih fajlova i asimetrično potpisuje `payload_meta.json` privatnim RSA-2048 ključem (`~/.config/wis-signing/payload_signing_private.pem`).
 4. **Priprema instalacionog medijuma (`ISO/Skripte/Prepare-WISMedia.py` & `ISO/Skripte/Build-Iso.py`):** Ugrađuje verifikovane artefakte u `$OEM$` stablo i generiše hibridnu UDF + UEFI/BIOS ISO sliku.
 
 ### 14.2. `USB Tool` Web GUI (`127.0.0.1:8092`) sa CSRF, DNS Rebinding i sistemskom disk zaštitom
@@ -675,12 +679,13 @@ Alat u `ISO/USB Tool/` služi za lokalnu pripremu i osvežavanje servisnih Vento
 ### 14.4. Višeslojna QA verifikacija (Linux statičke/unit provere vs Windows/PXE ugovori)
 Projekat jasno razdvaja provere koje se izvršavaju na Linux razvojnom hostu od testova i laboratorijskih ugovora koji zahtevaju Windows/VM/PXE okruženje:
 1. **Launcher Behavioral Test Suite (`python3 Launcher/Tests/run_tests.py`):** **31/31** funkcionalnih testova (`PASS` na Linuxu — kompilacija i izvršavanje stvarnog C# koda za proveru RSA potpisa, odbijanje neispravnih heševa, Zip-Slip zaštitu, transakcioni rollback, `StartMasterUIAndExit` i `GetRemoteSmbVersion`).
-2. **ServiceHub Unit & Integration Suite (`cd ServiceHub && python3 -m unittest discover -s tests`):** **259** unittest metoda u 27 test fajlova. U baznom Python 3 okruženju bez opcionih paketa (`Pillow`, `FastAPI`, `Node`) prolazi **239/239** izvršivih testova uz **20 legitimnih preskakanja (`skipped`)** (0 padova).
-3. **PowerShell, C# i Version Parity statički verifikatori:**
+2. **ServiceHub Unit & Integration Suite (`cd ServiceHub && python3 -m unittest discover -s tests`):** **279** unittest metoda u 32 test fajla. U baznom Python 3 okruženju bez opcionih paketa (`Pillow`, `FastAPI`, `Node`) prolazi **259/259** izvršivih testova uz **20 legitimnih preskakanja (`skipped`)** (0 padova).
+3. **UI Logički & Regresioni Testovi (`python3 -m unittest UI/Tests/Test-HwTestLogic.py UI/Tests/Test-AutopilotPreOobeCache.py UI/Tests/Test-UpdateAndDriversLogic.py`):** **29/29** testova (`PASS` na Linuxu — OEM rasporedi tastatura, odsustvo ugrađenog `WinRing0`, `PasswordControl` filtracija, Pre-OOBE Autopilot ZTD keš + `ConfirmedFree`, dvosmerni WU i `.tar` upload).
+4. **PowerShell, C# i Version Parity statički verifikatori:**
    - `python3 ISO/Skripte/Verify-PowerShellSyntax.py` — leksička i strukturna kontrola PS 5.1 kompatibilnosti i UTF-8 BOM statusa (**22/22 PASS** na Linuxu).
-   - `python3 ISO/Skripte/Verify-CSharpSyntax.py` — provera C# fajlova na odsustvo C# 6+ konstrukcija nespojivih sa .NET 4.x MSBuild-om (**25/25 PASS** na Linuxu).
+   - `python3 ISO/Skripte/Verify-CSharpSyntax.py` — provera C# fajlova na odsustvo C# 6+ konstrukcija nespojivih sa .NET 4.x MSBuild-om (**48/48 PASS** na Linuxu).
    - `python3 ISO/Skripte/Sync-Versions.py --check` — provera pariteta svih komponenti sa korenskim `version.json` (`PASS`).
-4. **Windows PS 5.1 & PXE Zero-Touch ugovori (zahtevaju Windows/lab okruženje — `NOT_RUN` na Linuxu):**
+5. **Windows PS 5.1 & PXE Zero-Touch ugovori (zahtevaju Windows/lab okruženje — `NOT_RUN` na Linuxu):**
    - `UI/Tests/Test-PowerShell51Parse.ps1` i `UI/Tests/Test-StepGuard.ps1`: Pester / pravi `[System.Management.Automation.PSParser]::Tokenize` testovi na Windows PowerShell 5.1.
    - `ISO/Skripte/Build-WIS.ps1`: Kanonski Windows MSBuild + `build-attestation.json` gate.
    - `ISO/Tests/PxeZeroTouch/verify_acceptance.py --check-lock`: **22** E2E PXE scenarija (`PXE-01..PXE-22`); dok ne postoji laboratorijski `LOCK.json` sa stvarnih mašina/QEMU-KVM testova, vraća `GATE_FAILED` (`exit 1`).
@@ -719,6 +724,10 @@ Projekat jasno razdvaja provere koje se izvršavaju na Linux razvojnom hostu od 
 | **G-16** | **Blokiranje PXE mreže na Intel I219-LM (`DEV_15FB`) usled `VTOYPE PNPHELP` abecedne kolizije (`e1d < net1ix64`)** | Ugrađeni `e1d.inf` (dodat za `DEV_15FC`/`DEV_0D4F`) abecedno prethodi inbox `net1ix64.inf` (`e1i68x64.sys`), pa `VTOYPE.EXE PNPHELP` za `DEV_15FB` okida `drvload e1d.inf` preko aktivnog drajvera; `Patch-BootWim.py` generiše abecedno prvi `000_wis_net1ix64.inf_guard` (`238,786 B`) iz inbox `net1ix64.inf` i briše `/Windows/System32/ventoy` uz 32 provere (`ADR-0184`). |
 | **G-17** | **Rušenje PowerShell 5.1 parsera na BOM-less modulima sa UTF-8 navodnicima (`0x93`/`0x94`) i `Error 1219` u Fazi 4** | Svi `.ps1`/`.psm1` fajlovi koriste UTF-8 BOM + čiste ASCII navodnike; `Phase4-Apps.ps1` eksplicitno uvozi `WIS.Core.psm1` radi `Sync-ProgramiFromNas` i `Error 1219` zaštite (`ADR-0185`). |
 | **G-18** | **Greška Office 2024 ODT (`0-2048` / `0x80070002`) pod `NT AUTHORITY\SYSTEM` (`Configure.xml` BOM i UNC `SourcePath`)** | `Invoke-OfficeInstall` prepoznaje i `Configure.xml` i `configuration.xml`, skida UTF-8 BOM, kopira offline `Office\Data` na lokalni SSD i upisuje lokalni `SourcePath` (`ADR-0185`). |
+| **G-19** | **Blokada `WIS.HwTest.exe` od strane Windows Defender / HVCI zbog ugrađenog `WinRing0` drajvera** | `Build-HwTest.py` i `ThermalSensorEngine.cs` uklonili su ugradnju `WinRing0`/`LibreHardwareMonitorLib` iz `WIS.HwTest.exe`, koristeći runtime refleksiju i WMI/ACPI/OEM WMI temperaturne izvore (`ADR-0189`). |
+| **G-20** | **Preskakanje OOBE ZTD kontakta kad `autounattend.xml` postavi `SkipNetworkSetup` (offline OOBE)** | `PreOOBE-Network.ps1` i `SetupComplete.ps1` (korak `6b`) privremeno uklanjaju `SkipNetworkSetup`, snimaju `C:\Windows\Logs\WIS\autopilot_report.json` + `AutopilotDDSZTDFile.preoobe.json` pre obnove zastavice, a prazan ZTD priznaje se kao `ConfirmedFree` (`ADR-0225`). |
+| **G-21** | **Lažni prikaz All-Core Turbo termalnog throttlinga u `ThermalSensorEngine.cs`** | Umesto poređenja trenutnog takta sa Single-Core maksimumom, uvedena je referentna baza `_baseMaxClockMHz` kako stabilno opterećenje svih jezgara ne bi prijavljivalo lažni throttling (`ADR-0225`). |
+| **G-22** | **Lažno prijavljen zaključan BIOS na ThinkPad modelima usled polja `BIOS Password Control`** | `AutoHardwareDiagnostics.AnalyzeSecurityBiosPair` izdvaja `isPolicyOrMeta` (`CONTROL`, `POLICY`, `LOCK`) od egzaktnih ključeva (`SUPERVISORPASSWORD`, `ADMINPASSWORD`), eliminišući lažne alarme (`ADR-0189`). |
 
 ---
 

@@ -119,7 +119,7 @@ namespace WIS.AutopilotAuditor
 
             // Footer
             html.AppendLine("    <div class=\"footer\">");
-            html.AppendLine("      Generisano putem samostalnog alata: <strong>WIS-AutopilotAuditor Standalone v2.0</strong> &bull; WIS Service");
+            html.AppendLine("      Generisano putem samostalnog alata: <strong>WIS-AutopilotAuditor Standalone v3.0</strong> &bull; WIS Service");
             html.AppendLine("    </div>");
 
             html.AppendLine("  </div>");
@@ -133,7 +133,7 @@ namespace WIS.AutopilotAuditor
         {
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("================================================================================");
-            sb.AppendLine("               MICROSOFT AUTOPILOT FORENSIC AUDITOR v2.0                        ");
+            sb.AppendLine("               MICROSOFT AUTOPILOT FORENSIC AUDITOR v3.0                        ");
             sb.AppendLine("                 Samostalni izvršni alat (Standalone EXE)                       ");
             sb.AppendLine("================================================================================");
             sb.AppendFormat("Vreme provere:   {0}\n", res.Timestamp);

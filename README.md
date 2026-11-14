@@ -1,8 +1,8 @@
-# Windows Installation Assistant (WIS) v2.19.0
+# Windows Installation Assistant (WIS) v3.0.0
 
-**WIS (Windows Installation Assistant)** je celovit, automatizovan **Zero-Touch** sistem za instalaciju operativnog sistema **Windows 11 Home / Pro (24H2 / Build 10.0.26200.8037)**, mrežnu iVentoy PXE i USB distribuciju, hardversku dijagnostiku, Microsoft Autopilot/MDM forenziku, idempotentnu instalaciju drajvera i aplikacija (`StepGuard`), kao i centralizovani nadzor flote računara.
+**WIS (Windows Installation Assistant)** je celovit, automatizovan **Zero-Touch** sistem za instalaciju operativnog sistema **Windows 11 Home / Pro (24H2+ / Build 10.0.26200.8037)**, mrežnu iVentoy PXE i USB distribuciju, integrisanu automatsku i interaktivnu hardversku dijagnostiku (`WIS.HwTest`), Microsoft Autopilot/MDM forenziku, idempotentnu instalaciju drajvera i aplikacija (`StepGuard`), dvosmerni HTTP/NAS Windows Update i driver keš, termalnu štampu servisnih nalepnica (Star TSP700II), kao i centralizovani nadzor flote računara.
 
-> **Status verzije (`version.json`):** Paket izdanja **`2.19.0`** (`release_status: development`, `windows_validation: pending`) — donosi ključne arhitektonske nadogradnje preko izdanja `v2.17.0` (WinPE `000_wis_net1ix64.inf_guard`, LAN-only `boot.wim`, `UI v2.3.0` sa `StepGuard` sistemom, pozadinskim WU radnikom, `HardwareIdentityService`/`DeviceChangeMonitor` motorom, HKLM-only `EnsureRunOnceEntry` i lokalnom SSD ODT instalacijom za Microsoft Office 2024).
+> **Status verzije (`version.json`):** Paket izdanja **`3.0.0`** (`release_status: development`, `windows_validation: pending`) — donosi integraciju `WIS.HwTest` direktno kao **9. tab** u `WIS.UI.exe` i jedinstvenu Fazu 5 (`45 min`), termalnu štampu Star TSP700II nalepnica (`LabelPrintService.cs`), dvosmerni WU & HTTP `<Model>.tar` keš (`Mode=All`, `ShareName=Servis`), Pre-OOBE Autopilot ZTD hvatanje sa zaštitom keša (`AutopilotAuditor v3.0`) i `ServiceHub v3.3.0`.
 
 ---
 
@@ -12,11 +12,11 @@ Kanonski izvor verzija svih komponenti nalazi se u [`version.json`](version.json
 
 | Celina / Alat | Verzija | Tehnologija | Opis i Uloga |
 | :--- | :--- | :--- | :--- |
-| **[`ISO/`](ISO/)** | `2.18.0` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja **Ultra-Lean Solid LZMS** Windows 11 ISO medijuma (`~6.07 GB`), Dual-Index `boot.wim` (`~582 MiB` sa LAN-only `/Drivers/Net`), `000_wis_net1ix64.inf_guard` zaštita za Intel I219-LM (`DEV_15FB`), Intel VMD Gen 10–14 detekcija, WinPE SMB 3.1.1 akceleracija (`WIS-AcceleratePE.cmd`, `WIS-ConnectNAS.cmd`), `Build-WIS.ps1` i `Release-WIS.py`. |
-| **[`Launcher/`](Launcher/)** | `2.2.17` | C# 5.0 / .NET Framework 4.0 (`6` prod. + `1` test fajl) | **`WIS.Launcher.exe`** — Samostalni *Thin-Client* pokretač ugrađen u `$OEM$`. Povezuje Wi-Fi, otkriva `ServiceHub` (UDP `8888`) i SMB deljenja (sa prioritetom `\\host\servis` manifesta), verifikuje RSA-2048 potpis i SHA-256 sume `wis-payload.zip` paketa, vrši Zip-Slip i transakcioni rollback (`.update_tx.json`), deblokira `:Zone.Identifier` i proverava postojeći `WIS.UI` proces pre pokretanja. |
-| **[`UI/`](UI/)** | `2.3.0` | C# WPF (.NET 4.8 + `v4.0` fallback) + PowerShell 5.1 (`13` modula, `6` faza) | **`WIS.UI.exe`** — Trojezični (**SRB `414` / 中文 `414` / EN `72`** ključa) kontrolni panel sa **8 tabova**, `WIS.StepGuard.psm1` mehanizmom (`step-journal.json` + `Expander` koraci), `HardwareIdentityService` i `DeviceChangeMonitor` motorima, obrnutim prikazom dnevnika, pozadinskim WU indikatorom (`wu-bg-status.json`), 30s `RunspacePool` stres testom i IPC kanalom. |
-| **[`ServiceHub/`](ServiceHub/)** | `3.2.0` | Python 3.10+ (`32` modula, 0 pip zavisnosti), Docker | Centralni nadzorni i distribucijski server na TCP `8080` i UDP `8888`. Pruža **Modern Enterprise Dark Mode Cockpit**, 1 Hz Live Screen Mirror u RAM-u (5s TTL), OEM provajdere drajvera (Lenovo, Dell, HP), MS Update Catalog scraper, DMTF servisne kartone i UEFI USB Builder sa ZFS/Disk zaštitom. |
-| **[`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/)** | `2.0.0` | C# (.NET Framework 4.8, `8` fajlova) | **`WIS-AutopilotAuditor.exe`** — Samostalni troslojni forenzički alat za proveru Microsoft Intune / Autopilot ZTD statusa u registru, UEFI/SMBIOS-u i Microsoft oblaku (GUI, `--cli`, `--json`, `--export-html`, `--export-hash`), uz PowerShell fallback `Provera_autopilota.ps1`. |
+| **[`ISO/`](ISO/)** | `3.0.0` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja **Ultra-Lean Solid LZMS** Windows 11 ISO medijuma, Dual-Index `boot.wim` sa LAN-only `/Drivers/Net`, `000_wis_net1ix64.inf_guard` zaštita za Intel I219-LM (`DEV_15FB`), Intel VMD detekcija, Pre-OOBE bootstrap (`PreOOBE-Network.ps1`, `SetupComplete.ps1` korak `6b`, `Provera_autopilota.ps1`), WinPE SMB 3.1.1 akceleracija, `Build-WIS.ps1` i RSA-2048 potpisano izdanje `Release-WIS.py` (`wis-payload.zip`, `78` fajlova, `68,475,013 B`). |
+| **[`Launcher/`](Launcher/)** | `3.0.0` (`min: 2.2.17`) | C# 5.0 / .NET Framework 4.0 (`6` prod. + `1` test fajl) | **`WIS.Launcher.exe`** (`468,480 B`) — Samostalni *Thin-Client* pokretač ugrađen u `$OEM$`. Povezuje Wi-Fi, otkriva `ServiceHub` (UDP `8888`) i SMB deljenja (`Servis` / `WIS`), verifikuje RSA-2048 potpis i SHA-256 sume `wis-payload.zip` paketa, vrši transakcioni rollback (`.update_tx.json`), deblokira `:Zone.Identifier` i proverava postojeći `WIS.UI` proces pre pokretanja. |
+| **[`UI/`](UI/)** | `3.0.0` | C# WPF (.NET 4.8 + `v4.0` fallback) + PowerShell 5.1 (`13` modula, `6` faza) | **`WIS.UI.exe`** (`2,977,280 B`) i **`WIS.HwTest.exe`** (`1,736,704 B`) — Trojezični (**SRB `435` / 中文 `435` / EN `73`** ključa) kontrolni panel sa **9 tabova** (uključujući integrisani `🧪 Hardverski testovi` tab sa **7 automatskih** + **9 interaktivnih** testova i 12 OEM šablona tastature), `LabelPrintService.cs` štampom nalepnica (Star TSP700II), `StepGuard` mehanizmom, `ThermalSensorEngine` refleksijom bez ugrađenog `WinRing0`, dvosmernim WU/driver klijentom i IPC kanalom. |
+| **[`ServiceHub/`](ServiceHub/)** | `3.3.0` | Python 3.10+ (`35` modula, 0 pip zavisnosti), Docker | Centralni nadzorni i distribucijski server na TCP `8080` i UDP `8888` (`279` unit testova). Pruža Web Cockpit, 1 Hz Live Screen Mirror, dvosmerni HTTP WU keš (`/api/updates/*`), dvosmerni `<Model>.tar` keš (`/api/drivers/model-pack/*`), profile modela (`/api/model-profile*`), rasporede tastature (`/api/keyboard-layout`), hardverske specifikacije (`/api/hardware-spec`), OEM provajdere drajvera i USB Builder. |
+| **[`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/)** | `3.0.0` | C# (.NET Framework 4.8, `8` fajlova, `2,333` lin.) | **`WIS-AutopilotAuditor.exe`** (`447,488 B`) — Samostalni troslojni forenzički alat za proveru Microsoft Intune / Autopilot ZTD statusa u registru, UEFI/SMBIOS-u i Microsoft oblaku (GUI, `--cli`, `--json`, `--export-html`, `--export-hash`), tretman praznog `AutopilotDDSZTDFile.json` kao `ConfirmedFree` i Pre-OOBE zaštitu `autopilot_report.json` keša, uz `Provera_autopilota.ps1` (`974` lin.). |
 
 ---
 
@@ -24,12 +24,12 @@ Kanonski izvor verzija svih komponenti nalazi se u [`version.json`](version.json
 
 `WIS.UI.exe` orkestrira **6 procesno izolovanih PowerShell 5.1 faza** sa pojedinačnim zaštitnim tajmautima i `WIS.StepGuard.psm1` kontrolom (21 atomski `Invoke-WisStep` korak kroz Faze 2, 3 i 4):
 
-1. **Faza 1 — Mreža i Servisni Wi-Fi (`Phase1-Network.ps1`, 15 min):** Fast-Pass mrežna provera, PnP fallback mrežnih drajvera, hardverska/S.M.A.R.T. trijaža, Autopilot forenzika i `STARTED` telemetrija.
-2. **Faza 2 — Drajveri i Windows Update (`Phase2-Drivers.ps1`, 60 min):** 6 `StepGuard` koraka (`P2.Identify` .. `P2.WuDrivers`): NAS `.msu` Pre-Patch, Single-Stream `<Model>.tar` drajveri (~3s sa TrueNAS-a), selektivni Windows Update COM API (sa TTL od 6h), MS Catalog OEM fallback, berba novih drajvera (`Export-ServisHardwareDrivers`) i pokretanje pozadinskog WU radnika (`wu-bg-status.json`).
+1. **Faza 1 — Mreža i Servisni Wi-Fi (`Phase1-Network.ps1`, 15 min):** Fast-Pass mrežna provera, PnP fallback mrežnih drajvera, hardverska/S.M.A.R.T. trijaža, učitavanje ili auto-retry Pre-OOBE Autopilot ZTD keša (`autopilot_report.json`) i `STARTED` telemetrija.
+2. **Faza 2 — Drajveri i Windows Update (`Phase2-Drivers.ps1`, 60 min):** 6 `StepGuard` koraka (`P2.Identify` .. `P2.WuDrivers`): dvosmerni HTTP/SMB WU keš (`Mode=All`, `OSBuild` + SHA-256 `index.json`, `/api/updates/*`), dvosmerni `<Model>.tar` driver keš (`/api/drivers/model-pack/*`, `ShareName=Servis`, `DriversSubDir=Drivers\Harvested\Models`), batch `/api/drivers/resolve`, selektivni WU COM API, status `HARVESTING` pri pakovanju novih drajvera (`Export-ServisHardwareDrivers`) i pozadinski WU radnik (`wu-bg-status.json`).
 3. **Faza 3 — Sistemska Optimizacija i Brendiranje (`Phase3-Optimization.ps1`, 20 min):** 6 `StepGuard` koraka (`P3.Debloat` .. `P3.UsbFree`): uklanjanje bloatware-a, gašenje telemetrije, OEM brendiranje, automatsko DPI skaliranje ekrana, Visual C++ AIO runtimes i autoritativna provera stanja restarta (`Get-WisPendingRebootState`), nakon čega `WIS.UI.exe` vrši kontrolisani međurestart (`HandleInterimReboot`) sa HKLM-only `RunOnce` upisom (`WIS.Launcher.exe` prioritet).
 4. **Faza 4 — Programi i OEM Licenca (`Phase4-Apps.ps1`, 60 min):** 9 `StepGuard` koraka (`P4.Runtimes` .. `P4.Activation`): rani uvoz `WIS.Core.psm1`, sekvencijalna `Global\_MSIExecute` zaštita, lokalni Chrome MSI keš, Acrobat Pro 2024 + 6-stepeni PDF lock, Microsoft Office 2024 LTSC (ODT pretraga `Configure.xml`/`configuration.xml`, uklanjanje UTF-8 BOM-a u `C:\setup\Office2024_Install.xml` sa lokalnim SSD `SourcePath`-om radi `SYSTEM` C2R kompatibilnosti i `-Force` fallback), WinRAR, BatteryBar Solo za Win11 (`SKIPPED` na desktopu), prečice, `Assert-InstalledApplicationsReality`, OEM OA3x aktivacija i `[↻ Ponovi Fazu 4]` kontrola u UI-ju.
-5. **Faza 5 — Stres Test i Dijagnostika (`Phase5-Stress.ps1`, 5 min):** Čekanje pozadinske WU barijere, 30-sekundni Multi-Core `RunspacePool` CPU stres test sa `98°C` Emergency Abort osiguračem, `WIS.StatusContract.psm1` ugovor (stvarno pregrevanje blokira predaju sa `exit 2`; `UNKNOWN` nedostatak senzora ne blokira instalaciju i postavlja `manual_check_required = true`).
-6. **Faza 6 — Finalizacija i Anti-Leak Čišćenje (`Phase6-Finalize.ps1`, 45 min):** Asinhroni WU Pass 2 (timeout 600s), gašenje Screen Mirror radnika, slanje DMTF servisnog kartona na `ServiceHub`, trajno uklanjanje `Wifi-Servis.ini` i servisnih WLAN profila, vraćanje UAC-a na podrazumevane vrednosti (`5`/`1`) i samouništenje `C:\setup`.
+5. **Faza 5 — Ugrađeni Hardverski Testovi & Stres Dijagnostika (`ExecutePhase5IntegratedHwTest` / `WIS.HwTest`, 45 min):** Objedinjeni tok unutar `WIS.UI.exe` (`MainWindow.HwTest.cs` / `StartPhase5FullWorkflow`: `P5.AutoDiag` 7 automatskih testova -> `P5.Stress` sa `ThermalSensorEngine` refleksijom i `_baseMaxClockMHz` korekcijom bez ugrađenog `WinRing0` -> `P5.Peripherals` 9 interaktivnih testova), uz `Phase5-Stress.ps1` za CI/fallback režim (`WIS_STRESS_TEST_INPUT_JSON`) i `WIS.StatusContract.psm1` politiku.
+6. **Faza 6 — Finalizacija, Štampa Nalepnica i Anti-Leak Čišćenje (`Phase6-Finalize.ps1`, 45 min):** Asinhroni WU Pass 2 (timeout 600s), gašenje Screen Mirror radnika, slanje DMTF servisnog kartona na `ServiceHub`, opciona termalna štampa nalepnice na Star TSP700II (`LabelPrintService.cs`) sa `HW test` rezimeom, trajno uklanjanje `Wifi-Servis.ini` i servisnih WLAN profila, vraćanje UAC-a (`5`/`1`) i samouništenje `C:\setup`.
 
 ---
 
@@ -57,7 +57,7 @@ docker compose up -d --build
   ```powershell
   powershell -ExecutionPolicy Bypass -File .\ISO\Skripte\Build-WIS.ps1
   ```
-- Za potpisivanje OTA paketa (zahteva čist Git commit, `build-attestation.json` i PASS izveštaj namenske Windows VM za isti commit) koristi se `ISO/Skripte/Release-WIS.py publish ...`, dok se Linux rekompilacija `UI` sloja i izrada hibridnog UDF/UEFI/BIOS ISO medijuma obavljaju kroz `UI/Build-UI.py`, `ISO/Skripte/Patch-BootWim.py` i `ISO/Skripte/Build-Iso.py`.
+- Za potpisivanje OTA paketa (zahteva čist Git commit, `build-attestation.json` i PASS izveštaj namenske Windows VM za isti commit) koristi se `ISO/Skripte/Release-WIS.py publish ...`, dok se Linux rekompilacija `UI`, `HwTest`, `Launcher` i `AutopilotAuditor` slojeva i izrada hibridnog UDF/UEFI/BIOS ISO medijuma obavljaju kroz `UI/Build-UI.py`, `UI/HwTest/Build-HwTest.py`, `Launcher/Build-Launcher.py`, `Tools/AutopilotAuditor/Build-AutopilotAuditor.py`, `ISO/Skripte/Patch-BootWim.py` i `ISO/Skripte/Build-Iso.py`.
 
 ---
 
@@ -76,7 +76,10 @@ python3 ISO/Skripte/Verify-CSharpSyntax.py
 # Launcher behavioral testovi u Mono okruženju (31/31 PASS)
 python3 Launcher/Tests/run_tests.py
 
-# ServiceHub unittest paket (259 testova ukupno: 239 PASS, 20 skipped kada opciono Pillow/FastAPI/Node nisu prisutni)
+# UI / HwTest / Pre-OOBE Autopilot / WU & Driver jedinica testovi (29 testova)
+python3 -m unittest UI/Tests/Test-HwTestLogic.py UI/Tests/Test-AutopilotPreOobeCache.py UI/Tests/Test-UpdateAndDriversLogic.py
+
+# ServiceHub unittest paket (279 testova ukupno: 259 PASS, 20 skipped kada opciono Pillow/FastAPI/Node nisu prisutni)
 cd ServiceHub && python3 -m unittest discover -s tests
 ```
 
@@ -89,7 +92,9 @@ cd ServiceHub && python3 -m unittest discover -s tests
 ## Dokumentacija
 
 Detaljna tehnička specifikacija i zapisi o arhitektonskim odlukama nalaze se u [`docs/`](docs/):
-- **[Tehnički opis sistema WIS v2.19.0](docs/TEHNICKI_OPIS_SISTEMA_WIS.md)** — Kompletna inženjerska specifikacija svih podsistema, ugovora i SRE zamki.
+- **[Tehnički opis sistema WIS v3.0.0](docs/TEHNICKI_OPIS_SISTEMA_WIS.md)** — Kompletna inženjerska specifikacija svih podsistema, ugovora i SRE zamki.
+- **[ADR-0189: Hardverski test suite `WIS.HwTest` i ServiceHub profili modela](docs/decisions/ADR-0189-manual-hardware-test-suite.md)** — 7 automatskih i 9 interaktivnih testova, 12 OEM šablona tastatura, integracija sa `WIS.UI.exe`.
+- **[ADR-0225: WIS v3.0.0 Arhitektonske Odluke](docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md)** — Ugrađeni 9. tab i objedinjena Faza 5 (`45 min`), Star TSP700II štampa, dvosmerni WU & `<Model>.tar` keš i Pre-OOBE Autopilot keš.
 - **[Arhitektura podsistema (`docs/architecture/`)](docs/architecture/overview.md)** — Detaljni pregledi pajplajna, WinPE drajvera, Windows Update COM API-ja, tihih instalacija, modula, mreže i ServiceHub-a.
 - **[Arhitektonske odluke (`docs/decisions/`)](docs/decisions/)** — Zbirka ADR dokumenata (`ADR-0001` do `ADR-0185`), uključujući novije odluke:
   - [`ADR-0181`](docs/decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23.md) — `StepGuard` pre-provera, `HardwareIdentityService`, `DeviceChangeMonitor`, `UI v2.3.0`, HKLM-only `RunOnce` i procesna single-instance zaštita.

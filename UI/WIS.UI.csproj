@@ -67,6 +67,13 @@
       <Private>False</Private>
     </Reference>
     <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Speech" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="zxing">
+      <HintPath>HwTest\zxing.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="LibreHardwareMonitorLib">
       <HintPath>LibreHardwareMonitorLib.dll</HintPath>
       <Private>True</Private>
@@ -97,6 +104,10 @@
       <DependentUpon>MainWindow.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="MainWindow.HwTest.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="Models.cs" />
     <Compile Include="JsonHelper.cs" />
     <Compile Include="HardwareIdentityService.cs" />
@@ -104,6 +115,27 @@
     <Compile Include="TelemetryService.cs" />
     <Compile Include="ThermalSensorEngine.cs" />
     <Compile Include="LocalizationService.cs" />
+    <Compile Include="LabelPrintService.cs" />
+    <Compile Include="HwTest\HwTestShell.cs" />
+    <Compile Include="HwTest\Interop\NativeMethods.cs" />
+    <Compile Include="HwTest\Core\ResultModel.cs" />
+    <Compile Include="HwTest\Core\HwTestLogger.cs" />
+    <Compile Include="HwTest\Core\ModelProfileClient.cs" />
+    <Compile Include="HwTest\Core\HardwareProbe.cs" />
+    <Compile Include="HwTest\Core\FactorySpecProbe.cs" />
+    <Compile Include="HwTest\Core\MazeGenerator.cs" />
+    <Compile Include="HwTest\Core\AutoHardwareDiagnostics.cs" />
+    <Compile Include="HwTest\Tests\DisplayTestWindow.cs" />
+    <Compile Include="HwTest\Tests\KeyboardTestWindow.cs" />
+    <Compile Include="HwTest\Tests\TouchpadTestWindow.cs" />
+    <Compile Include="HwTest\Tests\TouchscreenMazeWindow.cs" />
+    <Compile Include="HwTest\Tests\AudioTestWindow.cs" />
+    <Compile Include="HwTest\Tests\MicTestWindow.cs" />
+    <Compile Include="HwTest\Tests\CameraTestWindow.cs" />
+    <Compile Include="HwTest\Tests\FingerprintTestWindow.cs" />
+    <Compile Include="HwTest\Tests\UsbPortTestWindow.cs" />
+    <Compile Include="HwTest\Tests\GpuStressWindow.cs" />
+    <Compile Include="HwTest\Tests\AutoTestDetailsWindow.cs" />
     <Compile Include="Properties\AssemblyInfo.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -111,6 +143,42 @@
   <ItemGroup>
     <None Include="App.config" />
     <Resource Include="Assets\WIS.ico" />
+    <EmbeddedResource Include="HwTest\zxing.dll">
+      <LogicalName>Assets.zxing.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\keyboard_layouts.json">
+      <LogicalName>Assets.keyboard_layouts.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\0.wav">
+      <LogicalName>Assets.digits_en.0.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\1.wav">
+      <LogicalName>Assets.digits_en.1.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\2.wav">
+      <LogicalName>Assets.digits_en.2.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\3.wav">
+      <LogicalName>Assets.digits_en.3.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\4.wav">
+      <LogicalName>Assets.digits_en.4.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\5.wav">
+      <LogicalName>Assets.digits_en.5.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\6.wav">
+      <LogicalName>Assets.digits_en.6.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\7.wav">
+      <LogicalName>Assets.digits_en.7.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\8.wav">
+      <LogicalName>Assets.digits_en.8.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\9.wav">
+      <LogicalName>Assets.digits_en.9.wav</LogicalName>
+    </EmbeddedResource>
     <None Include="app.manifest" />
     <None Include="LibreHardwareMonitorLib.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

@@ -37,6 +37,10 @@ ENV/
 # ServisHub runtime storage & logs
 storage/cache/
 storage/drivers_cache/
+storage/hw_spec_cache/
+storage/model_profiles/
+storage/wis/
+storage/reports/
 storage/*.zip
 Logs/live/
 Logs/reports/

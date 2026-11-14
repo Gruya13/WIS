@@ -23,6 +23,34 @@ namespace WIS.UI
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            AppDomain.CurrentDomain.AssemblyResolve += (sender, eventArgs) =>
+            {
+                try
+                {
+                    string shortName = new System.Reflection.AssemblyName(eventArgs.Name).Name;
+                    if (string.Equals(shortName, "zxing", StringComparison.OrdinalIgnoreCase))
+                    {
+                        using (Stream s = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Assets.zxing.dll"))
+                        {
+                            if (s != null)
+                            {
+                                byte[] buf = new byte[s.Length];
+                                int offset = 0;
+                                while (offset < buf.Length)
+                                {
+                                    int read = s.Read(buf, offset, buf.Length - offset);
+                                    if (read <= 0) break;
+                                    offset += read;
+                                }
+                                return System.Reflection.Assembly.Load(buf);
+                            }
+                        }
+                    }
+                }
+                catch { }
+                return null;
+            };
+
             // 0. Striktna procesna provera: ako već postoji aktivan WIS.UI proces, dovedi ga u prvi plan i odmah ugasi ovu instancu
             try
             {

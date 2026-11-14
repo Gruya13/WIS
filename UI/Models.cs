@@ -1114,6 +1114,17 @@ namespace WIS.UI
         public string DisplayNits { get { return _displayNits; } set { SetProperty(ref _displayNits, value); } }
         public string DisplayColorGamut { get { return _displayColorGamut; } set { SetProperty(ref _displayColorGamut, value); } }
 
+        // Strukturisani podaci o ekranu za nalepnicu (WIS-TASK-188)
+        private int _displayWidth = 0;
+        private int _displayHeight = 0;
+        private int _displayRefreshHz = 0;
+        private string _displayPanelType = "";
+
+        public int DisplayWidth { get { return _displayWidth; } set { SetProperty(ref _displayWidth, value); } }
+        public int DisplayHeight { get { return _displayHeight; } set { SetProperty(ref _displayHeight, value); } }
+        public int DisplayRefreshHz { get { return _displayRefreshHz; } set { SetProperty(ref _displayRefreshHz, value); } }
+        public string DisplayPanelType { get { return _displayPanelType; } set { SetProperty(ref _displayPanelType, value); } }
+
         // Audio zvučnici i mikrofon (v2.14.0 - HW-07)
         private string _audioSpeakers = "Detekcija...";
         private SolidColorBrush _audioSpeakersBrush = CreateFrozenBrush(136, 136, 136);
@@ -1799,6 +1810,8 @@ namespace WIS.UI
                         return isZh ? "⬇ 下载中" : "⬇ PREUZIMANJE";
                     case "INSTALLING":
                         return isZh ? "⚙ 安装中" : "⚙ INSTALACIJA";
+                    case "HARVESTING":
+                        return isZh ? "⬆ 缓存至NAS" : "⬆ NAS KEŠ";
                     case "WARN":
                         return isZh ? "⚠ 警告" : "⚠ UPOZORENJE";
                     case "STARTING":
@@ -1824,6 +1837,7 @@ namespace WIS.UI
                         return CreateFrozenBrush(243, 156, 18);  // Narandžasta #F39C12
                     case "DOWNLOADING":
                     case "INSTALLING":
+                    case "HARVESTING":
                     case "SEARCHING":
                     case "STARTING":
                     default:
@@ -2276,6 +2290,20 @@ namespace WIS.UI
         public ICommand RerunPhase4Command { get; set; }
         public ICommand RefreshHardwareCommand { get; set; }
         public ICommand SwitchLanguageCommand { get; set; }
+        public ICommand RunHwTestCommand { get; set; }
+
+        // ------------------ HARDWARE TEST (WIS-TASK-189) ------------------
+        private bool _isHwTestFinished = false;
+        private string _hwTestOverallStatus = "Nije pokrenut";
+        private string _hwTestSummaryText = "";
+        private SolidColorBrush _hwTestBadgeBrush = CreateFrozenBrush(108, 117, 125);
+        private Dictionary<string, object> _hwTestFullResult = null;
+
+        public bool IsHwTestFinished { get { return _isHwTestFinished; } set { SetProperty(ref _isHwTestFinished, value); } }
+        public string HwTestOverallStatus { get { return _hwTestOverallStatus; } set { SetProperty(ref _hwTestOverallStatus, value); } }
+        public string HwTestSummaryText { get { return _hwTestSummaryText; } set { SetProperty(ref _hwTestSummaryText, value); } }
+        public SolidColorBrush HwTestBadgeBrush { get { return _hwTestBadgeBrush; } set { SetProperty(ref _hwTestBadgeBrush, value); } }
+        public Dictionary<string, object> HwTestFullResult { get { return _hwTestFullResult; } set { SetProperty(ref _hwTestFullResult, value); } }
 
         // ------------------ LOCALIZATION SUPPORT ------------------
         public LocalizationService Loc
@@ -2341,6 +2369,7 @@ namespace WIS.UI
         public string TabAppsHeader { get { return LocalizationService.Instance["TabApps"]; } }
         public string TabLogsHeader { get { return LocalizationService.Instance["TabLogs"]; } }
         public string TabAutopilotHeader { get { return LocalizationService.Instance["TabAutopilot"]; } }
+        public string TabHwTestHeader { get { return LocalizationService.Instance["TabHwTest"]; } }
 
         // ------------------ COMPLETION PANEL ------------------
         private bool _isCompleted = false;
@@ -2511,7 +2540,7 @@ namespace WIS.UI
             Phases.Add(new PhaseItem { Number = 2, Title = "2. Update", Subtitle = "Drajveri i zakrpe", Status = "Pending" });
             Phases.Add(new PhaseItem { Number = 3, Title = "3. Optimizacija", Subtitle = "Debloat i brendiranje", Status = "Pending" });
             Phases.Add(new PhaseItem { Number = 4, Title = "4. Programi", Subtitle = "Paketi i OEM licenca", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 5, Title = "5. Stres", Subtitle = "Stabilnost (30s)", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 5, Title = "5. Hardverski test", Subtitle = "Stres + Periferije", Status = "Pending" });
             Phases.Add(new PhaseItem { Number = 6, Title = "6. Završetak", Subtitle = "Dijagnostika i rezime", Status = "Pending" });
 
             // Inicijalizacija standardnih WIS aplikacija
@@ -2536,6 +2565,7 @@ namespace WIS.UI
             OnPropertyChanged("TabAppsHeader");
             OnPropertyChanged("TabLogsHeader");
             OnPropertyChanged("TabAutopilotHeader");
+            OnPropertyChanged("TabHwTestHeader");
             if (_isPaused)
             {
                 PauseButtonText = LocalizationService.Instance["BtnResume"];
@@ -2654,8 +2684,8 @@ namespace WIS.UI
                             Phases[i].Subtitle = isZh ? "软件包与 OEM 授权" : "Paketi i OEM licenca";
                             break;
                         case 5:
-                            Phases[i].Title = isZh ? "5. 压力测试" : "5. Stres";
-                            Phases[i].Subtitle = isZh ? "稳定性验证 (30秒)" : "Stabilnost (30s)";
+                            Phases[i].Title = isZh ? "5. 硬件测试" : "5. Hardverski test";
+                            Phases[i].Subtitle = isZh ? "压力与外设" : "Stres + Periferije";
                             break;
                         case 6:
                             Phases[i].Title = isZh ? "6. 完成交付" : "6. Završetak";

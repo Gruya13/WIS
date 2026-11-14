@@ -66,7 +66,7 @@ namespace WIS.AutopilotAuditor
                 {
                     if (!isJsonOutput)
                     {
-                        Console.WriteLine("\n[+] Pokrećem Microsoft Autopilot Forensic Auditor v2.0...");
+                        Console.WriteLine("\n[+] Pokrećem Microsoft Autopilot Forensic Auditor v3.0...");
                         Console.WriteLine("[*] Skeniram hardver i WMI parametre...");
                     }
 
@@ -87,6 +87,7 @@ namespace WIS.AutopilotAuditor
                     CloudZtdDetails cloud = CloudZtdInspector.Inspect(hw.SerialNumber);
 
                     AuditorResult result = DecisionMatrix.Evaluate(hw, local, cloud);
+                    CloudZtdInspector.SaveCachedReport(result);
 
                     // Izvoz u HTML ako je traženo
                     if (!string.IsNullOrEmpty(exportHtmlPath))
@@ -168,6 +169,7 @@ namespace WIS.AutopilotAuditor
                     LocalForensicsDetails local = LocalForensicsInspector.Inspect();
                     CloudZtdDetails cloud = CloudZtdInspector.Inspect(hw.SerialNumber);
                     AuditorResult result = DecisionMatrix.Evaluate(hw, local, cloud);
+                    CloudZtdInspector.SaveCachedReport(result);
                     Console.WriteLine(ReportExporter.GetFormattedConsoleText(result));
                     return result.IsLocked ? 1 : 0;
                 }
@@ -213,7 +215,7 @@ namespace WIS.AutopilotAuditor
         {
             Console.WriteLine(@"
 ================================================================================
-               MICROSOFT AUTOPILOT FORENSIC AUDITOR v2.0
+               MICROSOFT AUTOPILOT FORENSIC AUDITOR v3.0
                         WIS Service WIS Suite
 ================================================================================
 Upotreba:

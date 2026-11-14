@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import datetime, date
 from typing import Any, Dict, Optional, List
 
-from servishub.drivers.oem.base import BaseOEMProvider
+from servishub.drivers.oem.base import BaseOEMProvider, build_keyboard_spec, make_keyboard_layout_name
 
 try:
     from servishub.drivers.version import parse_driver_date
@@ -169,6 +169,8 @@ class HpOEMProvider(BaseOEMProvider):
             os.makedirs(self.base_cache_dir, exist_ok=True)
             self.warranty_cache_dir = os.path.join(self.base_cache_dir, "warranty")
             os.makedirs(self.warranty_cache_dir, exist_ok=True)
+            self.keyboard_cache_dir = os.path.join(self.base_cache_dir, "keyboard")
+            os.makedirs(self.keyboard_cache_dir, exist_ok=True)
 
     # =========================================================================
     # Pomoćne metode za normalizaciju i parsiranje
@@ -755,3 +757,300 @@ class HpOEMProvider(BaseOEMProvider):
         except Exception:
             pass
         return None
+
+    # =========================================================================
+    # 4. Prepoznavanje fizičkog rasporeda tastature (lookup_keyboard_spec)
+    # =========================================================================
+
+    _HP_ANSI_SUFFIXES = ("ABA", "ABL")
+    _HP_ISO_SUFFIXES = (
+        "ABD", "ABU", "ABF", "ABE", "ABZ", "ABH", "ABB", "AB8", "AB9",
+        "AKN", "AKC", "AKB", "AKD", "AKQ", "AKS",
+        "BED", "B1N", "B1R", "B10", "BCM", "BH4",
+        "UUZ", "UUW", "UUG",
+    )
+
+    @classmethod
+    def _parse_hp_sku_suffix(cls, sku_or_pn: str) -> Optional[bool]:
+        """
+        Određuje ISO vs ANSI iz HP SKU sufiksa (#ABA = US ANSI, #ABD = DE ISO,
+        #BED/#AKN = Adriatic/Balkan ISO, #ABU = UK ISO, #UUZ = CH ISO...).
+        """
+        if not sku_or_pn or "#" not in sku_or_pn:
+            return None
+        suffix = sku_or_pn.strip().upper().split("#")[-1]
+        suffix = re.sub(r'[^A-Z0-9]', '', suffix)[:4]
+        if not suffix:
+            return None
+        if suffix in cls._HP_ANSI_SUFFIXES:
+            return False
+        if suffix in cls._HP_ISO_SUFFIXES:
+            return True
+        return None
+
+    @classmethod
+    def _parse_hp_part_description(cls, desc: str, sku: str = "") -> Dict[str, Any]:
+        """
+        Parsira HP PartSurfer opis dela, npr.:
+        - 'Keyboard, backlit, United States, without numeric keypad'
+        - 'L87609-A41 Assy KBDPM CP+PS SR BEL'
+        """
+        text = (desc or "").upper()
+        has_copilot = "COPILOT" in text
+        has_numpad = None  # type: Optional[bool]
+        is_iso = None      # type: Optional[bool]
+
+        if (
+            any(k in text for k in ("WITHOUT NUMERIC KEYPAD", "WITHOUT KEYPAD", "NO NUMERIC KEYPAD", "NO KEYPAD", "NO NUMPAD", "W/O KP", "TKL"))
+            or re.search(r"\bNKP\b", text)
+        ):
+            has_numpad = False
+        elif any(k in text for k in ("WITH NUMERIC KEYPAD", "NUMERIC KEYPAD", "WITH KEYPAD", "W/KP", "WITH NUMPAD", "FULL SIZE")):
+            has_numpad = True
+
+        iso_words = (
+            "ADRIATIC", "SLOVENIAN", "CROATIAN", "SERBIAN", "GERMANY", "GERMAN",
+            "UNITED KINGDOM", "SWISS", "SWITZERLAND", "FRENCH", "FRANCE", "NORDIC",
+            "ITALIAN", "SPANISH", "INTERNATIONAL", "EUROPE", "CZECH", "SLOVAK",
+            "HUNGARIAN", "POLISH", "TURKISH", "ISO", "BELGIUM", "BELGIAN", "DUTCH",
+            "PORTUGUESE", "DANISH", "NORWEGIAN", "SWEDISH", "FINNISH",
+        )
+        if (
+            any(w in text for w in iso_words)
+            or re.search(r"\b(BEL|FR|GR|UK|SP|ITL|DEN|NOR|SWD|SWI|PORT|TURK|HU|CZ|SLV|BH|SRB|HR)\b", text)
+            or re.search(r"-(A41|031|041|051|061|071|081|091|131|141|151|211|251|291|B31|BG1|FL1|BH4)\b", text)
+        ):
+            is_iso = True
+        elif (
+            "UNITED STATES" in text
+            or "ANSI" in text
+            or re.search(r"\b(US|INTL)\b", text)
+            or re.search(r"-(001|B1U)\b", text)
+        ):
+            is_iso = False
+
+        if is_iso is None and sku:
+            is_iso = cls._parse_hp_sku_suffix(sku)
+
+        return {
+            "has_numpad": has_numpad,
+            "is_iso": is_iso,
+            "has_copilot": has_copilot,
+        }
+
+    @classmethod
+    def _extract_hp_partsurfer_keyboard(cls, raw_body: str) -> Optional[str]:
+        """Izvlači opis tastature iz HP PartSurfer JSON (BFF) ili HTML odgovora."""
+        if not raw_body:
+            return None
+        # 1. Pokušaj kao JSON (HP PartSurfer BFF ili generički JSON)
+        stripped = raw_body.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                data = json.loads(stripped)
+                candidates = []
+
+                # Prioritetno BFF SerialNumberBOM.unit_configuration (konkretna konfiguracija S/N-a)
+                if isinstance(data, dict):
+                    sbom = (data.get("Body") or {}).get("SerialNumberBOM") or {}
+                    if isinstance(sbom, dict):
+                        uc_list = sbom.get("unit_configuration") or []
+                        if isinstance(uc_list, list):
+                            for it in uc_list:
+                                if not isinstance(it, dict):
+                                    continue
+                                desc = str(it.get("part_description") or "").strip()
+                                pn = str(it.get("part_number") or "").strip()
+                                up = desc.upper()
+                                if (
+                                    ("KEYBOARD" in up or "KEYPAD" in up or re.search(r"\bKBD[A-Z0-9]*\b", up))
+                                    and "EXTERNAL" not in up and "CABLE" not in up and "SCREW" not in up
+                                ):
+                                    return f"{pn} {desc}".strip()
+
+                def _walk(node: Any):
+                    if isinstance(node, dict):
+                        for k in ("description", "partDescription", "part_description", "category", "name"):
+                            v = node.get(k)
+                            if isinstance(v, str) and (
+                                "KEYBOARD" in v.upper() or "KEYPAD" in v.upper() or re.search(r"\bKBD[A-Z0-9]*\b", v.upper())
+                            ):
+                                if "EXTERNAL" not in v.upper() and "CABLE" not in v.upper() and "SCREW" not in v.upper():
+                                    candidates.append(v.strip())
+                        for v in node.values():
+                            if isinstance(v, (dict, list)):
+                                _walk(v)
+                    elif isinstance(node, list):
+                        for it in node:
+                            _walk(it)
+
+                _walk(data)
+                if candidates:
+                    return candidates[0]
+            except Exception:
+                pass
+
+        # 2. Parsiranje HTML redova tabele (<tr>...</tr>)
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', raw_body, re.IGNORECASE | re.DOTALL)
+        for row_html in rows:
+            clean_row = re.sub(r'<[^>]+>', ' | ', row_html)
+            clean_row = re.sub(r'\s+', ' ', clean_row).strip()
+            up = clean_row.upper()
+            if ("KEYBOARD" in up or "TOP COVER WITH KEYBOARD" in up) and "EXTERNAL" not in up and "CABLE" not in up and "SCREW" not in up:
+                return clean_row
+        return None
+
+    @classmethod
+    def _infer_hp_series_layout(cls, model: str) -> Dict[str, Any]:
+        """Offline katalog HP serija (EliteBook, ProBook, ZBook, EliteDesk)."""
+        up = (model or "").upper()
+        is_desktop = any(k in up for k in ("ELITEDESK", "PRODESK", "PROONE", "ELITEONE", "Z2 ", "Z4 ", "Z6 ", "Z8 "))
+        has_numpad = None  # type: Optional[bool]
+        added_keys = []    # type: List[str]
+
+        if is_desktop:
+            has_numpad = True
+        elif any(k in up for k in ("850", "855", "860", "865", "650", "655", "450", "455", "470", "250", "255", "FURY 15", "FURY 16", "FURY 17", "POWER 15", "POWER 16", "ZBOOK 15", "ZBOOK 17", "15-")):
+            has_numpad = True
+        elif any(k in up for k in ("830", "835", "840", "845", "1030", "1040", "735", "745", "630", "640", "645", "430", "440", "445", "FIREFLY 14", "ENVY 13", "SPECTRE", "14-")):
+            has_numpad = False
+            is_new_gen_no_nav = bool(re.search(r"\bG(9|10|11|12)\b", up)) or any(
+                k in up for k in ("630", "640", "645")
+            )
+            has_elite_nav = (
+                any(k in up for k in ("ELITEBOOK", "ZBOOK"))
+                and any(k in up for k in ("830", "835", "840", "845", "1030", "1040", "735", "745", "14U", "FIREFLY 14"))
+            )
+            has_probook_nav = (
+                "PROBOOK" in up
+                and any(k in up for k in ("430", "440", "445"))
+                and any(g in up for g in ("G6", "G7", "G8"))
+            )
+            if not is_new_gen_no_nav and (has_elite_nav or has_probook_nav):
+                for nav_k in ("Home", "PageUp", "PageDown", "End"):
+                    added_keys.append(nav_k)
+
+        if has_numpad is None and not is_desktop:
+            return {"matched": False, "is_desktop": False, "has_numpad": None, "added_keys": []}
+
+        return {
+            "matched": True,
+            "is_desktop": is_desktop,
+            "has_numpad": has_numpad,
+            "added_keys": added_keys,
+        }
+
+    def lookup_keyboard_spec(
+        self,
+        serial: str = "",
+        model: str = "",
+        product_number: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Određuje fizički raspored tastature za HP uređaje:
+        1) Disk keš, 2) HP PartSurfer po S/N ili Product Number-u (timeout <= 5s),
+        3) Offline #XXX SKU sufiks + HP katalog serija.
+        """
+        clean_sn = self._normalize_serial(serial)
+        sku_iso = self._parse_hp_sku_suffix(product_number)
+        clean_pn = self._normalize_product_number(product_number)
+        cache_key = f"{clean_sn}_{clean_pn}".strip("_") or re.sub(r'[^A-Z0-9_-]', '_', (model or "").upper()).strip("_")
+
+        if cache_key:
+            cache_file = os.path.join(self.keyboard_cache_dir, f"{cache_key}.json")
+            with self.lock:
+                if os.path.isfile(cache_file):
+                    try:
+                        with open(cache_file, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                        if cached.get("status") == "ok":
+                            return cached
+                    except Exception:
+                        pass
+        else:
+            cache_file = ""
+
+        search_term = clean_sn if (clean_sn and not clean_sn.startswith("NEPOZNAT")) else clean_pn
+        if search_term:
+            if clean_sn and not clean_sn.startswith("NEPOZNAT"):
+                url = (
+                    f"https://partsurfer.hpcloud.hp.com/bff/proxy/get?input=/SerialNumber/GetSerialNumber/"
+                    f"{urllib.parse.quote(clean_sn)}/country/US/usertype/EXT"
+                )
+            else:
+                url = (
+                    f"https://partsurfer.hpcloud.hp.com/bff/proxy/get?input=/Search/GenericSearch/"
+                    f"{urllib.parse.quote(clean_pn)}/country/US/usertype/EXT"
+                )
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ServisHub-HpOEM/1.0",
+                    "Accept": "application/json,text/html",
+                    "Origin": "https://partsurfer.hp.com",
+                    "Referer": "https://partsurfer.hp.com/",
+                },
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                    if resp.status == 200:
+                        raw_body = resp.read().decode("utf-8", errors="replace")
+                        part_desc = self._extract_hp_partsurfer_keyboard(raw_body)
+                        if part_desc:
+                            parsed = self._parse_hp_part_description(part_desc, product_number)
+                            series = self._infer_hp_series_layout(model)
+                            has_numpad = parsed["has_numpad"] if parsed["has_numpad"] is not None else series.get("has_numpad")
+                            is_iso = parsed["is_iso"] if parsed["is_iso"] is not None else sku_iso
+                            is_desktop = bool(series.get("is_desktop", False))
+                            base_layout = None
+                            if has_numpad is not None:
+                                base_layout = make_keyboard_layout_name(has_numpad, bool(is_iso) if is_iso is not None else False, is_desktop)
+                            res = build_keyboard_spec(
+                                status="ok",
+                                source="hp_partsurfer",
+                                confidence="high" if (has_numpad is not None and is_iso is not None) else "medium",
+                                base_layout=base_layout,
+                                has_numpad=has_numpad,
+                                is_iso=is_iso,
+                                has_copilot=parsed["has_copilot"],
+                                oem_part_description=part_desc,
+                                added_keys=series.get("added_keys"),
+                                raw_data={"serial": clean_sn, "sku": product_number, "model": model},
+                            )
+                            if cache_file:
+                                with self.lock:
+                                    tmp_file = cache_file + ".tmp"
+                                    with open(tmp_file, "w", encoding="utf-8") as f:
+                                        json.dump(res, f, indent=2, ensure_ascii=False)
+                                    os.replace(tmp_file, cache_file)
+                            return res
+            except Exception:
+                pass
+
+        series = self._infer_hp_series_layout(model)
+        if series.get("matched") or sku_iso is not None:
+            has_numpad = series.get("has_numpad")
+            is_desktop = bool(series.get("is_desktop", False))
+            base_layout = None
+            if has_numpad is not None and sku_iso is not None:
+                base_layout = make_keyboard_layout_name(bool(has_numpad), bool(sku_iso), is_desktop)
+            elif is_desktop:
+                base_layout = make_keyboard_layout_name(True, bool(sku_iso) if sku_iso is not None else False, True)
+
+            return build_keyboard_spec(
+                status="ok",
+                source="hp_sku_series_catalog",
+                confidence="high" if (has_numpad is not None and sku_iso is not None) else "medium",
+                base_layout=base_layout,
+                has_numpad=has_numpad,
+                is_iso=sku_iso,
+                added_keys=series.get("added_keys"),
+                raw_data={"serial": clean_sn, "sku": product_number, "model": model, "is_desktop": is_desktop},
+            )
+
+        return build_keyboard_spec(
+            status="fallback",
+            source="hp_fallback",
+            confidence="low",
+            raw_data={"serial": clean_sn, "sku": product_number, "model": model},
+        )

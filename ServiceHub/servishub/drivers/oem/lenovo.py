@@ -20,7 +20,7 @@ import urllib.parse
 from datetime import datetime, date
 from typing import Any, Dict, Optional, List
 
-from servishub.drivers.oem.base import BaseOEMProvider
+from servishub.drivers.oem.base import BaseOEMProvider, build_keyboard_spec, make_keyboard_layout_name
 
 try:
     from servishub.drivers.version import parse_driver_date
@@ -117,6 +117,8 @@ class LenovoOEMProvider(BaseOEMProvider):
             os.makedirs(self.base_cache_dir, exist_ok=True)
             self.warranty_cache_dir = os.path.join(self.base_cache_dir, "warranty")
             os.makedirs(self.warranty_cache_dir, exist_ok=True)
+            self.keyboard_cache_dir = os.path.join(self.base_cache_dir, "keyboard")
+            os.makedirs(self.keyboard_cache_dir, exist_ok=True)
 
     # =========================================================================
     # Pomoćne metode za normalizaciju i parsiranje
@@ -572,3 +574,260 @@ class LenovoOEMProvider(BaseOEMProvider):
         except Exception:
             pass
         return None
+
+    # =========================================================================
+    # 4. Prepoznavanje fizičkog rasporeda tastature (lookup_keyboard_spec)
+    # =========================================================================
+
+    _ISO_CODES = (
+        "GR", "GER", "DE", "UK", "GB", "FR", "FRE", "CH", "SWI", "ND", "NORD",
+        "SRB", "SLV", "CRO", "HR", "SI", "EUR", "ISO", "SPA", "ES", "IT", "ITA",
+        "BE", "BEL", "TR", "TUR", "CZ", "CZE", "SK", "SLK", "HU", "HUN", "PL",
+        "POL", "ADR", "ADRIATIC", "NO", "SE", "DK", "FI", "NL", "PT", "BR", "LA",
+    )
+
+    @classmethod
+    def _parse_lenovo_keyboard_description(cls, desc: str) -> Dict[str, Any]:
+        """
+        Parsira Lenovo FRU / opis tastature (npr. 'CS20-84US', 'CS20-85GR',
+        'CS21-101US', 'CS21-102SRB', 'KYB BL SRB 85 KEY') u fizičke osobine.
+        """
+        text = (desc or "").upper()
+        has_copilot = "COPILOT" in text
+
+        # Traži obrazac broja tastera + opcionalni region (npr. 84US, 85GR, 102SRB, 105-ISO)
+        has_numpad = None  # type: Optional[bool]
+        is_iso = None      # type: Optional[bool]
+
+        m_fru = re.search(r'(?:^|[^0-9])(79|80|82|83|84|85|86|99|100|101|102|103|104|105)\s*[-_]?\s*([A-Z]{2,8})?\b', text)
+        key_count = int(m_fru.group(1)) if m_fru else None
+        region_tok = (m_fru.group(2) or "") if m_fru else ""
+
+        if key_count is not None:
+            has_numpad = key_count >= 95
+            if key_count in (85, 86, 102, 103, 105):
+                is_iso = True
+            elif key_count in (83, 84, 100, 101, 104) and region_tok == "US":
+                is_iso = False
+
+        # Eksplicitne oznake za numerički blok u tekstu
+        if has_numpad is None:
+            if any(tok in text for tok in ("WITH NUMPAD", "WITH NUMERIC", "FULL SIZE", "FULLSIZE")):
+                has_numpad = True
+            elif any(tok in text for tok in ("WITHOUT NUMPAD", "NO NUMPAD", "TKL", "84 KEY", "85 KEY")):
+                has_numpad = False
+
+        # Eksplicitne regionalne / ISO / ANSI oznake
+        tokens = set(re.findall(r'[A-Z0-9]+', text))
+        if is_iso is None:
+            if region_tok in cls._ISO_CODES or (tokens & set(cls._ISO_CODES)) or "ISO" in text or "GERMAN" in text or "SERBIAN" in text or "CROATIAN" in text or "SLOVENIAN" in text or "UK ENGLISH" in text or "ADRIATIC" in text:
+                is_iso = True
+            elif region_tok == "US" or "US ENGLISH" in text or "ANSI" in text or re.search(r'\bEN[-_]?US\b', text):
+                is_iso = False
+
+        return {
+            "has_numpad": has_numpad,
+            "is_iso": is_iso,
+            "has_copilot": has_copilot,
+            "key_count": key_count,
+        }
+
+    @classmethod
+    def _extract_lenovo_keyboard_part(cls, data: Any) -> Optional[str]:
+        """Izvlači opis tastature iz Lenovo Parts API JSON odgovora."""
+        candidates = []
+
+        def _walk(node: Any):
+            if isinstance(node, dict):
+                cat = str(node.get("category", node.get("commodity", node.get("partCategory", "")))).upper()
+                desc = str(node.get("description", node.get("partDesc", node.get("name", node.get("title", "")))))
+                merged = f"{cat} {desc}".upper()
+                if any(tag in merged for tag in ("KEYBOARD", "KEYBOARDS INTERNAL", "KYB", "CS20-", "CS21-", "CS22-", "CS23-", "CS24-")):
+                    # Izbegavamo eksterne USB tastature ako tražimo ugrađenu
+                    if "EXTERNAL" not in merged and "DOCK" not in merged and desc.strip():
+                        candidates.append(desc.strip())
+                for v in node.values():
+                    if isinstance(v, (dict, list)):
+                        _walk(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _walk(item)
+
+        _walk(data)
+        if not candidates:
+            return None
+        # Prioritet opisu koji sadrži broj tastera (84/85/101/102...)
+        for cand in candidates:
+            if re.search(r'(?:79|80|82|83|84|85|86|99|100|101|102|103|104|105)', cand):
+                return cand
+        return candidates[0]
+
+    @classmethod
+    def _infer_lenovo_series_layout(cls, model: str, product_number: str = "") -> Dict[str, Any]:
+        """Offline katalog Lenovo serija za određivanje numpada i desktop vs laptop šasije."""
+        combined = f"{model} {product_number}".upper()
+        is_desktop = any(k in combined for k in ("THINKCENTRE", "THINKSTATION", "IDEACENTRE", "M70", "M75", "M80", "M90", "P330", "P340", "P350", "P360", "P520", "P620"))
+        is_thinkpad = "THINKPAD" in combined
+        has_numpad = None  # type: Optional[bool]
+
+        if is_desktop:
+            has_numpad = True
+        elif any(k in combined for k in (
+            "T15", "T16", "T580", "T590", "L15", "L16", "L580", "L590",
+            "E15", "E16", "E580", "E590", "P15", "P16", "P17", "P52", "P53", "P73",
+            "Z16", "IDEAPAD 3 15", "IDEAPAD 5 15", "IDEAPAD 1 15", "IDEAPAD 15",
+            "LEGION 5", "LEGION 7", "LEGION PRO", "LOQ 15", "LOQ 16", "V15", "V17",
+        )):
+            has_numpad = True
+        elif any(k in combined for k in (
+            "X1 ", "X1C", "X13", "X12", "X280", "X380", "X390", "T14", "T480", "T490",
+            "T495", "L13", "L14", "L380", "L390", "L480", "L490", "E14", "E480",
+            "E490", "P14", "Z13", "YOGA 7 14", "YOGA 9 14", "YOGA SLIM", "IDEAPAD 5 14",
+            "IDEAPAD 3 14", "V14",
+        )):
+            has_numpad = False
+
+        # MTM provera za poznate TKL/Numpad mašine
+        mtm = cls._normalize_mtm(product_number or model)
+        if has_numpad is None and mtm in ("20UD", "20W0", "21E3", "20TD", "20S0", "20N2", "20LH"):
+            has_numpad = False
+            is_thinkpad = True
+
+        if has_numpad is None and not is_desktop:
+            return {"matched": False, "is_desktop": False, "has_numpad": None, "is_iso": None, "is_thinkpad": is_thinkpad}
+
+        return {
+            "matched": True,
+            "is_desktop": is_desktop,
+            "has_numpad": has_numpad,
+            "is_iso": None,
+            "is_thinkpad": is_thinkpad,
+        }
+
+    def lookup_keyboard_spec(
+        self,
+        serial: str = "",
+        model: str = "",
+        product_number: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Određuje fizički raspored tastature za Lenovo uređaje:
+        1) Disk keš, 2) Lenovo Parts API po S/N + MTM (timeout <= 5s), 3) Katalog serija.
+        """
+        clean_sn = self._normalize_serial(serial)
+        clean_mtm = self._normalize_mtm(product_number or model)
+        cache_key = f"{clean_sn}_{clean_mtm}".strip("_") or re.sub(r'[^A-Z0-9_-]', '_', (model or "").upper()).strip("_")
+        is_thinkpad_hint = "THINKPAD" in f"{model} {product_number}".upper()
+
+        if cache_key:
+            cache_file = os.path.join(self.keyboard_cache_dir, f"{cache_key}.json")
+            with self.lock:
+                if os.path.isfile(cache_file):
+                    try:
+                        with open(cache_file, "r", encoding="utf-8") as f:
+                            cached = json.load(f)
+                        if cached.get("status") == "ok":
+                            if is_thinkpad_hint and isinstance(cached.get("base_layout"), str):
+                                bl = cached["base_layout"]
+                                if bl.startswith("laptop-tkl-"):
+                                    cached["base_layout"] = "thinkpad-tkl-" + ("iso" if bl.endswith("-iso") else "ansi")
+                                elif bl.startswith("laptop-numpad-"):
+                                    cached["base_layout"] = "thinkpad-numpad-" + ("iso" if bl.endswith("-iso") else "ansi")
+                                cached.setdefault("raw_data", {})["is_thinkpad"] = True
+                            return cached
+                    except Exception:
+                        pass
+        else:
+            cache_file = ""
+
+        # Mrežni upit ka Lenovo Parts API-ju ako imamo S/N ili validan MTM
+        if clean_sn and not clean_sn.startswith("NEPOZNAT"):
+            candidate_urls = [
+                f"https://pcsupport.lenovo.com/api/v4/upsell/redport/getParts?serialNumber={urllib.parse.quote(clean_sn)}"
+                + (f"&productId={urllib.parse.quote(clean_mtm)}" if clean_mtm and clean_mtm != "GENERIC" else ""),
+            ]
+            if clean_mtm and clean_mtm != "GENERIC":
+                candidate_urls.append(
+                    f"https://pcsupport.lenovo.com/api/v4/upsell/redport/getProductParts?productId={urllib.parse.quote(clean_mtm)}"
+                )
+
+            for api_url in candidate_urls:
+                req = urllib.request.Request(
+                    api_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ServisHub-LenovoOEM/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        if resp.status == 200:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            part_desc = self._extract_lenovo_keyboard_part(data)
+                            if part_desc:
+                                parsed = self._parse_lenovo_keyboard_description(part_desc)
+                                series = self._infer_lenovo_series_layout(model, product_number)
+                                has_numpad = parsed["has_numpad"] if parsed["has_numpad"] is not None else series.get("has_numpad")
+                                is_iso = parsed["is_iso"]
+                                is_desktop = bool(series.get("is_desktop", False))
+                                is_thinkpad = bool(series.get("is_thinkpad", False) or is_thinkpad_hint)
+                                base_layout = None
+                                if has_numpad is not None and is_iso is not None:
+                                    base_layout = make_keyboard_layout_name(has_numpad, is_iso, is_desktop, is_thinkpad=is_thinkpad)
+                                elif has_numpad is not None:
+                                    base_layout = make_keyboard_layout_name(has_numpad, False, is_desktop, is_thinkpad=is_thinkpad)
+
+                                res = build_keyboard_spec(
+                                    status="ok",
+                                    source="lenovo_parts_api",
+                                    confidence="high" if (has_numpad is not None and is_iso is not None) else "medium",
+                                    base_layout=base_layout,
+                                    has_numpad=has_numpad,
+                                    is_iso=is_iso,
+                                    has_copilot=parsed["has_copilot"],
+                                    oem_part_description=part_desc,
+                                    raw_data={
+                                        "serial": clean_sn,
+                                        "mtm": clean_mtm,
+                                        "model": model,
+                                        "is_thinkpad": is_thinkpad,
+                                    },
+                                )
+                                if cache_file:
+                                    with self.lock:
+                                        tmp_file = cache_file + ".tmp"
+                                        with open(tmp_file, "w", encoding="utf-8") as f:
+                                            json.dump(res, f, indent=2, ensure_ascii=False)
+                                        os.replace(tmp_file, cache_file)
+                                return res
+                except Exception:
+                    pass
+
+        # Fallback: katalog Lenovo serija (numpad / desktop / thinkpad)
+        series = self._infer_lenovo_series_layout(model, product_number)
+        if series.get("matched"):
+            has_numpad = bool(series["has_numpad"])
+            is_desktop = bool(series["is_desktop"])
+            is_thinkpad = bool(series.get("is_thinkpad", False) or is_thinkpad_hint)
+            return build_keyboard_spec(
+                status="ok",
+                source="lenovo_series_catalog",
+                confidence="medium",
+                base_layout=make_keyboard_layout_name(has_numpad, False, is_desktop, is_thinkpad=is_thinkpad) if is_desktop else None,
+                has_numpad=has_numpad,
+                is_iso=series.get("is_iso"),
+                raw_data={
+                    "serial": clean_sn,
+                    "mtm": clean_mtm,
+                    "model": model,
+                    "is_desktop": is_desktop,
+                    "is_thinkpad": is_thinkpad,
+                },
+            )
+
+        return build_keyboard_spec(
+            status="fallback",
+            source="lenovo_fallback",
+            confidence="low",
+            raw_data={"serial": clean_sn, "mtm": clean_mtm, "model": model},
+        )

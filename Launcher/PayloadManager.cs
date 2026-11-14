@@ -33,8 +33,8 @@ namespace WIS.Launcher
 
     public static class PayloadManager
     {
-        public const string LauncherVersion = "WIS Launcher v2.2.17";
-        public const string CurrentLauncherSemVer = "2.2.17";
+        public const string LauncherVersion = "WIS Launcher v3.0.0";
+        public const string CurrentLauncherSemVer = "3.0.0";
         public const string UpdateMutexName = @"Global\WIS_Launcher_Update_Mutex";
 
         // Ugrađeni RSA-2048 javni ključ za verifikaciju potpisa manifesta (Root of Trust)

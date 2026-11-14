@@ -102,7 +102,23 @@ if ($wifiIni) {
                     $connMsg = ($connOut -join " ").Trim()
                     $connLvl = if ($connExit -eq 0) { "SUCCESS" } else { "WARN" }
                     Write-PreOobeLog "Rezultat netsh wlan connect za '$s' (ExitCode=$connExit): $connMsg" $connLvl
-                    Start-Sleep -Seconds 2
+
+                    $gotValidIp = $false
+                    for ($waitSec = 1; $waitSec -le 8; $waitSec++) {
+                        Start-Sleep -Seconds 1
+                        try {
+                            $validIp = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                                $_.InterfaceAlias -notmatch 'Loopback|vEthernet' -and
+                                $_.IPAddress -notmatch '^(127\.|169\.254\.)'
+                            } | Select-Object -First 1
+                            if ($validIp -and $validIp.IPAddress) {
+                                $gotValidIp = $true
+                                Write-PreOobeLog "Wi-Fi '$s' dobio validnu IPv4 adresu ($($validIp.IPAddress)) za ${waitSec}s." "SUCCESS"
+                                break
+                            }
+                        } catch {}
+                    }
+                    if ($gotValidIp) { break }
                 } else {
                     Write-PreOobeLog "Greska pri uvozu WLAN profila za '$s' (ExitCode=$addExit): $addMsg" "WARN"
                 }
@@ -111,4 +127,18 @@ if ($wifiIni) {
     } catch {
         Write-PreOobeLog "Izuzetak u PreOOBE-Network.ps1: $($_.Exception.Message)" "WARN"
     }
+}
+
+# Pokretanje TPM/ZTD servisa i Autopilot taska u pozadini pre ulaska u oobeSystem
+try {
+    foreach ($svcName in @('tbs', 'wlidsvc', 'dmwappushservice')) {
+        try {
+            & sc.exe config $svcName start= demand >$null 2>&1
+            Start-Service -Name $svcName -ErrorAction SilentlyContinue
+        } catch {}
+    }
+    Start-Process -FilePath "schtasks.exe" -ArgumentList '/run /tn "\Microsoft\Windows\Management\Provisioning\Autopilot"' -WindowStyle Hidden -ErrorAction SilentlyContinue
+    Write-PreOobeLog "Pokrenuti servisi (tbs, wlidsvc, dmwappushservice) i Autopilot provisioning task u Pre-OOBE fazi." "INFO"
+} catch {
+    Write-PreOobeLog "Napomena pri pokretanju Pre-OOBE Autopilot servisa: $($_.Exception.Message)" "WARN"
 }

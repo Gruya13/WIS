@@ -49,6 +49,8 @@ class UpdatePackageItem(BaseModel):
     modified_at: str = Field(..., description="Vreme poslednje izmene u ISO formatu")
     modified_timestamp: float = Field(..., description="Unix timestamp izmene datoteke")
     path: Optional[str] = Field(None, description="Puna ili relativna putanja do datoteke na serveru")
+    os_build: Optional[str] = Field(None, description="Ciljni Windows 11 build broj (npr. '26100', '22631') ako je specifičan")
+    sha256: Optional[str] = Field(None, description="SHA-256 checksum datoteke u skladištu")
 
     def to_dict(self):
         return self.model_dump() if hasattr(self, "model_dump") else self.__dict__

@@ -30,7 +30,10 @@ class VersionSourceTests(unittest.TestCase):
         data = json.loads((self.root / 'UI/version.json').read_text())
         self.assertEqual(data['version'], '2.1.1'); self.assertEqual(data['wis_release_version'], expected_release)
     def test_incompatible_minimum_rejected(self):
-        self.change(lambda d: d['compatibility'].update(min_launcher_version='2.2.18'))
+        current_launcher = json.loads((self.root / 'version.json').read_text())['components']['launcher']['version']
+        parts = [int(x) for x in current_launcher.split('.')]
+        too_high = f"{parts[0]}.{parts[1]}.{parts[2] + 1}"
+        self.change(lambda d: d['compatibility'].update(min_launcher_version=too_high))
         with self.assertRaises(ValueError): versions.sync_versions(self.root)
     def test_wrong_embedded_launcher_rejected(self):
         self.change(lambda d: d['components']['iso'].update(embedded_launcher_version='2.2.16'))

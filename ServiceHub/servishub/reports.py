@@ -168,6 +168,42 @@ def generate_markdown_report(report_data: dict) -> str:
             f"- **Period:** {start_date} do {end_date} (Preostalo: {days_remaining} dana)",
         ])
 
+    # Hardversko testiranje (WIS.HwTest)
+    hwtest = report_data.get("hwtest")
+    if hwtest and isinstance(hwtest, dict):
+        summary = hwtest.get("summary", {})
+        overall = summary.get("overall", "UNKNOWN")
+        passed = summary.get("pass", 0)
+        failed = summary.get("fail", 0)
+        skipped = summary.get("skip", 0)
+        na = summary.get("na", 0)
+
+        badge = "✅ PASS" if overall in ("PASS", "PASS_WITH_SKIP") else ("❌ FAIL" if overall == "FAIL" else f"⚪ {overall}")
+        lines.extend([
+            "",
+            "---",
+            "",
+            "## 🧪 Ručno Hardversko Testiranje (WIS-HwTest)",
+            "",
+            f"- **Ukupan Ishod:** {badge}",
+            f"- **Rezime:** {passed} prošlo, {failed} palo, {skipped} preskočeno, {na} neprimenljivo",
+            "",
+            "| Test | Ishod | Trajanje | Pokušaji | Detalji / Razlog |",
+            "|---|---|---|---|---|"
+        ])
+        for t in hwtest.get("tests", []):
+            tid = t.get("id", "nepoznato")
+            tst = t.get("status", "N/A")
+            ticon = "✅ PASS" if tst == "PASS" else ("❌ FAIL" if tst == "FAIL" else ("⏭️ SKIP" if tst == "SKIP" else "⚪ N/A"))
+            tdur = f"{t.get('duration_s', 0)}s"
+            tatt = str(t.get("attempts", 1))
+            treason = t.get("reason", "")
+            if not treason:
+                det = t.get("details", {})
+                if isinstance(det, dict) and det:
+                    treason = ", ".join(f"{k}: {v}" for k, v in det.items() if v)
+            lines.append(f"| `{tid}` | {ticon} | {tdur} | {tatt} | {treason or '—'} |")
+
     lines.extend([
         "",
         "---",

@@ -169,7 +169,7 @@ class MsUpdateCatalogScraper:
 
         links = re.findall(r'downloadInformation\[\d+\]\.files\[\d+\]\.url\s*=\s*[\'\"]([^\'\"]+)[\'\"]', dlg_html)
         if not links:
-            links = re.findall(r'https?://[^\s\'\"<>]+\.cab', dlg_html, re.IGNORECASE)
+            links = re.findall(r'https?://[^\s\'\"<>]+\.(?:msu|cab)', dlg_html, re.IGNORECASE)
 
         unique_links = []
         for l in links:

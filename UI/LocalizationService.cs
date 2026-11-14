@@ -287,7 +287,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v2.18.0 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v3.0.0 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -303,6 +303,7 @@ namespace WIS.UI
             _srDict["TabApps"] = "📦 Programi";
             _srDict["TabLogs"] = "📜 Dnevnik rada";
             _srDict["TabAutopilot"] = "🛡️ Autopilot";
+            _srDict["TabHwTest"] = "🧪 Hardverski testovi";
 
             // Dugmad i kontrole
             _srDict["BtnStartService"] = "▶ ZAPOČNI INSTALACIJU";
@@ -316,9 +317,29 @@ namespace WIS.UI
             _srDict["BtnCancelStressTest"] = "⏹ Prekini test";
             _srDict["BtnCleanAndShutdown"] = "🔴 OČISTI I UGASI RAČUNAR";
             _srDict["BtnCompletionSummary"] = "📋 Završni karton";
+            _srDict["BtnPrintLabel"] = "🖨 Štampaj nalepnicu";
+            _srDict["LabelNoTarget"] = "Izaberite štampač.";
+            _srDict["LabelNoPrinterHint"] = "USB štampač nije pronađen. Proverite kabl i da je štampač uključen, pa kliknite „Osveži“. Ako se ni tada ne pojavi, štampač je verovatno u USB „Vendor Class“ režimu — prebacite ga u „Printer Class“ ili instalirajte Star TSP700II drajver.";
+            _srDict["LabelStarNotFoundHint"] = "Star TSP700II nije prepoznat. Proverite da li je izabran pravi štampač.";
+            _srDict["LabelSearching"] = "Tražim USB štampač...";
+            _srDict["LabelEmulation"] = "Emulacija štampača";
+            _srDict["LabelPrinterTarget"] = "Štampač";
+            _srDict["TooltipPrintLabel"] = "Štampa nalepnice sa specifikacijom uređaja na USB štampaču Star TSP700II";
+            _srDict["LabelWindowTitle"] = "Štampa nalepnice sa specifikacijom";
+            _srDict["LabelWindowHeader"] = "🖨 Nalepnica (Star TSP700II, 80 mm)";
+            _srDict["LabelCopies"] = "Broj kopija";
+            _srDict["BtnPrintLabelNow"] = "🖨 Štampaj";
+            _srDict["BtnRefreshLabel"] = "↻ Osveži";
+            _srDict["BtnCloseLabel"] = "Zatvori";
+            _srDict["LabelSending"] = "Šaljem na {0}...";
+            _srDict["LabelPrinted"] = "Poslato na {0} (kopija: {1}).";
+            _srDict["LabelRenderError"] = "Greška pri pripremi nalepnice: ";
             _srDict["BtnExitWithoutClean"] = "✕ Izađi bez čišćenja";
             _srDict["BtnStayInApp"] = "📋 OSTANI U PROGRAMU";
             _srDict["TooltipStayInApp"] = "Zatvara ovaj prozor i omogućava detaljan pregled tabova, hardvera i logova. Dugme za gašenje i čišćenje ostaje u donjoj traci.";
+            _srDict["BtnRunHwTest"] = "🔧 Hardverski test";
+            _srDict["TooltipRunHwTest"] = "Ručno ispitivanje kamere (QR+IR), zvuka, tastature, touchpada, touchscreen-a i USB portova";
+            _srDict["HwTestFinished"] = "Hardverski test završen: {0} ({1})";
 
             // Jezičke oznake
             _srDict["LangSrb"] = "🇷🇸 SRB";
@@ -348,8 +369,8 @@ namespace WIS.UI
             _srDict["Phase3Subtitle"] = "Debloat i brendiranje";
             _srDict["Phase4Title"] = "4. Programi";
             _srDict["Phase4Subtitle"] = "Paketi i OEM licenca";
-            _srDict["Phase5Title"] = "5. Stres";
-            _srDict["Phase5Subtitle"] = "Stabilnost (30s)";
+            _srDict["Phase5Title"] = "5. Hardverski test";
+            _srDict["Phase5Subtitle"] = "Stres + Periferije";
             _srDict["Phase6Title"] = "6. Završetak";
             _srDict["Phase6Subtitle"] = "Dijagnostika i rezime";
             _srDict["PhaseStatusPending"] = "Na čekanju";
@@ -746,7 +767,7 @@ namespace WIS.UI
             // ==========================================
             // ENGLESKI JEZIK (EN - English)
             // ==========================================
-            _enDict["AppTitle"] = "WIS v2.19.0 - Windows Installation Assistant";
+            _enDict["AppTitle"] = "WIS v3.0.0 - Windows Installation Assistant";
             _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
             _enDict["WorkTimeTitle"] = "Elapsed Time";
             _enDict["CpuLabel"] = "⚙ CPU:";
@@ -761,6 +782,7 @@ namespace WIS.UI
             _enDict["TabApps"] = "📦 Applications";
             _enDict["TabLogs"] = "📜 System Log";
             _enDict["TabAutopilot"] = "🛡️ Autopilot";
+            _enDict["TabHwTest"] = "🧪 Hardware Tests";
 
             _enDict["BtnStartService"] = "▶ Start Automated Service";
             _enDict["BtnPause"] = "⏸ Pause";
@@ -830,7 +852,7 @@ namespace WIS.UI
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v2.18.0 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v3.0.0 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";
@@ -846,6 +868,7 @@ namespace WIS.UI
             _zhDict["TabApps"] = "📦 常用软件";
             _zhDict["TabLogs"] = "📜 运行日志";
             _zhDict["TabAutopilot"] = "🛡️ 自动巡检";
+            _zhDict["TabHwTest"] = "🧪 硬件测试";
 
             // Dugmad i kontrole
             _zhDict["BtnStartService"] = "▶ 开始自动化安装";
@@ -859,9 +882,29 @@ namespace WIS.UI
             _zhDict["BtnCancelStressTest"] = "⏹ 终止测试";
             _zhDict["BtnCleanAndShutdown"] = "🔴 清理并安全关机";
             _zhDict["BtnCompletionSummary"] = "📋 查看维修服务卡";
+            _zhDict["BtnPrintLabel"] = "🖨 打印标签";
+            _zhDict["LabelNoTarget"] = "请选择打印机。";
+            _zhDict["LabelNoPrinterHint"] = "未找到 USB 打印机。请检查数据线并确认打印机已开机，然后点击“刷新”。如果仍未出现，打印机可能处于 USB “Vendor Class” 模式 — 请切换到 “Printer Class” 或安装 Star TSP700II 驱动程序。";
+            _zhDict["LabelStarNotFoundHint"] = "未识别到 Star TSP700II。请确认选择了正确的打印机。";
+            _zhDict["LabelSearching"] = "正在查找 USB 打印机...";
+            _zhDict["LabelEmulation"] = "打印机仿真模式";
+            _zhDict["LabelPrinterTarget"] = "打印机";
+            _zhDict["TooltipPrintLabel"] = "在 USB Star TSP700II 打印机上打印设备规格标签";
+            _zhDict["LabelWindowTitle"] = "打印设备规格标签";
+            _zhDict["LabelWindowHeader"] = "🖨 标签 (Star TSP700II, 80 毫米)";
+            _zhDict["LabelCopies"] = "份数";
+            _zhDict["BtnPrintLabelNow"] = "🖨 打印";
+            _zhDict["BtnRefreshLabel"] = "↻ 刷新";
+            _zhDict["BtnCloseLabel"] = "关闭";
+            _zhDict["LabelSending"] = "正在发送到 {0}...";
+            _zhDict["LabelPrinted"] = "已发送到 {0} (份数: {1})。";
+            _zhDict["LabelRenderError"] = "准备标签时出错: ";
             _zhDict["BtnExitWithoutClean"] = "✕ 退出 (不清理)";
             _zhDict["BtnStayInApp"] = "📋 留在程序主界面";
             _zhDict["TooltipStayInApp"] = "关闭此结算窗口，允许仔细查看各项选项卡、硬件信息与日志。关机与清理按钮将保留在底部操作栏。";
+            _zhDict["BtnRunHwTest"] = "🔧 硬件测试";
+            _zhDict["TooltipRunHwTest"] = "手动测试摄像头 (QR+IR)、扬声器、键盘、触摸板、触摸屏及 USB 接口";
+            _zhDict["HwTestFinished"] = "硬件测试完成: {0} ({1})";
 
             // Jezičke oznake
             _zhDict["LangSrb"] = "🇷🇸 SRB";
@@ -891,8 +934,8 @@ namespace WIS.UI
             _zhDict["Phase3Subtitle"] = "精简与个性化";
             _zhDict["Phase4Title"] = "4. 软件安装";
             _zhDict["Phase4Subtitle"] = "软件包与 OEM 授权";
-            _zhDict["Phase5Title"] = "5. 压力测试";
-            _zhDict["Phase5Subtitle"] = "稳定性验证 (30秒)";
+            _zhDict["Phase5Title"] = "5. 硬件测试";
+            _zhDict["Phase5Subtitle"] = "压力与外设";
             _zhDict["Phase6Title"] = "6. 完成交付";
             _zhDict["Phase6Subtitle"] = "诊断与总览";
             _zhDict["PhaseStatusPending"] = "等待中";

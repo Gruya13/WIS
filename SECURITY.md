@@ -4,7 +4,8 @@
 
 | Verzija | Podržana |
 | ------- | -------- |
-| 2.17.x  | :white_check_mark: |
+| 3.0.x   | :white_check_mark: |
+| 2.17.x–2.19.x | :warning: (nasleđeno, nadogradnja na 3.0.0) |
 | < 2.17  | :x: |
 
 ## Bezbednosni Principi WIS Ekosistema

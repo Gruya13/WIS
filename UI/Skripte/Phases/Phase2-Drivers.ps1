@@ -69,30 +69,10 @@ try {
     exit 1
 }
 
-# 3. Glavno orkestrirano izvrsenje Faze 2
+# 3. Glavno orkestrirano izvrsenje Faze 2 (P2.Diag unutar Invoke-Phase2Drivers pokrece Resolve-MissingDriversFromHub nakon NAS/VMD/PnP)
 try {
     Send-IpcProgress -Progress 5 -Phase 2 -PhaseName "Drajveri" -SubPhase "Inicijalizacija" -StatusMessage "Skeniranje hardverskih komponenti i drajvera..."
-
-    # 3a. ServisHub OEM Driver Resolution (Faza 2A)
-    $shouldSkipWU = $SkipWindowsUpdate
-    if (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 10 -Phase 2 -PhaseName "Drajveri" -SubPhase "ServisHub OEM Drajveri" -StatusMessage "Provera i instalacija zvaničnih OEM drajvera preko ServisHub-a..."
-        $hubResult = Resolve-MissingDriversFromHub
-        if ($hubResult) {
-            if ($hubResult.TotalProblematic -gt 0 -and $hubResult.AllResolved -eq $true) {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Svi problematični uređaji ($($hubResult.ResolvedCount)/$($hubResult.TotalProblematic)) su rešeni preko ServisHub-a. Preskačem Windows Update pretragu." -Level "SUCCESS" -Component "Phase2"
-                }
-                $shouldSkipWU = $true
-            } elseif ($hubResult.NotFoundCount -gt 0 -or $hubResult.ErrorCount -gt 0) {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Preostalo je $($hubResult.NotFoundCount + $hubResult.ErrorCount) nerešenih uređaja na ServisHub-u. Nastavljam sa selektivnim Windows Update-om." -Level "INFO" -Component "Phase2"
-                }
-            }
-        }
-    }
-
-    Invoke-Phase2Drivers -LocalSetupDir $LocalSetupDir -SkipWindowsUpdate:$shouldSkipWU
+    Invoke-Phase2Drivers -LocalSetupDir $LocalSetupDir -SkipWindowsUpdate:$SkipWindowsUpdate
     exit 0
 } catch {
     $err = $_

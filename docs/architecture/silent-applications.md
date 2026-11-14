@@ -13,9 +13,9 @@ tags:
   - stepguard
 ---
 
-# Tihe Instalacije Aplikacija, SMB 3.1.1 Stream i Licenciranje: WIS (v2.19.0)
+# Tihe Instalacije Aplikacija, SMB 3.1.1 Stream i Licenciranje: WIS (v3.0.0)
 
-U Fazi 4 (`Phase4-Apps.ps1` i `WIS.Apps.psm1`, **4,157 linija**, `232,223 B`) celokupan paket od **8 standardnih servisnih aplikacija i alata** izvršava se kroz **9 idempotentnih `StepGuard` koraka** (`P4.Runtimes..P4.Activation` u `step-journal.json`) u 100% tihom (*unattended*) režimu, uz direktni gigabitni SMB 3.1.1 striming sa TrueNAS deljenja `\\192.168.170.254\Programi`, sekvencijalnu zaštitu Windows Installer servisa (`WIS.Core.psm1`) i fizičku proveru prisustva izvršnih fajlova i prečica ([[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
+U Fazi 4 (`Phase4-Apps.ps1` i `WIS.Apps.psm1`) celokupan paket od **8 standardnih servisnih aplikacija i alata** izvršava se kroz **9 idempotentnih `StepGuard` koraka** (`P4.Runtimes..P4.Activation` u `step-journal.json`) u 100% tihom (*unattended*) režimu, uz direktni gigabitni SMB 3.1.1 striming sa TrueNAS deljenja `\\192.168.170.254\Programi`, sekvencijalnu zaštitu Windows Installer servisa (`WIS.Core.psm1`) i fizičku proveru prisustva izvršnih fajlova i prečica ([[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]], [[decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot]]).
 
 ---
 

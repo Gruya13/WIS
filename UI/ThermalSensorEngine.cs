@@ -1,7 +1,9 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.IO;
 using System.Management;
-using LibreHardwareMonitor.Hardware;
+using System.Reflection;
 
 namespace WIS.UI
 {
@@ -20,12 +22,26 @@ namespace WIS.UI
     /// <summary>
     /// Senzorski telemetrijski motor za praćenje temperature CPU, GPU, MB, SSD, taktova jezgara,
     /// throttling procenta i broja obrtaja ventilatora.
-    /// Koristi LibreHardwareMonitorLib sa automatskim fallback-om na WMI/ACPI mehanizme.
+    /// Koristi LibreHardwareMonitorLib (isključivo refleksijom ako je DLL prisutan na disku)
+    /// sa automatskim fallback-om na čiste WMI/ACPI/PDH mehanizme bez kernel drajvera.
     /// Striktna kompatibilnost sa C# 5.0 (.NET Framework 4.8 / MSBuild 4.0).
     /// </summary>
     public class ThermalSensorEngine : IDisposable
     {
-        private Computer _computer;
+        private object _computer;
+        private MethodInfo _miComputerOpen;
+        private MethodInfo _miComputerClose;
+        private PropertyInfo _piComputerHardware;
+
+        private PropertyInfo _piHwType;
+        private PropertyInfo _piHwSensors;
+        private PropertyInfo _piHwSubHardware;
+        private MethodInfo _miHwUpdate;
+
+        private PropertyInfo _piSensorName;
+        private PropertyInfo _piSensorType;
+        private PropertyInfo _piSensorValue;
+
         private bool _isDisposed = false;
         private readonly object _syncLock = new object();
 
@@ -39,6 +55,7 @@ namespace WIS.UI
         private bool _hasFanData;
         private readonly List<CoreClockSensorInfo> _coreClocks = new List<CoreClockSensorInfo>();
         private float _historicalPeakClockMHz = 0f;
+        private float _baseMaxClockMHz = 0f;
 
         public float CpuTemperature
         {
@@ -143,23 +160,86 @@ namespace WIS.UI
         }
 
         /// <summary>
-        /// Sigurna inicijalizacija LibreHardwareMonitor.Hardware.Computer.
-        /// Ne sme srušiti proces u Core Isolation / HVCI okruženju gde drajver ne može da se učita.
+        /// Sigurna inicijalizacija LibreHardwareMonitor.Hardware.Computer putem refleksije.
+        /// Učitava se isključivo ako je LibreHardwareMonitorLib već učitan ili postoji pored aplikacije,
+        /// čime WIS.HwTest.exe ne sadrži ugrađen WinRing0 drajver koji okida Windows Defender.
         /// </summary>
         private void InitializeLhm()
         {
             try
             {
-                _computer = new Computer
+                Assembly lhmAsm = null;
+                Assembly[] loaded = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < loaded.Length; i++)
                 {
-                    IsCpuEnabled = true,
-                    IsGpuEnabled = true,
-                    IsMotherboardEnabled = true,
-                    IsStorageEnabled = true,
-                    IsControllerEnabled = true
-                };
+                    try
+                    {
+                        if (string.Equals(loaded[i].GetName().Name, "LibreHardwareMonitorLib", StringComparison.OrdinalIgnoreCase))
+                        {
+                            lhmAsm = loaded[i];
+                            break;
+                        }
+                    }
+                    catch { }
+                }
 
-                _computer.Open();
+                if (lhmAsm == null)
+                {
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    if (!string.IsNullOrEmpty(baseDir))
+                    {
+                        string candidatePath = Path.Combine(baseDir, "LibreHardwareMonitorLib.dll");
+                        if (File.Exists(candidatePath))
+                        {
+                            lhmAsm = Assembly.LoadFrom(candidatePath);
+                        }
+                    }
+                }
+
+                if (lhmAsm == null)
+                {
+                    IsLhmActive = false;
+                    return;
+                }
+
+                Type compType = lhmAsm.GetType("LibreHardwareMonitor.Hardware.Computer", false);
+                Type hwType = lhmAsm.GetType("LibreHardwareMonitor.Hardware.IHardware", false);
+                Type sensorType = lhmAsm.GetType("LibreHardwareMonitor.Hardware.ISensor", false);
+                if (compType == null || hwType == null || sensorType == null)
+                {
+                    IsLhmActive = false;
+                    return;
+                }
+
+                object comp = Activator.CreateInstance(compType);
+                SetBoolProperty(compType, comp, "IsCpuEnabled", true);
+                SetBoolProperty(compType, comp, "IsGpuEnabled", true);
+                SetBoolProperty(compType, comp, "IsMotherboardEnabled", true);
+                SetBoolProperty(compType, comp, "IsStorageEnabled", true);
+                SetBoolProperty(compType, comp, "IsControllerEnabled", true);
+
+                _miComputerOpen = compType.GetMethod("Open", Type.EmptyTypes);
+                _miComputerClose = compType.GetMethod("Close", Type.EmptyTypes);
+                _piComputerHardware = compType.GetProperty("Hardware");
+
+                _piHwType = hwType.GetProperty("HardwareType");
+                _piHwSensors = hwType.GetProperty("Sensors");
+                _piHwSubHardware = hwType.GetProperty("SubHardware");
+                _miHwUpdate = hwType.GetMethod("Update", Type.EmptyTypes);
+
+                _piSensorName = sensorType.GetProperty("Name");
+                _piSensorType = sensorType.GetProperty("SensorType");
+                _piSensorValue = sensorType.GetProperty("Value");
+
+                if (_miComputerOpen == null || _piComputerHardware == null || _piHwType == null || _piHwSensors == null ||
+                    _piSensorName == null || _piSensorType == null || _piSensorValue == null)
+                {
+                    IsLhmActive = false;
+                    return;
+                }
+
+                _miComputerOpen.Invoke(comp, null);
+                _computer = comp;
                 IsLhmActive = true;
             }
             catch (Exception)
@@ -169,11 +249,20 @@ namespace WIS.UI
                 {
                     try
                     {
-                        _computer.Close();
+                        if (_miComputerClose != null) _miComputerClose.Invoke(_computer, null);
                     }
                     catch { }
                     _computer = null;
                 }
+            }
+        }
+
+        private static void SetBoolProperty(Type t, object target, string propName, bool val)
+        {
+            PropertyInfo pi = t.GetProperty(propName);
+            if (pi != null && pi.CanWrite)
+            {
+                pi.SetValue(target, val, null);
             }
         }
 
@@ -207,24 +296,25 @@ namespace WIS.UI
         }
 
         /// <summary>
-        /// Očitavanje preko LibreHardwareMonitorLib biblioteke.
+        /// Očitavanje preko LibreHardwareMonitorLib biblioteke (putem refleksije).
         /// </summary>
         private void UpdateFromLhm()
         {
-            List<IHardware> allHardware = new List<IHardware>();
-            if (_computer != null && _computer.Hardware != null)
+            List<object> allHardware = new List<object>();
+            IEnumerable topHw = _piComputerHardware.GetValue(_computer, null) as IEnumerable;
+            if (topHw != null)
             {
-                foreach (IHardware hw in _computer.Hardware)
+                foreach (object hw in topHw)
                 {
                     CollectHardwareRecursive(hw, allHardware);
                 }
             }
 
-            foreach (IHardware hw in allHardware)
+            foreach (object hw in allHardware)
             {
                 try
                 {
-                    hw.Update();
+                    if (_miHwUpdate != null) _miHwUpdate.Invoke(hw, null);
                 }
                 catch { }
             }
@@ -236,8 +326,8 @@ namespace WIS.UI
             float cpuAny = 0f;
             float cpuLoadTotal = 0f;
             float explicitThrottlePercent = -1f;
-            List<ISensor> primaryCoreClockSensors = new List<ISensor>();
-            List<ISensor> effectiveCoreClockSensors = new List<ISensor>();
+            List<object> primaryCoreClockSensors = new List<object>();
+            List<object> effectiveCoreClockSensors = new List<object>();
 
             // Privremene promenljive za GPU
             float gpuCore = 0f;
@@ -256,20 +346,27 @@ namespace WIS.UI
             int maxFan = 0;
             int firstPositiveFan = 0;
 
-            foreach (IHardware hw in allHardware)
+            foreach (object hw in allHardware)
             {
-                // CPU obrada
-                if (hw.HardwareType == HardwareType.Cpu)
-                {
-                    if (hw.Sensors != null)
-                    {
-                        foreach (ISensor sensor in hw.Sensors)
-                        {
-                            string name = sensor.Name != null ? sensor.Name : string.Empty;
+                object hwTypeVal = _piHwType.GetValue(hw, null);
+                string hwTypeName = hwTypeVal != null ? hwTypeVal.ToString() : string.Empty;
+                IEnumerable sensors = _piHwSensors.GetValue(hw, null) as IEnumerable;
 
-                            if (sensor.SensorType == SensorType.Temperature && sensor.Value.HasValue)
+                // CPU obrada
+                if (hwTypeName == "Cpu")
+                {
+                    if (sensors != null)
+                    {
+                        foreach (object sensor in sensors)
+                        {
+                            string name = (_piSensorName.GetValue(sensor, null) as string) ?? string.Empty;
+                            object stVal = _piSensorType.GetValue(sensor, null);
+                            string stName = stVal != null ? stVal.ToString() : string.Empty;
+                            float? sVal = _piSensorValue.GetValue(sensor, null) as float?;
+
+                            if (stName == "Temperature" && sVal.HasValue)
                             {
-                                float val = sensor.Value.Value;
+                                float val = sVal.Value;
                                 if (val > 0.5f && val < 130.0f)
                                 {
                                     if (name.IndexOf("package", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -290,7 +387,7 @@ namespace WIS.UI
                                     if (cpuAny <= 0f) cpuAny = val;
                                 }
                             }
-                            else if (sensor.SensorType == SensorType.Clock && sensor.Value.HasValue)
+                            else if (stName == "Clock" && sVal.HasValue)
                             {
                                 if (name.IndexOf("core", StringComparison.OrdinalIgnoreCase) >= 0 &&
                                     name.IndexOf("bus", StringComparison.OrdinalIgnoreCase) < 0)
@@ -305,21 +402,21 @@ namespace WIS.UI
                                     }
                                 }
                             }
-                            else if (sensor.SensorType == SensorType.Load && sensor.Value.HasValue)
+                            else if (stName == "Load" && sVal.HasValue)
                             {
                                 if (name.IndexOf("total", StringComparison.OrdinalIgnoreCase) >= 0)
                                 {
-                                    cpuLoadTotal = sensor.Value.Value;
+                                    cpuLoadTotal = sVal.Value;
                                 }
                             }
 
                             // Eksplicitni indikator termalnog / energetskog usporenja (throttling) ako postoji
-                            if (sensor.Value.HasValue &&
+                            if (sVal.HasValue &&
                                 (name.IndexOf("throttl", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                  name.IndexOf("prochot", StringComparison.OrdinalIgnoreCase) >= 0))
                             {
                                 if (explicitThrottlePercent < 0f) explicitThrottlePercent = 0f;
-                                float tVal = sensor.Value.Value;
+                                float tVal = sVal.Value;
                                 if (tVal > 0f)
                                 {
                                     float pct = tVal <= 1.0f ? (tVal * 100f) : (tVal > 100f ? 100f : tVal);
@@ -330,19 +427,22 @@ namespace WIS.UI
                     }
                 }
                 // Motherboard i SuperIO obrada
-                else if (hw.HardwareType == HardwareType.Motherboard ||
-                         hw.HardwareType == HardwareType.SuperIO)
+                else if (hwTypeName == "Motherboard" || hwTypeName == "SuperIO")
                 {
-                    if (hw.Sensors != null)
+                    if (sensors != null)
                     {
-                        foreach (ISensor sensor in hw.Sensors)
+                        foreach (object sensor in sensors)
                         {
-                            if (sensor.SensorType == SensorType.Temperature && sensor.Value.HasValue)
+                            object stVal = _piSensorType.GetValue(sensor, null);
+                            string stName = stVal != null ? stVal.ToString() : string.Empty;
+                            float? sVal = _piSensorValue.GetValue(sensor, null) as float?;
+
+                            if (stName == "Temperature" && sVal.HasValue)
                             {
-                                float val = sensor.Value.Value;
+                                float val = sVal.Value;
                                 if (val > 0f && val < 120f)
                                 {
-                                    string name = sensor.Name != null ? sensor.Name : string.Empty;
+                                    string name = (_piSensorName.GetValue(sensor, null) as string) ?? string.Empty;
                                     // Ignorišemo CPU PECI senzore na SuperIO čipu ako tražimo temperaturu matične ploče
                                     bool isCpuMirror = name.IndexOf("cpu", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                                        name.IndexOf("peci", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -373,20 +473,22 @@ namespace WIS.UI
                     }
                 }
                 // GPU obrada
-                else if (hw.HardwareType == HardwareType.GpuNvidia ||
-                         hw.HardwareType == HardwareType.GpuAmd ||
-                         hw.HardwareType == HardwareType.GpuIntel)
+                else if (hwTypeName == "GpuNvidia" || hwTypeName == "GpuAmd" || hwTypeName == "GpuIntel")
                 {
-                    if (hw.Sensors != null)
+                    if (sensors != null)
                     {
-                        foreach (ISensor sensor in hw.Sensors)
+                        foreach (object sensor in sensors)
                         {
-                            if (sensor.SensorType == SensorType.Temperature && sensor.Value.HasValue)
+                            object stVal = _piSensorType.GetValue(sensor, null);
+                            string stName = stVal != null ? stVal.ToString() : string.Empty;
+                            float? sVal = _piSensorValue.GetValue(sensor, null) as float?;
+
+                            if (stName == "Temperature" && sVal.HasValue)
                             {
-                                float val = sensor.Value.Value;
+                                float val = sVal.Value;
                                 if (val > 0f && val < 135f)
                                 {
-                                    string name = sensor.Name != null ? sensor.Name : string.Empty;
+                                    string name = (_piSensorName.GetValue(sensor, null) as string) ?? string.Empty;
                                     if (name.IndexOf("core", StringComparison.OrdinalIgnoreCase) >= 0)
                                     {
                                         if (val > gpuCore) gpuCore = val;
@@ -404,15 +506,19 @@ namespace WIS.UI
                     }
                 }
                 // Storage (SSD / NVMe / HDD) obrada
-                else if (hw.HardwareType == HardwareType.Storage)
+                else if (hwTypeName == "Storage")
                 {
-                    if (hw.Sensors != null)
+                    if (sensors != null)
                     {
-                        foreach (ISensor sensor in hw.Sensors)
+                        foreach (object sensor in sensors)
                         {
-                            if (sensor.SensorType == SensorType.Temperature && sensor.Value.HasValue)
+                            object stVal = _piSensorType.GetValue(sensor, null);
+                            string stName = stVal != null ? stVal.ToString() : string.Empty;
+                            float? sVal = _piSensorValue.GetValue(sensor, null) as float?;
+
+                            if (stName == "Temperature" && sVal.HasValue)
                             {
-                                float val = sensor.Value.Value;
+                                float val = sVal.Value;
                                 if (val > 0f && val < 125f)
                                 {
                                     if (val > ssdMax) ssdMax = val;
@@ -423,16 +529,19 @@ namespace WIS.UI
                 }
 
                 // Ventilatori (Fan senzori mogu biti na matičnoj ploči, GPU-u, kontroleru ili hlađenju)
-                if (hw.Sensors != null)
+                if (sensors != null)
                 {
-                    foreach (ISensor sensor in hw.Sensors)
+                    foreach (object sensor in sensors)
                     {
-                        if (sensor.SensorType == SensorType.Fan)
+                        object stVal = _piSensorType.GetValue(sensor, null);
+                        string stName = stVal != null ? stVal.ToString() : string.Empty;
+                        if (stName == "Fan")
                         {
                             foundFan = true;
-                            if (sensor.Value.HasValue)
+                            float? sVal = _piSensorValue.GetValue(sensor, null) as float?;
+                            if (sVal.HasValue)
                             {
-                                float val = sensor.Value.Value;
+                                float val = sVal.Value;
                                 if (val >= 0f && val < 50000f)
                                 {
                                     int rpm = (int)Math.Round(val);
@@ -537,7 +646,7 @@ namespace WIS.UI
             }
 
             // Obrada taktova procesorskih jezgara (CoreClocks)
-            List<ISensor> selectedClockSensors = primaryCoreClockSensors.Count > 0 ? primaryCoreClockSensors : effectiveCoreClockSensors;
+            List<object> selectedClockSensors = primaryCoreClockSensors.Count > 0 ? primaryCoreClockSensors : effectiveCoreClockSensors;
             float avgCoreClock = 0f;
             int validClockCount = 0;
 
@@ -545,14 +654,16 @@ namespace WIS.UI
             {
                 for (int i = 0; i < selectedClockSensors.Count; i++)
                 {
-                    ISensor clkSensor = selectedClockSensors[i];
-                    if (clkSensor.Value.HasValue)
+                    object clkSensor = selectedClockSensors[i];
+                    float? clkVal = _piSensorValue.GetValue(clkSensor, null) as float?;
+                    if (clkVal.HasValue)
                     {
-                        float mhz = clkSensor.Value.Value;
+                        float mhz = clkVal.Value;
                         if (mhz > 0f && mhz < 12000f)
                         {
                             float roundedMhz = (float)Math.Round(mhz, 0);
-                            string coreLabel = NormalizeCoreSensorName(clkSensor.Name, i + 1);
+                            string rawSensorName = (_piSensorName.GetValue(clkSensor, null) as string) ?? string.Empty;
+                            string coreLabel = NormalizeCoreSensorName(rawSensorName, i + 1);
                             UpdateCoreClockEntry(i, coreLabel, roundedMhz);
 
                             if (roundedMhz > _historicalPeakClockMHz)
@@ -578,7 +689,7 @@ namespace WIS.UI
             }
 
             // Izračunavanje procenta Throttling-a (0% - 100%)
-            ThrottlingPercentage = ComputeThrottlingPercentage(explicitThrottlePercent, CpuTemperature, cpuLoadTotal, avgCoreClock, _historicalPeakClockMHz);
+            ThrottlingPercentage = ComputeThrottlingPercentage(explicitThrottlePercent, CpuTemperature, cpuLoadTotal, avgCoreClock, _historicalPeakClockMHz, EnsureBaseMaxClockMHz());
 
             // Izbor Fan RPM i statusa prisustva
             HasFanData = foundFan;
@@ -690,14 +801,39 @@ namespace WIS.UI
             }
         }
 
+        private float EnsureBaseMaxClockMHz()
+        {
+            if (_baseMaxClockMHz > 500f) return _baseMaxClockMHz;
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT MaxClockSpeed FROM Win32_Processor"))
+                {
+                    using (ManagementObjectCollection coll = searcher.Get())
+                    {
+                        foreach (ManagementObject obj in coll)
+                        {
+                            if (obj["MaxClockSpeed"] != null)
+                            {
+                                float max = Convert.ToSingle(obj["MaxClockSpeed"]);
+                                if (max > _baseMaxClockMHz) _baseMaxClockMHz = max;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return _baseMaxClockMHz;
+        }
+
         /// <summary>
         /// Proračun procenta stvarnog termalnog / energetskog throttling-a (0% - 100%)
-        /// isključivo iz eksplicitnog senzora ili izmerenog pada frekvencije pod opterećenjem.
+        /// isključivo iz eksplicitnog senzora ili izmerenog pada frekvencije ispod baznog takta.
+        /// Normalno spuštanje sa single-core Turbo špica na all-core Turbo takt nije throttling.
         /// </summary>
-        private float ComputeThrottlingPercentage(float explicitSensorPct, float cpuTemp, float cpuLoad, float avgClock, float peakClock)
+        private float ComputeThrottlingPercentage(float explicitSensorPct, float cpuTemp, float cpuLoad, float avgClock, float peakClock, float baseMaxClock)
         {
             bool hasExplicitSensor = (explicitSensorPct >= 0f);
-            bool hasValidClockDropMetric = (peakClock > 500f && avgClock > 0f);
+            bool hasValidClockDropMetric = (baseMaxClock > 500f && avgClock > 0f) || (peakClock > 500f && avgClock > 0f);
             IsThrottlingMetricAvailable = hasExplicitSensor || hasValidClockDropMetric;
 
             if (!IsThrottlingMetricAvailable)
@@ -707,14 +843,20 @@ namespace WIS.UI
 
             float result = hasExplicitSensor ? explicitSensorPct : 0f;
 
-            // Pad frekvencije pod opterećenjem ili visokom temperaturom
-            if ((cpuLoad >= 55f || cpuTemp >= 82f) && peakClock > 500f && avgClock > 0f)
+            // Pad frekvencije merimo u odnosu na nominalni bazni takt (ili peakClock samo ako baza nije poznata i temp >= 82°C).
+            // Ako je prosečni takt >= 90% baznog takta i temperatura < 90°C, procesor radi normalno (all-core boost).
+            bool normalAllCoreRate = (baseMaxClock > 500f && avgClock >= (baseMaxClock * 0.90f) && cpuTemp < 90f);
+            if (!normalAllCoreRate && avgClock > 100f)
             {
-                float ratio = avgClock / peakClock;
-                if (ratio < 0.88f)
+                float refClock = baseMaxClock > 500f ? baseMaxClock : ((cpuLoad >= 55f || cpuTemp >= 82f) ? peakClock : 0f);
+                if (refClock > 500f)
                 {
-                    float clockDropPct = (1.0f - ratio) * 100f;
-                    if (clockDropPct > result) result = clockDropPct;
+                    float ratio = avgClock / refClock;
+                    if (ratio < 0.88f)
+                    {
+                        float clockDropPct = (1.0f - ratio) * 100f;
+                        if (clockDropPct > result) result = clockDropPct;
+                    }
                 }
             }
 
@@ -726,13 +868,14 @@ namespace WIS.UI
         /// <summary>
         /// Rekurzivno sakuplja sve hardverske čvorove (roditelje i podkomponente poput SuperIO).
         /// </summary>
-        private void CollectHardwareRecursive(IHardware hardware, List<IHardware> list)
+        private void CollectHardwareRecursive(object hardware, List<object> list)
         {
             if (hardware == null) return;
             list.Add(hardware);
-            if (hardware.SubHardware != null)
+            IEnumerable subHw = _piHwSubHardware != null ? (_piHwSubHardware.GetValue(hardware, null) as IEnumerable) : null;
+            if (subHw != null)
             {
-                foreach (IHardware sub in hardware.SubHardware)
+                foreach (object sub in subHw)
                 {
                     CollectHardwareRecursive(sub, list);
                 }
@@ -774,7 +917,7 @@ namespace WIS.UI
 
             float avgClock;
             UpdateCoreClocksFromWmiFallback(out avgClock);
-            ThrottlingPercentage = ComputeThrottlingPercentage(-1f, CpuTemperature, 0f, avgClock, _historicalPeakClockMHz);
+            ThrottlingPercentage = ComputeThrottlingPercentage(-1f, CpuTemperature, 0f, avgClock, _historicalPeakClockMHz, _baseMaxClockMHz);
 
             int fanRpm;
             bool hasFan;
@@ -822,6 +965,11 @@ namespace WIS.UI
                 }
             }
             catch { }
+
+            if (baseMaxClock > 500f && baseMaxClock > _baseMaxClockMHz)
+            {
+                _baseMaxClockMHz = baseMaxClock;
+            }
 
             if (baseMaxClock > _historicalPeakClockMHz)
             {
@@ -970,13 +1118,15 @@ namespace WIS.UI
         /// <summary>
         /// Očitavanje temperature procesora preko WMI / ACPI zona.
         /// Primarni: root\wmi:MSAcpi_ThermalZoneTemperature ((CurrentTemperature - 2732.0f) / 10.0f)
-        /// Sekundarni: root\cimv2:Win32_PerfFormattedData_Counters_ThermalZoneInformation
+        /// Sekundarni: root\cimv2:Win32_PerfFormattedData_Counters_ThermalZoneInformation / Win32_PerfRawData_Counters_ThermalZoneInformation
+        /// Tercijarni: root\cimv2:Win32_TemperatureProbe i OEM WMI (Lenovo_SensorData / HP_ThermalSensor)
         /// </summary>
         private float ReadCpuTempWmi()
         {
             // 1. Pokušaj preko root\wmi: MSAcpi_ThermalZoneTemperature
             try
             {
+                float bestAcpi = 0f;
                 using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\wmi", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
@@ -985,56 +1135,40 @@ namespace WIS.UI
                         {
                             if (obj["CurrentTemperature"] != null)
                             {
-                                float raw = Convert.ToSingle(obj["CurrentTemperature"]);
-                                if (raw > 0f)
-                                {
-                                    // Vrednost je u desetinama Kelvina (decikelvins)
-                                    float celsius = (raw - 2732.0f) / 10.0f;
-                                    if (celsius > 0f && celsius < 130f)
-                                    {
-                                        return celsius;
-                                    }
-                                }
+                                float celsius = NormalizeWmiTemperatureValue(Convert.ToSingle(obj["CurrentTemperature"]));
+                                if (celsius > bestAcpi) bestAcpi = celsius;
                             }
                         }
                     }
                 }
+                if (bestAcpi > 0f) return bestAcpi;
             }
             catch { }
 
-            // 2. Fallback preko root\cimv2: Win32_PerfFormattedData_Counters_ThermalZoneInformation
+            // 2. Fallback preko root\cimv2: ThermalZoneInformation (Formatted pa Raw)
+            float tzTemp;
+            if (TryReadWmiThermalZoneClass("Win32_PerfFormattedData_Counters_ThermalZoneInformation", out tzTemp))
+            {
+                return tzTemp;
+            }
+            if (TryReadWmiThermalZoneClass("Win32_PerfRawData_Counters_ThermalZoneInformation", out tzTemp))
+            {
+                return tzTemp;
+            }
+
+            // 3. Dodatni fallback preko root\cimv2: Win32_TemperatureProbe
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation"))
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT CurrentReading FROM Win32_TemperatureProbe"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
                         foreach (ManagementObject obj in coll)
                         {
-                            if (obj["Temperature"] != null)
+                            if (obj["CurrentReading"] != null)
                             {
-                                float raw = Convert.ToSingle(obj["Temperature"]);
-                                if (raw > 0f)
-                                {
-                                    float celsius;
-                                    if (raw > 1000f)
-                                    {
-                                        celsius = (raw - 2732.0f) / 10.0f;
-                                    }
-                                    else if (raw > 200f)
-                                    {
-                                        celsius = raw - 273.15f;
-                                    }
-                                    else
-                                    {
-                                        celsius = raw;
-                                    }
-
-                                    if (celsius > 0f && celsius < 130f)
-                                    {
-                                        return celsius;
-                                    }
-                                }
+                                float celsius = NormalizeWmiTemperatureValue(Convert.ToSingle(obj["CurrentReading"]));
+                                if (celsius > 0f) return celsius;
                             }
                         }
                     }
@@ -1042,7 +1176,108 @@ namespace WIS.UI
             }
             catch { }
 
+            // 4. OEM WMI fallback (Lenovo_SensorData / HP_ThermalSensor u root\WMI)
+            float oemTemp;
+            if (TryReadOemWmiTemp(@"root\wmi", "Lenovo_SensorData", new string[] { "CurrentTemperature", "Temperature", "ThermalData", "Value" }, out oemTemp))
+            {
+                return oemTemp;
+            }
+            if (TryReadOemWmiTemp(@"root\wmi", "HP_ThermalSensor", new string[] { "CurrentReading", "Temperature", "Value" }, out oemTemp))
+            {
+                return oemTemp;
+            }
+
             return 0f;
+        }
+
+        private static float NormalizeWmiTemperatureValue(float raw)
+        {
+            if (raw <= 0f) return 0f;
+            float celsius;
+            if (raw > 2000f)
+            {
+                // Desetinke Kelvina (npr. 3182 = 45.0 C)
+                celsius = (raw - 2732.0f) / 10.0f;
+            }
+            else if (raw > 200f && raw < 450f)
+            {
+                // Kelvini (npr. 318 = 44.85 C)
+                celsius = raw - 273.15f;
+            }
+            else
+            {
+                celsius = raw;
+            }
+            return (celsius > 5f && celsius < 125f) ? celsius : 0f;
+        }
+
+        private static bool TryReadWmiThermalZoneClass(string className, out float bestCelsius)
+        {
+            bestCelsius = 0f;
+            try
+            {
+                string query = "SELECT Temperature, HighPrecisionTemperature FROM " + className;
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", query))
+                {
+                    using (ManagementObjectCollection coll = searcher.Get())
+                    {
+                        foreach (ManagementObject obj in coll)
+                        {
+                            object hpObj = null;
+                            try { hpObj = obj["HighPrecisionTemperature"]; } catch { }
+                            if (hpObj != null)
+                            {
+                                float hpCelsius = NormalizeWmiTemperatureValue(Convert.ToSingle(hpObj));
+                                if (hpCelsius > bestCelsius) bestCelsius = hpCelsius;
+                            }
+
+                            object tempObj = null;
+                            try { tempObj = obj["Temperature"]; } catch { }
+                            if (tempObj != null)
+                            {
+                                float tCelsius = NormalizeWmiTemperatureValue(Convert.ToSingle(tempObj));
+                                if (tCelsius > bestCelsius) bestCelsius = tCelsius;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return bestCelsius > 0f;
+        }
+
+        private static bool TryReadOemWmiTemp(string scopePath, string className, string[] candidateProps, out float bestCelsius)
+        {
+            bestCelsius = 0f;
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(scopePath, "SELECT * FROM " + className))
+                {
+                    using (ManagementObjectCollection coll = searcher.Get())
+                    {
+                        foreach (ManagementObject obj in coll)
+                        {
+                            for (int i = 0; i < candidateProps.Length; i++)
+                            {
+                                object val = null;
+                                try { val = obj[candidateProps[i]]; } catch { }
+                                if (val != null)
+                                {
+                                    float c;
+                                    try
+                                    {
+                                        c = NormalizeWmiTemperatureValue(Convert.ToSingle(val));
+                                    }
+                                    catch { c = 0f; }
+                                    if (c > bestCelsius) bestCelsius = c;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return bestCelsius > 0f;
         }
 
         /// <summary>
@@ -1177,7 +1412,7 @@ namespace WIS.UI
                     {
                         try
                         {
-                            _computer.Close();
+                            if (_miComputerClose != null) _miComputerClose.Invoke(_computer, null);
                         }
                         catch { }
                         _computer = null;

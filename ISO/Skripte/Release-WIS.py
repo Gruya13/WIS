@@ -37,6 +37,21 @@ def prepare_bundle(build_dir, bundle, commit):
         dest = bundle / ('Skripte/WIS.UI/' + name if name in ('WIS.UI.exe', 'HidSharp.dll', 'LibreHardwareMonitorLib.dll') else name)
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, dest)
+        if name == 'WIS.UI.exe':
+            shutil.copy2(source, bundle / name)
+    for name, targets in (
+        ('WIS.HwTest.exe', ('WIS.HwTest.exe', 'Skripte/WIS.UI/WIS.HwTest.exe')),
+        ('WIS-AutopilotAuditor.exe', ('WIS-AutopilotAuditor.exe', 'Skripte/WIS-AutopilotAuditor.exe')),
+    ):
+        source = build_dir / name
+        if not source.is_file():
+            continue
+        if name in receipt.get('files', {}) and receipt['files'][name] != sha256(source):
+            raise ReleaseError('Build artefakt ne odgovara potvrdi: ' + name)
+        for rel_target in targets:
+            dest = bundle / rel_target
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest)
     for folder, pattern in (('Skripte/Modules', '*'), ('Skripte/Phases', '*.ps1')):
         for source in sorted((ROOT / 'UI' / folder).glob(pattern)):
             if source.suffix not in ('.ps1', '.psm1'):

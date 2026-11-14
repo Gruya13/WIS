@@ -817,6 +817,10 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.DisplayModel = finalDisplayModel;
                         ViewModel.HardwareInfo.DisplayNits = finalDisplayNits;
                         ViewModel.HardwareInfo.DisplayColorGamut = finalDisplayGamut;
+                        ViewModel.HardwareInfo.DisplayWidth = screenW;
+                        ViewModel.HardwareInfo.DisplayHeight = screenH;
+                        ViewModel.HardwareInfo.DisplayRefreshHz = refreshRate;
+                        ViewModel.HardwareInfo.DisplayPanelType = panelType ?? "";
                         ViewModel.HardwareInfo.HasTouchscreen = hasTouch;
                         ViewModel.HardwareInfo.TouchscreenStatus = touchStatusStr;
                         ViewModel.HardwareInfo.TouchscreenBrush = touchBrush;

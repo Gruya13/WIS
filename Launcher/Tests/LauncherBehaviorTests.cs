@@ -92,7 +92,7 @@ class LauncherBehaviorTests
                 });
                 Test("newer minimum launcher is rejected", delegate {
                     string root = MakeFiles("2.17.0", false); PayloadVersionInfo info; string error;
-                    Assert(!PayloadManager.ParseAndVerifyManifest(Manifest(root, "2.17.0", null, "2.2.18"), out info, out error), "Incompatible minimum accepted");
+                    Assert(!PayloadManager.ParseAndVerifyManifest(Manifest(root, "2.17.0", null, "3.0.1"), out info, out error), "Incompatible minimum accepted");
                 });
                 Test("tampered local UI cannot start", delegate {
                     Install("2.16.2"); Write(PayloadManager.TargetUiExe, "tampered"); string error;

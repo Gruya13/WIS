@@ -12,9 +12,9 @@ tags:
   - defender
 ---
 
-# Sistemske Optimizacije, Automatski DPI i OEM Brendiranje: WIS (v2.19.0)
+# Sistemske Optimizacije, Automatski DPI i OEM Brendiranje: WIS (v3.0.0)
 
-U okviru Faze 3 (`Phase3-Optimization.ps1`, `WIS.Branding.psm1` sa **792 linije** / `39,869 B` i `WIS.Core.psm1`), operativni sistem Windows 11 prolazi kroz **6 idempotentnih `StepGuard` koraka** (`P3.*`): prilagođavanje hardveru, ergonomsku optimizaciju radne površine, bezbednosno očvršćavanje i obavezni kontrolisani međurestart pre Faze 4 ([[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
+U okviru Faze 3 (`Phase3-Optimization.ps1`, `WIS.Branding.psm1` i `WIS.Core.psm1`), operativni sistem Windows 11 prolazi kroz **6 idempotentnih `StepGuard` koraka** (`P3.*`): prilagođavanje hardveru, ergonomsku optimizaciju radne površine, bezbednosno očvršćavanje i obavezni kontrolisani međurestart pre Faze 4 ([[decisions/ADR-0181-stepguard-precheck-hardware-identity-and-ui-v23]], [[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]], [[decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot]]).
 
 ---
 

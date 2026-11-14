@@ -11,7 +11,7 @@ tags:
   - security
 ---
 
-# Mrežno Povezivanje, Servisni Wi-Fi i Anti-Leak Sanitizacija: WIS (v2.19.0)
+# Mrežno Povezivanje, Servisni Wi-Fi i Anti-Leak Sanitizacija: WIS (v3.0.0)
 
 Pouzdan i brz pristup servisnoj mreži (`192.168.170.0/24`) i internetu ključan je za preuzimanje potpisanog `wis-payload.zip` paketa sa `ServiceHub`-a, striming drajvera i programa sa TrueNAS servera (`192.168.170.254`) i izvršavanje Windows Update zakrpa. **WIS** obezbeđuje dvoslojno automatsko povezivanje uz strogo **Anti-Leak brisanje svih servisnih tajni** pre predaje računara klijentu.
 
@@ -22,7 +22,7 @@ Pouzdan i brz pristup servisnoj mreži (`192.168.170.0/24`) i internetu ključan
 Parametri servisne bežične mreže, `ServiceHub` servera i TrueNAS SMB deljenja definisani su u `Wifi-Servis.ini`:
 - **`[ServisWifi]`:** Podržava više SSID naziva odvojenih zarezom (primarni 5 GHz i rezervni 2.4 GHz) i lozinku.
 - **`[ServisHub]`:** Port `8080` i UDP Discovery port `8888`.
-- **`[NasCache]` / `[Programi]`:** Definiše TrueNAS host (`192.168.170.254` / `truenas.servis`), sistemsko deljenje `ShareName=WIS`, deljenje aplikacija `ProgramiShare=Programi` i servisne SMB akreditive (`Username=admin`, `Password=<SMB_PASSWORD>`), kao i `[WindowsUpdate] Mode=DriversOnly`.
+- **`[ServisNas]` / `[WindowsUpdate]` / `[Printer]`:** Definiše TrueNAS host (`192.168.170.254` / `truenas.servis`), servisno deljenje `ShareName=Servis`, deljenje aplikacija `ProgramiShare=Programi`, poddirektorijum zakrpa `UpdatesSubfolder=Updates\Win11`, bazu drajvera `DriversSubDir=Drivers\Harvested\Models`, `[WindowsUpdate] Mode=All` i sekciju `[Printer]` za Star TSP700II termalni štampač (`Transport=Usb|Queue|Network`, `Emulation=StarLine|EscPos`, port `9100`, širina `576` tačaka, `ShopName=Tehno kutak`). Podaci za SMB nalog ostaju van Git-a (`.example.ini` koristi `Password=CHANGE_ME`).
 
 ---
 
@@ -40,8 +40,8 @@ Da bi klijentski računar imao aktivnu IP adresu već u prvoj sekundi ulaska na 
 
 ## 🔧 3. Univerzalni PnP Fallback Mrežnih Drajvera i Otključavanje Mrežnog Steka (`WIS.Network.psm1` & `WIS.Core.psm1`)
 
-1. **`Install-NetDriverFallback` (`WIS.Network.psm1` — 1,249 linija, `55,195 B`):** Ukoliko mrežni adapter nema ugrađen drajver u Windows 11 slici, modul automatski skenira lokalnu bazu `C:\setup\Drivers\Net` (Intel, Realtek, MediaTek, Wi-Fi + LAN) i instalira `.inf` pakete preko `pnputil.exe`. U WinPE PXE slici (`boot.wim`) čuvaju se samo LAN drajveri (`15` fajlova, `7.57 MiB` + `000_wis_net1ix64.inf_guard`), dok puni Wi-Fi paketi stižu kroz `$OEM$\$1\setup\Drivers\Net` ([[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]]).
-2. **Windows 11 24H2 SMB Hardening i `Error 1219` Zaštita u Fazi 4:** Otključava `LanmanWorkstation` registre (`AllowInsecureGuestAuth = 1`, `RequireSecuritySignature = 0`) i autentifikuje SMB sesije ka `\\192.168.170.254\WIS` i `\\192.168.170.254\Programi`. `Phase4-Apps.ps1` eksplicitno uvozi `WIS.Core.psm1` kako bi `Sync-ProgramiFromNas` očistio prethodne sesije i sprečio Windows SMB `Error 1219` pri prebacivanju resursa ili pod `SYSTEM` nalogom ([[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
+1. **`PreOOBE-Network.ps1` (144 linije) & `Install-NetDriverFallback` (`WIS.Network.psm1`):** Pre prvog OOBE ekrana `PreOOBE-Network.ps1` omogućava mrežne adaptere, pokreće `wlansvc` i privremeno spaja servisni Wi-Fi (XML escaping + brisanje privremenog XML profila u `finally` bloku) kako bi `SetupComplete.ps1` uhvatio Pre-OOBE Autopilot ZTD status. Kasnije u instaliranom sistemu, ukoliko mrežni adapter nema ugrađen drajver, `Install-NetDriverFallback` skenira `C:\setup\Drivers\Net` i instalira `.inf` pakete preko `pnputil.exe` (u WinPE `boot.wim` čuvaju se samo LAN drajveri — `15` fajlova, `7.57 MiB` + `000_wis_net1ix64.inf_guard`, [[decisions/ADR-0184-winpe-i219lm-driverstore-guard-and-parallel-pxe]]).
+2. **Windows 11 24H2 SMB Hardening i `Error 1219` Zaštita u Fazi 4:** Otključava `LanmanWorkstation` registre (`AllowInsecureGuestAuth = 1`, `RequireSecuritySignature = 0`) i autentifikuje SMB sesije ka `\\192.168.170.254\Servis` (sa fallback-om na `\WIS`) i `\\192.168.170.254\Programi`. `Phase4-Apps.ps1` eksplicitno uvozi `WIS.Core.psm1` kako bi `Sync-ProgramiFromNas` očistio prethodne sesije i sprečio Windows SMB `Error 1219` pri prebacivanju resursa ili pod `SYSTEM` nalogom ([[decisions/ADR-0185-phase4-office-odt-bom-free-and-local-nvme-sourcepath]]).
 3. **`Optimize-ServisNetworkStack`:** Postavlja `DisableBandwidthThrottling = 1`, `MaxCmds = 2048`, `EnableLargeMtu = $true` i TCP `InternetCustom` profil preko neblokirajućih poziva, omogućavajući pun gigabitni protok (**110–122 MB/s**).
 
 ---

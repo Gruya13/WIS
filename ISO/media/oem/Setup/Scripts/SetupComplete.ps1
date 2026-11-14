@@ -355,7 +355,211 @@ if (Test-Path $localWifiIni) {
         Write-Log ('Greska pri ranom uvozu Wi-Fi profila: {0}' -f $_.Exception.Message) 'WARN' 'WiFiAutoConnect'
     }
 } else {
-    Write-Log ('{0} nije pronadjen - preskace se rano Wi-Fi povezivanje.' -f $localWifiIni) 'INFO' 'WiFiAutoConnect'
+    Write-Log ('{0} vec postoji u lokalnom kesu.' -f $localWifiIni) 'INFO' 'WiFiAutoConnect'
+}
+
+# 6b. Pre-OOBE Autopilot ZTD Provera i Snimanje Trajnog Izvestaja (dok OOBEComplete nije zakljucan)
+Write-Log 'Pokretanje Pre-OOBE Autopilot ZTD provere i cuvanje trajnog izvestaja...' 'STEP' 'AutopilotPreOOBE'
+try {
+    foreach ($apSvc in @('tbs', 'wlidsvc', 'dmwappushservice')) {
+        try {
+            Start-Service -Name $apSvc -ErrorAction SilentlyContinue
+        } catch {}
+    }
+
+    function Test-PreOobeTcpEndpoint {
+        param([string]$TargetHost, [int]$Port = 443, [int]$TimeoutMs = 2000)
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $iar = $tcp.BeginConnect($TargetHost, $Port, $null, $null)
+            $ok = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+            if (-not $ok) {
+                $tcp.Close()
+                return $false
+            }
+            $tcp.EndConnect($iar)
+            $tcp.Close()
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    $preOobeOnline = $false
+    for ($netSec = 1; $netSec -le 12; $netSec++) {
+        $validIpObj = $null
+        try {
+            $validIpObj = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                $_.InterfaceAlias -notmatch 'Loopback|vEthernet' -and
+                $_.IPAddress -notmatch '^(127\.|169\.254\.)'
+            } | Select-Object -First 1
+        } catch {}
+
+        if ($validIpObj -and $validIpObj.IPAddress) {
+            if ((Test-PreOobeTcpEndpoint -TargetHost 'ztd.dds.microsoft.com' -Port 443 -TimeoutMs 2000) -or
+                (Test-PreOobeTcpEndpoint -TargetHost 'login.live.com' -Port 443 -TimeoutMs 2000)) {
+                $preOobeOnline = $true
+                Write-Log ('Mrezna veza ka Microsoft ZTD oblaku potvrdena u Pre-OOBE fazi (IP={0}, cekanje={1}s).' -f $validIpObj.IPAddress, $netSec) 'SUCCESS' 'AutopilotPreOOBE'
+                break
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+
+    if (-not $preOobeOnline) {
+        Write-Log 'Microsoft ZTD oblak nije dostizan u roku od 12s u Pre-OOBE fazi (verovatno nedostaje Wi-Fi drajver ili internet veza).' 'WARN' 'AutopilotPreOOBE'
+    }
+
+    $oobeRegPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE'
+    $hadSkipNetworkSetup = $false
+    $origSkipNetworkSetup = 1
+    $hadDisableOobeConn = $false
+    $origDisableOobeConn = $null
+    try {
+        if (Test-Path $oobeRegPath) {
+            $oobeProps = Get-ItemProperty -Path $oobeRegPath -ErrorAction SilentlyContinue
+            if ($oobeProps -and ($null -ne $oobeProps.SkipNetworkSetup)) {
+                $hadSkipNetworkSetup = $true
+                $origSkipNetworkSetup = $oobeProps.SkipNetworkSetup
+                Remove-ItemProperty -Path $oobeRegPath -Name 'SkipNetworkSetup' -Force -ErrorAction SilentlyContinue
+            }
+            if ($oobeProps -and ($null -ne $oobeProps.DisableOOBEConnection)) {
+                $hadDisableOobeConn = $true
+                $origDisableOobeConn = $oobeProps.DisableOOBEConnection
+                Remove-ItemProperty -Path $oobeRegPath -Name 'DisableOOBEConnection' -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        try {
+            Start-Process -FilePath 'schtasks.exe' -ArgumentList '/run /tn "\Microsoft\Windows\Management\Provisioning\Autopilot"' -WindowStyle Hidden -ErrorAction SilentlyContinue
+        } catch {}
+
+        # Pronalazenje WIS-AutopilotAuditor.exe ili Provera_autopilota.ps1
+        $apAuditorExe = $null
+        $apAuditorPs1 = $null
+        $exeCands = @(
+            (Join-Path $SetupDir 'WIS-AutopilotAuditor.exe'),
+            (Join-Path $SetupDir 'Skripte\WIS-AutopilotAuditor.exe'),
+            (Join-Path $SetupDir 'Tools\AutopilotAuditor\WIS-AutopilotAuditor.exe')
+        )
+        $ps1Cands = @(
+            (Join-Path $SetupDir 'Provera_autopilota.ps1'),
+            (Join-Path $SetupDir 'Skripte\Provera_autopilota.ps1')
+        )
+        foreach ($dr in $allDrives) {
+            $exeCands += @(
+                (Join-Path $dr.Root 'WIS-AutopilotAuditor.exe'),
+                (Join-Path $dr.Root 'Tools\AutopilotAuditor\WIS-AutopilotAuditor.exe'),
+                (Join-Path $dr.Root ('sources\' + [char]36 + 'OEM\' + [char]36 + '1\setup\WIS-AutopilotAuditor.exe')),
+                (Join-Path $dr.Root ('sources\' + [char]36 + 'OEM\' + [char]36 + '1\setup\Skripte\WIS-AutopilotAuditor.exe'))
+            )
+            $ps1Cands += @(
+                (Join-Path $dr.Root 'Provera_autopilota.ps1'),
+                (Join-Path $dr.Root 'Skripte\Provera_autopilota.ps1'),
+                (Join-Path $dr.Root ('sources\' + [char]36 + 'OEM\' + [char]36 + '1\setup\Provera_autopilota.ps1')),
+                (Join-Path $dr.Root ('sources\' + [char]36 + 'OEM\' + [char]36 + '1\setup\Skripte\Provera_autopilota.ps1'))
+            )
+        }
+        $apAuditorExe = $exeCands | Where-Object { Test-Path $_ } | Select-Object -First 1
+        $apAuditorPs1 = $ps1Cands | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+        $apJsonPayload = $null
+        $tmpApOut = Join-Path $SetupDir ('preoobe_ap_out_{0}.tmp' -f $PID)
+        $tmpApErr = Join-Path $SetupDir ('preoobe_ap_err_{0}.tmp' -f $PID)
+        try {
+            $apProc = $null
+            if ($apAuditorExe) {
+                Write-Log ('Pokrecem Pre-OOBE Autopilot auditor: {0} --json' -f $apAuditorExe) 'INFO' 'AutopilotPreOOBE'
+                $apProc = Start-Process -FilePath $apAuditorExe -ArgumentList '--json' -RedirectStandardOutput $tmpApOut -RedirectStandardError $tmpApErr -PassThru -WindowStyle Hidden
+            } elseif ($apAuditorPs1) {
+                Write-Log ('Pokrecem Pre-OOBE Autopilot skriptu: {0} -JsonOutput' -f $apAuditorPs1) 'INFO' 'AutopilotPreOOBE'
+                $apProc = Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -JsonOutput' -f $apAuditorPs1) -RedirectStandardOutput $tmpApOut -RedirectStandardError $tmpApErr -PassThru -WindowStyle Hidden
+            } else {
+                Write-Log 'Ni WIS-AutopilotAuditor.exe ni Provera_autopilota.ps1 nisu pronadjeni za Pre-OOBE proveru.' 'WARN' 'AutopilotPreOOBE'
+            }
+
+            if ($apProc) {
+                if (-not $apProc.WaitForExit(55000)) {
+                    try { $apProc.Kill() } catch {}
+                    Write-Log 'Pre-OOBE Autopilot auditor prekoracio 55s timeout.' 'WARN' 'AutopilotPreOOBE'
+                }
+                if (Test-Path $tmpApOut) {
+                    $rawOut = [System.IO.File]::ReadAllText($tmpApOut, $script:Utf8NoBom)
+                    if ($rawOut) {
+                        $firstB = $rawOut.IndexOf('{')
+                        $lastB = $rawOut.LastIndexOf('}')
+                        if ($firstB -ge 0 -and $lastB -gt $firstB) {
+                            $candidateJson = $rawOut.Substring($firstB, $lastB - $firstB + 1).Trim()
+                            $parsedCheck = $candidateJson | ConvertFrom-Json -ErrorAction SilentlyContinue
+                            if ($parsedCheck -and $parsedCheck.matrix_code) {
+                                $apJsonPayload = $candidateJson
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            Remove-Item -Path $tmpApOut, $tmpApErr -Force -ErrorAction SilentlyContinue
+        }
+
+        if ($apJsonPayload) {
+            $apParsedInfo = $apJsonPayload | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $apMatrix = if ($apParsedInfo -and $apParsedInfo.matrix_code) { "$($apParsedInfo.matrix_code)".ToUpper().Trim() } else { 'UNKNOWN' }
+            $apTenantLog = if ($apParsedInfo -and $apParsedInfo.tenant_domain) { $apParsedInfo.tenant_domain } else { 'N/A' }
+            $newConfirmed = $apMatrix -in @('LOCKED_TENANT', 'HIDDEN_LOCK', 'RELEASED_LOCAL_TRACES', 'CONFIRMED_CLEAN')
+            $reportTargets = @(
+                (Join-Path $LogDir 'autopilot_report.json'),
+                (Join-Path $SetupDir 'autopilot_report.json')
+            )
+            foreach ($rt in $reportTargets) {
+                try {
+                    $rtDir = Split-Path $rt -Parent
+                    if ($rtDir -and -not (Test-Path $rtDir)) {
+                        New-Item -Path $rtDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                    }
+                    if ((-not $newConfirmed) -and (Test-Path $rt)) {
+                        $exRaw = Get-Content -Path $rt -Raw -ErrorAction SilentlyContinue
+                        if ($exRaw) {
+                            $exObj = $exRaw | ConvertFrom-Json -ErrorAction SilentlyContinue
+                            $exMc = if ($exObj -and $exObj.matrix_code) { "$($exObj.matrix_code)".ToUpper().Trim() } else { '' }
+                            if ($exMc -in @('LOCKED_TENANT', 'HIDDEN_LOCK', 'RELEASED_LOCAL_TRACES', 'CONFIRMED_CLEAN')) { continue }
+                        }
+                    }
+                    [System.IO.File]::WriteAllText($rt, $apJsonPayload, $script:Utf8NoBom)
+                } catch {}
+            }
+            Write-Log ('Pre-OOBE Autopilot izvestaj sacuvan (matrix_code={0}, tenant={1}) u {2}\autopilot_report.json i {3}\autopilot_report.json' -f $apMatrix, $apTenantLog, $LogDir, $SetupDir) 'SUCCESS' 'AutopilotPreOOBE'
+        } else {
+            Write-Log 'Pre-OOBE Autopilot auditor nije vratio validan JSON izvestaj.' 'WARN' 'AutopilotPreOOBE'
+        }
+
+        $ztdStateFile = Join-Path $env:SystemRoot 'ServiceState\Autopilot\AutopilotDDSZTDFile.json'
+        if (Test-Path $ztdStateFile) {
+            try {
+                if (-not (Test-Path $LogDir)) {
+                    New-Item -Path $LogDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                $preOobeZtdCopy = Join-Path $LogDir 'AutopilotDDSZTDFile.preoobe.json'
+                Copy-Item -Path $ztdStateFile -Destination $preOobeZtdCopy -Force -ErrorAction Stop
+                Write-Log ('Rezervna kopija AutopilotDDSZTDFile.json sacuvana u: {0}' -f $preOobeZtdCopy) 'SUCCESS' 'AutopilotPreOOBE'
+            } catch {
+                Write-Log ('Neuspesno kopiranje AutopilotDDSZTDFile.json: {0}' -f $_.Exception.Message) 'WARN' 'AutopilotPreOOBE'
+            }
+        }
+    } finally {
+        try {
+            if (-not (Test-Path $oobeRegPath)) {
+                New-Item -Path $oobeRegPath -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            $restoreSkipVal = if ($hadSkipNetworkSetup) { $origSkipNetworkSetup } else { 1 }
+            Set-ItemProperty -Path $oobeRegPath -Name 'SkipNetworkSetup' -Value $restoreSkipVal -Type DWord -Force -ErrorAction SilentlyContinue
+            if ($hadDisableOobeConn -and ($null -ne $origDisableOobeConn)) {
+                Set-ItemProperty -Path $oobeRegPath -Name 'DisableOOBEConnection' -Value $origDisableOobeConn -Type DWord -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+} catch {
+    Write-Log ('Izuzetak u Pre-OOBE Autopilot koraku: {0}' -f $_.Exception.Message) 'WARN' 'AutopilotPreOOBE'
 }
 
 # 7. Jedinstvena tiha detekcija i ekstrakcija Programi.tar sa proverom izlaza i sadrzaja (Nalaz 1)

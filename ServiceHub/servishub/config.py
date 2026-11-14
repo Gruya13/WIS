@@ -28,6 +28,12 @@ REPORTS_DIR = os.path.join(LOGS_DIR, "reports")
 # Izvor za payload
 PAYLOAD_SOURCE_DIR = os.environ.get("SERVIS_HUB_PAYLOAD_DIR", os.path.join(BASE_DIR, "payload_src"))
 
+# Skladište paketa drajvera po modelu (<Model>.tar)
+DEFAULT_MODEL_PACKS_DIR = os.environ.get(
+    "SERVIS_MODEL_PACKS_DIR",
+    "/mnt/Servis/Drivers/Harvested/Archives" if os.path.isdir("/mnt/Servis") else os.path.join(DRIVERS_CACHE_DIR, "model_packs"),
+)
+
 # Skladište zakrpi (Windows 11 updates keš)
 DEFAULT_UPDATES_DIR = os.environ.get(
     "SERVIS_UPDATES_DIR",
@@ -48,6 +54,7 @@ class HubConfig:
         logs_dir: str = LOGS_DIR,
         payload_source_dir: str = PAYLOAD_SOURCE_DIR,
         updates_dir: str = None,
+        model_packs_dir: str = None,
     ):
         self.host = host
         self.port = port
@@ -61,6 +68,15 @@ class HubConfig:
         self.reports_dir = os.path.join(self.logs_dir, "reports")
         self.payload_source_dir = os.path.abspath(payload_source_dir)
 
+        if model_packs_dir:
+            self.model_packs_dir = os.path.abspath(model_packs_dir)
+        elif os.environ.get("SERVIS_MODEL_PACKS_DIR"):
+            self.model_packs_dir = os.path.abspath(os.environ["SERVIS_MODEL_PACKS_DIR"])
+        elif os.path.isdir("/mnt/Servis/Drivers/Harvested/Archives") or os.path.isdir("/mnt/Servis"):
+            self.model_packs_dir = "/mnt/Servis/Drivers/Harvested/Archives"
+        else:
+            self.model_packs_dir = os.path.join(self.drivers_cache_dir, "model_packs")
+
         # Određivanje putanje za skladište Windows 11 zakrpi
         if updates_dir:
             self.updates_dir = os.path.abspath(updates_dir)
@@ -70,6 +86,10 @@ class HubConfig:
             self.updates_dir = os.path.abspath(os.environ["SERVIS_HUB_UPDATES_DIR"])
         elif os.path.isdir("/home/gru/Storage/Updates/Win11"):
             self.updates_dir = "/home/gru/Storage/Updates/Win11"
+        elif os.path.isdir("/mnt/Servis/Updates/Win11"):
+            self.updates_dir = "/mnt/Servis/Updates/Win11"
+        elif os.path.isdir("/mnt/Servis"):
+            self.updates_dir = "/mnt/Servis/Updates/Win11"
         elif os.path.isdir(os.path.join(self.base_dir, "Updates", "Win11")):
             self.updates_dir = os.path.abspath(os.path.join(self.base_dir, "Updates", "Win11"))
         else:
@@ -88,6 +108,10 @@ class HubConfig:
         os.makedirs(self.logs_dir, exist_ok=True)
         os.makedirs(self.live_logs_dir, exist_ok=True)
         os.makedirs(self.reports_dir, exist_ok=True)
+        try:
+            os.makedirs(self.model_packs_dir, exist_ok=True)
+        except OSError:
+            pass
 
 
 # Globalna instanca konfiguracije
