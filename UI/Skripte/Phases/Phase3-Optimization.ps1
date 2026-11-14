@@ -63,6 +63,9 @@ try {
 
 # 3. Glavno orkestrirano izvrsenje Faze 3
 try {
+    $Global:CurrentPhase = 3
+    if (-not $Global:State) { $Global:State = @{} }
+    $Global:State.Phase = 3
     Send-IpcProgress -Progress 5 -Phase 3 -PhaseName "Optimizacija" -SubPhase "Inicijalizacija" -StatusMessage "Zapocinjem sistemske optimizacije..."
     Invoke-Phase3Optimization -LocalSetupDir $LocalSetupDir -Brand $Brand
     exit 0

@@ -491,6 +491,11 @@ function Set-AcrobatDefaultPDF {
 
         Remove-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice" -Recurse -Force -ErrorAction SilentlyContinue
 
+        try {
+            New-Item -Path "HKLM:\SOFTWARE\Classes\.pdf" -Force -ErrorAction SilentlyContinue | Out-Null
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Classes\.pdf" -Name "(Default)" -Value "AcroExch.Document.DC" -Force -ErrorAction SilentlyContinue
+        } catch {}
+
         cmd.exe /c "assoc .pdf=AcroExch.Document.DC" | Out-Null
         $acrobatExe = "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe"
         if (-not (Test-Path $acrobatExe)) {
@@ -513,7 +518,25 @@ function Test-WindowsActivated {
 }
 
 function Test-OfficeActivated {
-    # 1. Provera OSPP.VBS statusa (za standardne KMS/MAK/Retail licence)
+    # 1. Provera Ohook aktivacije (sppc.dll / sppcs.dll u root\vfs\System ili SystemX86)
+    $ohookPaths = @(
+        "C:\Program Files\Microsoft Office\root\vfs\System\sppc.dll",
+        "C:\Program Files (x86)\Microsoft Office\root\vfs\SystemX86\sppc.dll",
+        "C:\Program Files\Microsoft Office\root\vfs\SystemX86\sppc.dll",
+        "C:\Program Files\Common Files\Microsoft Shared\OfficeSoftwareProtectionPlatform\sppcs.dll"
+    )
+    foreach ($dll in $ohookPaths) {
+        if (Test-Path $dll) {
+            try {
+                $fItem = Get-Item $dll -ErrorAction SilentlyContinue
+                if ($fItem -and $fItem.Length -gt 5120) {
+                    return $true
+                }
+            } catch {}
+        }
+    }
+
+    # 2. Provera OSPP.VBS statusa (za standardne KMS/MAK/Retail licence)
     $osppPaths = @(
         "C:\Program Files\Microsoft Office\Office16\OSPP.VBS",
         "C:\Program Files\Microsoft Office\root\Office16\OSPP.VBS",
@@ -530,7 +553,7 @@ function Test-OfficeActivated {
         } catch {}
     }
 
-    # 2. Provera WMI / CIM SoftwareLicensingProduct (za KMS/MAK/Retail licence)
+    # 3. Provera WMI / CIM SoftwareLicensingProduct (za KMS/MAK/Retail licence)
     try {
         $c2rLic = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue |
             Where-Object { ($_.Name -like "*Office*" -or $_.Description -like "*Office*") -and $_.LicenseStatus -eq 1 }
@@ -837,8 +860,24 @@ function Get-WisAppPresence {
                 $pdfProgId = (Get-ItemProperty -Path $userChoiceKey -Name "ProgId" -ErrorAction SilentlyContinue).ProgId
             } catch {}
 
-            if ($pdfProgId -like "*Acrobat*" -or $pdfProgId -like "*AcroExch*") {
-                $msg = "Adobe Acrobat je podešen kao podrazumevani PDF čitač ($pdfProgId)"
+            $gpoAssocPath = ""
+            try {
+                $gpoAssocPath = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "DefaultAssociationsConfiguration" -ErrorAction SilentlyContinue).DefaultAssociationsConfiguration
+            } catch {}
+
+            $classesPdf = ""
+            try {
+                $classesPdf = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Classes\.pdf" -Name "(Default)" -ErrorAction SilentlyContinue).'(Default)'
+            } catch {}
+
+            $isAcrobatUserChoice = ($pdfProgId -like "*Acrobat*" -or $pdfProgId -like "*AcroExch*")
+            $isOtherUserChoice = (-not [string]::IsNullOrWhiteSpace($pdfProgId)) -and (-not $isAcrobatUserChoice)
+            $isGpoAcrobat = ($gpoAssocPath -like "*AppAssoc_Acrobat.xml*") -and (Test-Path "C:\Windows\System32\AppAssoc_Acrobat.xml")
+            $isClassAcrobat = ($classesPdf -like "*AcroExch*")
+
+            if ($isAcrobatUserChoice -or ((-not $isOtherUserChoice) -and ($isGpoAcrobat -or $isClassAcrobat))) {
+                $desc = if ($isAcrobatUserChoice) { $pdfProgId } elseif ($isGpoAcrobat) { "GPO AppAssoc_Acrobat.xml" } else { $classesPdf }
+                $msg = "Adobe Acrobat je podešen kao podrazumevani PDF čitač ($desc)"
                 $result.Installed = $true
                 $result.Done      = $true
                 $result.Message   = $msg
@@ -2964,6 +3003,100 @@ function Invoke-WindowsOfficeActivation {
                  (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
                  (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE")
     $offActive = if ($hasOffice) { Test-OfficeActivated } else { $true }
+
+    # Pretraga lokalnog offline MAS alata u Programi/MAS (ili na disku / NAS-u)
+    $offlineMasPaths = @()
+    if ($ProgramiDir) {
+        $offlineMasPaths += (Join-Path $ProgramiDir "MAS\MAS_AIO.cmd")
+        $offlineMasPaths += (Join-Path $ProgramiDir "MAS\MAS_AIO.bat")
+    }
+    $offlineMasPaths += "C:\setup\Programi\MAS\MAS_AIO.cmd"
+    $offlineMasPaths += "C:\setup\Programi\MAS\MAS_AIO.bat"
+    if ($Global:SourceRoot) {
+        $offlineMasPaths += (Join-Path $Global:SourceRoot "Programi\MAS\MAS_AIO.cmd")
+        $offlineMasPaths += (Join-Path $Global:SourceRoot "Programi\MAS\MAS_AIO.bat")
+    }
+    $masScript = $offlineMasPaths | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+    if ($masScript) {
+        Unblock-File -Path $masScript -ErrorAction SilentlyContinue
+        Remove-Item -Path "$($masScript):Zone.Identifier" -ErrorAction SilentlyContinue
+    }
+    $comSpec = if ($env:ComSpec) { $env:ComSpec } else { "cmd.exe" }
+
+    # 1. Aktivacija Windows-a (HWID) ako OA3x nije vec aktivirao
+    if (-not $winActive) {
+        $hwidSuccess = $false
+        if ($masScript) {
+            $masWorkDir = Split-Path $masScript -Parent
+            $masRunHwid = {
+                param($cmdFile, $wDir)
+                $effWork = if ($wDir -and -not ($wDir -like "\\*") -and (Test-Path $wDir)) { $wDir } else { "C:\setup" }
+                $procHwid = Start-Process -FilePath $comSpec -ArgumentList "/c `"`"$cmdFile`" /HWID /S`"" -WorkingDirectory $effWork -Wait -WindowStyle Hidden -PassThru
+                if ($procHwid) { return $procHwid.ExitCode }
+                return 0
+            }
+            $masResHwid = Invoke-InstallerWithLocalFallback -AppName "MAS" -InstallerPath $masScript -WorkingDirectory $masWorkDir -IsDirectoryPackage -PackageSourceDir $masWorkDir -CustomExecution $masRunHwid -VerificationCheck {
+                Test-WindowsActivated
+            }
+            Start-Sleep -Seconds 3
+            $winActive = Test-WindowsActivated
+            if ($winActive -or $masResHwid.Success) { $hwidSuccess = $true }
+        }
+        if (-not $hwidSuccess) {
+            try {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Lokalni HWID nije potvrdio Windows licencu. Pokrecem online MAS fallback..." -Level "STEP" -Component "License"
+                }
+                $masCmd = "& ([ScriptBlock]::Create((irm https://get.activated.win))) /HWID /S"
+                Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$masCmd`"" -Wait -WindowStyle Hidden
+                Start-Sleep -Seconds 3
+                $winActive = Test-WindowsActivated
+            } catch {}
+        }
+    }
+
+    # 2. Aktivacija Microsoft Office 2024 (Ohook) ako je instaliran i nije aktiviran
+    if ($hasOffice -and -not $offActive) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Microsoft Office nije aktiviran. Pokrecem trajnu Ohook aktivaciju..." -Level "STEP" -Component "License"
+        }
+        $null = Wait-OfficeInstallationReady -TimeoutSec 45
+        $ohookSuccess = $false
+        if ($masScript) {
+            $masWorkDir = Split-Path $masScript -Parent
+            $masRunOhook = {
+                param($cmdFile, $wDir)
+                $effWork = if ($wDir -and -not ($wDir -like "\\*") -and (Test-Path $wDir)) { $wDir } else { "C:\setup" }
+                $procOhook = Start-Process -FilePath $comSpec -ArgumentList "/c `"`"$cmdFile`" /Ohook /S`"" -WorkingDirectory $effWork -Wait -WindowStyle Hidden -PassThru
+                if ($procOhook) { return $procOhook.ExitCode }
+                return 0
+            }
+            $masResOhook = Invoke-InstallerWithLocalFallback -AppName "MAS_Ohook" -InstallerPath $masScript -WorkingDirectory $masWorkDir -IsDirectoryPackage -PackageSourceDir $masWorkDir -CustomExecution $masRunOhook -VerificationCheck {
+                Test-OfficeActivated
+            }
+            Start-Sleep -Seconds 3
+            $offActive = Test-OfficeActivated
+            if ($offActive -or $masResOhook.Success) { $ohookSuccess = $true }
+        }
+        if (-not $ohookSuccess) {
+            try {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Lokalni Ohook nije potvrdio Office licencu. Pokrecem online MAS fallback (Ohook)..." -Level "STEP" -Component "License"
+                }
+                $masOnlineCmd = "& ([ScriptBlock]::Create((irm https://get.activated.win))) /Ohook /S"
+                Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$masOnlineCmd`"" -Wait -WindowStyle Hidden
+                Start-Sleep -Seconds 3
+                $offActive = Test-OfficeActivated
+            } catch {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Greska pri online Ohook aktivaciji: $($_.Exception.Message)" -Level "WARN" -Component "License"
+                }
+            }
+        }
+    }
+
+    $winActive = Test-WindowsActivated
+    $offActive = if ($hasOffice) { Test-OfficeActivated } else { $true }
     $overallSuccess = $winActive -and $offActive
 
     if (Get-Command Write-DiagnosticEvent -ErrorAction SilentlyContinue) {
@@ -3278,12 +3411,32 @@ function Invoke-Phase4Apps {
     $env:SEE_MASK_NOZONECHECKS = '1'
     try { [Environment]::SetEnvironmentVariable("SEE_MASK_NOZONECHECKS", "1", "Process") } catch {}
 
+    $Global:CurrentPhase = 4
+    if (-not $Global:State) { $Global:State = @{} }
+    $Global:State.Phase = 4
+
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "=== POKRETANJE FAZE 4: Korisnicki Programi i Aktivacija ===" -Level "STEP" -Component "Phase4"
     }
     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
         Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
     }
+
+    # Nakon restarta u Fazi 3, ponovo osiguraj da je pozadinski Windows Update radnik aktivan tokom Faza 4 i 5
+    try {
+        if (-not (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue)) {
+            $updMod = @(
+                (Join-Path $PSScriptRoot "WIS.Update.psm1"),
+                (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
+                (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
+                "C:\setup\Skripte\Modules\WIS.Update.psm1"
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($updMod) { Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+        }
+        if (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue) {
+            Start-BackgroundWindowsUpdateWorker | Out-Null
+        }
+    } catch {}
 
     if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
         Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Pocetak"

@@ -2862,6 +2862,10 @@ function Invoke-Phase2Drivers {
         [switch]$SkipWindowsUpdate
     )
 
+    $Global:CurrentPhase = 2
+    if (-not $Global:State) { $Global:State = @{} }
+    $Global:State.Phase = 2
+
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "=== POKRETANJE FAZE 2: Drajveri i PnP Integracija ===" -Level "STEP" -Component "Phase2"
     }
@@ -3131,18 +3135,14 @@ function Invoke-Phase2Drivers {
     }
 
     # =========================================================================
-    # 6. DRAJVERI PREKO WINDOWS UPDATE-A - P2.WuDrivers (-JournalTtlHours 6)
+    # 6. DRAJVERI PREKO WINDOWS UPDATE-A - P2.WuDrivers
     # =========================================================================
-    Invoke-WisStep -Phase 2 -StepId "P2.WuDrivers" -Title "Hardverski drajveri preko Windows Update-a" -JournalTtlHours 6 -Test {
+    Invoke-WisStep -Phase 2 -StepId "P2.WuDrivers" -Title "Hardverski drajveri preko Windows Update-a" -Test {
         $dmRes = Test-WisDeviceManagerClean
         if (-not $dmRes.Clean) {
             return @{ Done = $false; Reason = "Device Manager nije čist: $($dmRes.Reason)" }
         }
-        $pReboot = Get-WisPendingRebootState
-        if ($pReboot.Pending) {
-            return @{ Done = $false; Reason = "Pending reboot aktivan: $($pReboot.Reasons -join ', ')" }
-        }
-        return @{ Done = $true; Reason = "Device Manager je čist, nema pending reboot-a i WU krug je obavljen unutar 6h" }
+        return @{ Done = $true; Reason = $dmRes.Reason }
     } -Action {
         if ($phaseCtx.SkipWU) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -3335,25 +3335,36 @@ function Start-BackgroundWindowsUpdateWorker {
             if ($raw) {
                 $existing = ConvertFrom-Json -InputObject $raw -ErrorAction SilentlyContinue
                 if ($existing) {
-                    if ($existing.status -in @("COMPLETED", "SKIPPED")) {
+                    $exStatus = "$($existing.status)".ToUpperInvariant()
+                    $exPid = if ($null -ne $existing.pid) { [int]$existing.pid } else { 0 }
+                    if ($exStatus -in @("COMPLETED", "SKIPPED")) {
                         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update je vec zavrsen ($($existing.status))." -Level "INFO" -Component "BgWinUpdate"
+                            Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update je vec zavrsen ($exStatus)." -Level "INFO" -Component "BgWinUpdate"
                         }
                         return $true
                     }
-                    if ($existing.pid -gt 0 -and $existing.status -in @("STARTING", "SEARCHING", "DOWNLOADING", "WAITING_MSI", "INSTALLING", "HARVESTING")) {
-                        $alive = Get-Process -Id ([int]$existing.pid) -ErrorAction SilentlyContinue
+                    if ($exPid -gt 0 -and $exStatus -in @("STARTING", "SEARCHING", "DOWNLOADING", "WAITING_MSI", "INSTALLING", "HARVESTING")) {
+                        $alive = Get-Process -Id $exPid -ErrorAction SilentlyContinue
                         if ($alive) {
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update radnik je vec aktivan (PID: $($existing.pid), Status: $($existing.status))." -Level "INFO" -Component "BgWinUpdate"
+                                Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Pozadinski Windows Update radnik je vec aktivan (PID: $exPid, Status: $exStatus)." -Level "INFO" -Component "BgWinUpdate"
                             }
                             return $true
+                        }
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Start-BackgroundWindowsUpdateWorker: Prethodni pozadinski radnik (PID: $exPid, Status: $exStatus) je prekinut (verovatno tokom restarta). Pokrecem novog radnika..." -Level "WARN" -Component "BgWinUpdate"
                         }
                     }
                 }
             }
         } catch {}
     }
+
+    try {
+        if (Test-Path "C:\setup\wu-secondpass-done.flag") {
+            Remove-Item -Path "C:\setup\wu-secondpass-done.flag" -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 
     $modDir = $PSScriptRoot
     if (-not $modDir -or -not (Test-Path (Join-Path $modDir "WIS.Update.psm1"))) {
@@ -3441,172 +3452,225 @@ function Invoke-BackgroundWindowsUpdateWorker {
     } catch {}
     Start-Sleep -Seconds 2
 
-    $uSession = $null
-    $searchResult = $null
+    # Registracija Microsoft Update servisa (obuhvata Office, .NET, drajvere i sistemske zakrpe)
+    $muServiceId = "7971f918-a847-4430-9279-4a52d1efe18d"
+    $isMuRegistered = $false
     try {
-        $uSession = New-Object -ComObject Microsoft.Update.Session
-        $uSearcher = $uSession.CreateUpdateSearcher()
-        $uSearcher.ServerSelection = 2
-        $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
-    } catch {
-        try {
-            $uSearcher.ServerSelection = 0
-            $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
-        } catch {
-            $errStr = $_.Exception.Message
-            Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Katalog trenutno nedostupan (preskoceno)" -WorkerPid $PID
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pretraga kataloga nije uspela ($errStr)." -Level "WARN" -Component "BgWinUpdate"
-            }
-            return
+        $svcMgr = New-Object -ComObject Microsoft.Update.ServiceManager
+        $svcMgr.ClientApplicationID = "WIS Servis Toolkit"
+        foreach ($svc in $svcMgr.Services) {
+            if ($svc.ServiceID -eq $muServiceId) { $isMuRegistered = $true; break }
         }
-    }
-
-    $rawCount = if ($searchResult -and $searchResult.Updates) { $searchResult.Updates.Count } else { 0 }
-    if ($rawCount -eq 0) {
-        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Sistem je azuran (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -WorkerPid $PID
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Sistem je u potpunosti azuran (0 zaostalih zakrpa)." -Level "SUCCESS" -Component "BgWinUpdate"
+        if (-not $isMuRegistered) {
+            $svcMgr.AddService2($muServiceId, 7, "") | Out-Null
+            $isMuRegistered = $true
         }
-        return
-    }
+    } catch { $isMuRegistered = $false }
 
     $wuMode = Get-WUConfigMode
-    $filteredUpdates = @()
-    for ($i = 0; $i -lt $rawCount; $i++) {
-        $u = $searchResult.Updates.Item($i)
-        $isDrv = Test-IsDriverUpdate -UpdateItem $u
-        $isCum = Test-IsCumulativeUpdate -UpdateItem $u
-
-        $includeItem = $false
-        if ($wuMode -eq "DriversOnly") {
-            if ($isDrv -and (-not $isCum)) { $includeItem = $true }
-        } elseif ($wuMode -eq "SkipCumulative") {
-            if (-not $isCum) { $includeItem = $true }
-        } else {
-            $includeItem = $true
-        }
-
-        if ($includeItem) {
-            if (-not $u.EulaAccepted) {
-                try { $u.AcceptEula() } catch {}
-            }
-            $filteredUpdates += $u
-        }
-    }
-
-    $totalCount = $filteredUpdates.Count
-    if ($totalCount -eq 0) {
-        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Azurno za rezim $wuMode (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -WorkerPid $PID
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Nakon filtera ($wuMode) nema dodatnih zakrpa (0)." -Level "SUCCESS" -Component "BgWinUpdate"
-        }
-        return
-    }
-
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pronadjeno $totalCount stavki (rezim: $wuMode). Zapocinjem pozadinsko preuzimanje (Download)..." -Level "INFO" -Component "BgWinUpdate"
-    }
-
-    # FAZA A: Pozadinsko preuzimanje (Download ne drzi MSI mutex - radi 100% paralelno sa Fazama 3 i 4)
-    $downloadedCount = 0
-    for ($idx = 0; $idx -lt $totalCount; $idx++) {
-        $item = $filteredUpdates[$idx]
-        $num = $idx + 1
-        Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzimanje ($num/$totalCount)..." -FoundCount $totalCount -DownloadedCount $downloadedCount -InstalledCount 0 -WorkerPid $PID
-
-        if (-not $item.IsDownloaded) {
-            try {
-                $dlColl = New-Object -ComObject Microsoft.Update.UpdateColl
-                $dlColl.Add($item) | Out-Null
-                $downloader = $uSession.CreateUpdateDownloader()
-                $downloader.Updates = $dlColl
-                $downloader.Download() | Out-Null
-            } catch {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri preuzimanju '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
-                }
-            }
-        }
-        $downloadedCount = $num
-        Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzeto ($downloadedCount/$totalCount)" -FoundCount $totalCount -DownloadedCount $downloadedCount -InstalledCount 0 -WorkerPid $PID
-    }
-
-    # FAZA B: Koordinisana instalacija (ceka slobodan MSI instalator da ne izazove Error 1618 u Fazi 4)
-    $installedOk = 0
+    $totalFoundAll = 0
+    $totalDownloadedAll = 0
+    $totalInstalledAll = 0
     $rebootReq = $false
+    $harvestUpdates = @()
 
-    for ($idx = 0; $idx -lt $totalCount; $idx++) {
-        $item = $filteredUpdates[$idx]
-        $num = $idx + 1
+    for ($bgCycle = 1; $bgCycle -le 2; $bgCycle++) {
+        if ($bgCycle -gt 1) {
+            Write-BackgroundWuStatus -Status "SEARCHING" -PhaseText "Pozadinski WU: Dodatna provera kataloga (krug $bgCycle/2)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            try { Start-Process "usoclient.exe" -ArgumentList "StartInteractiveScan" -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
+            Start-Sleep -Seconds 3
+        }
 
-        # Proveri da li je u toku instalacija MSI aplikacije iz Faze 4 (msiexec / Acrobat / Chrome / DotNet)
-        $waitCycles = 0
-        while ($waitCycles -lt 60) {
-            $msiBusy = $false
+        $uSession = $null
+        $searchResult = $null
+        try {
+            $uSession = New-Object -ComObject Microsoft.Update.Session
+            $uSearcher = $uSession.CreateUpdateSearcher()
+            $uSearcher.Online = $true
+            if ($isMuRegistered) {
+                $uSearcher.ServerSelection = 3
+                $uSearcher.ServiceID = $muServiceId
+            } else {
+                $uSearcher.ServerSelection = 2
+            }
+            $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
+        } catch {
             try {
-                $activeAppInstallers = Get-Process -Name "msiexec", "AcroPro*", "ChromeSetup*", "windowsdesktop-runtime*", "aspnetcore-runtime*", "VC_redist*" -ErrorAction SilentlyContinue
-                if ($activeAppInstallers -and @($activeAppInstallers).Count -gt 1) {
-                    $msiBusy = $true
-                }
-            } catch {}
-
-            if (-not $msiBusy) {
+                $uSearcher.ServerSelection = 2
+                $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
+            } catch {
                 try {
-                    $mutex = $null
-                    if ([System.Threading.Mutex]::TryOpenExisting("Global\_MSIExecute", [ref]$mutex)) {
+                    $uSearcher.ServerSelection = 0
+                    $searchResult = $uSearcher.Search("IsInstalled=0 and IsHidden=0")
+                } catch {
+                    $errStr = $_.Exception.Message
+                    if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
+                        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Katalog trenutno nedostupan" -WorkerPid $PID
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pretraga kataloga nije uspela ($errStr)." -Level "WARN" -Component "BgWinUpdate"
+                        }
+                        return
+                    }
+                    break
+                }
+            }
+        }
+
+        $rawCount = if ($searchResult -and $searchResult.Updates) { $searchResult.Updates.Count } else { 0 }
+        if ($rawCount -eq 0) {
+            if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
+                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Sistem je azuran (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -RebootRequired $rebootReq -WorkerPid $PID
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Sistem je u potpunosti azuran (0 zaostalih zakrpa)." -Level "SUCCESS" -Component "BgWinUpdate"
+                }
+                return
+            }
+            break
+        }
+
+        $filteredUpdates = @()
+        for ($i = 0; $i -lt $rawCount; $i++) {
+            $u = $searchResult.Updates.Item($i)
+            $isDrv = Test-IsDriverUpdate -UpdateItem $u
+            $isCum = Test-IsCumulativeUpdate -UpdateItem $u
+
+            $includeItem = $false
+            if ($wuMode -eq "DriversOnly") {
+                if ($isDrv -and (-not $isCum)) { $includeItem = $true }
+            } elseif ($wuMode -eq "SkipCumulative") {
+                if (-not $isCum) { $includeItem = $true }
+            } else {
+                $includeItem = $true
+            }
+
+            if ($includeItem) {
+                if (-not $u.EulaAccepted) {
+                    try { $u.AcceptEula() } catch {}
+                }
+                $filteredUpdates += $u
+            }
+        }
+
+        $cycleCount = $filteredUpdates.Count
+        if ($cycleCount -eq 0) {
+            if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
+                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Azurno za rezim $wuMode (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -RebootRequired $rebootReq -WorkerPid $PID
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Nakon filtera ($wuMode) nema dodatnih zakrpa (0)." -Level "SUCCESS" -Component "BgWinUpdate"
+                }
+                return
+            }
+            break
+        }
+
+        $totalFoundAll += $cycleCount
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker (krug $bgCycle): Pronadjeno $cycleCount stavki (rezim: $wuMode). Zapocinjem pozadinsko preuzimanje..." -Level "INFO" -Component "BgWinUpdate"
+        }
+
+        # FAZA A: Pozadinsko preuzimanje (Download ne drzi MSI mutex - radi 100% paralelno sa Fazama 3 i 4)
+        for ($idx = 0; $idx -lt $cycleCount; $idx++) {
+            $item = $filteredUpdates[$idx]
+            $num = $idx + 1
+            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzimanje ($($totalDownloadedAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+
+            if (-not $item.IsDownloaded) {
+                try {
+                    $dlColl = New-Object -ComObject Microsoft.Update.UpdateColl
+                    $dlColl.Add($item) | Out-Null
+                    $downloader = $uSession.CreateUpdateDownloader()
+                    $downloader.Updates = $dlColl
+                    $downloader.Download() | Out-Null
+                } catch {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri preuzimanju '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
+                    }
+                }
+            }
+            $totalDownloadedAll++
+            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        }
+
+        # FAZA B: Koordinisana instalacija (ceka slobodan MSI instalator da ne izazove Error 1618 u Fazi 4)
+        $cycleInstalledOk = 0
+        for ($idx = 0; $idx -lt $cycleCount; $idx++) {
+            $item = $filteredUpdates[$idx]
+
+            $waitCycles = 0
+            while ($waitCycles -lt 60) {
+                $msiBusy = $false
+                try {
+                    $activeAppInstallers = Get-Process -Name "msiexec", "AcroPro*", "ChromeSetup*", "windowsdesktop-runtime*", "aspnetcore-runtime*", "VC_redist*" -ErrorAction SilentlyContinue
+                    if ($activeAppInstallers -and @($activeAppInstallers).Count -gt 1) {
                         $msiBusy = $true
-                        $mutex.Close()
                     }
                 } catch {}
+
+                if (-not $msiBusy) {
+                    try {
+                        $mutex = $null
+                        if ([System.Threading.Mutex]::TryOpenExisting("Global\_MSIExecute", [ref]$mutex)) {
+                            $msiBusy = $true
+                            $mutex.Close()
+                        }
+                    } catch {}
+                }
+
+                if (-not $msiBusy) { break }
+                Write-BackgroundWuStatus -Status "WAITING_MSI" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll) - ceka MSI instalator..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+                Start-Sleep -Seconds 3
+                $waitCycles++
             }
 
-            if (-not $msiBusy) { break }
-            Write-BackgroundWuStatus -Status "WAITING_MSI" -PhaseText "Pozadinski WU: Preuzeto ($totalCount/$totalCount) - ceka MSI instalator..." -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -WorkerPid $PID
-            Start-Sleep -Seconds 3
-            $waitCycles++
+            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalacija ($($totalInstalledAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+
+            try {
+                if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) {
+                    New-Item -Path "HKLM:\SOFTWARE\WIS" -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+
+                $instColl = New-Object -ComObject Microsoft.Update.UpdateColl
+                $instColl.Add($item) | Out-Null
+                $installer = $uSession.CreateUpdateInstaller()
+                $installer.Updates = $instColl
+                $installer.ForceQuiet = $true
+                $instRes = $installer.Install()
+
+                if ($instRes) {
+                    if ($instRes.RebootRequired) { $rebootReq = $true }
+                    if ($instRes.ResultCode -in @(2, 3)) {
+                        $cycleInstalledOk++
+                        $totalInstalledAll++
+                    }
+                }
+            } catch {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri instalaciji '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
+                }
+            } finally {
+                Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+            }
+
+            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalirano ($totalInstalledAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
         }
 
-        Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalacija ($num/$totalCount)..." -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -WorkerPid $PID
-
-        try {
-            if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) {
-                New-Item -Path "HKLM:\SOFTWARE\WIS" -Force -ErrorAction SilentlyContinue | Out-Null
-            }
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-
-            $instColl = New-Object -ComObject Microsoft.Update.UpdateColl
-            $instColl.Add($item) | Out-Null
-            $installer = $uSession.CreateUpdateInstaller()
-            $installer.Updates = $instColl
-            $installer.ForceQuiet = $true
-            $instRes = $installer.Install()
-
-            if ($instRes) {
-                if ($instRes.RebootRequired) { $rebootReq = $true }
-                if ($instRes.ResultCode -in @(2, 3)) { $installedOk++ }
-            }
-        } catch {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Upozorenje pri instalaciji '$($item.Title)': $($_.Exception.Message)" -Level "WARN" -Component "BgWinUpdate"
-            }
-        } finally {
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        $harvestUpdates += $filteredUpdates
+        if ($cycleInstalledOk -eq 0) {
+            break
         }
-
-        Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalirano ($installedOk/$totalCount)" -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -RebootRequired $rebootReq -WorkerPid $PID
     }
 
-    if ($filteredUpdates -and $filteredUpdates.Count -gt 0) {
-        Write-BackgroundWuStatus -Status "HARVESTING" -PhaseText "Pozadinski WU: Arhiviranje novih zakrpa na NAS..." -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -RebootRequired $rebootReq -WorkerPid $PID
+    if ($harvestUpdates -and $harvestUpdates.Count -gt 0) {
+        Write-BackgroundWuStatus -Status "HARVESTING" -PhaseText "Pozadinski WU: Arhiviranje novih zakrpa na NAS..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
         try {
-            Export-ServisWindowsUpdates -Updates $filteredUpdates
+            Export-ServisWindowsUpdates -Updates $harvestUpdates
         } catch {}
     }
 
-    Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($installedOk/$totalCount instalirano)" -FoundCount $totalCount -DownloadedCount $totalCount -InstalledCount $installedOk -RebootRequired $rebootReq -WorkerPid $PID
+    Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($totalInstalledAll/$totalFoundAll instalirano)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $installedOk/$totalCount, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
+        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $totalInstalledAll/$totalFoundAll, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
     }
 }
 
@@ -3625,17 +3689,23 @@ function Invoke-WindowsUpdateSecondPass {
     #>
     [CmdletBinding()]
     param(
-        [int]$TimeoutSeconds = 90
+        [int]$TimeoutSeconds = 300
     )
 
     $bgStatusFile = "C:\setup\wu-bg-status.json"
+    $bgPreInstalled = 0
+    $bgPreFound = 0
+    $bgPreReboot = $false
+    $bgNeedFinalVerify = $true
+
     if (Test-Path $bgStatusFile) {
         $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($waitSw.Elapsed.TotalSeconds -lt 90) {
+        while ($waitSw.Elapsed.TotalSeconds -lt 180) {
             if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Invoke-WindowsUpdateSecondPass: Operater zatrazio preskakanje cekanja na pozadinski WU." -Level "WARN" -Component "Update"
                 }
+                $bgNeedFinalVerify = $false
                 break
             }
 
@@ -3645,42 +3715,27 @@ function Invoke-WindowsUpdateSecondPass {
                     $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
                     if ($bgObj) {
                         $st = "$($bgObj.status)".ToUpperInvariant()
-                        $instCnt = if ($null -ne $bgObj.installed_count) { [int]$bgObj.installed_count } else { 0 }
-                        $fndCnt = if ($null -ne $bgObj.found_count) { [int]$bgObj.found_count } else { 0 }
-                        $rebReq = [bool]$bgObj.reboot_required
+                        $bgPreInstalled = if ($null -ne $bgObj.installed_count) { [int]$bgObj.installed_count } else { 0 }
+                        $bgPreFound = if ($null -ne $bgObj.found_count) { [int]$bgObj.found_count } else { 0 }
+                        $bgPreReboot = [bool]$bgObj.reboot_required
                         $pText = "$($bgObj.phase_text)"
 
                         if ($st -in @("COMPLETED", "SKIPPED", "WARN")) {
-                            $doneMsg = "Pozadinski Windows Update (pokrenut nakon Faze 2) je vec zavrsen ($($st): instalirano $instCnt/$fndCnt). Nema potrebe za ponovnim pokretanjem na kraju."
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: $doneMsg" -Level "SUCCESS" -Component "Update"
+                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: Pozadinski Windows Update prijavio status '$st' ($bgPreInstalled/$bgPreFound). Pokrecem zavrsnu WUA verifikaciju zaostalih ili naknadno otkljucanih azuriranja (Office/.NET/drajveri)..." -Level "INFO" -Component "Update"
                             }
-                            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                                Send-IpcLog -Message $doneMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 6
-                            }
-                            return @{
-                                Success        = $true
-                                InstalledCount = $instCnt
-                                RebootRequired = $rebReq
-                                Message        = $doneMsg
-                            }
+                            break
                         }
 
                         # Proveri da li je pozadinski proces jos uvek aktivan
                         $bgPid = if ($null -ne $bgObj.pid) { [int]$bgObj.pid } else { 0 }
                         $procAlive = if ($bgPid -gt 0) { [bool](Get-Process -Id $bgPid -ErrorAction SilentlyContinue) } else { $false }
                         if (-not $procAlive) {
-                            Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($instCnt/$fndCnt)" -FoundCount $fndCnt -DownloadedCount $fndCnt -InstalledCount $instCnt -RebootRequired $rebReq
-                            $doneMsg2 = "Pozadinski Windows Update proces je zavrsio rad (instalirano $instCnt/$fndCnt)."
+                            # Proces je prekinut (npr. tokom restarta u Fazi 3) pre nego sto je zavrsio - NIKAKO ne upisivati lazni COMPLETED!
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: $doneMsg2" -Level "SUCCESS" -Component "Update"
+                                Write-ServisLog "Invoke-WindowsUpdateSecondPass: Pozadinski Windows Update radnik (PID: $bgPid, status: $st, instalirano: $bgPreInstalled/$bgPreFound) je prekinut pre zavrsetka. Prelazim na direktno WUA skeniranje i instalaciju u Fazi 6." -Level "WARN" -Component "Update"
                             }
-                            return @{
-                                Success        = $true
-                                InstalledCount = $instCnt
-                                RebootRequired = $rebReq
-                                Message        = $doneMsg2
-                            }
+                            break
                         }
 
                         $el = [int]$waitSw.Elapsed.TotalSeconds
@@ -3694,23 +3749,21 @@ function Invoke-WindowsUpdateSecondPass {
             Start-Sleep -Seconds 2
         }
 
-        $timeoutBgMsg = "Pozadinski Windows Update privodi rad kraju u pozadini - nastavljam finalizaciju bez zadrzavanja."
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-WindowsUpdateSecondPass: $timeoutBgMsg" -Level "INFO" -Component "Update"
-        }
-        return @{
-            Success        = $true
-            InstalledCount = 0
-            RebootRequired = $false
-            Message        = $timeoutBgMsg
+        if (-not $bgNeedFinalVerify) {
+            return @{
+                Success        = $true
+                InstalledCount = $bgPreInstalled
+                RebootRequired = $bgPreReboot
+                Message        = "Preskoceno na zahtev operatera."
+            }
         }
     }
 
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "=== POKRECEM DRUGI PROLAZ (DUAL-PASS) WINDOWS UPDATE-A ===" -Level "STEP" -Component "Update"
+        Write-ServisLog "=== POKRECEM ZAVRSNU PROVERU I DRUGI PROLAZ (DUAL-PASS) WINDOWS UPDATE-A ===" -Level "STEP" -Component "Update"
     }
     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 8 -Phase 5 -PhaseName "Zavrsetak" -SubPhase "Dual-Pass Update" -StatusMessage "Skeniranje zaostalih kumulativnih zakrpi i drajvera..."
+        Send-IpcProgress -Progress 8 -Phase 6 -PhaseName "Zavrsetak" -SubPhase "Dual-Pass Update" -StatusMessage "Skeniranje zaostalih kumulativnih zakrpi, Office i driver azuriranja..."
     }
 
     # Provera internet konekcije
@@ -3732,17 +3785,31 @@ function Invoke-WindowsUpdateSecondPass {
         }
         return @{
             Success        = $true
-            InstalledCount = 0
-            RebootRequired = $false
+            InstalledCount = $bgPreInstalled
+            RebootRequired = $bgPreReboot
             Message        = "Preskoceno - nema internet konekcije."
         }
     }
 
-    # 1. Osvezavanje Windows Update servisa i pokretanje brzog interaktivnog skeniranja
+    # 1. Osvezavanje Windows Update servisa i registracija Microsoft Update kataloga
     try {
         Start-Process "usoclient.exe" -ArgumentList "StartInteractiveScan" -WindowStyle Hidden -ErrorAction SilentlyContinue
     } catch {}
     Start-Sleep -Seconds 3
+
+    $muServiceId = "7971f918-a847-4430-9279-4a52d1efe18d"
+    $isMuRegistered = $false
+    try {
+        $svcMgr = New-Object -ComObject Microsoft.Update.ServiceManager
+        $svcMgr.ClientApplicationID = "WIS Servis Toolkit"
+        foreach ($svc in $svcMgr.Services) {
+            if ($svc.ServiceID -eq $muServiceId) { $isMuRegistered = $true; break }
+        }
+        if (-not $isMuRegistered) {
+            $svcMgr.AddService2($muServiceId, 7, "") | Out-Null
+            $isMuRegistered = $true
+        }
+    } catch { $isMuRegistered = $false }
 
     # 2. Inicijalizacija COM objekta Microsoft.Update.Session
     $UpdateSession = $null
@@ -3750,22 +3817,33 @@ function Invoke-WindowsUpdateSecondPass {
     try {
         $UpdateSession = New-Object -ComObject Microsoft.Update.Session
         $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $UpdateSearcher.ServerSelection = 2
+        $UpdateSearcher.Online = $true
+        if ($isMuRegistered) {
+            $UpdateSearcher.ServerSelection = 3
+            $UpdateSearcher.ServiceID = $muServiceId
+        } else {
+            $UpdateSearcher.ServerSelection = 2
+        }
         $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
     } catch {
         try {
-            $UpdateSearcher.ServerSelection = 0
+            $UpdateSearcher.ServerSelection = 2
             $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
         } catch {
-            $searchErr = $_.Exception.Message
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Invoke-WindowsUpdateSecondPass: Greska pri pretrazi kataloga: $searchErr" -Level "WARN" -Component "Update"
-            }
-            return @{
-                Success        = $false
-                InstalledCount = 0
-                RebootRequired = $false
-                Message        = "Greska pri pretrazi: $searchErr"
+            try {
+                $UpdateSearcher.ServerSelection = 0
+                $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
+            } catch {
+                $searchErr = $_.Exception.Message
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-WindowsUpdateSecondPass: Greska pri pretrazi kataloga: $searchErr" -Level "WARN" -Component "Update"
+                }
+                return @{
+                    Success        = $false
+                    InstalledCount = $bgPreInstalled
+                    RebootRequired = $bgPreReboot
+                    Message        = "Greska pri pretrazi: $searchErr"
+                }
             }
         }
     }
@@ -3773,16 +3851,19 @@ function Invoke-WindowsUpdateSecondPass {
     $rawCount = if ($SearchResult -and $SearchResult.Updates) { $SearchResult.Updates.Count } else { 0 }
     if ($rawCount -eq 0) {
         $cleanMsg = "Sistem je u potpunosti azuriran (0 zaostalih zakrpi)."
+        $totInst = $bgPreInstalled
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Windows Update: Sistem azuran ($totInst instalirano)" -FoundCount $bgPreFound -DownloadedCount $bgPreFound -InstalledCount $totInst -RebootRequired $bgPreReboot
+        try { Set-Content -Path "C:\setup\wu-secondpass-done.flag" -Value "DONE" -Encoding ASCII -Force -ErrorAction SilentlyContinue } catch {}
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Invoke-WindowsUpdateSecondPass: $cleanMsg" -Level "SUCCESS" -Component "Update"
         }
         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-            Send-IpcLog -Message $cleanMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 5
+            Send-IpcLog -Message $cleanMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 6
         }
         return @{
             Success        = $true
-            InstalledCount = 0
-            RebootRequired = $false
+            InstalledCount = $totInst
+            RebootRequired = $bgPreReboot
             Message        = $cleanMsg
         }
     }
@@ -3829,16 +3910,18 @@ function Invoke-WindowsUpdateSecondPass {
     $count = $UpdatesToInstall.Count
     if ($count -eq 0) {
         $filteredCleanMsg = "Nakon primene filtera ($wuMode) nema preostalih zakrpa za drugi prolaz. Sistem je spreman za zavrsetak."
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Windows Update: Zavrseno ($bgPreInstalled instalirano)" -FoundCount $bgPreFound -DownloadedCount $bgPreFound -InstalledCount $bgPreInstalled -RebootRequired $bgPreReboot
+        try { Set-Content -Path "C:\setup\wu-secondpass-done.flag" -Value "DONE" -Encoding ASCII -Force -ErrorAction SilentlyContinue } catch {}
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Invoke-WindowsUpdateSecondPass: $filteredCleanMsg" -Level "SUCCESS" -Component "Update"
         }
         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-            Send-IpcLog -Message $filteredCleanMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 5
+            Send-IpcLog -Message $filteredCleanMsg -Level "SUCCESS" -Tag "[UPDATE]" -Phase 6
         }
         return @{
             Success        = $true
-            InstalledCount = 0
-            RebootRequired = $false
+            InstalledCount = $bgPreInstalled
+            RebootRequired = $bgPreReboot
             Message        = $filteredCleanMsg
         }
     }
@@ -3846,9 +3929,10 @@ function Invoke-WindowsUpdateSecondPass {
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "Invoke-WindowsUpdateSecondPass: Detektovano $count zaostalih azuriranja (Rezim: $wuMode). Zapocinjem preuzimanje i instalaciju (Zaštitni Timeout: ${TimeoutSeconds}s)..." -Level "INFO" -Component "Update"
     }
+    Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Zavrsni WU: Instalacija $count azuriranja..." -FoundCount ($bgPreFound + $count) -DownloadedCount $bgPreFound -InstalledCount $bgPreInstalled -RebootRequired $bgPreReboot
 
     # 3. Kontrolisano preuzimanje i instalacija zaostalih zakrpi uz zaštitni timeout
-    $rebootReq = $false
+    $rebootReq = $bgPreReboot
     $installedOk = 0
     $timedOut = $false
     $swPass = [System.Diagnostics.Stopwatch]::StartNew()
@@ -3856,12 +3940,23 @@ function Invoke-WindowsUpdateSecondPass {
     $job = $null
     try {
         $job = Start-Job -ScriptBlock {
-            param([string[]]$titles)
+            param([string[]]$titles, [string]$muSvcId, [bool]$useMu)
             try {
                 $session = New-Object -ComObject Microsoft.Update.Session
                 $searcher = $session.CreateUpdateSearcher()
-                $searcher.ServerSelection = 0
-                $res = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                $searcher.Online = $true
+                if ($useMu -and $muSvcId) {
+                    $searcher.ServerSelection = 3
+                    $searcher.ServiceID = $muSvcId
+                } else {
+                    $searcher.ServerSelection = 2
+                }
+                try {
+                    $res = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                } catch {
+                    $searcher.ServerSelection = 0
+                    $res = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                }
                 if (-not $res -or -not $res.Updates -or $res.Updates.Count -eq 0) {
                     return @{ Success = $true; Installed = 0; Reboot = $false }
                 }
@@ -3897,7 +3992,7 @@ function Invoke-WindowsUpdateSecondPass {
                     Error   = $_.Exception.Message
                 }
             }
-        } -ArgumentList (,$updateTitles)
+        } -ArgumentList (,$updateTitles), $muServiceId, $isMuRegistered
     } catch {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Upozorenje: Nije moguće pokrenuti Start-Job za WU drugi prolaz ($($_.Exception.Message)), prelazim na direktno izvršavanje." -Level "WARN" -Component "Update"
@@ -3933,7 +4028,7 @@ function Invoke-WindowsUpdateSecondPass {
             }
 
             if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                Send-IpcProgress -Progress 9 -Phase 5 -PhaseName "Završetak" -SubPhase "Dual-Pass Update (${elapsedSec}s/${TimeoutSeconds}s)" -StatusMessage "Obrada $count zaostalih zakrpi u toku (${elapsedSec}s)..."
+                Send-IpcProgress -Progress 9 -Phase 6 -PhaseName "Završetak" -SubPhase "Dual-Pass Update (${elapsedSec}s/${TimeoutSeconds}s)" -StatusMessage "Preuzimanje i instalacija $count Windows Update zakrpi (${elapsedSec}s)..."
             }
             Start-Sleep -Seconds 2
         }
@@ -3944,7 +4039,7 @@ function Invoke-WindowsUpdateSecondPass {
                 Remove-Job $job -Force -ErrorAction SilentlyContinue
                 if ($jobResult -and $jobResult.Success) {
                     $installedOk = $jobResult.Installed
-                    $rebootReq = [bool]$jobResult.Reboot
+                    if ($jobResult.Reboot) { $rebootReq = $true }
                 } elseif ($jobResult -and $jobResult.Error) {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                         Write-ServisLog "Invoke-WindowsUpdateSecondPass: Upozorenje iz posla zaostalih zakrpi: $($jobResult.Error)" -Level "WARN" -Component "Update"
@@ -3965,7 +4060,7 @@ function Invoke-WindowsUpdateSecondPass {
             $InstallResult = $Installer.Install()
 
             if ($InstallResult) {
-                $rebootReq = [bool]$InstallResult.RebootRequired
+                if ($InstallResult.RebootRequired) { $rebootReq = $true }
                 $resCode = $InstallResult.ResultCode
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Invoke-WindowsUpdateSecondPass: Instalacija zavrsena (ResultCode: $resCode, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "Update"
@@ -3986,10 +4081,15 @@ function Invoke-WindowsUpdateSecondPass {
         } catch {}
     }
 
+    $totalInstalledFinal = $bgPreInstalled + $installedOk
+    $totalFoundFinal = $bgPreFound + $count
+    Write-BackgroundWuStatus -Status $(if ($timedOut) { "WARN" } else { "COMPLETED" }) -PhaseText "Windows Update: Zavrseno ($totalInstalledFinal/$totalFoundFinal instalirano)" -FoundCount $totalFoundFinal -DownloadedCount $totalFoundFinal -InstalledCount $totalInstalledFinal -RebootRequired $rebootReq
+    try { Set-Content -Path "C:\setup\wu-secondpass-done.flag" -Value "DONE" -Encoding ASCII -Force -ErrorAction SilentlyContinue } catch {}
+
     $finalMsg = if ($timedOut) {
         "Drugi prolaz Windows Update-a prekinut (dostignut zaštitni timeout ${TimeoutSeconds}s), servis nastavlja dalje bez zastoja."
     } else {
-        "Drugi prolaz Windows Update-a zavrsen. Obradjeno zakrpi: $count (Instalirano: $installedOk, RebootRequired: $rebootReq)."
+        "Drugi prolaz Windows Update-a zavrsen. Obradjeno zakrpi: $count (Instalirano: $installedOk, Ukupno: $totalInstalledFinal, RebootRequired: $rebootReq)."
     }
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "Invoke-WindowsUpdateSecondPass: $finalMsg" -Level $(if ($timedOut) { 'WARN' } else { 'SUCCESS' }) -Component "Update"
@@ -3997,7 +4097,7 @@ function Invoke-WindowsUpdateSecondPass {
 
     return @{
         Success        = $true
-        InstalledCount = $installedOk
+        InstalledCount = $totalInstalledFinal
         RebootRequired = $rebootReq
         Message        = $finalMsg
     }
@@ -4011,22 +4111,26 @@ function Wait-WindowsUpdateCompletionBarrier {
         [switch]$Force
     )
 
-    # Ako je pozadinski Windows Update (pokrenut odmah nakon Faze 2) vec zavrsio, preskoci dugo cekanje u Fazi 6
+    # Ako je drugi prolaz u Fazi 6 vec kompletirao proveru i pozadinski radnik je zavrsen, preskoci dodatno cekanje
     $bgStatusFile = "C:\setup\wu-bg-status.json"
-    if ((-not $Force) -and (Test-Path $bgStatusFile)) {
+    $spDoneFile = "C:\setup\wu-secondpass-done.flag"
+    if ((-not $Force) -and (Test-Path $bgStatusFile) -and (Test-Path $spDoneFile)) {
         try {
             $rawBg = Get-Content -Path $bgStatusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
             if ($rawBg) {
                 $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
                 if ($bgObj -and ("$($bgObj.status)".ToUpperInvariant() -in @("COMPLETED", "SKIPPED", "WARN"))) {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Pozadinski Windows Update nakon Faze 2 je vec kompletiran ($($bgObj.status)). Preskacem zavrsnu WU barijeru." -Level "SUCCESS" -Component "Update"
-                    }
-                    return @{
-                        Success       = $true
-                        WaitedSeconds = 0
-                        TimedOut      = $false
-                        Skipped       = $false
+                    $activeCheck = Get-Process -Name "mousocoreworker", "tiworker", "trustedinstaller" -ErrorAction SilentlyContinue
+                    if (-not $activeCheck) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Zavrsni Windows Update i pozadinski procesi su kompletirani ($($bgObj.status)). Preskacem dodatno cekanje." -Level "SUCCESS" -Component "Update"
+                        }
+                        return @{
+                            Success       = $true
+                            WaitedSeconds = 0
+                            TimedOut      = $false
+                            Skipped       = $false
+                        }
                     }
                 }
             }

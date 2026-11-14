@@ -25,19 +25,43 @@ namespace WIS.UI
         private bool _phase5LastThermalCritical = false;
         private bool _phase5LastCancelled = false;
 
+        private static bool IsPlaceholderIdentity(string val)
+        {
+            if (string.IsNullOrEmpty(val)) return true;
+            string t = val.Trim();
+            if (t.Length == 0) return true;
+            if (t.Equals("N/A", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Standardni PC", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Nepoznat model", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Učitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Ucitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Loading", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("To be filled", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Default string", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("System Product Name", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         private void GetCurrentDeviceIdentity(out string model, out string serial, out string mfg, out string sku)
         {
-            model = (ViewModel != null && !string.IsNullOrEmpty(ViewModel.ComputerModel))
-                ? ViewModel.ComputerModel
-                : (ViewModel != null && ViewModel.HardwareInfo != null && !string.IsNullOrEmpty(ViewModel.HardwareInfo.MotherboardModel)
-                    ? ViewModel.HardwareInfo.MotherboardModel
-                    : "Nepoznat model");
+            string vmModel = ViewModel != null ? ViewModel.ComputerModel : null;
+            string hwModel = (ViewModel != null && ViewModel.HardwareInfo != null) ? ViewModel.HardwareInfo.MotherboardModel : null;
+            if (!IsPlaceholderIdentity(vmModel))
+                model = vmModel.Trim();
+            else if (!IsPlaceholderIdentity(hwModel))
+                model = hwModel.Trim();
+            else
+                model = "";
 
-            serial = (ViewModel != null && !string.IsNullOrEmpty(ViewModel.SerialNumber))
-                ? ViewModel.SerialNumber
-                : (ViewModel != null && ViewModel.HardwareInfo != null && !string.IsNullOrEmpty(ViewModel.HardwareInfo.SerialNumber)
-                    ? ViewModel.HardwareInfo.SerialNumber
-                    : "Nepoznat serijski broj");
+            string vmSerial = ViewModel != null ? ViewModel.SerialNumber : null;
+            string hwSerial = (ViewModel != null && ViewModel.HardwareInfo != null) ? ViewModel.HardwareInfo.SerialNumber : null;
+            if (!IsPlaceholderIdentity(vmSerial))
+                serial = vmSerial.Trim();
+            else if (!IsPlaceholderIdentity(hwSerial))
+                serial = hwSerial.Trim();
+            else
+                serial = "";
 
             mfg = "";
             sku = "";

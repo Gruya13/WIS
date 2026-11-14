@@ -2799,7 +2799,7 @@ namespace WIS.UI
                     string hubUrl = GetServisHubBaseUrl();
                     if (string.IsNullOrEmpty(hubUrl))
                     {
-                        hubUrl = "http://192.168.170.254:8000";
+                        hubUrl = "http://192.168.170.254:8080";
                     }
 
                     string deviceId = Environment.MachineName;
@@ -5422,10 +5422,10 @@ namespace WIS.UI
 
             string[] candidates = new string[]
             {
-                "http://192.168.170.254:8000",
-                "http://192.168.170.250:8000",
-                "http://127.0.0.1:8000",
-                "http://192.168.88.50:8000"
+                "http://192.168.170.254:8080",
+                "http://192.168.170.250:8080",
+                "http://127.0.0.1:8080",
+                "http://192.168.88.50:8080"
             };
 
             foreach (var cand in candidates)
@@ -5446,7 +5446,7 @@ namespace WIS.UI
                 catch { }
             }
 
-            return "http://192.168.170.254:8000";
+            return "http://192.168.170.254:8080";
         }
 
         private void ExecuteInstallDriver(object param)

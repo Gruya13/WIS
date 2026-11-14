@@ -20,7 +20,7 @@ namespace WIS.UI
         private readonly object _logLock = new object();
 
         private string _hubUrl;
-        private int _hubPort = 8000;
+        private int _hubPort = 8080;
         private bool _isEnabled = true;
         private bool _isDisposed = false;
         private int _consecutiveFailures = 0;
@@ -264,15 +264,23 @@ namespace WIS.UI
                 }
                 catch { }
 
-                // 5. Brzo sondiranje kandidata (Fast HTTP Probe)
+                // 5. Brzo sondiranje kandidata (Fast HTTP Probe: prioritet _hubPort, zatim 8080 pa 8000)
+                int[] portsToProbe = (_hubPort == 8080)
+                    ? new int[] { 8080, 8000 }
+                    : ((_hubPort == 8000) ? new int[] { 8080, 8000 } : new int[] { _hubPort, 8080, 8000 });
+
                 foreach (var candIp in candidateIps)
                 {
-                    string testUrl = string.Format("http://{0}:{1}", candIp, _hubPort);
-                    if (ProbeHub(testUrl))
+                    foreach (var p in portsToProbe)
                     {
-                        HubUrl = testUrl;
-                        _consecutiveFailures = 0;
-                        return true;
+                        string testUrl = string.Format("http://{0}:{1}", candIp, p);
+                        if (ProbeHub(testUrl))
+                        {
+                            _hubPort = p;
+                            HubUrl = testUrl;
+                            _consecutiveFailures = 0;
+                            return true;
+                        }
                     }
                 }
             }
@@ -354,7 +362,7 @@ namespace WIS.UI
         {
             try
             {
-                var req = (HttpWebRequest)WebRequest.Create(baseUrl + "/api/devices");
+                var req = (HttpWebRequest)WebRequest.Create(baseUrl + "/api/status");
                 req.Method = "GET";
                 req.Timeout = 400;
                 req.ReadWriteTimeout = 400;

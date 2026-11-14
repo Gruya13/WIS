@@ -1277,7 +1277,7 @@ function Get-RealAppStatuses {
         @{ Id = "Shortcuts";  Name = "Precice";             Installed = $hasShortcuts;  Required = $true;    IsLaptop = $false }
     )
 
-    $curPhase = if ($Global:State -and $Global:State.Phase) { [int]$Global:State.Phase } else { 1 }
+    $curPhase = if ($Global:State -and $Global:State.Phase) { [int]$Global:State.Phase } elseif ($Global:CurrentPhase) { [int]$Global:CurrentPhase } else { 1 }
     $resultList = @()
 
     foreach ($it in $itemsDef) {
@@ -1584,7 +1584,7 @@ function Show-ServisDashboard {
 
         # 2. Status Faza (Dinamicki rasporedjen pregled punom sirinom)
         Write-Host " FAZE: " -ForegroundColor Cyan -NoNewline
-        $curPhase = if ($Global:State -and $Global:State.Phase) { [int]$Global:State.Phase } else { 1 }
+        $curPhase = if ($Global:State -and $Global:State.Phase) { [int]$Global:State.Phase } elseif ($Global:CurrentPhase) { [int]$Global:CurrentPhase } else { 1 }
         $upCycle = if ($Global:State -and $Global:State.UpdateCycle) { [int]$Global:State.UpdateCycle } else { 1 }
         $maxCycles = if ($Global:State -and $Global:State.MaxCycles) { [int]$Global:State.MaxCycles } else { 3 }
 

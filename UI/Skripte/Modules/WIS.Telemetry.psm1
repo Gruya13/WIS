@@ -83,7 +83,7 @@ function Find-ServisHub {
         $wifiIni = $wifiIniCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
         $enabled = $true
         $configuredHostRaw = "192.168.170.254,auto"
-        $configuredPort = 8000
+        $configuredPort = 8080
 
         if ($wifiIni) {
             try {
@@ -208,24 +208,28 @@ function Find-ServisHub {
 
         # 3. Brzo sondiranje kandidata (Fast Multi-Subnet HTTP Probe - maks. 400ms timeout)
         $candidatesToProbe = $candidateIps | Select-Object -First 5
+        $portsToProbe = @($configuredPort, 8080, 8000) | Select-Object -Unique
         foreach ($candHost in $candidatesToProbe) {
-            $testUrl = "http://${candHost}:${configuredPort}"
-            try {
-                $req = [System.Net.WebRequest]::Create("$testUrl/api/devices")
-                $req.Timeout = 400
-                $req.ReadWriteTimeout = 400
-                $req.Method = "GET"
-                $resp = $req.GetResponse()
-                $resp.Close()
+            foreach ($candPort in $portsToProbe) {
+                $testUrl = "http://${candHost}:${candPort}"
+                try {
+                    # Provera /api/status (ili /api/health) sprecava koliziju sa drugim servisima na portu 8000
+                    $req = [System.Net.WebRequest]::Create("$testUrl/api/status")
+                    $req.Timeout = 400
+                    $req.ReadWriteTimeout = 400
+                    $req.Method = "GET"
+                    $resp = $req.GetResponse()
+                    $resp.Close()
 
-                $Global:ServisHubUrl = $testUrl
-                $Global:HubFailCount = 0
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Uspesno povezan na Centralni Servisni Hub: $testUrl (Podmreza prepoznata)" -Level "SUCCESS" -Component "Telemetry"
+                    $Global:ServisHubUrl = $testUrl
+                    $Global:HubFailCount = 0
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Uspesno povezan na Centralni Servisni Hub: $testUrl (Podmreza prepoznata)" -Level "SUCCESS" -Component "Telemetry"
+                    }
+                    return $testUrl
+                } catch {
+                    # Prelazak na sledeci port/adresu
                 }
-                return $testUrl
-            } catch {
-                # Prelazak na sledecu adresu/podmrezu
             }
         }
 

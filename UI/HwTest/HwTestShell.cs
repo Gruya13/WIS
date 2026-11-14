@@ -78,15 +78,15 @@ namespace WIS.HwTest
             if (!string.IsNullOrEmpty(sku) && string.IsNullOrEmpty(_hwInfo.SystemSkuNumber))
                 _hwInfo.SystemSkuNumber = sku;
 
-            bool emptyModelArg = string.IsNullOrEmpty(modelName) || modelName.Equals("Nepoznat model", StringComparison.OrdinalIgnoreCase);
+            bool emptyModelArg = IsPlaceholderIdentity(modelName);
             _modelName = (!emptyModelArg)
                 ? modelName
-                : (!string.IsNullOrEmpty(_hwInfo.ModelName) ? _hwInfo.ModelName : "Nepoznat model");
+                : (!IsPlaceholderIdentity(_hwInfo.ModelName) ? _hwInfo.ModelName : "Nepoznat model");
 
-            bool emptySnArg = string.IsNullOrEmpty(serialNumber) || serialNumber.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase);
+            bool emptySnArg = IsPlaceholderIdentity(serialNumber);
             _serialNumber = (!emptySnArg)
                 ? serialNumber
-                : (!string.IsNullOrEmpty(_hwInfo.SerialNumber) ? _hwInfo.SerialNumber : "Nepoznat serijski broj");
+                : (!IsPlaceholderIdentity(_hwInfo.SerialNumber) ? _hwInfo.SerialNumber : "Nepoznat serijski broj");
 
             if (string.IsNullOrEmpty(_hwInfo.ModelName)) _hwInfo.ModelName = _modelName;
             if (string.IsNullOrEmpty(_hwInfo.SerialNumber)) _hwInfo.SerialNumber = _serialNumber;
@@ -352,19 +352,37 @@ namespace WIS.HwTest
             _autoStressCancel.Cancel();
         }
 
+        private static bool IsPlaceholderIdentity(string val)
+        {
+            if (string.IsNullOrEmpty(val)) return true;
+            string t = val.Trim();
+            if (t.Length == 0) return true;
+            if (t.Equals("N/A", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Standardni PC", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Nepoznat model", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Učitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Ucitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Loading", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("To be filled", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Default string", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("System Product Name", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
         public void UpdateIdentity(string modelName, string serialNumber)
         {
             bool changed = false;
-            if (!string.IsNullOrEmpty(modelName) && !modelName.Equals("Nepoznat model", StringComparison.OrdinalIgnoreCase))
+            if (!IsPlaceholderIdentity(modelName))
             {
-                _modelName = modelName;
-                if (_hwInfo != null) _hwInfo.ModelName = modelName;
+                _modelName = modelName.Trim();
+                if (_hwInfo != null) _hwInfo.ModelName = _modelName;
                 changed = true;
             }
-            if (!string.IsNullOrEmpty(serialNumber) && !serialNumber.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase))
+            if (!IsPlaceholderIdentity(serialNumber))
             {
-                _serialNumber = serialNumber;
-                if (_hwInfo != null) _hwInfo.SerialNumber = serialNumber;
+                _serialNumber = serialNumber.Trim();
+                if (_hwInfo != null) _hwInfo.SerialNumber = _serialNumber;
                 changed = true;
             }
             if (changed && _subTitleBlock != null)
@@ -416,26 +434,44 @@ namespace WIS.HwTest
             _testItems.Add(autoSecurity);
 
             // === PERIFERNI TESTOVI SERVISERA ===
-            // 1. Ekran (uvek prisutan)
-            _testItems.Add(new TestItemResult("display", "Ekran (mrtvi pikseli)", "Provera matrice ekrana (6 boja + gradijent), WMI osvetljenja i HDMI izlaza"));
+            // Na Desktop racunaru rucni testovi periferija (ekran, tastatura, zvuk, USB...) nisu obavezni
+            // i automatski dobijaju status NotApplicable (serviser ih i dalje moze rucno prikazati i pokrenuti).
+            bool isLaptop = _hwInfo.IsLaptop;
 
-            // 2. Tastatura (uvek prisutna)
-            _testItems.Add(new TestItemResult("keyboard", "Tastatura", "Ispitivanje odziva svih fizičkih tastera i provera zaglavljenih kontakata"));
+            // 1. Ekran (integrisan na laptopu; na Desktopu je eksterni monitor)
+            TestItemResult disp = new TestItemResult("display", "Ekran (mrtvi pikseli)", "Provera matrice ekrana (6 boja + gradijent), WMI osvetljenja i HDMI izlaza");
+            if (!isLaptop)
+            {
+                disp.Status = TestStatus.NotApplicable;
+                disp.Reason = "Nije primenljivo — Desktop računar (eksterni monitor)";
+            }
+            _testItems.Add(disp);
+
+            // 2. Tastatura (integrisana na laptopu; na Desktopu je eksterna tastatura)
+            TestItemResult kbd = new TestItemResult("keyboard", "Tastatura", "Ispitivanje odziva svih fizičkih tastera i provera zaglavljenih kontakata");
+            if (!isLaptop)
+            {
+                kbd.Status = TestStatus.NotApplicable;
+                kbd.Reason = "Nije primenljivo — Desktop računar (eksterna tastatura)";
+            }
+            _testItems.Add(kbd);
 
             // 3. Touchpad / TrackPoint
-            bool tpExpected = _hwInfo.HasTouchpad || _hwInfo.IsLaptop || _hwInfo.FactoryTouchpad == true || _hwInfo.TouchpadDisabledInBios;
+            bool tpExpected = isLaptop && (_hwInfo.HasTouchpad || _hwInfo.FactoryTouchpad == true || _hwInfo.TouchpadDisabledInBios);
             bool hasTrackPoint = _hwInfo.HasTrackPoint || _hwInfo.IsThinkPad;
             string tpTitle = hasTrackPoint ? "Touchpad / TrackPoint" : "Touchpad";
             string tpDesc = hasTrackPoint
                 ? "Provera kursora, 4 ugla, L/D klika i TrackPoint srednjeg tastera"
                 : "Test praćenja pokazivača u 4 ugla, levog/desnog klika i skrola sa dva prsta";
-            if (_hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
+            if (isLaptop && _hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
                 tpDesc = "⚠️ UPOZORENJE: Touchpad je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchpadBiosStatus + ")!";
             TestItemResult tp = new TestItemResult("touchpad", tpTitle, tpDesc);
             if (!tpExpected)
             {
                 tp.Status = TestStatus.NotApplicable;
-                tp.Reason = "Uređaj fabrički nema touchpad (Desktop konfiguracija)";
+                tp.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar (eksterne periferije)"
+                    : "Uređaj fabrički nema touchpad";
             }
             else if (_hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
             {
@@ -445,23 +481,25 @@ namespace WIS.HwTest
             _testItems.Add(tp);
 
             // 4. Touchscreen (+ Stylus olovka)
-            bool tsExpected = _hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.TouchscreenDisabledInBios || _hwInfo.FactoryTouchscreen == true;
+            bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.TouchscreenDisabledInBios || _hwInfo.FactoryTouchscreen == true);
             string tsTitle = _hwInfo.HasStylusPen ? "Touchscreen + Olovka (Stylus)" : "Ekran na dodir (Touchscreen)";
             string tsDesc = _hwInfo.HasStylusPen
                 ? "Prolazak kroz lavirint prstom, multitouch detekcija (+ provera Stylus olovke i pritiska)"
                 : "Prolazak kroz lavirint prstom i multitouch detekcija";
-            if (_hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
+            if (isLaptop && _hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
                 tsDesc = "⚠️ FABRIČKI PRISUTAN — Touchscreen je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchscreenBiosStatus + ")!";
-            else if (!_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
+            else if (isLaptop && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
                 tsDesc = "⚠️ FABRIČKI PRISUTAN (" + (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP") + "), ali nije aktivan u Windowsu!";
 
             TestItemResult ts = new TestItemResult("touchscreen", tsTitle, tsDesc);
             if (!tsExpected)
             {
                 ts.Status = TestStatus.NotApplicable;
-                ts.Reason = !string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence)
-                    ? ("Ekran nije osetljiv na dodir (" + _hwInfo.FactoryTouchscreenEvidence + ")")
-                    : "Displej fabrički ne podržava unos dodirom";
+                ts.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar (eksterni monitor)"
+                    : (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence)
+                        ? ("Ekran nije osetljiv na dodir (" + _hwInfo.FactoryTouchscreenEvidence + ")")
+                        : "Displej fabrički ne podržava unos dodirom");
             }
             else if (!_hwInfo.HasTouchscreen)
             {
@@ -473,29 +511,33 @@ namespace WIS.HwTest
             _testItems.Add(ts);
 
             // 5. Zvuk (Zvučnici)
-            bool audioExpected = _hwInfo.HasSpeakers || _hwInfo.IsLaptop || _hwInfo.FactorySpeakers == true;
+            bool audioExpected = isLaptop && (_hwInfo.HasSpeakers || _hwInfo.FactorySpeakers == true);
             TestItemResult audio = new TestItemResult("audio", "Zvuk (Levi / Desni kanal)", "Test stereo zvučnika izgovorom nasumičnih cifara na levom i desnom kanalu");
             if (!audioExpected)
             {
                 audio.Status = TestStatus.NotApplicable;
-                audio.Reason = "Uređaj nema detektovane zvučnike (Desktop bez audio izlaza)";
+                audio.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar (eksterni zvučnici)"
+                    : "Uređaj nema detektovane zvučnike";
             }
             _testItems.Add(audio);
 
             // 6. Mikrofon
-            bool micExpected = _hwInfo.HasMicrophone || _hwInfo.MicrophoneDisabledInBios || _hwInfo.FactoryMicrophone == true ||
-                               (_hwInfo.IsLaptop && _hwInfo.FactoryMicrophone != false && (_hwInfo.HasWebcam || _hwInfo.FactoryWebcam == true));
+            bool micExpected = isLaptop && (_hwInfo.HasMicrophone || _hwInfo.MicrophoneDisabledInBios || _hwInfo.FactoryMicrophone == true ||
+                               (_hwInfo.FactoryMicrophone != false && (_hwInfo.HasWebcam || _hwInfo.FactoryWebcam == true)));
             string micDesc = "VU metar nivoa glasa i automatsko preslušavanje snimka";
-            if (_hwInfo.MicrophoneDisabledInBios && !_hwInfo.HasMicrophone)
+            if (isLaptop && _hwInfo.MicrophoneDisabledInBios && !_hwInfo.HasMicrophone)
                 micDesc = "⚠️ FABRIČKI PRISUTAN — Mikrofon je ONEMOGUĆEN u BIOS-u (" + _hwInfo.MicrophoneBiosStatus + ")!";
-            else if (!_hwInfo.HasMicrophone && micExpected)
+            else if (isLaptop && !_hwInfo.HasMicrophone && micExpected)
                 micDesc = "⚠️ FABRIČKI OČEKIVAN MIKROFON — Nije detektovan aktivan capture uređaj u Windowsu!";
 
             TestItemResult mic = new TestItemResult("mic", "Mikrofon", micDesc);
             if (!micExpected)
             {
                 mic.Status = TestStatus.NotApplicable;
-                mic.Reason = "Uređaj nema ugrađeni mikrofon";
+                mic.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar"
+                    : "Uređaj nema ugrađeni mikrofon";
             }
             else if (!_hwInfo.HasMicrophone)
             {
@@ -505,21 +547,23 @@ namespace WIS.HwTest
             _testItems.Add(mic);
 
             // 7. Kamera (Web / IR)
-            bool camExpected = _hwInfo.HasWebcam || _hwInfo.HasIrCamera || _hwInfo.WebcamPnpPresent ||
-                               _hwInfo.CameraDisabledInBios || _hwInfo.FactoryWebcam == true || _hwInfo.FactoryIrCamera == true;
+            bool camExpected = isLaptop && (_hwInfo.HasWebcam || _hwInfo.HasIrCamera || _hwInfo.WebcamPnpPresent ||
+                               _hwInfo.CameraDisabledInBios || _hwInfo.FactoryWebcam == true || _hwInfo.FactoryIrCamera == true);
             string camDesc = "Očitavanje otštampanog QR koda kamerom i provera IR senzora";
-            if (_hwInfo.CameraDisabledInBios && !_hwInfo.HasWebcam)
+            if (isLaptop && _hwInfo.CameraDisabledInBios && !_hwInfo.HasWebcam)
                 camDesc = "⚠️ FABRIČKI PRISUTNA — Kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
-            else if (!_hwInfo.HasWebcam && camExpected)
+            else if (isLaptop && !_hwInfo.HasWebcam && camExpected)
                 camDesc = "⚠️ FABRIČKI PRISUTNA KAMERA (" + (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence) ? _hwInfo.FactoryWebcamEvidence : "PnP") + "), ali nije aktivna u Windowsu!";
 
             TestItemResult cam = new TestItemResult("camera", "Kamera (QR kod i IR)", camDesc);
             if (!camExpected)
             {
                 cam.Status = TestStatus.NotApplicable;
-                cam.Reason = !string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence)
-                    ? ("Uređaj fabrički nema kameru (" + _hwInfo.FactoryWebcamEvidence + ")")
-                    : "Video kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji";
+                cam.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar"
+                    : (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence)
+                        ? ("Uređaj fabrički nema kameru (" + _hwInfo.FactoryWebcamEvidence + ")")
+                        : "Video kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
             }
             else if (!_hwInfo.HasWebcam && !_hwInfo.HasIrCamera)
             {
@@ -528,29 +572,37 @@ namespace WIS.HwTest
             }
             _testItems.Add(cam);
 
-            // 8. USB portovi (uvek prisutni)
-            _testItems.Add(new TestItemResult("usb", "USB portovi", "Verifikacija svih spoljnih USB portova ubacivanjem fleš diska"));
+            // 8. USB portovi (integrisani na laptopu; na Desktopu nisu obavezni u Fazi 5)
+            TestItemResult usb = new TestItemResult("usb", "USB portovi", "Verifikacija svih spoljnih USB portova ubacivanjem fleš diska");
+            if (!isLaptop)
+            {
+                usb.Status = TestStatus.NotApplicable;
+                usb.Reason = "Nije primenljivo — Desktop računar";
+            }
+            _testItems.Add(usb);
 
             // 9. Čitač otiska prsta (OS + PnP + BIOS + OEM BOM provera; ako BOM nije dostupan na laptopu ne krijemo ga naslepo)
-            bool fpExpected = _hwInfo.HasFingerprint ||
+            bool fpExpected = isLaptop && (_hwInfo.HasFingerprint ||
                               _hwInfo.FingerprintDisabledInBios ||
                               _hwInfo.FactoryFingerprint == true ||
-                              (_hwInfo.IsLaptop && !_hwInfo.FactoryBomLoaded && _hwInfo.FactoryFingerprint != false);
+                              (!_hwInfo.FactoryBomLoaded && _hwInfo.FactoryFingerprint != false));
             string fpDesc = "Provera odziva biometrijskog senzora otiska prsta preko Windows Biometric API-ja";
-            if (_hwInfo.FingerprintDisabledInBios)
+            if (isLaptop && _hwInfo.FingerprintDisabledInBios)
                 fpDesc = "⚠️ UPOZORENJE: Uređaj je ONEMOGUĆEN u podešavanjima BIOS-a (" + _hwInfo.FingerprintBiosStatus + ")!";
-            else if (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
+            else if (isLaptop && !_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
                 fpDesc = "⚠️ FABRIČKI PRISUTAN U OEM BOM-U (" + _hwInfo.FactoryFingerprintEvidence + "), ali nije detektovan u Windowsu!";
-            else if (!_hwInfo.HasFingerprint && _hwInfo.IsLaptop && !_hwInfo.FactoryBomLoaded)
+            else if (isLaptop && !_hwInfo.HasFingerprint && !_hwInfo.FactoryBomLoaded)
                 fpDesc = "⚠️ Senzor nije automatski detektovan (fabrički BOM nedostupan) — ako laptop ima čitač otiska, testirajte ili preskočite ako ga nema.";
 
             TestItemResult fp = new TestItemResult("fingerprint", "Čitač otiska prsta", fpDesc);
             if (!fpExpected)
             {
                 fp.Status = TestStatus.NotApplicable;
-                fp.Reason = !string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence)
-                    ? ("Čitač otiska prsta nije fabrički ugrađen (" + _hwInfo.FactoryFingerprintEvidence + ")")
-                    : "Čitač otiska prsta nije pronađen ni u OS-u ni u fabričkoj specifikaciji";
+                fp.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar"
+                    : (!string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence)
+                        ? ("Čitač otiska prsta nije fabrički ugrađen (" + _hwInfo.FactoryFingerprintEvidence + ")")
+                        : "Čitač otiska prsta nije pronađen ni u OS-u ni u fabričkoj specifikaciji");
             }
             else if (_hwInfo.FingerprintDisabledInBios)
             {
@@ -1833,6 +1885,39 @@ namespace WIS.HwTest
                 }
 
                 // 3. Interaktivni periferijski testovi
+                bool hasPendingManual = false;
+                for (int i = 0; i < _testItems.Count; i++)
+                {
+                    TestItemResult t = _testItems[i];
+                    if (!t.IsAutomated && t.Status == TestStatus.Pending)
+                    {
+                        hasPendingManual = true;
+                        break;
+                    }
+                }
+
+                if (!hasPendingManual)
+                {
+                    Dispatcher.Invoke(new Action(() =>
+                    {
+                        bool alreadyNotified;
+                        lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
+                        if (alreadyNotified) return;
+
+                        string skipPeriphReason = (_hwInfo != null && !_hwInfo.IsLaptop)
+                            ? "Desktop računar — ručni testovi periferija nisu potrebni"
+                            : "Nema primenljivih periferijskih testova";
+                        EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija", "SKIPPED_DONE", skipPeriphReason);
+                        if (_autoSectionStatus != null)
+                        {
+                            _autoSectionStatus.Text = "✓ " + skipPeriphReason + " — automatski završavam Fazu 5 i snimam izveštaj.";
+                        }
+                        UpdateSummaryBadge();
+                        SaveCurrentReport(false, false, "", false);
+                    }));
+                    return;
+                }
+
                 EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija", "RUNNING", "");
                 Dispatcher.Invoke(new Action(() =>
                 {

@@ -105,6 +105,29 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("Resolve-MissingDriversFromHub", self.hw_src)
         self.assertIn("/api/drivers/resolve", self.hw_src)
 
+    def test_06_wis_task_227_wu_completeness_hub_8080_and_apps_fixes(self):
+        """Proverava completeness WU logiku (MU katalog, bez laznog COMPLETED, Phase4 restart radnika), 8080/status i Apps ispravke."""
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        tel_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Telemetry.psm1").read_text(encoding="utf-8")
+
+        # 1. WU completeness
+        self.assertIn("7971f918-a847-4430-9279-4a52d1efe18d", self.update_src)
+        self.assertIn("wu-secondpass-done.flag", self.update_src)
+        self.assertNotIn('Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($instCnt/$fndCnt)"', self.update_src)
+        self.assertIn('Invoke-WisStep -Phase 2 -StepId "P2.WuDrivers" -Title "Hardverski drajveri preko Windows Update-a" -Test {', self.update_src)
+        self.assertNotIn('-StepId "P2.WuDrivers" -Title "Hardverski drajveri preko Windows Update-a" -JournalTtlHours 6', self.update_src)
+        self.assertIn("Start-BackgroundWindowsUpdateWorker", apps_src)
+
+        # 2. Port 8080 + /api/status
+        self.assertIn("$configuredPort = 8080", tel_src)
+        self.assertIn('"$testUrl/api/status"', tel_src)
+
+        # 3. Office Ohook + PdfDefault GPO + CurrentPhase=4
+        self.assertIn("vfs\\System\\sppc.dll", apps_src)
+        self.assertIn("/Ohook /S", apps_src)
+        self.assertIn("AppAssoc_Acrobat.xml", apps_src)
+        self.assertIn("$Global:CurrentPhase = 4", apps_src)
+
 
 if __name__ == "__main__":
     unittest.main()

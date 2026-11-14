@@ -617,6 +617,24 @@ class TestHwTestComponents(unittest.TestCase):
         ):
             self.assertIn(token, build_ui_src)
 
+    def test_wis_task_227_desktop_peripheral_skip_and_identity_guard(self):
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        ui_hwtest_src = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+
+        # 1. Na Desktopu se svi rucni testovi periferija oznacavaju kao NotApplicable
+        self.assertIn("bool isLaptop = _hwInfo.IsLaptop;", shell_src)
+        self.assertIn("Nije primenljivo — Desktop računar", shell_src)
+        self.assertIn("bool hasPendingManual = false;", shell_src)
+        self.assertIn("Desktop računar — ručni testovi periferija nisu potrebni", shell_src)
+        self.assertIn('"SKIPPED_DONE"', shell_src)
+
+        # 2. Placeholder identitet ("Učitavanje konfiguracije...", "Standardni PC", "N/A") ne prepisuje WMI
+        self.assertIn("IsPlaceholderIdentity(", shell_src)
+        self.assertIn("IsPlaceholderIdentity(", ui_hwtest_src)
+        self.assertIn("TelemetryService", (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8"))
+        self.assertIn("private int _hubPort = 8080;", (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8"))
+        self.assertIn('baseUrl + "/api/status"', (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -84,6 +84,9 @@ try {
 # - ZABRANA: Faza 6 NE SME automatski brisati C:\setup i NE SME pokretati shutdown.exe!
 # - Postavljanje progresa na 100% i uspešan izlazak sa exit 0
 try {
+    $Global:CurrentPhase = 6
+    if (-not $Global:State) { $Global:State = @{} }
+    $Global:State.Phase = 6
     Send-IpcProgress -Progress 5 -Phase 6 -PhaseName "Završetak" -SubPhase "Inicijalizacija" -StatusMessage "Priprema završnih procedura..."
 
     if (-not (Test-Path $LocalSetupDir)) {
