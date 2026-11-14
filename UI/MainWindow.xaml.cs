@@ -2484,12 +2484,45 @@ namespace WIS.UI
             }
             if (_telemetryService != null)
             {
+                string diagStatus;
+                if (isSensorUnavailable || string.Equals(_lastStressStatus, "UNKNOWN", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagStatus = "SENSOR_UNAVAILABLE";
+                }
+                else if (string.Equals(_lastStressStatus, "WARN", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagStatus = "WARN";
+                }
+                else if (string.Equals(_lastStressStatus, "ERROR", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagStatus = "ERROR";
+                }
+                else if (string.Equals(_lastStressStatus, "CANCELLED", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagStatus = "CANCELLED";
+                }
+                else if (!isSensorUnavailable && _lastStressMaxTemp > 0.5f && string.Equals(_lastStressStatus, "PASS", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagStatus = "OK";
+                }
+                else
+                {
+                    diagStatus = "NOT_VERIFIED";
+                }
+
+                bool coolingVerified = string.Equals(diagStatus, "OK", StringComparison.OrdinalIgnoreCase);
+
                 var compData = new Dictionary<string, object>
                 {
                     { "phase", 6 },
                     { "phase_name", "Zavrsetak" },
                     { "status", "SUCCESS" },
                     { "stress_status", _lastStressStatus },
+                    { "diagnostics_status", diagStatus },
+                    { "cooling_verified", coolingVerified },
+                    { "manual_check_required", !coolingVerified },
+                    { "max_cpu_temp_c", _lastStressMaxTemp },
+                    { "sensor_available", !isSensorUnavailable },
                     { "duration", ViewModel.DurationString },
                     { "apps_summary", ViewModel.AppsSummaryText }
                 };

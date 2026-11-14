@@ -128,6 +128,37 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("AppAssoc_Acrobat.xml", apps_src)
         self.assertIn("$Global:CurrentPhase = 4", apps_src)
 
+    def test_07_wis_task_229_wu_barrier_fast_exit_and_lifecycle_diagnostics(self):
+        """Proverava brzo izlaženje WU barijere (wu-secondpass-done.flag, bez idle MoUsoCoreWorker) i očuvanje cooling_verified."""
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8")
+        ui_src = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+
+        # 1. SecondPass i Wait-WindowsUpdateCompletionBarrier bez 15-min zastoja
+        self.assertIn("while ($waitSw.Elapsed.TotalSeconds -lt 45)", self.update_src)
+        self.assertNotIn("while ($waitSw.Elapsed.TotalSeconds -lt 180)", self.update_src)
+        barrier_block = self.update_src.split("function Wait-WindowsUpdateCompletionBarrier", 1)[1]
+        self.assertIn("[int]$TimeoutSeconds = 60", barrier_block)
+        self.assertNotIn("[int]$TimeoutSeconds = 900", barrier_block)
+        self.assertIn('$wuProcesses = @("tiworker", "trustedinstaller")', barrier_block)
+        self.assertNotIn('"mousocoreworker", "tiworker", "trustedinstaller", "usoclient"', barrier_block)
+        self.assertIn("TotalProcessorTime.TotalMilliseconds", barrier_block)
+        self.assertIn("if (-not $bgStillActive)", barrier_block)
+
+        # 2. Uklonjen dupli 900s poziv u Phase6 i Invoke-Phase6Finalize
+        self.assertIn("Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 45", phase6_src)
+        self.assertNotIn("Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 900", phase6_src)
+        self.assertNotIn("Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 900", cleanup_src)
+        self.assertIn("$spAlreadyDone =", cleanup_src)
+
+        # 3. COMPLETED lifecycle čuva cooling_verified / diagnostics_status
+        self.assertIn("Get-WisTelemetryDiagnostics -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir", cleanup_src)
+        self.assertIn('{ "diagnostics_status", diagStatus }', ui_src)
+        self.assertIn('{ "cooling_verified", coolingVerified }', ui_src)
+        self.assertIn('{ "manual_check_required", !coolingVerified }', ui_src)
+        self.assertIn('{ "max_cpu_temp_c", _lastStressMaxTemp }', ui_src)
+        self.assertIn('{ "sensor_available", !isSensorUnavailable }', ui_src)
+
 
 if __name__ == "__main__":
     unittest.main()

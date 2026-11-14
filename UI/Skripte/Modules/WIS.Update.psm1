@@ -3682,8 +3682,8 @@ function Invoke-WindowsUpdateSecondPass {
     .DESCRIPTION
         U novom redizajniranom toku, pozadinski Windows Update krece odmah nakon Faze 2 i radi tokom Faza 3, 4 i 5.
         Kada proces stigne u Fazu 6, ova funkcija proverava C:\setup\wu-bg-status.json:
-        - Ako je pozadinski WU vec zavrsen (COMPLETED / SKIPPED / WARN), odmah vraca rezultat bez ponovnog skeniranja.
-        - Ako pozadinski WU upravo privodi kraju instalaciju, saceka njegovo kompletiranje (do 90s) bez pokretanja novog ciklusa.
+        - Ako je pozadinski WU vec zavrsen (COMPLETED / SKIPPED / WARN), odmah prelazi na zavrsnu WUA proveru.
+        - Ako pozadinski WU upravo privodi kraju instalaciju, saceka njegovo kompletiranje (do 45s) pre zavrsne WUA provere.
     .COMPATIBILITY
         Windows PowerShell 5.1+
     #>
@@ -3700,7 +3700,7 @@ function Invoke-WindowsUpdateSecondPass {
 
     if (Test-Path $bgStatusFile) {
         $waitSw = [System.Diagnostics.Stopwatch]::StartNew()
-        while ($waitSw.Elapsed.TotalSeconds -lt 180) {
+        while ($waitSw.Elapsed.TotalSeconds -lt 45) {
             if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Invoke-WindowsUpdateSecondPass: Operater zatrazio preskakanje cekanja na pozadinski WU." -Level "WARN" -Component "Update"
@@ -4106,42 +4106,62 @@ function Invoke-WindowsUpdateSecondPass {
 function Wait-WindowsUpdateCompletionBarrier {
     [CmdletBinding()]
     param(
-        [int]$TimeoutSeconds = 900,
+        [int]$TimeoutSeconds = 60,
         [int]$PollIntervalSeconds = 4,
         [switch]$Force
     )
 
-    # Ako je drugi prolaz u Fazi 6 vec kompletirao proveru i pozadinski radnik je zavrsen, preskoci dodatno cekanje
+    # Ako je drugi prolaz u Fazi 6 vec kompletirao proveru i nas pozadinski WU radnik nije aktivan,
+    # ne cekamo Windowsove idle servise (MoUsoCoreWorker / TrustedInstaller / TiWorker ostaju u RAM-u na Win11 24H2)
     $bgStatusFile = "C:\setup\wu-bg-status.json"
     $spDoneFile = "C:\setup\wu-secondpass-done.flag"
-    if ((-not $Force) -and (Test-Path $bgStatusFile) -and (Test-Path $spDoneFile)) {
-        try {
-            $rawBg = Get-Content -Path $bgStatusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-            if ($rawBg) {
-                $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
-                if ($bgObj -and ("$($bgObj.status)".ToUpperInvariant() -in @("COMPLETED", "SKIPPED", "WARN"))) {
-                    $activeCheck = Get-Process -Name "mousocoreworker", "tiworker", "trustedinstaller" -ErrorAction SilentlyContinue
-                    if (-not $activeCheck) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Zavrsni Windows Update i pozadinski procesi su kompletirani ($($bgObj.status)). Preskacem dodatno cekanje." -Level "SUCCESS" -Component "Update"
-                        }
-                        return @{
-                            Success       = $true
-                            WaitedSeconds = 0
-                            TimedOut      = $false
-                            Skipped       = $false
+    if ((-not $Force) -and (Test-Path $spDoneFile)) {
+        $bgStillActive = $false
+        $bgStateLabel = "DONE"
+        if (Test-Path $bgStatusFile) {
+            try {
+                $rawBg = Get-Content -Path $bgStatusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($rawBg) {
+                    $bgObj = ConvertFrom-Json -InputObject $rawBg -ErrorAction SilentlyContinue
+                    if ($bgObj) {
+                        $bgSt = "$($bgObj.status)".ToUpperInvariant()
+                        $bgStateLabel = $bgSt
+                        if ($bgSt -in @("STARTING", "SEARCHING", "DOWNLOADING", "INSTALLING", "HARVESTING", "RUNNING")) {
+                            $bgPid = if ($null -ne $bgObj.pid) { [int]$bgObj.pid } else { 0 }
+                            if ($bgPid -gt 0 -and (Get-Process -Id $bgPid -ErrorAction SilentlyContinue)) {
+                                $bgStillActive = $true
+                            }
                         }
                     }
                 }
+            } catch {}
+        }
+
+        if (-not $bgStillActive) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Zavrsni Windows Update (wu-secondpass-done.flag) i pozadinski radnik su kompletirani ($bgStateLabel). Preskacem dodatno cekanje." -Level "SUCCESS" -Component "Update"
             }
-        } catch {}
+            return @{
+                Success       = $true
+                WaitedSeconds = 0
+                TimedOut      = $false
+                Skipped       = $false
+            }
+        }
     }
 
     $wuMode = Get-WUConfigMode
-    if ($wuMode -eq "DriversOnly" -and (-not $Force) -and $TimeoutSeconds -gt 45) {
-        $TimeoutSeconds = 45
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Rezim rada je DriversOnly - skracujem maksimalno cekanje na pozadinske WU procese na 45s kako servis ne bi cekao preuzimanje OS LCU paketa." -Level "INFO" -Component "Update"
+    if (-not $Force) {
+        if ($wuMode -eq "DriversOnly" -and $TimeoutSeconds -gt 30) {
+            $TimeoutSeconds = 30
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Rezim rada je DriversOnly - skracujem maksimalno cekanje na pozadinske WU procese na 30s kako servis ne bi cekao preuzimanje OS LCU paketa." -Level "INFO" -Component "Update"
+            }
+        } elseif ($TimeoutSeconds -gt 60) {
+            $TimeoutSeconds = 60
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Ogranicavam maksimalno cekanje na pozadinske WU procese na 60s." -Level "INFO" -Component "Update"
+            }
         }
     }
 
@@ -4159,8 +4179,9 @@ function Wait-WindowsUpdateCompletionBarrier {
     $timedOut = $false
     $skipped = $false
 
-    # Pozadinski procesi vezani za preuzimanje i instalaciju Windows Update-a
-    $wuProcesses = @("mousocoreworker", "tiworker", "trustedinstaller", "usoclient")
+    # Pratimo iskljucivo stvarne instalaterske servise (ne idle MoUsoCoreWorker / UsoClient orkestrator na Win11 24H2)
+    $wuProcesses = @("tiworker", "trustedinstaller")
+    $prevCpuByPid = @{}
 
     while ($true) {
         # 1. Provera da li je operater u GUI-ju kliknuo Preskoci / Skip
@@ -4182,14 +4203,42 @@ function Wait-WindowsUpdateCompletionBarrier {
             break
         }
 
-        # 3. Detekcija aktivnih procesa
+        # 3. Detekcija aktivnih instalaterskih procesa (samo ako zaista trose CPU, ne idle cekanje SCM-a)
         $activeWuProcs = @()
+        $currentSeenPids = @{}
         foreach ($procName in $wuProcesses) {
             $procs = Get-Process -Name $procName -ErrorAction SilentlyContinue
             if ($procs) {
                 foreach ($p in $procs) {
-                    $activeWuProcs += "$($p.ProcessName) (PID: $($p.Id))"
+                    $pidKey = [int]$p.Id
+                    $currentSeenPids[$pidKey] = $true
+                    $cpuMs = -1.0
+                    try { $cpuMs = [double]$p.TotalProcessorTime.TotalMilliseconds } catch { $cpuMs = -1.0 }
+
+                    $isCpuActive = $false
+                    if ($cpuMs -lt 0) {
+                        $isCpuActive = $true
+                    } elseif (-not $prevCpuByPid.ContainsKey($pidKey)) {
+                        $prevCpuByPid[$pidKey] = $cpuMs
+                        # Na prvom uzorku ostavljamo jedno ocitavanje da naredni prolaz izmeri CPU deltu
+                        $isCpuActive = $true
+                    } else {
+                        $deltaMs = $cpuMs - [double]$prevCpuByPid[$pidKey]
+                        $prevCpuByPid[$pidKey] = $cpuMs
+                        if ($deltaMs -ge 150.0) {
+                            $isCpuActive = $true
+                        }
+                    }
+
+                    if ($isCpuActive) {
+                        $activeWuProcs += "$($p.ProcessName) (PID: $($p.Id))"
+                    }
                 }
+            }
+        }
+        foreach ($oldPid in @($prevCpuByPid.Keys)) {
+            if (-not $currentSeenPids.ContainsKey($oldPid)) {
+                $prevCpuByPid.Remove($oldPid)
             }
         }
 

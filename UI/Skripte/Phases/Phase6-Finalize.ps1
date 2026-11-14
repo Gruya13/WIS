@@ -147,11 +147,11 @@ try {
         }
     }
 
-    # 3b. Windows Update barijera - čeka da se u pozadini završe preuzimanja i instalacije zakrpi (MoUsoCoreWorker, TiWorker, BITS)
+    # 3b. Windows Update barijera - čeka da se završe aktivni instalaterski WU procesi ili BITS transferi (max 45s; odmah izlazi ako je wu-secondpass-done.flag prisutan)
     if (Get-Command Wait-WindowsUpdateCompletionBarrier -ErrorAction SilentlyContinue) {
         Send-IpcProgress -Progress 12 -Phase 6 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Čekanje završetka pozadinskih procesa Windows Update-a..."
         try {
-            Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 900
+            Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 45
         } catch {
             $wuBarrierErr = $_.Exception.Message
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {

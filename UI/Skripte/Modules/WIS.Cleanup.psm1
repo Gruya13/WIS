@@ -1046,14 +1046,21 @@ function Invoke-Phase6Finalize {
         Wait-ServisUICooperativePause -CheckpointName "Faza 6 - Pocetak"
     }
 
-    # 0. Windows Update barijera - provera i čekanje da se zaostali pozadinski poslovi preuzimanja/instalacije završe
-    if (Get-Command Wait-WindowsUpdateCompletionBarrier -ErrorAction SilentlyContinue) {
+    # 0. Windows Update barijera - pokreće se samo kratko (max 15s) i isključivo ako Phase6 nije već završila Invoke-WindowsUpdateSecondPass
+    $spDoneCandidate1 = Join-Path $LocalSetupDir "wu-secondpass-done.flag"
+    $spDoneCandidate2 = "C:\setup\wu-secondpass-done.flag"
+    $spAlreadyDone = (Test-Path $spDoneCandidate1) -or (Test-Path $spDoneCandidate2)
+    if ((-not $spAlreadyDone) -and (Get-Command Wait-WindowsUpdateCompletionBarrier -ErrorAction SilentlyContinue)) {
         try {
-            Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 900
+            Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 15
         } catch {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Upozorenje u WU barijeri unutar Invoke-Phase6Finalize: $($_.Exception.Message)" -Level "WARN" -Component "Phase6"
             }
+        }
+    } elseif ($spAlreadyDone) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-Phase6Finalize: Zavrsni Windows Update drugi prolaz (wu-secondpass-done.flag) je vec kompletiran; preskacem duplu WU barijeru." -Level "INFO" -Component "Phase6"
         }
     }
 
@@ -1139,6 +1146,19 @@ function Invoke-Phase6Finalize {
     }
 
     try {
+        # Prikupljanje dijagnostičkog ugovora hlađenja kako COMPLETED lifecycle ne bi pregazio cooling_verified
+        $diagCustom = @{}
+        if (Get-Command Get-WisTelemetryDiagnostics -ErrorAction SilentlyContinue) {
+            try {
+                $diagInfo = Get-WisTelemetryDiagnostics -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+                if ($diagInfo) {
+                    foreach ($dk in $diagInfo.Keys) {
+                        $diagCustom[$dk] = $diagInfo[$dk]
+                    }
+                }
+            } catch {}
+        }
+
         # 3a. Slanje životnog ciklusa COMPLETED
         if (Get-Command Send-ServisLifecycleEvent -ErrorAction SilentlyContinue) {
             $lcData = @{
@@ -1147,13 +1167,16 @@ function Invoke-Phase6Finalize {
                 chassis   = $chassis
                 serial    = $serial
             }
+            foreach ($dk in $diagCustom.Keys) {
+                $lcData[$dk] = $diagCustom[$dk]
+            }
             Send-ServisLifecycleEvent -EventType "COMPLETED" -Data $lcData -LocalSetupDir $LocalSetupDir | Out-Null
         }
 
         # 3b. Slanje kompletnog završnog izveštaja na ServisHub (POST /api/devices/<id>/report)
         $repOk = $false
         if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
-            $repOk = Send-FleetFinalReport -Status "COMPLETED"
+            $repOk = Send-FleetFinalReport -Status "COMPLETED" -CustomData $diagCustom -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
         }
 
         if (-not $repOk) {
@@ -1166,6 +1189,9 @@ function Invoke-Phase6Finalize {
                         status        = "COMPLETED"
                         timestamp     = (Get-Date).ToString("o")
                         hostname      = $env:COMPUTERNAME
+                    }
+                    foreach ($dk in $diagCustom.Keys) {
+                        $repPayload[$dk] = $diagCustom[$dk]
                     }
                     $jsonRep = ConvertTo-Json -InputObject $repPayload -Compress
                     $postUrl = "$targetHub/api/devices/$deviceId/report"
@@ -1192,6 +1218,9 @@ function Invoke-Phase6Finalize {
                         device_id     = $deviceId
                         computer_name = $env:COMPUTERNAME
                         timestamp     = (Get-Date).ToString("o")
+                    }
+                    foreach ($dk in $diagCustom.Keys) {
+                        $lcPayload[$dk] = $diagCustom[$dk]
                     }
                     $jsonLc = ConvertTo-Json -InputObject $lcPayload -Compress
                     $lcUrl = "$targetHub/api/lifecycle"
