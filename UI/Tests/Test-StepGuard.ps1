@@ -63,18 +63,18 @@ $testJournalPath = Join-Path $tempDir "step-journal.json"
 
 try {
     # Test 2: Korak već odrađen -> SKIPPED_DONE (bez pokretanja Action)
-    $actionExecuted = $false
+    $script:actionExecuted = $false
     $res1 = Invoke-WisStep -Phase 4 -StepId "Test.AppAlreadyDone" -Title "Test App Done" `
         -JournalPath $testJournalPath `
         -Test { @{ Done = $true; Reason = "Aplikacija već postoji na disku" } } `
-        -Action { $actionExecuted = $true }
+        -Action { $script:actionExecuted = $true }
 
     Assert-Test "SKIPPED_DONE stanje za već odrađen korak" ($res1.State -eq "SKIPPED_DONE")
-    Assert-Test "Action blok nije pokrenut" (-not $actionExecuted)
+    Assert-Test "Action blok nije pokrenut" (-not $script:actionExecuted)
     Assert-Test "Razlog ispravno prenet" ($res1.Reason -like "*već postoji*")
 
     # Test 3: Korak nije odrađen -> Action se pokreće i post-verifikacija uspešna (preko diska/env jer je Test izolovan u pod-runspace)
-    $actionExecuted = $false
+    $script:actionExecuted = $false
     $step3Flag = Join-Path $tempDir "step3.done"
     $env:WIS_TEST_STEP3_FLAG = $step3Flag
     $res2 = Invoke-WisStep -Phase 4 -StepId "Test.AppNeedsInstall" -Title "Test App Install" `
@@ -85,11 +85,11 @@ try {
             @{ Done = $ok; Reason = if ($ok) { "Instalirano" } else { "Nije instalirano" } }
         } `
         -Action {
-            $actionExecuted = $true
+            $script:actionExecuted = $true
             Set-Content -Path $env:WIS_TEST_STEP3_FLAG -Value "1" -Encoding ASCII -Force
         }
 
-    Assert-Test "Action blok jeste pokrenut kada korak nije gotov" ($actionExecuted)
+    Assert-Test "Action blok jeste pokrenut kada korak nije gotov" ($script:actionExecuted)
     Assert-Test "Stanje je OK nakon uspešne post-verifikacije" ($res2.State -eq "OK")
     Assert-Test "Executed flag je true" ($res2.Executed -eq $true)
 
@@ -110,13 +110,13 @@ try {
     Assert-Test "Post-verifikacija ne prolazi za Critical daje ERROR" ($res4.State -eq "ERROR")
 
     # Test 6: Greška u Test bloku -> bezbedno izvršenje Action bloka (Safe Fail-Open)
-    $actionSafeRan = $false
+    $script:actionSafeRan = $false
     $res5 = Invoke-WisStep -Phase 2 -StepId "Test.CrashTest" -Title "Crash test" `
         -JournalPath $testJournalPath `
         -Test { throw "Simulirana greška u WMI upitu" } `
-        -Action { $actionSafeRan = $true }
+        -Action { $script:actionSafeRan = $true }
 
-    Assert-Test "Fail-Open: Action se izvršava ako Test baci grešku" ($actionSafeRan)
+    Assert-Test "Fail-Open: Action se izvršava ako Test baci grešku" ($script:actionSafeRan)
 
     # Test 7: Žurnal - upis i čitanje
     Assert-Test "Žurnal fajl kreiran na disku" (Test-Path $testJournalPath)
@@ -124,7 +124,11 @@ try {
     Assert-Test "Žurnal sadrži podatke za korake" ($journalData -and $journalData.steps)
     Assert-Test "Žurnal ima Test.AppAlreadyDone" ($journalData.steps["Test.AppAlreadyDone"].state -eq "SKIPPED_DONE")
 
-    # Test 8: Summary po fazama
+    # Test 8: Summary po fazama (Get-WisPhaseStepSummary trazi P4.* prefiks)
+    $null = Invoke-WisStep -Phase 4 -StepId "P4.SummaryProbe" -Title "Summary Probe" -NoSkip `
+        -JournalPath $testJournalPath `
+        -Test { @{ Done = $true; Reason = "OK" } } `
+        -Action { $null = "done" }
     $summaryP4 = Get-WisPhaseStepSummary -Phase 4 -JournalPath $testJournalPath
     Assert-Test "Summary prepoznaje fazu 4" ($summaryP4 -ne $null)
     Assert-Test "Summary prepoznaje da je bar jedan korak izvršen" ($summaryP4.ExecutedAny -eq $true)
@@ -135,12 +139,12 @@ try {
     $isForce = Test-WisForceRerun -Phase 4 -FlagsDir $tempDir
     Assert-Test "Test-WisForceRerun detektuje flag fajl" ($isForce -eq $true)
 
-    $actionForceRan = $false
+    $script:actionForceRan = $false
     $resForce = Invoke-WisStep -Phase 4 -StepId "Test.ForceRun" -Title "Force run test" `
         -JournalPath $testJournalPath -FlagsDir $tempDir `
         -Test { @{ Done = $true; Reason = "Već urađeno" } } `
-        -Action { $actionForceRan = $true }
-    Assert-Test "ForceRerun prisiljava izvršenje i pored Done=true" ($actionForceRan -and $resForce.Executed)
+        -Action { $script:actionForceRan = $true }
+    Assert-Test "ForceRerun prisiljava izvršenje i pored Done=true" ($script:actionForceRan -and $resForce.Executed)
 
     # Test 10: Reprodukcija Phase2 P2.Identify sa svim ucitavanim WIS.* modulima (bez deadlocka)
     $modRoot = Join-Path $PSScriptRoot "..\Skripte\Modules"
