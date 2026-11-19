@@ -3641,8 +3641,11 @@ function Invoke-Phase4Apps {
             return
         }
 
-        $rarCandidates = Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue
-        if ($rarCandidates -and $rarCandidates.Count -gt 0) {
+        $rarCandidates = @(Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        $wrInstalledNow = $false
+        $rarExe = $null
+
+        if ($rarCandidates.Count -gt 0) {
             $rarExe = $rarCandidates[0].FullName
             Unblock-File -Path $rarExe -ErrorAction SilentlyContinue
             Remove-Item -Path "$($rarExe):Zone.Identifier" -ErrorAction SilentlyContinue
@@ -3650,13 +3653,79 @@ function Invoke-Phase4Apps {
                 Write-ServisLog "Instaliram WinRAR iz: $rarExe" -Level "STEP" -Component "WinRAR"
             }
             $resWinrar = Invoke-InstallerWithLocalFallback -InstallerPath $rarExe -ArgumentList "/s" -AppName "WinRAR" -WaitSeconds 60
-        } else {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "WinRAR lokalni instaler nije pronadjen. Pokusavam Winget fallback..." -Level "DEBUG" -Component "WinRAR"
+            Start-Sleep -Milliseconds 500
+            $wrPresence = Get-WisAppPresence -AppId "WinRAR"
+            $wrInstalledNow = [bool]$wrPresence.Installed
+
+            if (-not $wrInstalledNow) {
+                $wrExit = if ($resWinrar -and ($resWinrar -is [hashtable] -or $resWinrar -is [System.Collections.IDictionary]) -and $resWinrar.ContainsKey('ExitCode')) { $resWinrar.ExitCode } else { -1 }
+                $warnMsg1 = "WinRAR nije pronadjen posle prve instalacije ($rarExe, ExitCode=$wrExit). Pokrecem retry (/S)..."
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog $warnMsg1 -Level "WARN" -Component "WinRAR"
+                }
+                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                    Send-IpcLog -Message $warnMsg1 -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                }
+                Start-Sleep -Seconds 2
+                $retryExit = -1
+                try {
+                    $retryProc = Start-Process -FilePath $rarExe -ArgumentList "/S" -Wait -PassThru -WindowStyle Hidden
+                    $retryExit = if ($retryProc) { $retryProc.ExitCode } else { -1 }
+                } catch {
+                    $retryErrMsg = "WinRAR retry (/S) izuzetak za ${rarExe}: $($_.Exception.Message)"
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog $retryErrMsg -Level "WARN" -Component "WinRAR"
+                    }
+                    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                        Send-IpcLog -Message $retryErrMsg -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                    }
+                }
+                Start-Sleep -Milliseconds 500
+                $wrPresence = Get-WisAppPresence -AppId "WinRAR"
+                $wrInstalledNow = [bool]$wrPresence.Installed
+                if (-not $wrInstalledNow) {
+                    $warnMsg2 = "WinRAR retry (/S) nije instalirao aplikaciju ($rarExe, ExitCode=$retryExit). Pokrecem Winget fallback..."
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog $warnMsg2 -Level "WARN" -Component "WinRAR"
+                    }
+                    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                        Send-IpcLog -Message $warnMsg2 -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                    }
+                }
             }
+        } else {
+            $missMsg = "WinRAR lokalni instaler (*winrar*.exe) nije pronadjen u '$activeProgDir'. Pokrecem Winget fallback..."
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog $missMsg -Level "WARN" -Component "WinRAR"
+            }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message $missMsg -Level "WARN" -Tag "[WinRAR]" -Phase 4
+            }
+        }
+
+        if (-not $wrInstalledNow) {
+            $wingetRes = $false
             try {
-                Start-Process -FilePath "winget.exe" -ArgumentList "install --id RARLab.WinRAR --silent --accept-package-agreements --accept-source-agreements" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
-            } catch {}
+                if (Get-Command Invoke-WingetAppInstall -ErrorAction SilentlyContinue) {
+                    $wingetRes = [bool](Invoke-WingetAppInstall -PackageId "RARLab.WinRAR")
+                } else {
+                    $wgProc = Start-Process -FilePath "winget.exe" -ArgumentList "install --id RARLab.WinRAR --exact --silent --accept-package-agreements --accept-source-agreements" -Wait -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
+                    $wingetRes = ($wgProc -and $wgProc.ExitCode -eq 0)
+                }
+            } catch {
+                $wingetRes = $false
+            }
+            Start-Sleep -Milliseconds 500
+            $wrAfterWg = Get-WisAppPresence -AppId "WinRAR"
+            if (-not $wrAfterWg.Installed) {
+                $wgWarn = "WinRAR nije pronadjen na disku ni nakon Winget fallback-a (wingetOk=$wingetRes, activeProgDir='$activeProgDir')."
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog $wgWarn -Level "WARN" -Component "WinRAR"
+                }
+                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                    Send-IpcLog -Message $wgWarn -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                }
+            }
         }
         try { Remove-WinRARDesktopShortcut } catch {}
     }

@@ -4,6 +4,21 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.2.1] / ServiceHub [v3.5.0] — 2026-11-19
+
+### Hitni hotfix: StepGuard PowerShell 5.1 Deadlock & `P4.WinRAR` otpornost (`WIS-TASK-260`)
+- **Uklonjen PowerShell 5.1 deadlock u `Invoke-WisScriptBlockWithTimeout` (`UI/Skripte/Modules/WIS.StepGuard.psm1`):**
+  - Zamenjen `PSThreadOptions::ReuseThread` sa `UseNewThread` (uz `ApartmentState::MTA`), čime je sprečena 100% blokada u koraku `P2.Identify` (`15%`).
+  - Uveden selektivan uvoz samo potrebnih `WIS.*` modula za dati `$ScriptBlock` (preko `ExportedCommands` i `WisTelemetryConfig|WisBloatPatterns`, uz automatsku prateću podršku `WIS.StatusContract` / `WIS.Common`) umesto slepog uvoza svih učitanih modula pri svakoj `-Test` proveri.
+  - Zamenjen blokirajući `Stop()`/`Dispose()`/`Close()` pri isteku timeouta non-blocking pozivima `BeginStop($null, $null)` i `BeginClose($null, $null)`.
+- **Otpornost i dijagnostika `P4.WinRAR` (`UI/Skripte/Modules/WIS.Apps.psm1`):**
+  - Rezultat `Get-ChildItem` umotan u `@(...)` niz za bezbednost u PowerShell 5.1, dodata post-provera prisustva WinRAR-a sa jasnim `WARN` / `Send-IpcLog` logovanjem putanje i `ExitCode`, automatski `1×` retry sa `/S` posle `2s` pauze i objedinjeni `Winget` fallback.
+- **Windows PowerShell 5.1 CI provera i verzionisanje:**
+  - `UI/Tests/Test-StepGuard.ps1` proširen testovima 10–12 (reprodukcija `P2.Identify` sa svim `WIS.*` modulima, non-blocking timeout, selektivno učitavanje `WIS.Apps`/`WIS.Branding`) i uključen u `ISO/Skripte/Build-WIS.ps1` za `windows-2022` CI.
+  - Verzija WIS komponenti podignuta na `3.2.1` (uz nepromenjen `ServiceHub v3.5.0`).
+
+---
+
 ## [v3.2.0] / ServiceHub [v3.5.0] — 2026-11-19
 
 ### Jedinstveni deduplikovani Driver Pool (CAS) & Zvanični OEM Enterprise Katalozi (`WIS-TASK-258`)

@@ -73,15 +73,20 @@ try {
     Assert-Test "Action blok nije pokrenut" (-not $actionExecuted)
     Assert-Test "Razlog ispravno prenet" ($res1.Reason -like "*već postoji*")
 
-    # Test 3: Korak nije odrađen -> Action se pokreće i post-verifikacija uspešna
+    # Test 3: Korak nije odrađen -> Action se pokreće i post-verifikacija uspešna (preko diska/env jer je Test izolovan u pod-runspace)
     $actionExecuted = $false
-    $isDoneNow = $false
+    $step3Flag = Join-Path $tempDir "step3.done"
+    $env:WIS_TEST_STEP3_FLAG = $step3Flag
     $res2 = Invoke-WisStep -Phase 4 -StepId "Test.AppNeedsInstall" -Title "Test App Install" `
         -JournalPath $testJournalPath `
-        -Test { @{ Done = $isDoneNow; Reason = if ($isDoneNow) { "Instalirano" } else { "Nije instalirano" } } } `
+        -Test {
+            $p = $env:WIS_TEST_STEP3_FLAG
+            $ok = [bool]($p -and (Test-Path -LiteralPath $p))
+            @{ Done = $ok; Reason = if ($ok) { "Instalirano" } else { "Nije instalirano" } }
+        } `
         -Action {
             $actionExecuted = $true
-            $isDoneNow = $true
+            Set-Content -Path $env:WIS_TEST_STEP3_FLAG -Value "1" -Encoding ASCII -Force
         }
 
     Assert-Test "Action blok jeste pokrenut kada korak nije gotov" ($actionExecuted)
@@ -137,7 +142,48 @@ try {
         -Action { $actionForceRan = $true }
     Assert-Test "ForceRerun prisiljava izvršenje i pored Done=true" ($actionForceRan -and $resForce.Executed)
 
+    # Test 10: Reprodukcija Phase2 P2.Identify sa svim ucitavanim WIS.* modulima (bez deadlocka)
+    $modRoot = Join-Path $PSScriptRoot "..\Skripte\Modules"
+    foreach ($modFile in @("WIS.StatusContract.psm1", "WIS.Common.psm1", "WIS.Hardware.psm1", "WIS.Update.psm1", "WIS.Apps.psm1", "WIS.Branding.psm1")) {
+        $mp = Join-Path $modRoot $modFile
+        Import-Module $mp -Force -ErrorAction Stop
+    }
+    $swP2 = [System.Diagnostics.Stopwatch]::StartNew()
+    $resP2 = Invoke-WisStep -Phase 2 -StepId "P2.Identify" -Title "Identifikacija" -NoSkip `
+        -JournalPath $testJournalPath `
+        -Test { return @{ Done = $true; Reason = "Identifikacija racunara obavezna" } } `
+        -Action { $null = "ok" }
+    $swP2.Stop()
+    Assert-Test "Test 10: P2.Identify zavrsava OK sa svim WIS.* modulima ($($swP2.ElapsedMilliseconds)ms)" ($resP2.State -eq "OK" -and $swP2.Elapsed.TotalSeconds -lt 10)
+
+    # Test 11: Non-blocking timeout (BeginStop/BeginClose ne blokira cekajuci 30s)
+    $script:timeoutActionRan = $false
+    $swTo = [System.Diagnostics.Stopwatch]::StartNew()
+    $resTo = Invoke-WisStep -Phase 2 -StepId "Test.Timeout" -Title "Timeout test" -TimeoutSec 1 `
+        -JournalPath $testJournalPath `
+        -Test { Start-Sleep -Seconds 30; return @{ Done = $true } } `
+        -Action { $script:timeoutActionRan = $true }
+    $swTo.Stop()
+    Assert-Test "Test 11: Action se izvrsava nakon timeouta bez blokiranja ($($swTo.ElapsedMilliseconds)ms)" ($script:timeoutActionRan -and $swTo.Elapsed.TotalSeconds -lt 8)
+
+    # Test 12: Selektivno ucitavanje WIS.Apps i WIS.Branding u pod-runspace
+    $resSelApps = Invoke-WisStep -Phase 4 -StepId "Test.SelectiveApps" -Title "Selective Apps" `
+        -JournalPath $testJournalPath `
+        -Test { Get-WisAppPresence -AppId "WinRAR" } `
+        -Action { $null = "ok" }
+    Assert-Test "Test 12a: Selektivno ucitavanje WIS.Apps radi ($($resSelApps.State))" ($resSelApps -and ($resSelApps.State -in @("SKIPPED_DONE", "OK", "WARN")))
+
+    $resSelBr = Invoke-WisStep -Phase 3 -StepId "Test.SelectiveBranding" -Title "Selective Branding" `
+        -JournalPath $testJournalPath `
+        -Test {
+            $ok = ($null -ne $Global:WisTelemetryConfig -and $Global:WisTelemetryConfig.RegValues.Count -gt 0)
+            return @{ Done = $ok; Reason = "TelemetryConfig loaded=$ok" }
+        } `
+        -Action { $null = "ok" }
+    Assert-Test "Test 12b: Selektivno ucitavanje WIS.Branding ($($resSelBr.State))" ($resSelBr.State -eq "SKIPPED_DONE")
+
 } finally {
+    Remove-Item Env:WIS_TEST_STEP3_FLAG -ErrorAction SilentlyContinue
     if (Test-Path $tempDir) {
         Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }

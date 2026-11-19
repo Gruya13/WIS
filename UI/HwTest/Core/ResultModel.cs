@@ -59,7 +59,7 @@ namespace WIS.HwTest.Core
         public HwTestRunResult()
         {
             Schema = "wis.hwtest.v1";
-            AppVersion = "3.2.0";
+            AppVersion = "3.2.1";
             Summary = new Dictionary<string, object>();
             Tests = new List<Dictionary<string, object>>();
         }

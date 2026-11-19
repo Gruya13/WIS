@@ -33,24 +33,53 @@ function Invoke-WisScriptBlockWithTimeout {
 
     $runspace = $null
     $ps = $null
+    $timedOut = $false
     try {
         $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
         $runspace.ApartmentState = [System.Threading.ApartmentState]::MTA
-        $runspace.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+        $runspace.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::UseNewThread
         $runspace.Open()
 
         $ps = [System.Management.Automation.PowerShell]::Create()
         $ps.Runspace = $runspace
-        $loadedModules = Get-Module -Name 'WIS.*' -ErrorAction SilentlyContinue
-        if ($loadedModules) {
-            foreach ($mod in $loadedModules) {
-                if ($mod.Path -and (Test-Path -LiteralPath $mod.Path)) {
-                    [void]$ps.AddCommand('Import-Module').AddParameter('Name', $mod.Path).AddParameter('Global', $true)
-                    [void]$ps.AddStatement()
+        $sbText = $ScriptBlock.ToString()
+        $loadedModules = @(Get-Module -Name 'WIS.*' -ErrorAction SilentlyContinue)
+        $supportPaths = New-Object System.Collections.Generic.List[string]
+        $modulesToImport = New-Object System.Collections.Generic.List[string]
+        foreach ($mod in $loadedModules) {
+            if (-not $mod -or -not $mod.Path -or -not (Test-Path -LiteralPath $mod.Path)) { continue }
+            if ($mod.Name -eq 'WIS.StepGuard') { continue }
+            if ($mod.Name -in @('WIS.StatusContract', 'WIS.Common')) {
+                $supportPaths.Add($mod.Path)
+            }
+            $matched = $false
+            if ($mod.ExportedCommands -and $mod.ExportedCommands.Count -gt 0) {
+                foreach ($cmdName in $mod.ExportedCommands.Keys) {
+                    if ($cmdName -and $sbText.IndexOf($cmdName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                        $matched = $true
+                        break
+                    }
                 }
             }
+            if (-not $matched -and $mod.Name -eq 'WIS.Branding' -and $sbText -match 'WisTelemetryConfig|WisBloatPatterns') {
+                $matched = $true
+            }
+            if ($matched -and -not $modulesToImport.Contains($mod.Path)) {
+                $modulesToImport.Add($mod.Path)
+            }
         }
-        [void]$ps.AddScript($ScriptBlock.ToString())
+        if ($modulesToImport.Count -gt 0) {
+            foreach ($sPath in $supportPaths) {
+                if (-not $modulesToImport.Contains($sPath)) {
+                    $modulesToImport.Insert(0, $sPath)
+                }
+            }
+            foreach ($mPath in $modulesToImport) {
+                [void]$ps.AddCommand('Import-Module').AddParameter('Name', $mPath).AddParameter('Global', $true)
+                [void]$ps.AddStatement()
+            }
+        }
+        [void]$ps.AddScript($sbText)
 
         $asyncResult = $ps.BeginInvoke()
         $waitMs = [int]($TimeoutSec * 1000)
@@ -92,7 +121,8 @@ function Invoke-WisScriptBlockWithTimeout {
                 }
             }
         } else {
-            try { $ps.Stop() } catch {}
+            $timedOut = $true
+            try { $null = $ps.BeginStop($null, $null) } catch {}
             return @{
                 Success  = $false
                 TimedOut = $true
@@ -109,8 +139,12 @@ function Invoke-WisScriptBlockWithTimeout {
             return @{ Success = $false; TimedOut = $false; Output = $null; Error = $_ }
         }
     } finally {
-        try { if ($ps) { $ps.Dispose() } } catch {}
-        try { if ($runspace) { $runspace.Close(); $runspace.Dispose() } } catch {}
+        if ($timedOut) {
+            try { if ($runspace) { $null = $runspace.BeginClose($null, $null) } } catch {}
+        } else {
+            try { if ($ps) { $ps.Dispose() } } catch {}
+            try { if ($runspace) { $runspace.Close(); $runspace.Dispose() } } catch {}
+        }
     }
 }
 

@@ -15,6 +15,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Verzije izvora nisu uskladjene sa version.json.' }
     & (Join-Path $root 'UI\Tests\Test-PowerShell51Parse.ps1')
     & (Join-Path $root 'UI\Tests\Test-StatusContract.ps1')
+    & (Join-Path $root 'UI\Tests\Test-StepGuard.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'Test-StepGuard nije prosao.' }
     & (Join-Path $root 'Launcher\Tests\Run-LauncherTests.ps1')
     foreach ($csprojRel in @('UI\WIS.UI.csproj', 'Launcher\WIS.Launcher.csproj', 'UI\HwTest\WIS.HwTest.csproj', 'Tools\AutopilotAuditor\WIS.AutopilotAuditor.csproj')) {
         & $MsBuild (Join-Path $root $csprojRel) /restore /t:Rebuild /p:Configuration=Release /p:Platform=AnyCPU /p:LangVersion=5

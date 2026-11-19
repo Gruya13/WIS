@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.2.0 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.2.0 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.2.0 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.2.1 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.2.1 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.2.1 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -490,6 +490,27 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("Invoke-DriverPoolBundleInstall", res_block)
         self.assertIn("$batchMissingHwids", res_block)
         self.assertIn("WIS-DriverEngine/3.2", res_block)
+
+    def test_16_wis_task_260_stepguard_deadlock_and_winrar_resilience(self):
+        """Proverava WIS-TASK-260 (v3.2.1) popravku deadlocka u StepGuard-u, otpornost P4.WinRAR i Build-WIS.ps1 CI integraciju."""
+        stepguard_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.StepGuard.psm1").read_text(encoding="utf-8")
+        self.assertIn("PSThreadOptions]::UseNewThread", stepguard_src)
+        self.assertIn("ApartmentState]::MTA", stepguard_src)
+        self.assertNotIn("ReuseThread", stepguard_src)
+        self.assertIn("BeginStop", stepguard_src)
+        self.assertIn("BeginClose", stepguard_src)
+        self.assertIn("WisTelemetryConfig|WisBloatPatterns", stepguard_src)
+        self.assertIn("ExportedCommands", stepguard_src)
+
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        p4_wr = apps_src.split("# 2. WINRAR - P4.WinRAR", 1)[1].split("# 3. GOOGLE CHROME - P4.Chrome", 1)[0]
+        self.assertIn("@(Get-ChildItem", p4_wr)
+        self.assertIn('Get-WisAppPresence -AppId "WinRAR"', p4_wr)
+        self.assertIn('"/S"', p4_wr)
+        self.assertIn("Send-IpcLog", p4_wr)
+
+        build_ps1 = (ROOT / "ISO" / "Skripte" / "Build-WIS.ps1").read_text(encoding="utf-8")
+        self.assertIn("Test-StepGuard.ps1", build_ps1)
 
 
 if __name__ == "__main__":
