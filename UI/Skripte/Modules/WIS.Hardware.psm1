@@ -2148,12 +2148,12 @@ function Resolve-MissingDriversFromHub {
         if ($biosInfo -and $biosInfo.SerialNumber) { $sysSerial = $biosInfo.SerialNumber.Trim() }
     } catch {}
 
-    # 1. Pronalaženje svih aktivnih uređaja sa stvarnim kodom greške drajvera (isključuje kod 22 Disabled, 45 Disconnected i ROOT/SWD)
+    # 1. Pronalaženje svih aktivnih uređaja sa stvarnim kodom greške drajvera (isključuje kod 14 PendingRestart, 22 Disabled, 45 Disconnected i ROOT/SWD)
     $badDevices = @()
     try {
         $badDevices = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
             $_.ConfigManagerErrorCode -and
-            $_.ConfigManagerErrorCode -notin @(0, 22, 45) -and
+            $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
             $_.HardwareID -and
             $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
             $_.DeviceID -notmatch '^(ROOT|SWD)\\'
@@ -2162,7 +2162,7 @@ function Resolve-MissingDriversFromHub {
         try {
             $badDevices = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
                 $_.ConfigManagerErrorCode -and
-                $_.ConfigManagerErrorCode -notin @(0, 22, 45) -and
+                $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
                 $_.HardwareID -and
                 $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
                 $_.DeviceID -notmatch '^(ROOT|SWD)\\'
@@ -2234,8 +2234,13 @@ function Resolve-MissingDriversFromHub {
                 $lastErr = $_.Exception.Message
                 $httpCode = 0
                 try {
-                    if ($_.Exception -and $_.Exception.Response) {
-                        $httpCode = [int]$_.Exception.Response.StatusCode
+                    $exWalk = $_.Exception
+                    while ($exWalk) {
+                        if ($exWalk.PSObject.Properties['Response'] -and $exWalk.Response) {
+                            $httpCode = [int]$exWalk.Response.StatusCode
+                            break
+                        }
+                        $exWalk = $exWalk.InnerException
                     }
                 } catch {}
                 if ($httpCode -ge 400 -and $httpCode -lt 500) {
@@ -2306,21 +2311,18 @@ function Resolve-MissingDriversFromHub {
             Write-ServisLog "Resolve-MissingDriversFromHub: Upit za [$devName] (HWID: $($hwids[0]), Kod: $($dev.ConfigManagerErrorCode))..." -Level "DEBUG" -Component "Hardware"
         }
 
-        # Kreiranje JSON tela sa garantovanim nizom za hwids plus model, serial_number i async_download
+        # Kreiranje JSON tela sa garantovanim nizom za hwids (bez regex zamene koja kvari GUID '{...}') plus model, serial_number i async_download
+        $hwidsJsonItems = @($hwids | ForEach-Object { ConvertTo-Json -InputObject ([string]$_) -Compress })
+        $hwidsArrayJson = "[" + ($hwidsJsonItems -join ",") + "]"
         $postBodyObj = [ordered]@{
-            hwids          = $hwids
+            hwids          = "__WIS_HWIDS_PLACEHOLDER__"
             device_name    = $devName
             manufacturer   = $mfg
             model          = $sysModel
             serial_number  = $sysSerial
             async_download = $true
         }
-        $postBody = $postBodyObj | ConvertTo-Json -Compress
-        if ($hwids.Count -eq 1) {
-            # PowerShell 5.1 ponekad pretvara niz sa jednim elementom u skalar u Hashtable-u
-            $escapedSingle = ($hwids[0] | ConvertTo-Json -Compress)
-            $postBody = $postBody -replace '"hwids":("[^"]*"|[^,\}]+)', "`"hwids`":[$escapedSingle]"
-        }
+        $postBody = ($postBodyObj | ConvertTo-Json -Compress).Replace('"__WIS_HWIDS_PLACEHOLDER__"', $hwidsArrayJson)
 
         $resolveUrl = "$HubUrl/api/drivers/resolve"
         $postRes = Invoke-HubDriverResolvePost -Url $resolveUrl -BodyJson $postBody -DevName $devName
@@ -3232,7 +3234,7 @@ function Test-WisDeviceManagerClean {
     <#
     .SYNOPSIS
         Proverava da li su svi uredjaji u Device Manager-u ispravno instalirani
-        (nema ConfigManagerErrorCode razlicitog od 0, 22 ili 45, niti generickih Basic Display/Render adaptera).
+        (nema ConfigManagerErrorCode razlicitog od 0, 14, 22 ili 45, niti generickih Basic Display/Render adaptera).
     .OUTPUTS
         Hashtable sa kljucevima Done, Clean, Reason, ProblemDevices.
     #>
@@ -3240,6 +3242,7 @@ function Test-WisDeviceManagerClean {
     param()
 
     $problems = @()
+    $pendingRestartDevs = 0
 
     # 1. PnP Entity provera (Get-CimInstance uz fallback na Get-WmiObject)
     try {
@@ -3253,7 +3256,11 @@ function Test-WisDeviceManagerClean {
         if ($pnpEntities) {
             foreach ($dev in $pnpEntities) {
                 $code = $dev.ConfigManagerErrorCode
-                if ($null -ne $code -and $code -ne 0 -and $code -ne 22 -and $code -ne 45) {
+                if ($code -eq 14) {
+                    $pendingRestartDevs++
+                    continue
+                }
+                if ($null -ne $code -and $code -ne 0 -and $code -ne 14 -and $code -ne 22 -and $code -ne 45) {
                     $devName = if ($dev.Name) { $dev.Name.Trim() } else { "Nepoznat uredjaj" }
                     $devId = if ($dev.DeviceID) { $dev.DeviceID.Trim() } else { "" }
                     $problems += [PSCustomObject]@{
@@ -3309,6 +3316,9 @@ function Test-WisDeviceManagerClean {
     $reasonStr = ""
     if ($isClean) {
         $reasonStr = "Device Manager je cist (svi uredjaji prepoznati, nema zutih uzvicnika niti Basic Display adaptera)"
+        if ($pendingRestartDevs -gt 0) {
+            $reasonStr = "$reasonStr (napomena: $pendingRestartDevs uredjaja ceka restart - Kod 14)"
+        }
     } else {
         $sampleList = @($problems | ForEach-Object {
             $n = if ($_.Name) { $_.Name.Trim() } else { "Nepoznat uredjaj" }

@@ -397,8 +397,12 @@ def show_device_details(device_name: str, hub_url: str = DEFAULT_HUB_URL) -> boo
         specs.append(f"CPU: {hw['cpu']}")
     if hw.get("ram_gb"):
         specs.append(f"RAM: {hw['ram_gb']}GB")
+    elif hw.get("ram"):
+        specs.append(f"RAM: {hw['ram']}")
     if hw.get("disks"):
         specs.append(f"Disk: {hw['disks']}")
+    elif hw.get("disk"):
+        specs.append(f"Disk: {hw['disk']}")
     if specs:
         print(f" {C_WHITE}{'Hardver specifikacija:':<24}{C_RESET} {' | '.join(specs)}")
 

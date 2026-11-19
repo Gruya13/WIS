@@ -31,8 +31,16 @@ function Invoke-WisScriptBlockWithTimeout {
         }
     }
 
-    $ps = [System.Management.Automation.PowerShell]::Create()
+    $runspace = $null
+    $ps = $null
     try {
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.ApartmentState = [System.Threading.ApartmentState]::MTA
+        $runspace.ThreadOptions = [System.Management.Automation.Runspaces.PSThreadOptions]::ReuseThread
+        $runspace.Open()
+
+        $ps = [System.Management.Automation.PowerShell]::Create()
+        $ps.Runspace = $runspace
         $loadedModules = Get-Module -Name 'WIS.*' -ErrorAction SilentlyContinue
         if ($loadedModules) {
             foreach ($mod in $loadedModules) {
@@ -51,19 +59,36 @@ function Invoke-WisScriptBlockWithTimeout {
         if ($signaled) {
             try {
                 $out = $ps.EndInvoke($asyncResult)
+                $streamErr = $null
+                if ($ps.HadErrors -and $ps.Streams -and $ps.Streams.Error -and $ps.Streams.Error.Count -gt 0) {
+                    $streamErr = ($ps.Streams.Error | ForEach-Object { "$_" }) -join "; "
+                }
+                if ($null -eq $out -and $streamErr) {
+                    return @{
+                        Success  = $false
+                        TimedOut = $false
+                        Output   = $null
+                        Error    = $streamErr
+                    }
+                }
                 $effectiveOut = if ($out -and $out.Count -eq 1) { $out[0] } else { $out }
                 return @{
                     Success  = $true
                     TimedOut = $false
                     Output   = $effectiveOut
-                    Error    = $null
+                    Error    = $streamErr
                 }
             } catch {
+                $errDetail = $_.Exception.Message
+                if ($ps.Streams -and $ps.Streams.Error -and $ps.Streams.Error.Count -gt 0) {
+                    $streamMsg = ($ps.Streams.Error | ForEach-Object { "$_" }) -join "; "
+                    if ($streamMsg) { $errDetail = "$errDetail ($streamMsg)" }
+                }
                 return @{
                     Success  = $false
                     TimedOut = $false
                     Output   = $null
-                    Error    = $_
+                    Error    = $errDetail
                 }
             }
         } else {
@@ -84,7 +109,8 @@ function Invoke-WisScriptBlockWithTimeout {
             return @{ Success = $false; TimedOut = $false; Output = $null; Error = $_ }
         }
     } finally {
-        try { $ps.Dispose() } catch {}
+        try { if ($ps) { $ps.Dispose() } } catch {}
+        try { if ($runspace) { $runspace.Close(); $runspace.Dispose() } } catch {}
     }
 }
 

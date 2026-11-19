@@ -410,6 +410,67 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("driver-harvest-deferred.flag", p2_block)
         self.assertIn("driver-harvest-deferred.flag", phase6_src)
 
+    def test_14_wis_task_257_live_v311_hotfixes(self):
+        """Proverava WIS-TASK-257 live v3.1.1 hotfixeve (Stavke 1, 2 i BAG-10..BAG-16)."""
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        branding_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        stepguard_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.StepGuard.psm1").read_text(encoding="utf-8")
+        main_cs = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        loc_cs = (ROOT / "UI" / "LocalizationService.cs").read_text(encoding="utf-8")
+        sync_py = (ROOT / "ISO" / "Skripte" / "Sync-Versions.py").read_text(encoding="utf-8")
+
+        # BAG-10: GUID JSON HWID bez pokvarenog regex-a + InnerException.Response u Invoke-HubDriverResolvePost
+        res_block = self.hw_src.split("function Resolve-MissingDriversFromHub", 1)[1].split("function Send-WisModelDnaToHub", 1)[0]
+        self.assertIn("__WIS_HWIDS_PLACEHOLDER__", res_block)
+        self.assertNotIn(r'[^,\}]+', res_block)
+        self.assertIn("$exWalk.InnerException", res_block)
+
+        # BAG-12: $problemCount umesto unrollovanog (@($dmCheck.ProblemDevices)).Count iz if izraza
+        p2_block = self.update_src.split("function Invoke-Phase2Drivers", 1)[1].split("function Write-BackgroundWuStatus", 1)[0]
+        self.assertIn("$problemCount = @($problemDevices).Count", p2_block)
+        self.assertIn("Detektovano $problemCount problema sa drajverima", p2_block)
+
+        # BAG-13: WHQL/Authenticode .cat provera u Install-DriverTarArchive + skip HTTP duplog preuzimanja + prnms009 ciscenje
+        tar_block = self.update_src.split("function Install-DriverTarArchive", 1)[1].split("function Invoke-ModelDriversPreInstall", 1)[0]
+        self.assertIn("Get-AuthenticodeSignature", tar_block)
+        self.assertIn("nedozvoljene skripte", tar_block)
+        pre_block = self.update_src.split("function Invoke-ModelDriversPreInstall", 1)[1].split("function Get-WisUpdateHubEndpoint", 1)[0]
+        self.assertIn("$skipHttpModelFallback", pre_block)
+        self.assertIn("prnms009", self.update_src)
+
+        # BAG-14: Kod 14 (Pending Restart) ne sme blokirati Device Manager proveru ni Resolve-MissingDriversFromHub
+        dm_block = self.hw_src.split("function Test-WisDeviceManagerClean", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("-notin @(0, 14, 22, 45)", res_block)
+        self.assertIn("$code -ne 14", dm_block)
+        self.assertIn("-notin @(14, 22, 45)", tar_block)
+
+        # BAG-15: 0x80240016 circuit breaker u P2.WuDrivers
+        self.assertIn("$consecutiveNotAllowed", p2_block)
+        self.assertIn("0x80240016", p2_block)
+        self.assertIn("$consecutiveNotAllowed -ge 3", p2_block)
+
+        # Stavka 1: Legalni [Licensing] (OfficeKmsHost/OfficeProductKey) i $hasOffice u Get-WisAppPresence
+        self.assertIn("$inLicensingSection", apps_src)
+        self.assertIn("OfficeKmsHost", apps_src)
+        self.assertIn("OfficeProductKey", apps_src)
+        self.assertIn("$result.OfficeInstalled  = $hasOffice", apps_src)
+
+        # Stavka 2: P3.Debloat (rani debloat-done.flag + 1x Get-Appx*), P3.Telemetry bez Get-CimInstance, MTA StepGuard, MainWindow ExitCode 2 oporavak
+        p3_block = branding_src.split("function Invoke-Phase3Optimization", 1)[1].split("Export-ModuleMember", 1)[0]
+        tel_test_block = p3_block.split('-StepId "P3.Telemetry"', 1)[1].split('-Action {', 1)[0]
+        self.assertNotIn("Get-CimInstance", tel_test_block)
+        self.assertIn(r"HKLM:\SYSTEM\CurrentControlSet\Services\$sName", tel_test_block)
+        debloat_test_head = p3_block.split('-StepId "P3.Debloat"', 1)[1].split("$foundBloat", 1)[0]
+        self.assertIn("debloat-done.flag", debloat_test_head)
+        self.assertIn("ApartmentState]::MTA", stepguard_src)
+        self.assertIn("_phase3AutoRetryCount", main_cs)
+        self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
+
+        # BAG-16: AppTitle 3.1.1 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.1.1 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.1.1 - 视窗系统自动化安装助手"', loc_cs)
+        self.assertIn("UI/LocalizationService.cs", sync_py)
+
 
 if __name__ == "__main__":
     unittest.main()

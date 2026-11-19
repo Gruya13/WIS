@@ -36,6 +36,34 @@ def _atomic_write_json(filepath: str, data: dict) -> None:
     _atomic_write_text(filepath, json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def _format_hw_ram(hw: dict) -> str:
+    """Formatira podatak o RAM memoriji uz podršku za numerički ram_gb i tekstualni hw['ram']."""
+    if not isinstance(hw, dict):
+        return "N/A"
+    ram_gb = hw.get("ram_gb")
+    if ram_gb is not None and str(ram_gb).strip() not in ("", "0", "None", "N/A"):
+        return f"{ram_gb} GB"
+    ram_txt = str(hw.get("ram") or "").strip()
+    if ram_txt and ram_txt != "N/A":
+        return ram_txt
+    return "N/A"
+
+
+def _format_hw_disk(hw: dict) -> str:
+    """Formatira podatak o disku uz podršku za disk_model/disk_size_gb i tekstualni hw['disk']."""
+    if not isinstance(hw, dict):
+        return "N/A"
+    model = str(hw.get("disk_model") or "").strip()
+    size_gb = hw.get("disk_size_gb")
+    size_str = str(size_gb).strip() if size_gb is not None else ""
+    if (model and model != "N/A") or (size_str and size_str not in ("0", "None", "N/A")):
+        return f"{model or 'N/A'} ({size_str or 'N/A'} GB)"
+    disk_txt = str(hw.get("disk") or "").strip()
+    if disk_txt and disk_txt != "N/A":
+        return disk_txt
+    return "N/A"
+
+
 def compute_handover_status(rec: dict) -> str:
     """
     Računa jedinstveni kanonski status spremnosti uređaja za predaju kupcu:
@@ -258,8 +286,8 @@ def generate_markdown_report(report_data: dict) -> str:
             f"- **Proizvođač:** {hw.get('manufacturer', 'N/A')}",
             f"- **Model:** {hw.get('model', 'N/A')}",
             f"- **Procesor (CPU):** {hw.get('cpu', 'N/A')}",
-            f"- **RAM Memorija:** {hw.get('ram_gb', 'N/A')} GB",
-            f"- **Disk:** {hw.get('disk_model', 'N/A')} ({hw.get('disk_size_gb', 'N/A')} GB)",
+            f"- **RAM Memorija:** {_format_hw_ram(hw)}",
+            f"- **Disk:** {_format_hw_disk(hw)}",
         ])
 
     # Fabrička Garancija (OEM)
@@ -721,7 +749,7 @@ def register_new_device(clean_id: str, payload: dict, reports_dir: str = None) -
     prijem_entry = (
         f"### [Datum: {ts_str}] - Status: {status}\n"
         f"- **Prijem na servis:** Računar primljen na dijagnostiku (Serviser: {serviser}).\n"
-        f"- **Hardver:** {manufacturer} {model} | CPU: {hw.get('cpu', 'N/A')} | RAM: {hw.get('ram_gb', 'N/A')} GB"
+        f"- **Hardver:** {manufacturer} {model} | CPU: {hw.get('cpu', 'N/A')} | RAM: {_format_hw_ram(hw)}"
     )
 
     if not os.path.isfile(dnevnik_path):

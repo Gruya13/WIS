@@ -894,13 +894,26 @@ function Get-WisAppPresence {
 
         '(?i)^(Activation|WindowsActivation|OfficeActivation)$' {
             $winAct = Test-WindowsActivated
-            $offAct = Test-OfficeActivated
+            $hasOffice = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                         (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
+                         (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or `
+                         (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE") -or `
+                         (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
+                         (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or `
+                         (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE") -or `
+                         (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE")
+            $offAct = if ($hasOffice) { Test-OfficeActivated } else { $true }
 
             $result.WindowsActivated = $winAct
+            $result.OfficeInstalled  = $hasOffice
             $result.OfficeActivated  = $offAct
 
             if ($winAct -and $offAct) {
-                $msg = "Windows i Microsoft Office su trajno licencirani i aktivirani"
+                $msg = if ($hasOffice) {
+                    "Windows i Microsoft Office su trajno licencirani i aktivirani"
+                } else {
+                    "Windows je trajno licenciran i aktiviran (Office nije instaliran)"
+                }
                 $result.Installed = $true
                 $result.Done      = $true
                 $result.Message   = $msg
@@ -908,7 +921,7 @@ function Get-WisAppPresence {
             } else {
                 $parts = @()
                 if (-not $winAct) { $parts += "Windows nije aktiviran" }
-                if (-not $offAct) { $parts += "Office nije aktiviran" }
+                if ($hasOffice -and -not $offAct) { $parts += "Office nije aktiviran" }
                 $msg = $parts -join "; "
                 $result.Message   = $msg
                 $result.Reason    = $msg
@@ -3045,6 +3058,62 @@ function Invoke-WindowsOfficeActivation {
         )
         $ospp = $osppPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
         if ($ospp) {
+            $officeKmsHost = ""
+            $officeProductKey = ""
+            $licIniCandidates = @(
+                "C:\setup\Wifi-Servis.ini",
+                "C:\setup\Skripte\Wifi-Servis.ini"
+            )
+            if ($Global:LocalSetupDir) {
+                $licIniCandidates += (Join-Path $Global:LocalSetupDir "Wifi-Servis.ini")
+            }
+            if ($PSScriptRoot) {
+                $licIniCandidates += (Join-Path $PSScriptRoot "Wifi-Servis.ini")
+            }
+            $licIniPath = $licIniCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+            if ($licIniPath) {
+                try {
+                    $iniLines = Get-Content -LiteralPath $licIniPath -Encoding UTF8 -ErrorAction SilentlyContinue
+                    $inLicensingSection = $false
+                    foreach ($rawLine in $iniLines) {
+                        $line = $rawLine.Trim()
+                        if (-not $line -or $line.StartsWith(";") -or $line.StartsWith("#")) { continue }
+                        if ($line.StartsWith("[") -and $line.EndsWith("]")) {
+                            $secName = $line.Substring(1, $line.Length - 2).Trim()
+                            $inLicensingSection = ($secName -ieq "Licensing")
+                            continue
+                        }
+                        if ($inLicensingSection -and $line -match '^\s*([^=]+)=(.*)$') {
+                            $k = $matches[1].Trim()
+                            $v = $matches[2].Trim()
+                            if ($k -ieq "OfficeKmsHost" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                                $officeKmsHost = $v
+                            } elseif ($k -ieq "OfficeProductKey" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                                $officeProductKey = $v
+                            }
+                        }
+                    }
+                } catch {}
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($officeKmsHost)) {
+                try {
+                    & cscript.exe //nologo $ospp "/sethst:$officeKmsHost" >$null 2>&1
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Primenjen lokalni Office KMS host iz konfiguracije ([Licensing])." -Level "INFO" -Component "License"
+                    }
+                } catch {}
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($officeProductKey) -and $officeProductKey.Trim().Length -ge 25) {
+                try {
+                    & cscript.exe //nologo $ospp "/inpkey:$($officeProductKey.Trim())" >$null 2>&1
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Primenjen legalni Office MAK/Volume ključ iz lokalne konfiguracije ([Licensing])." -Level "INFO" -Component "License"
+                    }
+                } catch {}
+            }
+
             try {
                 & cscript.exe //nologo $ospp /act >$null 2>&1
                 Start-Sleep -Seconds 2

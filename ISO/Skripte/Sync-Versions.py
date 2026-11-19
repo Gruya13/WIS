@@ -49,6 +49,16 @@ def expected_files(root):
         s = re.sub(r'(Assembly(?:File)?Version\(")[^"]+("\))', lambda m: m[1] + version + '.0' + m[2], s)
         s = re.sub(r'(AssemblyInformationalVersion\(")[^"]+("\))', lambda m: m[1] + version + m[2], s)
         result[p] = s
+    p = Path('UI/LocalizationService.cs')
+    if (root / p).is_file():
+        ui_ver = data['components']['ui']['version']
+        loc_src = (root / p).read_text(encoding='utf-8')
+        loc_src = re.sub(
+            r'(_(?:sr|en|zh)Dict\["AppTitle"\]\s*=\s*"WIS v)\d+\.\d+\.\d+',
+            lambda m: m[1] + ui_ver,
+            loc_src,
+        )
+        result[p] = loc_src
     p = Path('Launcher/PayloadManager.cs')
     s = (root / p).read_text(encoding='utf-8')
     launcher = data['components']['launcher']['version']

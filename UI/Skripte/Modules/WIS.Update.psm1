@@ -397,7 +397,58 @@ function Install-DriverTarArchive {
             $_.Extension -in @('.ps1', '.psm1', '.bat', '.cmd', '.vbs', '.js', '.jse', '.wsf', '.wsh', '.hta')
         })
         if ($extractedScripts.Count -gt 0) {
-            throw "Bezbednosna blokada: paket drajvera ($CleanModel.tar) sadrzi nedozvoljene skripte ($($extractedScripts[0].Name))."
+            $verifiedDriverFolders = @{}
+            $allowedSignedScripts = @()
+            $untrustedScripts = @()
+            $resolvedWorkRoot = [System.IO.Path]::GetFullPath($workDir).TrimEnd('\', '/')
+
+            foreach ($sf in $extractedScripts) {
+                $isTrustedPkgScript = $false
+                try {
+                    $resolvedScriptFull = [System.IO.Path]::GetFullPath($sf.FullName)
+                    if ($resolvedScriptFull.Length -gt ($resolvedWorkRoot.Length + 1)) {
+                        $relPath = $resolvedScriptFull.Substring($resolvedWorkRoot.Length + 1).TrimStart('\', '/')
+                        $relParts = @($relPath -split '[\\/]' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        if ($relParts.Count -ge 2) {
+                            $topFolder = $relParts[0]
+                            if (-not $verifiedDriverFolders.ContainsKey($topFolder)) {
+                                $pkgDir = Join-Path $workDir $topFolder
+                                $pkgInfs = @(Get-ChildItem -Path $pkgDir -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue)
+                                $pkgCats = @(Get-ChildItem -Path $pkgDir -Filter "*.cat" -Recurse -File -ErrorAction SilentlyContinue)
+                                $hasValidSig = $false
+                                if ($pkgInfs.Count -gt 0 -and $pkgCats.Count -gt 0) {
+                                    foreach ($cat in $pkgCats) {
+                                        try {
+                                            $sig = Get-AuthenticodeSignature -FilePath $cat.FullName -ErrorAction SilentlyContinue
+                                            if ($sig -and $sig.Status -eq 'Valid') {
+                                                $hasValidSig = $true
+                                                break
+                                            }
+                                        } catch {}
+                                    }
+                                }
+                                $verifiedDriverFolders[$topFolder] = $hasValidSig
+                            }
+                            $isTrustedPkgScript = [bool]$verifiedDriverFolders[$topFolder]
+                        }
+                    }
+                } catch {
+                    $isTrustedPkgScript = $false
+                }
+
+                if ($isTrustedPkgScript) {
+                    $allowedSignedScripts += $sf
+                } else {
+                    $untrustedScripts += $sf
+                }
+            }
+
+            if ($untrustedScripts.Count -gt 0) {
+                throw "Bezbednosna blokada: paket drajvera ($CleanModel.tar) sadrzi nedozvoljene skripte ($($untrustedScripts[0].Name))."
+            }
+            if ($allowedSignedScripts.Count -gt 0 -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+                Write-ServisLog "Install-DriverTarArchive: Dozvoljeno $($allowedSignedScripts.Count) pratecih fajlova unutar digitalno potpisanih drajver paketa (npr. $($allowedSignedScripts[0].Name))." -Level "DEBUG" -Component "NAS"
+            }
         }
         $extractedCats = @(Get-ChildItem -Path $workDir -Filter "*.cat" -Recurse -File -ErrorAction SilentlyContinue)
         $extractedInfs = @(Get-ChildItem -Path $workDir -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue)
@@ -416,7 +467,7 @@ function Install-DriverTarArchive {
             if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
                 $unresolvedDevs = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
                     $_.ConfigManagerErrorCode -ne 0 -and
-                    $_.ConfigManagerErrorCode -notin @(22, 45) -and
+                    $_.ConfigManagerErrorCode -notin @(14, 22, 45) -and
                     $_.Class -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
                     $_.InstanceId -notmatch '^(ROOT|SWD)\\'
                 })
@@ -474,6 +525,7 @@ function Invoke-ModelDriversPreInstall {
             return
         }
         $installedAny = $false
+        $skipHttpModelFallback = $false
         $uncShare = $null
         $ownsSmbSession = $false
 
@@ -528,6 +580,9 @@ function Invoke-ModelDriversPreInstall {
                                 $installedAny = $true
                             }
                         } catch {
+                            if ($_.Exception.Message -match 'Bezbednosna blokada') {
+                                $skipHttpModelFallback = $true
+                            }
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                                 Write-ServisLog "UPOZORENJE: Preuzimanje ili raspakivanje drajvera iz arhive $cleanModel.tar nije uspelo ($($_.Exception.Message)). Prelazim na stablo foldera..." -Level "WARN" -Component "NAS"
                             }
@@ -594,7 +649,7 @@ function Invoke-ModelDriversPreInstall {
                                     if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
                                         $unresolvedDevs = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object {
                                             $_.ConfigManagerErrorCode -ne 0 -and
-                                            $_.ConfigManagerErrorCode -notin @(22, 45) -and
+                                            $_.ConfigManagerErrorCode -notin @(14, 22, 45) -and
                                             $_.Class -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
                                             $_.InstanceId -notmatch '^(ROOT|SWD)\\'
                                         })
@@ -635,7 +690,7 @@ function Invoke-ModelDriversPreInstall {
         }
 
         # ServiceHub HTTP fallback za <Model>.tar kada SMB nije dostupan ili nema paketa na SMB-u
-        if (-not $installedAny) {
+        if (-not $installedAny -and -not $skipHttpModelFallback) {
             $hubUrl = Get-WisUpdateHubEndpoint
             if ($hubUrl) {
                 $escapedModel = [System.Uri]::EscapeDataString($cleanModel)
@@ -2412,6 +2467,13 @@ function Export-ServisHardwareDrivers {
                     }
                 }
 
+                # Ukloni Microsoft Print To PDF inbox drajver (prnms009.inf_*) jer je vec ugradjen u Windows i sadrzi .js constraint datoteke
+                foreach ($d in $exportDirs) {
+                    if ($d.Name -match '(?i)^prnms009\.inf_') {
+                        Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+
                 # Za svaki duplirani .inf prefiks (pre _amd64_ / _x86_ / _arm64_), zadrzi samo najnoviji folder
                 $remainingDirs = @(Get-ChildItem -Path $tempExportDir -Directory -ErrorAction SilentlyContinue)
                 $groups = $remainingDirs | Group-Object { ($_.Name -replace '_(?:amd64|x86|arm64|wow64)_.*$', '').ToLowerInvariant() }
@@ -3497,11 +3559,15 @@ function Invoke-Phase2Drivers {
         if (Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue) {
             $dmCheck = Test-WisDeviceManagerClean
         }
-        $problemDevices = if ($dmCheck -and $dmCheck.ProblemDevices) { @($dmCheck.ProblemDevices) } else { @() }
+        $problemDevices = @()
+        if ($dmCheck -and $dmCheck.ProblemDevices) {
+            $problemDevices = @($dmCheck.ProblemDevices)
+        }
+        $problemCount = @($problemDevices).Count
 
         if ($dmCheck -and -not $dmCheck.Clean) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Detektovano $($problemDevices.Count) problema sa drajverima ($($dmCheck.Reason))." -Level "WARN" -Component "Drivers"
+                Write-ServisLog "Detektovano $problemCount problema sa drajverima ($($dmCheck.Reason))." -Level "WARN" -Component "Drivers"
             }
             if (-not $phaseCtx.SkipWU -and (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue)) {
                 $hubRes = Resolve-MissingDriversFromHub
@@ -3633,6 +3699,7 @@ function Invoke-Phase2Drivers {
                         }
                     }
 
+                    $consecutiveNotAllowed = 0
                     for ($dIdx = 0; $dIdx -lt $totalDrv; $dIdx++) {
                         $drv = $driverUpdates.Item($dIdx)
                         $drvNum = $dIdx + 1
@@ -3643,6 +3710,7 @@ function Invoke-Phase2Drivers {
                         }
 
                         $drvInstalledOk = $false
+                        $lastDrvHResult = ""
                         for ($drvTry = 1; $drvTry -le 2; $drvTry++) {
                             try {
                                 $singleColl = New-Object -ComObject Microsoft.Update.UpdateColl
@@ -3673,6 +3741,7 @@ function Invoke-Phase2Drivers {
                                         if ($uRes0) { $hResHex = ("0x{0:X8}" -f $uRes0.HResult) }
                                     }
                                 } catch {}
+                                $lastDrvHResult = $hResHex
 
                                 if ($resCode -in @(2, 3)) {
                                     $drvInstalledOk = $true
@@ -3691,8 +3760,23 @@ function Invoke-Phase2Drivers {
                                 }
                             }
                             if (-not $drvInstalledOk -and $drvTry -lt 2) {
-                                Start-Sleep -Seconds 3
+                                $waitRetrySec = if ($lastDrvHResult -eq "0x80240016") { 10 } else { 3 }
+                                Start-Sleep -Seconds $waitRetrySec
                             }
+                        }
+
+                        if ($drvInstalledOk) {
+                            $consecutiveNotAllowed = 0
+                        } elseif ($lastDrvHResult -eq "0x80240016") {
+                            $consecutiveNotAllowed++
+                            if ($consecutiveNotAllowed -ge 3) {
+                                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                    Write-ServisLog "P2.WuDrivers: Detektovano 3 uzastopne greske 0x80240016 (WU servis ceka restart ili drugu instalaciju). Prekidam dalju petlju drajvera; preostale stavke ce dovrsiti pozadinski WU ili prolaz nakon restarta." -Level "WARN" -Component "WinUpdate"
+                                }
+                                break
+                            }
+                        } else {
+                            $consecutiveNotAllowed = 0
                         }
                     }
                 } finally {

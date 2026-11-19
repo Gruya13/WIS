@@ -49,6 +49,29 @@ class TestReports(unittest.TestCase):
         self.assertIn("ThinkPad T14", md)
         self.assertIn("Chrome", md)
 
+    def test_generate_markdown_report_with_string_ram_and_disk(self):
+        sample = {
+            "device_id": "TK-LAPTOP-5CG2491CHJ",
+            "computer_name": "DESKTOP-3VL6LE1",
+            "chassis": "Laptop",
+            "serial_number": "5CG2491CHJ",
+            "status": "SUCCESS",
+            "duration_seconds": 2243,
+            "duration_formatted": "37m 23s",
+            "hw": {
+                "manufacturer": "HP",
+                "model": "HP EliteBook 840 14 inch G9 Notebook PC",
+                "cpu": "12th Gen Intel(R) Core(TM) i5-1235U",
+                "ram": "16 GB DDR5 4800 MHz",
+                "disk": "SSSTC CL4-8D256-HP (256 GB)",
+            },
+        }
+        md = generate_markdown_report(sample)
+        self.assertIn("- **RAM Memorija:** 16 GB DDR5 4800 MHz", md)
+        self.assertIn("- **Disk:** SSSTC CL4-8D256-HP (256 GB)", md)
+        self.assertNotIn("N/A GB", md)
+        self.assertNotIn("N/A (N/A GB)", md)
+
     def test_save_device_report(self):
         sample = {
             "device_id": "TK-TEST-5678",

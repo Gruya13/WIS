@@ -69,6 +69,7 @@ namespace WIS.UI
         private bool _taskRunnerStarted = false;
         private Process _currentPhaseProcess = null;
         private int _failedPhase = 0;
+        private int _phase3AutoRetryCount = 0;
         private string _lastProcessedLog = "";
 
         private int _lastStressActualDurationSec = 0;
@@ -1219,6 +1220,10 @@ namespace WIS.UI
             ViewModel.IsServiceReadyVisible = false;
             _taskRunnerStarted = true;
             _failedPhase = 0;
+            if (phaseNumber <= 2)
+            {
+                _phase3AutoRetryCount = 0;
+            }
             ViewModel.IsPaused = false;
             ViewModel.IpcConnected = true;
             ViewModel.IpcStatusText = string.Format("Master Faza {0}", phaseNumber);
@@ -1538,6 +1543,9 @@ namespace WIS.UI
                     return;
                 }
 
+                // Osiguraj pražnjenje asinhronih OutputDataReceived/ErrorDataReceived bafera do EOF-a
+                try { proc.WaitForExit(); } catch { }
+
                 int exitCode = proc.ExitCode;
                 _currentPhaseProcess = null;
 
@@ -1628,6 +1636,7 @@ namespace WIS.UI
                     // WIS-TASK-180 / WIS-TASK-181: Hibridna provera međurestarta između Faze 3 i Faze 4
                     if (phaseNumber == 3)
                     {
+                        _phase3AutoRetryCount = 0;
                         bool needReboot = true;
                         try
                         {
@@ -1700,9 +1709,32 @@ namespace WIS.UI
                 }
                 else
                 {
+                    string phaseErrLine = string.Format("Faza {0} završila sa greškom (ExitCode {1}).", phaseNumber, exitCode);
+                    if (_telemetryService != null)
+                    {
+                        _telemetryService.PushLog("[ERROR] [TaskRunner] " + phaseErrLine);
+                    }
+
+                    if (phaseNumber == 3 && _phase3AutoRetryCount < 1)
+                    {
+                        _phase3AutoRetryCount++;
+                        string retryWarn = string.Format("Faza 3 je neočekivano prekinuta (ExitCode {0}). Pokrećem automatski ponovni pokušaj ({1}/1) — već završeni koraci biće preskočeni preko StepGuard žurnala...", exitCode, _phase3AutoRetryCount);
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog("[WARN] [TaskRunner] " + retryWarn);
+                        }
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            ViewModel.AddLog("WARN", "TaskRunner", retryWarn);
+                        }));
+                        Thread.Sleep(2000);
+                        ExecutePhase(3);
+                        return;
+                    }
+
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
-                        ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Faza {0} završila sa greškom (ExitCode {1}).", phaseNumber, exitCode));
+                        ViewModel.AddLog("ERROR", "TaskRunner", phaseErrLine);
                         ViewModel.LiveStatus = string.Format("Greška u Fazi {0} (Kod {1}). Kliknite 'Preskoči' za sledeću ili 'Nastavi' za ponovni pokušaj.", phaseNumber, exitCode);
                         _failedPhase = phaseNumber;
                     }));
@@ -3673,6 +3705,10 @@ namespace WIS.UI
             {
                 int p = _failedPhase;
                 _failedPhase = 0;
+                if (p == 3)
+                {
+                    _phase3AutoRetryCount = 0;
+                }
                 ViewModel.AddLog("INFO", "Korisnik", string.Format("Korisnik zahtevao ponovni pokušaj Faze {0}. Pokrećem...", p));
                 StartPhaseExecution(p);
                 return;

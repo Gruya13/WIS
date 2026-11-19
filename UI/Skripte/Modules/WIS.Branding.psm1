@@ -539,15 +539,21 @@ function Invoke-Phase3Optimization {
     # 1. DEBLOAT WINDOWS APLIKACIJA - P3.Debloat
     # =========================================================================
     $null = Invoke-WisStep -Phase 3 -StepId "P3.Debloat" -Title "Debloat neželjenih aplikacija" -Test {
-        $foundBloat = @()
-        foreach ($pat in $Global:WisBloatPatterns) {
-            $pkgs = Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue
-            if ($pkgs) { foreach ($p in $pkgs) { $foundBloat += $p.Name } }
-            $provPkgs = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pat }
-            if ($provPkgs) { foreach ($pp in $provPkgs) { $foundBloat += $pp.DisplayName } }
-        }
         if (Test-Path "C:\setup\debloat-done.flag") {
-            return @{ Done = $true; Reason = "Windows debloat je izvrsen (preostalo zakljucanih sistemskih paketa: $($foundBloat.Count))" }
+            return @{ Done = $true; Reason = "Windows debloat je izvrsen (debloat-done.flag prisutan)" }
+        }
+        $foundBloat = @()
+        $allAppx = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)
+        $allProv = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)
+        foreach ($pat in $Global:WisBloatPatterns) {
+            if ($allAppx.Count -gt 0) {
+                $pkgs = @($allAppx | Where-Object { $_.Name -like $pat })
+                foreach ($p in $pkgs) { $foundBloat += $p.Name }
+            }
+            if ($allProv.Count -gt 0) {
+                $provPkgs = @($allProv | Where-Object { $_.DisplayName -like $pat })
+                foreach ($pp in $provPkgs) { $foundBloat += $pp.DisplayName }
+            }
         }
         if ($foundBloat.Count -eq 0) {
             return @{ Done = $true; Reason = "Sve neželjene sponzorisane aplikacije su već uklonjene" }
@@ -570,16 +576,30 @@ function Invoke-Phase3Optimization {
         }
 
         $removedCount = 0
+        $allAppx = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)
+        $allProv = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)
+        $removedPkgMap = @{}
+        $removedProvMap = @{}
         foreach ($pat in $Global:WisBloatPatterns) {
             try {
-                $pkgs = Get-AppxPackage -Name $pat -AllUsers -ErrorAction SilentlyContinue
-                foreach ($p in $pkgs) {
-                    Remove-AppxPackage -Package $p.PackageFullName -AllUsers -ErrorAction SilentlyContinue | Out-Null
-                    $removedCount++
+                if ($allAppx.Count -gt 0) {
+                    $pkgs = @($allAppx | Where-Object { $_.Name -like $pat })
+                    foreach ($p in $pkgs) {
+                        if ($p.PackageFullName -and -not $removedPkgMap.ContainsKey($p.PackageFullName)) {
+                            $removedPkgMap[$p.PackageFullName] = $true
+                            Remove-AppxPackage -Package $p.PackageFullName -AllUsers -ErrorAction SilentlyContinue | Out-Null
+                            $removedCount++
+                        }
+                    }
                 }
-                $provPkgs = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like $pat }
-                foreach ($pp in $provPkgs) {
-                    Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction SilentlyContinue | Out-Null
+                if ($allProv.Count -gt 0) {
+                    $provPkgs = @($allProv | Where-Object { $_.DisplayName -like $pat })
+                    foreach ($pp in $provPkgs) {
+                        if ($pp.PackageName -and -not $removedProvMap.ContainsKey($pp.PackageName)) {
+                            $removedProvMap[$pp.PackageName] = $true
+                            Remove-AppxProvisionedPackage -Online -PackageName $pp.PackageName -ErrorAction SilentlyContinue | Out-Null
+                        }
+                    }
                 }
             } catch {}
         }
@@ -608,12 +628,12 @@ function Invoke-Phase3Optimization {
         }
 
         foreach ($sName in $Global:WisTelemetryConfig.Services) {
-            $svc = Get-Service -Name $sName -ErrorAction SilentlyContinue
-            if ($svc) {
-                $startType = (Get-CimInstance Win32_Service -Filter "Name = '$sName'" -ErrorAction SilentlyContinue).StartMode
-                if ($startType -and $startType -ine "Disabled") {
+            $svcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$sName"
+            if (Test-Path $svcRegPath) {
+                $startVal = (Get-ItemProperty -Path $svcRegPath -Name "Start" -ErrorAction SilentlyContinue).Start
+                if ($null -ne $startVal -and [int]$startVal -ne 4) {
                     $allOk = $false
-                    $unmatched += "Servis $sName ($startType)"
+                    $unmatched += "Servis $sName (Start=$startVal)"
                 }
             }
         }
