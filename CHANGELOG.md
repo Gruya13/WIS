@@ -4,6 +4,24 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.1.1] / ServiceHub [v3.4.1] — 2026-11-19
+
+### Ispravke bagova sa terena (`BUG-01` – `BUG-09`)
+- **`BUG-01` (`UI/HwTest/Tests/AudioTestWindow.cs`, `MicTestWindow.cs`):** Eliminisan WinMM/COM deadlock na prelazu Audio $\rightarrow$ Mic testa uvođenjem `ManualResetEventSlim _waveOutDoneEvent` sinhronizacije (`StopActivePlayback`), jedinstvenim praćenjem govora cifara preko `PlayWaveOutTracked`, izmeštanjem svih `_audioVolume` COM poziva na STA UI nit preko `Dispatcher.BeginInvoke`, te prebacivanjem enumeracije mikrofona, `TryUnmuteAndLogCaptureEndpoint()` i `waveInOpen` iz `Loaded` UI handlera na namensku pozadinsku STA nit (`StartMicInitAsync`) sa `100 ms` grace pauzom i thread-safe `_waveInLock` čišćenjem.
+- **`BUG-02` (`UI/Skripte/Modules/WIS.Hardware.psm1`):** U `Resolve-MissingDriversFromHub` uveden `Invoke-HubDriverResolvePost` sa `Restore-ServisNetworkConnectivityIfNeeded -WaitSeconds 15` i do `2` retry pokušaja pri mrežnim greškama (opravak od PnP mrežnog reseta posle čipset/SMBus `3010` drajvera), plus `2s` stabilizacija posle instalacije čipset/mrežnih/`3010` drajvera.
+- **`BUG-03` (`UI/Skripte/Modules/WIS.Hardware.psm1`):** Prag u `Select-RelevantDriverInfFiles` podignut sa `<= 3` na `<= 12` `.inf` fajlova i dodato očuvanje pratećih `Extension`/`SoftwareComponent` `.inf` modula u većim paketima; `Install-OemDriverFromHub` instalira kompletan paket sa `pnputil.exe /add-driver "<extractDir>\*.inf" /subdirs /install` kada nisu vršena rezanja.
+- **`BUG-04` (`UI/Skripte/Modules/WIS.Update.psm1`):** `ServisWuActive=1/0` proširen oko batch download-a u `P2.WuDrivers`, dodati `$installer.ForceQuiet = $true`, provera `ResultCode -in @(2, 3)` / `HResult`, `1` retry posle `3s`, uklonjen prazan `catch {}` uz eksplicitno logovanje i dodat dopunski `Resolve-MissingDriversFromHub` po završetku `P2.WuDrivers`.
+- **`BUG-05` (`UI/Skripte/Modules/WIS.Update.psm1`):** Popravljen PowerShell 5.1 bag u `Invoke-WindowsUpdateSecondPass` gde se `-ArgumentList (,$updateTitles)` vezao kao `@("System.Object[]")` — sada se prosleđuje `$titlesJson` (`ConvertTo-Json` / `ConvertFrom-Json`) i broji se stvarni uspeh svake pojedinačne stavke po `GetUpdateResult($k).ResultCode -in @(2, 3)`.
+- **`BUG-06` (`UI/Skripte/Modules/WIS.Update.psm1`, `Phase6-Finalize.ps1`):** `Invoke-BackgroundWindowsUpdateWorker` produžava čekanje na kraj Faze 4 (`Phase4Active`) sa `360s` (`120` ciklusa) na `900s` (`300` ciklusa) i prijavljuje `Status = "WARN"` (umesto `COMPLETED`) kada pri `0/N` ništa nije instalirano; Faza 6 izvršava završni `Resolve-MissingDriversFromHub` pre gašenja mreže ako Device Manager ima preostale greške.
+- **`BUG-07` (`ServiceHub/servishub/handlers.py`, `scraper.py`, `UI/MainWindow.xaml.cs`, `WIS.Hardware.psm1`):** Uvedeno dedupovano pozadinsko preuzimanje velikih MS Catalog `.cab` paketa u `ServiceHub` (`async_download: true` $\rightarrow$ `status: "downloading"` + `retry_after_sec`) i klijentski polling petlje u `WIS.UI` (sa slanjem stvarnog `model`/`serial_number` i `Timeout = 120000 ms`) i `Resolve-MissingDriversFromHub`.
+- **`BUG-08` (`WIS.Update.psm1`, `Phase6-Finalize.ps1`):** Dodat `Test-WisDeviceManagerReadyForHarvest` guard u `Export-ServisHardwareDrivers` i na kraju `Invoke-Phase2Drivers` (`driver-harvest-deferred.flag`), čime je sprečeno snimanje nepotpunih `<Model>.tar` arhiva na NAS dok Device Manager ima kritične greške (odlaže se do čistog stanja na kraju Faze 6); takođe obrisan ranije zagađen `83JE.tar` (`324 MB`) sa produkcionog NAS-a.
+- **`BUG-09` (`UI/HwTest/Core/AutoHardwareDiagnostics.cs`, `GpuStressWindow.cs`):** Proširen `InspectGpuAdapters` sa praćenjem `hasAnyBasicDisplay`, `hasAnyErrorAdapter` i `problemAdaptersSummary` preko svih `Win32_VideoController` adaptera tako da neispravan sekundarni/diskretni GPU obavezno daje `TestStatus.Fail` umesto lažnog `PASS` na integrisanom iGPU-u.
+
+### Vlasništvo i Dokumentacija
+- **IG-Systems:** Kompletna javna i interna dokumentacija, licencni zaglavlja (`LICENSE`, `AssemblyInfo.cs`), konfiguracioni šabloni (`Wifi-Servis.example.ini`), QR PDF generator, QA nazivi uređaja i podrazumevani `ShopName` u `LabelPrintService.cs` prebačeni na vlasnika sistema **IG-Systems**.
+
+---
+
 ## [v3.1.0] / ServiceHub [v3.4.0] — 2026-11-19
 
 ### Bezbednost (Security Hardening)

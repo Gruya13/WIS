@@ -1,5 +1,5 @@
-# ⚡ WIS Service Centralni Servisni Hub (ServisHub)
-# Sveobuhvatna Tehnička i Arhitektonska Dokumentacija (v3.3.0 / WIS v3.0.0)
+# ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
+# Sveobuhvatna Tehnička i Arhitektonska Dokumentacija (v3.4.1 / WIS v3.1.1)
 
 ---
 
@@ -796,4 +796,4 @@ cd ServiceHub && python3 -m unittest tests/test_benchmark_and_predictive.py test
 ```
 
 ---
-*Dokumentacija izdanja v3.3.0 (WIS v3.0.0) | Servis računara "WIS Service" | Održava razvojni tim.*
+*Dokumentacija izdanja v3.4.1 (WIS v3.1.1) | Vlasnik sistema: **IG-Systems** | Održava razvojni tim.*

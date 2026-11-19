@@ -1,6 +1,6 @@
-# ServisHub u WIS monorepo-u
+# ServisHub u WIS monorepo-u (`IG-Systems`)
 
-Komponentna razvojna verzija: **3.4.0**, u WIS paketu **3.1.0**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
+Komponentna razvojna verzija: **3.4.1**, u WIS paketu **3.1.1**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
 
 Aktivni razvoj servera nalazi se u `ServiceHub/` ovog repozitorijuma. Prethodni samostalni direktorijum je arhiva; produkcioni NAS nije menjan. Opis API-ja ispod čuva prethodne funkcionalnosti, dok je sledeći ugovor merodavan za release pipeline razvoja 2.17.
 
@@ -15,14 +15,14 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 
 ---
 
-# ⚡ WIS Service Centralni Servisni Hub (ServisHub)
-### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.4.0)
+# ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
+### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.4.1)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-brightgreen.svg)]()
 [![Docker Ready](https://img.shields.io/badge/Docker-TrueNAS%20SCALE-blueviolet.svg)]()
 
-[![Version](https://img.shields.io/badge/Release-v3.4.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/Release-v3.4.1-orange.svg)]()
 
 ---
 
@@ -839,4 +839,4 @@ Pokriveni scenariji (`299` unittest metoda u `32` test modula — `279 PASS, 20 
   - **Operativni Runbook:** `wiki/memory/ops-runbook.md`
   - **Glavni Indeks (MOC):** `wiki/index.md`
 
-`servishub.__version__` koristi generisani `VERSION=3.4.0` (`WIS v3.1.0`). Za razvoj i bezbednosna unapređenja `v3.4.0` u `WIS v3.1.0`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).
+`servishub.__version__` koristi generisani `VERSION=3.4.1` (`WIS v3.1.1`, **IG-Systems**). Za razvoj i bezbednosna unapređenja `v3.4.0`–`v3.4.1`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0254](../docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).

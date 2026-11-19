@@ -1,8 +1,8 @@
-# WIS Autopilot Forensic Auditor Standalone (v3.1)
+# WIS Autopilot Forensic Auditor Standalone (v3.1.1 — IG-Systems)
 
-Samostalni izvršni alat (`WIS-AutopilotAuditor.exe` **v3.1.0**, `~448 KB`, `8` `.cs` fajlova / `2.333` linije) za brzu i determinističku proveru da li je računar vezan za Microsoft Intune / Microsoft Entra ID (Azure AD) kroz **Microsoft Autopilot (Zero Touch Deployment)** sistem.
+Samostalni izvršni alat (`WIS-AutopilotAuditor.exe` **v3.1.1**, `~448 KB`, `8` `.cs` fajlova / `2.333` linije, vlasništvo **IG-Systems**) za brzu i determinističku proveru da li je računar vezan za Microsoft Intune / Microsoft Entra ID (Azure AD) kroz **Microsoft Autopilot (Zero Touch Deployment)** sistem.
 
-### Šta donosi v3.0.0–v3.1.0 (`CloudZtdInspector.cs`)
+### Šta donosi v3.0.0–v3.1.1 (`CloudZtdInspector.cs`)
 - **Pre-OOBE keširanje i zaštita izveštaja:** Čita i čuva potvrđene izveštaje u `C:\Windows\Logs\WIS\autopilot_report.json`, `C:\setup\autopilot_report.json` i `C:\Windows\Logs\WIS\AutopilotDDSZTDFile.preoobe.json` (`TryLoadCachedReport`, `SaveCachedReport`, `IsReportContentConfirmed`), čime sprečava degradaciju već potvrđenog nalaza na `Unknown` ako kasnije nestane mreža.
 - **Tačno tumačenje praznog ZTD profila (`ConfirmedFree`):** `TryParseZtdJsonContent` ispravno prepoznaje prazan `AutopilotDDSZTDFile.json` (npr. prazan `CloudAssignedTenantId`) i poruku `"807 - ZtdDeviceIsNotRegistered (ZTD File)"` kao dokazano slobodan uređaj (`ConfirmedFree`), usklađeno sa `Provera_autopilota.ps1` (`974` linija, bez UTF-8 BOM-a).
 

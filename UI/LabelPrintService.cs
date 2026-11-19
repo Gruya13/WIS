@@ -60,7 +60,7 @@ namespace WIS.UI
             Port = 9100;
             Copies = 1;
             WidthDots = 576;
-            ShopName = "Tehno kutak";
+            ShopName = "IG-Systems";
             LoadedFromIni = false;
         }
 
@@ -241,7 +241,7 @@ namespace WIS.UI
                 }
             }
 
-            string shop = cfg != null && !string.IsNullOrEmpty(cfg.ShopName) ? cfg.ShopName : "Tehno kutak";
+            string shop = cfg != null && !string.IsNullOrEmpty(cfg.ShopName) ? cfg.ShopName : "IG-Systems";
             d.Footer = string.Format("{0}  •  {1}", shop, DateTime.Now.ToString("dd.MM.yyyy.", CultureInfo.InvariantCulture));
             return d;
         }

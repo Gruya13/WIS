@@ -1377,7 +1377,7 @@ function Select-RelevantDriverInfFiles {
     )
 
     $allInfs = @($InfFiles | ForEach-Object { $_ } | Where-Object { $_ })
-    if ($allInfs.Count -le 3) {
+    if ($allInfs.Count -le 12) {
         return @($allInfs)
     }
 
@@ -1388,6 +1388,7 @@ function Select-RelevantDriverInfFiles {
 
     $exactTokens = [System.Collections.Generic.List[string]]::new()
     $baseTokens = [System.Collections.Generic.List[string]]::new()
+    $vendorTokens = [System.Collections.Generic.List[string]]::new()
 
     foreach ($hid in $cleanHwids) {
         $u = $hid.ToUpperInvariant()
@@ -1405,6 +1406,10 @@ function Select-RelevantDriverInfFiles {
             $bt = "ACPI\$($matches[1])"
             if (-not $baseTokens.Contains($bt)) { $baseTokens.Add($bt) }
         }
+        if ($u -match '((?:VEN|VID)_[0-9A-F]{4})') {
+            $vt = $matches[1]
+            if (-not $vendorTokens.Contains($vt)) { $vendorTokens.Add($vt) }
+        }
     }
 
     if ($exactTokens.Count -eq 0 -and $baseTokens.Count -eq 0) {
@@ -1413,6 +1418,7 @@ function Select-RelevantDriverInfFiles {
 
     $exactMatched = [System.Collections.Generic.List[object]]::new()
     $baseMatched = [System.Collections.Generic.List[object]]::new()
+    $companionInfs = [System.Collections.Generic.List[object]]::new()
 
     foreach ($inf in $allInfs) {
         $rawText = ""
@@ -1445,21 +1451,65 @@ function Select-RelevantDriverInfFiles {
         }
         if ($hitBase) {
             $baseMatched.Add($inf)
+            continue
+        }
+
+        # Prateci Extension/SoftwareComponent .inf iz istog paketa (bez tudjeg SUBSYS_) ukljucujemo uz glavni drajver
+        if ($upperText -match 'CLASS\s*=\s*(EXTENSION|SOFTWARECOMPONENT)') {
+            $hitVendor = $false
+            foreach ($vt in $vendorTokens) {
+                if ($upperText.Contains($vt)) {
+                    $hitVendor = $true
+                    break
+                }
+            }
+            $hasAnySubsys = ($upperText -match 'SUBSYS_[0-9A-F]{8}')
+            if ($hitVendor -or (-not $hasAnySubsys)) {
+                $companionInfs.Add($inf)
+            }
         }
     }
 
     if ($exactMatched.Count -gt 0) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Select-RelevantDriverInfFiles: Filtrirano $($exactMatched.Count)/$($allInfs.Count) .inf datoteka po tacnom SUBSYS HWID-u." -Level "INFO" -Component "Hardware"
+        $mergedExact = [System.Collections.Generic.List[object]]::new()
+        $seenPaths = @{}
+        foreach ($m in $exactMatched) {
+            if ($m -and $m.FullName -and -not $seenPaths.ContainsKey($m.FullName)) {
+                $seenPaths[$m.FullName] = $true
+                $mergedExact.Add($m)
+            }
         }
-        return @($exactMatched.ToArray())
+        foreach ($comp in $companionInfs) {
+            if ($comp -and $comp.FullName -and -not $seenPaths.ContainsKey($comp.FullName)) {
+                $seenPaths[$comp.FullName] = $true
+                $mergedExact.Add($comp)
+            }
+        }
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Select-RelevantDriverInfFiles: Filtrirano $($mergedExact.Count)/$($allInfs.Count) .inf datoteka po tacnom SUBSYS HWID-u (+pratece komponente)." -Level "INFO" -Component "Hardware"
+        }
+        return @($mergedExact.ToArray())
     }
 
     if ($baseMatched.Count -gt 0 -and $baseMatched.Count -lt $allInfs.Count) {
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Select-RelevantDriverInfFiles: Filtrirano $($baseMatched.Count)/$($allInfs.Count) .inf datoteka po VEN/DEV HWID-u." -Level "INFO" -Component "Hardware"
+        $mergedBase = [System.Collections.Generic.List[object]]::new()
+        $seenBase = @{}
+        foreach ($m in $baseMatched) {
+            if ($m -and $m.FullName -and -not $seenBase.ContainsKey($m.FullName)) {
+                $seenBase[$m.FullName] = $true
+                $mergedBase.Add($m)
+            }
         }
-        return @($baseMatched.ToArray())
+        foreach ($comp in $companionInfs) {
+            if ($comp -and $comp.FullName -and -not $seenBase.ContainsKey($comp.FullName)) {
+                $seenBase[$comp.FullName] = $true
+                $mergedBase.Add($comp)
+            }
+        }
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Select-RelevantDriverInfFiles: Filtrirano $($mergedBase.Count)/$($allInfs.Count) .inf datoteka po VEN/DEV HWID-u (+pratece komponente)." -Level "INFO" -Component "Hardware"
+        }
+        return @($mergedBase.ToArray())
     }
 
     return @($allInfs)
@@ -1987,28 +2037,46 @@ function Install-OemDriverFromHub {
             }
         }
 
+        $origInfCount = @($infFiles).Count
         if ($TargetHwids -and $TargetHwids.Count -gt 0) {
             $infFiles = @(Select-RelevantDriverInfFiles -InfFiles $infFiles -TargetHwids $TargetHwids | ForEach-Object { $_ } | Where-Object { $_ -and $_.FullName })
         }
 
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Install-OemDriverFromHub: Pronađeno $($infFiles.Count) .inf datoteka. Pokrećem instalaciju preko pnputil.exe..." -Level "INFO" -Component "Hardware"
+            Write-ServisLog "Install-OemDriverFromHub: Pronađeno $($infFiles.Count)/$origInfCount .inf datoteka. Pokrećem instalaciju preko pnputil.exe..." -Level "INFO" -Component "Hardware"
         }
 
         $pnpOutputs = [System.Collections.Generic.List[string]]::new()
         $exitCodes = [System.Collections.Generic.List[int]]::new()
         $hasReboot = $false
+        $batchSucceeded = $false
 
-        foreach ($inf in $infFiles) {
-            $pnpOut = & pnputil.exe /add-driver "$($inf.FullName)" /install 2>&1
-            $exitCode = $LASTEXITCODE
-            $exitCodes.Add($exitCode)
-
-            $outStr = ($pnpOut -join "`n").Trim()
-            $pnpOutputs.Add("[$($inf.Name)] ExitCode: $exitCode | $outStr")
-
-            if ($exitCode -eq 3010) {
+        # Kada su izabrani svi .inf fajlovi paketa, instaliraj ceo skup odjednom (/subdirs /install) da bi zavisni Extension/SoftwareComponent moduli odmah vezali drajver
+        if ($infFiles.Count -ge $origInfCount -and (Test-Path $extractDir)) {
+            $batchOut = & pnputil.exe /add-driver "$extractDir\*.inf" /subdirs /install 2>&1
+            $batchEc = $LASTEXITCODE
+            $exitCodes.Add($batchEc)
+            $pnpOutputs.Add("[*.inf /subdirs /install] ExitCode: $batchEc | $(($batchOut -join "`n").Trim())")
+            if ($batchEc -eq 3010) {
                 $hasReboot = $true
+            }
+            if ($batchEc -eq 0 -or $batchEc -eq 3010 -or $batchEc -eq 259) {
+                $batchSucceeded = $true
+            }
+        }
+
+        if (-not $batchSucceeded) {
+            foreach ($inf in $infFiles) {
+                $pnpOut = & pnputil.exe /add-driver "$($inf.FullName)" /install 2>&1
+                $exitCode = $LASTEXITCODE
+                $exitCodes.Add($exitCode)
+
+                $outStr = ($pnpOut -join "`n").Trim()
+                $pnpOutputs.Add("[$($inf.Name)] ExitCode: $exitCode | $outStr")
+
+                if ($exitCode -eq 3010) {
+                    $hasReboot = $true
+                }
             }
         }
 
@@ -2126,9 +2194,111 @@ function Resolve-MissingDriversFromHub {
     $errorCount = 0
     $resultsList = [System.Collections.Generic.List[PSCustomObject]]::new()
 
+    function Invoke-HubDriverResolvePost {
+        param(
+            [string]$Url,
+            [string]$BodyJson,
+            [string]$DevName
+        )
+        $maxHubAttempts = 3
+        $lastErr = ""
+        for ($attempt = 1; $attempt -le $maxHubAttempts; $attempt++) {
+            try {
+                $req = [System.Net.HttpWebRequest]::Create($Url)
+                $req.Method = "POST"
+                $req.ContentType = "application/json; charset=utf-8"
+                $req.Timeout = 90000
+                $req.ReadWriteTimeout = 90000
+                $req.UserAgent = "WIS-DriverEngine/3.1"
+
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
+                $req.ContentLength = $bytes.Length
+                $reqStream = $req.GetRequestStream()
+                $reqStream.Write($bytes, 0, $bytes.Length)
+                $reqStream.Close()
+
+                $resp = $req.GetResponse()
+                $stream = $resp.GetResponseStream()
+                $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
+                $respJson = $reader.ReadToEnd()
+                $reader.Close()
+                $stream.Close()
+                $resp.Close()
+
+                return @{
+                    Success  = $true
+                    Response = ($respJson | ConvertFrom-Json)
+                    Error    = ""
+                }
+            } catch {
+                $lastErr = $_.Exception.Message
+                $httpCode = 0
+                try {
+                    if ($_.Exception -and $_.Exception.Response) {
+                        $httpCode = [int]$_.Exception.Response.StatusCode
+                    }
+                } catch {}
+                if ($httpCode -ge 400 -and $httpCode -lt 500) {
+                    break
+                }
+                if ($attempt -lt $maxHubAttempts) {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Resolve-MissingDriversFromHub: Konekcija ka ServisHub-u za [$DevName] prekinuta ($lastErr) — pokušaj oporavka mreže ($attempt/$maxHubAttempts)..." -Level "WARN" -Component "Hardware"
+                    }
+                    if (Get-Command Restore-ServisNetworkConnectivityIfNeeded -ErrorAction SilentlyContinue) {
+                        $null = Restore-ServisNetworkConnectivityIfNeeded -WaitSeconds 15
+                    } else {
+                        Start-Sleep -Seconds 3
+                    }
+                }
+            }
+        }
+        return @{
+            Success  = $false
+            Response = $null
+            Error    = $lastErr
+        }
+    }
+
+    function Invoke-MsCatalogFallbackForDevice {
+        param(
+            [string]$DevName,
+            [string[]]$TargetHwids
+        )
+        foreach ($hwid in $TargetHwids) {
+            if ([string]::IsNullOrWhiteSpace($hwid)) { continue }
+            $msCatRes = Install-DriverFromMsCatalog -HardwareId $hwid -DeviceName $DevName -DestinationDir (Join-Path "C:\setup\Drivers\Pending" "MsCat")
+            if ($msCatRes.Success) {
+                if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
+                    $fbBytes = if ($null -ne $msCatRes.DownloadBytes) { [long]$msCatRes.DownloadBytes } else { [long]0 }
+                    $fbDurMs = if ($null -ne $msCatRes.DownloadDurationMs) { [double]$msCatRes.DownloadDurationMs } else { [double]0.0 }
+                    Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $fbBytes -DurationMs $fbDurMs -ItemName $DevName | Out-Null
+                }
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Resolve-MissingDriversFromHub: [USPEH FALLBACK] Drajver za [$DevName] uspesno instaliran preko Microsoft Kataloga (HWID: $hwid, Kod: $($msCatRes.ExitCode))." -Level "SUCCESS" -Component "Hardware"
+                }
+                return @{
+                    Success        = $true
+                    ExitCode       = $msCatRes.ExitCode
+                    RebootRequired = [bool]$msCatRes.RebootRequired
+                    Result         = [PSCustomObject]@{
+                        DeviceName     = $DevName
+                        Status         = "installed_via_mscatalog"
+                        DriverId       = $hwid
+                        ExitCode       = $msCatRes.ExitCode
+                        RebootRequired = $msCatRes.RebootRequired
+                        Details        = $msCatRes.Title
+                    }
+                }
+            }
+        }
+        return @{ Success = $false }
+    }
+
     foreach ($dev in $badDevices) {
         $devName = if ($dev.Name) { $dev.Name.Trim() } elseif ($dev.Description) { $dev.Description.Trim() } else { "Nepoznat uredjaj" }
         $mfg = if ($dev.Manufacturer) { $dev.Manufacturer.Trim() } else { "" }
+        $pnpClass = if ($dev.PNPClass) { $dev.PNPClass.Trim() } else { "" }
         $hwids = @($dev.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         if ($hwids.Count -eq 0) { continue }
 
@@ -2136,13 +2306,14 @@ function Resolve-MissingDriversFromHub {
             Write-ServisLog "Resolve-MissingDriversFromHub: Upit za [$devName] (HWID: $($hwids[0]), Kod: $($dev.ConfigManagerErrorCode))..." -Level "DEBUG" -Component "Hardware"
         }
 
-        # Kreiranje JSON tela sa garantovanim nizom za hwids plus model i serial_number
+        # Kreiranje JSON tela sa garantovanim nizom za hwids plus model, serial_number i async_download
         $postBodyObj = [ordered]@{
-            hwids         = $hwids
-            device_name   = $devName
-            manufacturer  = $mfg
-            model         = $sysModel
-            serial_number = $sysSerial
+            hwids          = $hwids
+            device_name    = $devName
+            manufacturer   = $mfg
+            model          = $sysModel
+            serial_number  = $sysSerial
+            async_download = $true
         }
         $postBody = $postBodyObj | ConvertTo-Json -Compress
         if ($hwids.Count -eq 1) {
@@ -2152,66 +2323,49 @@ function Resolve-MissingDriversFromHub {
         }
 
         $resolveUrl = "$HubUrl/api/drivers/resolve"
-        $hubResponse = $null
+        $postRes = Invoke-HubDriverResolvePost -Url $resolveUrl -BodyJson $postBody -DevName $devName
+        $hubResponse = $postRes.Response
 
-        try {
-            $req = [System.Net.HttpWebRequest]::Create($resolveUrl)
-            $req.Method = "POST"
-            $req.ContentType = "application/json; charset=utf-8"
-            $req.Timeout = 90000
-            $req.ReadWriteTimeout = 90000
-            $req.UserAgent = "WIS-DriverEngine/2.15"
+        # Polling ako ServisHub u pozadini preuzima veliki OEM .cab paket sa Microsoft CDN-a
+        $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($postRes.Success -and $hubResponse -and $hubResponse.status -eq "ok" -and $hubResponse.results) {
+            $tmpArr = @($hubResponse.results)
+            $hasReady = [bool]($tmpArr | Where-Object { $_.status -eq "ready" -and $_.driver_id } | Select-Object -First 1)
+            $dlItem = $tmpArr | Where-Object { $_.status -eq "downloading" } | Select-Object -First 1
+            if ($hasReady -or (-not $dlItem) -or $pollSw.Elapsed.TotalSeconds -ge 300) {
+                break
+            }
+            if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                break
+            }
+            $retrySec = 5
+            try {
+                if ($dlItem.retry_after_sec -and [int]$dlItem.retry_after_sec -gt 0) {
+                    $retrySec = [math]::Max(2, [math]::Min(15, [int]$dlItem.retry_after_sec))
+                }
+            } catch {}
+            $elapsedSec = [int]$pollSw.Elapsed.TotalSeconds
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Resolve-MissingDriversFromHub: ServiceHub preuzima OEM paket za [$devName] (${elapsedSec}s)..." -Level "INFO" -Component "Hardware"
+            }
+            Start-Sleep -Seconds $retrySec
+            $postRes = Invoke-HubDriverResolvePost -Url $resolveUrl -BodyJson $postBody -DevName $devName
+            $hubResponse = $postRes.Response
+        }
 
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($postBody)
-            $req.ContentLength = $bytes.Length
-            $reqStream = $req.GetRequestStream()
-            $reqStream.Write($bytes, 0, $bytes.Length)
-            $reqStream.Close()
-
-            $resp = $req.GetResponse()
-            $stream = $resp.GetResponseStream()
-            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8)
-            $respJson = $reader.ReadToEnd()
-            $reader.Close()
-            $stream.Close()
-            $resp.Close()
-
-            $hubResponse = $respJson | ConvertFrom-Json
-        } catch {
-            $reqErr = $_.Exception.Message
+        if (-not $postRes.Success) {
+            $reqErr = $postRes.Error
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Resolve-MissingDriversFromHub: ServisHub na $HubUrl nije dostupan ($reqErr). Automatski prelazim na Internet Fallback (Microsoft Update Catalog) za [$devName]..." -Level "WARN" -Component "Hardware"
             }
-
-            # Automatski Internet Fallback preko Microsoft Update Catalog-a
-            $fallbackSuccess = $false
-            foreach ($hwid in $hwids) {
-                if ([string]::IsNullOrWhiteSpace($hwid)) { continue }
-                $msCatRes = Install-DriverFromMsCatalog -HardwareId $hwid -DeviceName $devName -DestinationDir (Join-Path "C:\setup\Drivers\Pending" "MsCat")
-                if ($msCatRes.Success) {
-                    $resolvedCount++
-                    $fallbackSuccess = $true
-                    if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
-                        $fbBytes = if ($null -ne $msCatRes.DownloadBytes) { [long]$msCatRes.DownloadBytes } else { [long]0 }
-                        $fbDurMs = if ($null -ne $msCatRes.DownloadDurationMs) { [double]$msCatRes.DownloadDurationMs } else { [double]0.0 }
-                        Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $fbBytes -DurationMs $fbDurMs -ItemName $devName | Out-Null
-                    }
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Resolve-MissingDriversFromHub: [USPEH FALLBACK] Drajver za [$devName] uspesno instaliran preko Microsoft Kataloga (HWID: $hwid, Kod: $($msCatRes.ExitCode))." -Level "SUCCESS" -Component "Hardware"
-                    }
-                    $resultsList.Add([PSCustomObject]@{
-                        DeviceName     = $devName
-                        Status         = "installed_via_mscatalog"
-                        DriverId       = $hwid
-                        ExitCode       = $msCatRes.ExitCode
-                        RebootRequired = $msCatRes.RebootRequired
-                        Details        = $msCatRes.Title
-                    })
-                    break
+            $fbRes = Invoke-MsCatalogFallbackForDevice -DevName $devName -TargetHwids $hwids
+            if ($fbRes.Success) {
+                $resolvedCount++
+                $resultsList.Add($fbRes.Result)
+                if ($fbRes.RebootRequired -or $fbRes.ExitCode -eq 3010 -or $pnpClass -match '(?i)net|system' -or $devName -match '(?i)chipset|smbus|network|ethernet|wi-?fi|wlan|lan|pci|lpc|serial\s*io') {
+                    Start-Sleep -Seconds 2
                 }
-            }
-
-            if (-not $fallbackSuccess) {
+            } else {
                 $errorCount++
                 $resultsList.Add([PSCustomObject]@{
                     DeviceName = $devName
@@ -2255,6 +2409,9 @@ function Resolve-MissingDriversFromHub {
                         RebootRequired = $instRes.RebootRequired
                         Details        = $readyRes.title
                     })
+                    if ($instRes.RebootRequired -or $instRes.ExitCode -eq 3010 -or $pnpClass -match '(?i)net|system' -or $devName -match '(?i)chipset|smbus|network|ethernet|wi-?fi|wlan|lan|pci|lpc|serial\s*io') {
+                        Start-Sleep -Seconds 2
+                    }
                 } else {
                     $errorCount++
                     $handled = $true
@@ -2278,35 +2435,15 @@ function Resolve-MissingDriversFromHub {
                         Write-ServisLog "Resolve-MissingDriversFromHub: ServisHub vratio not_found za sve HWID-jeve uređaja [$devName]. Pokrećem Internet Fallback preko Microsoft Kataloga..." -Level "INFO" -Component "Hardware"
                     }
 
-                    $fallbackSuccess = $false
-                    foreach ($hwid in $hwids) {
-                        if ([string]::IsNullOrWhiteSpace($hwid)) { continue }
-                        $msCatRes = Install-DriverFromMsCatalog -HardwareId $hwid -DeviceName $devName -DestinationDir (Join-Path "C:\setup\Drivers\Pending" "MsCat")
-                        if ($msCatRes.Success) {
-                            $resolvedCount++
-                            $fallbackSuccess = $true
-                            $handled = $true
-                            if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
-                                $fbBytes2 = if ($null -ne $msCatRes.DownloadBytes) { [long]$msCatRes.DownloadBytes } else { [long]0 }
-                                $fbDurMs2 = if ($null -ne $msCatRes.DownloadDurationMs) { [double]$msCatRes.DownloadDurationMs } else { [double]0.0 }
-                                Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $fbBytes2 -DurationMs $fbDurMs2 -ItemName $devName | Out-Null
-                            }
-                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "Resolve-MissingDriversFromHub: [USPEH FALLBACK] Drajver za [$devName] uspesno instaliran preko Microsoft Kataloga (HWID: $hwid)." -Level "SUCCESS" -Component "Hardware"
-                            }
-                            $resultsList.Add([PSCustomObject]@{
-                                DeviceName     = $devName
-                                Status         = "installed_via_mscatalog"
-                                DriverId       = $hwid
-                                ExitCode       = $msCatRes.ExitCode
-                                RebootRequired = $msCatRes.RebootRequired
-                                Details        = $msCatRes.Title
-                            })
-                            break
+                    $fbRes2 = Invoke-MsCatalogFallbackForDevice -DevName $devName -TargetHwids $hwids
+                    if ($fbRes2.Success) {
+                        $resolvedCount++
+                        $handled = $true
+                        $resultsList.Add($fbRes2.Result)
+                        if ($fbRes2.RebootRequired -or $fbRes2.ExitCode -eq 3010 -or $pnpClass -match '(?i)net|system' -or $devName -match '(?i)chipset|smbus|network|ethernet|wi-?fi|wlan|lan|pci|lpc|serial\s*io') {
+                            Start-Sleep -Seconds 2
                         }
-                    }
-
-                    if (-not $fallbackSuccess) {
+                    } else {
                         $notFoundCount++
                         $handled = $true
                         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {

@@ -62,6 +62,14 @@ $updateMod = @(
 
 if ($updateMod) { Import-Module $updateMod -Force -ErrorAction SilentlyContinue }
 
+$hwMod = @(
+    (Join-Path $PSScriptRoot "..\Modules\WIS.Hardware.psm1"),
+    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Hardware.psm1"),
+    "C:\setup\Skripte\Modules\WIS.Hardware.psm1"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($hwMod) { Import-Module $hwMod -Force -ErrorAction SilentlyContinue }
+
 
 # 2. Verifikacija administratorskih privilegija
 try {
@@ -160,6 +168,36 @@ try {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Upozorenje u Windows Update barijeri: $wuBarrierErr" -Level "WARN" -Component "Phase6"
             }
+        }
+    }
+
+    # 3c. Završna provera i dopunska rezolucija preostalih drajvera + bezbedna odložena berba (pre gašenja mreže/SMB sesija)
+    try {
+        if ((Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue) -and (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue)) {
+            $dmP6 = Test-WisDeviceManagerClean
+            if ($dmP6 -and -not $dmP6.Clean) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Faza 6: Detektovani preostali problemi sa drajverima ($($dmP6.Reason)) — pokrecem zavrsni Resolve-MissingDriversFromHub..." -Level "INFO" -Component "Phase6"
+                }
+                $null = Resolve-MissingDriversFromHub
+            }
+        }
+        $harvestReadyP6 = if (Get-Command Test-WisDeviceManagerReadyForHarvest -ErrorAction SilentlyContinue) {
+            Test-WisDeviceManagerReadyForHarvest
+        } else {
+            @{ Ready = $false; Reason = "Test-WisDeviceManagerReadyForHarvest nedostupan" }
+        }
+        if ($harvestReadyP6.Ready -and (Get-Command Export-ServisHardwareDrivers -ErrorAction SilentlyContinue)) {
+            Export-ServisHardwareDrivers
+            foreach ($dfFlag in @((Join-Path $LocalSetupDir "driver-harvest-deferred.flag"), "C:\setup\driver-harvest-deferred.flag")) {
+                if (Test-Path $dfFlag) { Remove-Item -Path $dfFlag -Force -ErrorAction SilentlyContinue }
+            }
+        } elseif (-not $harvestReadyP6.Ready -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+            Write-ServisLog "Faza 6: Preskacem berbu <Model>.tar jer Device Manager i dalje nije cist ($($harvestReadyP6.Reason))." -Level "WARN" -Component "Phase6"
+        }
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Faza 6: Upozorenje pri zavrsnoj proveri/berbi drajvera: $($_.Exception.Message)" -Level "WARN" -Component "Phase6"
         }
     }
 

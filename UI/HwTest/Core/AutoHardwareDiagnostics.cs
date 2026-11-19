@@ -2272,7 +2272,12 @@ namespace WIS.HwTest.Core
             uint errCode;
             bool isBasicAdapter;
             string allGpus;
-            InspectGpuAdapters(out primaryGpu, out driverVer, out vramMb, out errCode, out isBasicAdapter, out allGpus);
+            bool hasAnyBasicDisplay;
+            bool hasAnyErrorAdapter;
+            string problemAdapters;
+            InspectGpuAdapters(
+                out primaryGpu, out driverVer, out vramMb, out errCode, out isBasicAdapter, out allGpus,
+                out hasAnyBasicDisplay, out hasAnyErrorAdapter, out problemAdapters);
 
             int tier = (System.Windows.Media.RenderCapability.Tier >> 16);
             res.Details["gpu_name"] = primaryGpu;
@@ -2280,30 +2285,64 @@ namespace WIS.HwTest.Core
             res.Details["vram_mb"] = vramMb;
             res.Details["pnp_error_code"] = errCode;
             res.Details["is_basic_display"] = isBasicAdapter;
+            res.Details["has_any_basic_display"] = hasAnyBasicDisplay;
+            res.Details["has_any_error_adapter"] = hasAnyErrorAdapter;
+            res.Details["problem_adapters"] = problemAdapters;
             res.Details["wpf_render_tier"] = tier;
             res.Details["all_adapters"] = allGpus;
 
             string vramTxt = vramMb > 0 ? string.Format(" | VRAM: {0} MB", vramMb) : "";
             res.MetricSummary = string.Format("{0}{1} | Tier {2} | Čeka 3D stres", ShortModel(primaryGpu, 26), vramTxt, tier);
 
-            if (isBasicAdapter || errCode != 0)
+            if (isBasicAdapter || errCode != 0 || hasAnyBasicDisplay || hasAnyErrorAdapter)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = isBasicAdapter
-                    ? "Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)"
-                    : string.Format("Greška GPU uređaja u Device Manager-u (Error Code {0})", errCode);
+                if (isBasicAdapter)
+                {
+                    res.Reason = "Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)";
+                }
+                else if (errCode != 0)
+                {
+                    res.Reason = string.Format("Greška GPU uređaja u Device Manager-u (Error Code {0})", errCode);
+                }
+                else
+                {
+                    res.Reason = string.Format("Sekundarni GPU nema drajver ili ima grešku: {0}", problemAdapters);
+                }
             }
             return res;
         }
 
         public static void InspectGpuAdapters(out string primaryName, out string driverVersion, out long vramMb, out uint errorCode, out bool isBasicDisplay, out string allAdaptersSummary)
         {
+            bool dummyBasic;
+            bool dummyErr;
+            string dummyProblem;
+            InspectGpuAdapters(
+                out primaryName, out driverVersion, out vramMb, out errorCode, out isBasicDisplay, out allAdaptersSummary,
+                out dummyBasic, out dummyErr, out dummyProblem);
+        }
+
+        public static void InspectGpuAdapters(
+            out string primaryName,
+            out string driverVersion,
+            out long vramMb,
+            out uint errorCode,
+            out bool isBasicDisplay,
+            out string allAdaptersSummary,
+            out bool hasAnyBasicDisplay,
+            out bool hasAnyErrorAdapter,
+            out string problemAdaptersSummary)
+        {
             primaryName = "Nepoznat GPU";
             driverVersion = "";
             vramMb = 0;
             errorCode = 0;
             isBasicDisplay = false;
+            hasAnyBasicDisplay = false;
+            hasAnyErrorAdapter = false;
             List<string> list = new List<string>();
+            List<string> problemList = new List<string>();
 
             try
             {
@@ -2324,6 +2363,18 @@ namespace WIS.HwTest.Core
                                        name.IndexOf("Standard VGA", StringComparison.OrdinalIgnoreCase) >= 0;
 
                         list.Add(string.Format("{0} (Drv: {1}, Err: {2})", name, drv, err));
+                        if (isBasic)
+                        {
+                            hasAnyBasicDisplay = true;
+                        }
+                        if (err != 0)
+                        {
+                            hasAnyErrorAdapter = true;
+                        }
+                        if (isBasic || err != 0)
+                        {
+                            problemList.Add(string.Format("{0} (Err: {1})", name, err));
+                        }
 
                         // Prioritet dajemo pravoj kartici (ne Basic Display), a ako su obe prave uzimamo prvu ili sa većim VRAM-om
                         if (!setPrimary || (!isBasic && isBasicDisplay) || (!isBasic && mb > vramMb))
@@ -2373,6 +2424,7 @@ namespace WIS.HwTest.Core
             catch { }
 
             allAdaptersSummary = string.Join(" | ", list.ToArray());
+            problemAdaptersSummary = string.Join(" | ", problemList.ToArray());
         }
         #endregion
 

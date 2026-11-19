@@ -1,13 +1,13 @@
-# Windows Installation Assistant (WIS) v3.1.0
+# Windows Installation Assistant (WIS) v3.1.1 — IG-Systems
 
-[![Version](https://img.shields.io/badge/WIS-v3.1.0-blue.svg)](version.json)
-[![ServiceHub](https://img.shields.io/badge/ServiceHub-v3.4.0-indigo.svg)](ServiceHub/)
+[![Version](https://img.shields.io/badge/WIS-v3.1.1-blue.svg)](version.json)
+[![ServiceHub](https://img.shields.io/badge/ServiceHub-v3.4.1-indigo.svg)](ServiceHub/)
 [![Windows Validation](https://github.com/Gruya13/WIS/actions/workflows/windows-validation.yml/badge.svg)](https://github.com/Gruya13/WIS/actions/workflows/windows-validation.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-012456.svg)](ISO/Skripte/Build-WIS.ps1)
 [![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.0%20%2F%204.8-512BD4.svg)](UI/WIS.UI.csproj)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**WIS (Windows Installation Assistant)** je modularni, **Zero-Touch** sistem za automatizovano postavljanje **Windows 11 Home / Pro (24H2+)**, mrežnu PXE (iVentoy) i USB distribuciju, integrisanu hardversku dijagnostiku (`WIS.HwTest`), Microsoft Autopilot/ZTD forenziku, determinističko upravljanje drajverima i aplikacijama (`StepGuard`), dvosmerni HTTP/SMB keš za zakrpe i pakete drajvera, termalnu štampu servisnih nalepnica (Star TSP700II) i centralni nadzor flote kroz **ServiceHub v3.4.0**.
+**WIS (Windows Installation Assistant)**, u vlasništvu **IG-Systems**, je modularni, **Zero-Touch** sistem za automatizovano postavljanje **Windows 11 Home / Pro (24H2+)**, mrežnu PXE (iVentoy) i USB distribuciju, integrisanu hardversku dijagnostiku (`WIS.HwTest`), Microsoft Autopilot/ZTD forenziku, determinističko upravljanje drajverima i aplikacijama (`StepGuard`), dvosmerni HTTP/SMB keš za zakrpe i pakete drajvera, termalnu štampu servisnih nalepnica (Star TSP700II) i centralni nadzor flote kroz **ServiceHub v3.4.1**.
 
 ---
 
@@ -31,7 +31,7 @@ flowchart LR
     LAUNCHER --> UI["WIS.UI.exe (9 Tabova + 6 Faza PS 5.1)"]
     UI --> HWTEST["WIS.HwTest (7 Auto + 9 Interaktivnih)"]
     UI --> AUDITOR["WIS-AutopilotAuditor.exe (ZTD / MDM)"]
-    LAUNCHER <--> HUB["ServiceHub v3.4.0 (HTTP :8080 / UDP :8888)"]
+    LAUNCHER <--> HUB["ServiceHub v3.4.1 (HTTP :8080 / UDP :8888)"]
     UI <--> HUB
     UI <--> NAS["TrueNAS SMB / HTTP Keš (Zakrpe & Drajveri)"]
 ```
@@ -40,11 +40,11 @@ Kanonski izvor verzija svih podsistema definisan je u [`version.json`](version.j
 
 | Celina / Alat | Verzija | Tehnologija | Odgovornost |
 | :--- | :--- | :--- | :--- |
-| **[`ISO/`](ISO/)** | `3.1.0` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja Ultra-Lean Windows 11 ISO/USB medijuma, `boot.wim` LAN driver injection (`000_wis_net1ix64.inf_guard`), VMD podrška, Pre-OOBE bootstrap (`PreOOBE-Network.ps1`, `SetupComplete.ps1`, `Provera_autopilota.ps1`), [`Build-WIS.ps1`](ISO/Skripte/Build-WIS.ps1) i [`Release-WIS.py`](ISO/Skripte/Release-WIS.py). |
-| **[`Launcher/`](Launcher/)** | `3.1.0` (`min: 3.1.0`) | C# 5.0 / .NET Framework 4.0 | Samostalni bootstrapper (`WIS.Launcher.exe`): Wi-Fi profili (WPA2/WPA3/Open sa XML escaping-om), UDP/SMB otkrivanje Hub-a, RSA-2048 + SHA-256 + anti-downgrade verifikacija paketa (`MandatoryRelease310Files`), Zip-Slip/`.sys` zaštita i transakcioni rollback. |
-| **[`UI/`](UI/)** | `3.1.0` | C# 5.0 WPF (.NET 4.8) + PowerShell 5.1 | Glavni orkestrator `WIS.UI.exe` (`MainWindow.xaml.cs`, `MainWindow.Hardware.cs`, `MainWindow.HwTest.cs`, `MainWindow.Reboot.cs`), ugrađeni [`UI/HwTest/`](UI/HwTest/) modul (`WIS.HwTest.exe`), 13 PowerShell modula (`UI/Skripte/Modules/`), 6 faza (`UI/Skripte/Phases/`) i Star TSP700II štampa (`LabelPrintService.cs`). |
-| **[`ServiceHub/`](ServiceHub/)** | `3.4.0` | Python 3.10+ (Stdlib HTTP + opcioni FastAPI), Docker | Centralni nadzorni server (`TCP 8080` / `UDP 8888`): fail-closed admin/client autentifikacija, CORS allowlist, 1 Hz Screen Mirror (TTL + RAM cap), WIS Benchmark (kohorte + P5 wait), cross-model `.cab` HWID indeks, Predictive Cache, OEM provajderi (Lenovo/Dell/HP) i UEFI USB Builder sa ZFS zaštitom. |
-| **[`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/)** | `3.1.0` | C# 5.0 / .NET Framework 4.8 | Forenzički alat (`WIS-AutopilotAuditor.exe`) za troslojnu Autopilot/ZTD analizu (CLI/GUI/JSON/HTML) uz očuvanje Pre-OOBE keša i strogu TLS proveru. |
+| **[`ISO/`](ISO/)** | `3.1.1` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja Ultra-Lean Windows 11 ISO/USB medijuma, `boot.wim` LAN driver injection (`000_wis_net1ix64.inf_guard`), VMD podrška, Pre-OOBE bootstrap (`PreOOBE-Network.ps1`, `SetupComplete.ps1`, `Provera_autopilota.ps1`), [`Build-WIS.ps1`](ISO/Skripte/Build-WIS.ps1) i [`Release-WIS.py`](ISO/Skripte/Release-WIS.py). |
+| **[`Launcher/`](Launcher/)** | `3.1.1` (`min: 3.1.0`) | C# 5.0 / .NET Framework 4.0 | Samostalni bootstrapper (`WIS.Launcher.exe`): Wi-Fi profili (WPA2/WPA3/Open sa XML escaping-om), UDP/SMB otkrivanje Hub-a, RSA-2048 + SHA-256 + anti-downgrade verifikacija paketa (`MandatoryRelease310Files`), Zip-Slip/`.sys` zaštita i transakcioni rollback. |
+| **[`UI/`](UI/)** | `3.1.1` | C# 5.0 WPF (.NET 4.8) + PowerShell 5.1 | Glavni orkestrator `WIS.UI.exe` (`MainWindow.xaml.cs`, `MainWindow.Hardware.cs`, `MainWindow.HwTest.cs`, `MainWindow.Reboot.cs`), ugrađeni [`UI/HwTest/`](UI/HwTest/) modul (`WIS.HwTest.exe`), 13 PowerShell modula (`UI/Skripte/Modules/`), 6 faza (`UI/Skripte/Phases/`) i Star TSP700II štampa (`LabelPrintService.cs`). |
+| **[`ServiceHub/`](ServiceHub/)** | `3.4.1` | Python 3.10+ (Stdlib HTTP + opcioni FastAPI), Docker | Centralni nadzorni server (`TCP 8080` / `UDP 8888`): fail-closed admin/client autentifikacija, CORS allowlist, async `.cab` driver resolver (`downloading` polling), 1 Hz Screen Mirror (TTL + RAM cap), WIS Benchmark, cross-model `.cab` HWID indeks, Predictive Cache, OEM provajderi (Lenovo/Dell/HP) i UEFI USB Builder sa ZFS zaštitom. |
+| **[`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/)** | `3.1.1` | C# 5.0 / .NET Framework 4.8 | Forenzički alat (`WIS-AutopilotAuditor.exe`) za troslojnu Autopilot/ZTD analizu (CLI/GUI/JSON/HTML) uz očuvanje Pre-OOBE keša i strogu TLS proveru. |
 
 ---
 
@@ -129,16 +129,16 @@ Puni PXE/OOBE laboratorijski i Windows testovi nalaze se u [`UI/Tests/`](UI/Test
 
 ## Dokumentacija
 
-- **[Tehnički opis sistema WIS v3.1.0](docs/TEHNICKI_OPIS_SISTEMA_WIS.md)** — Detaljna specifikacija podsistema, telemetrijskih ugovora i poznatih inženjerskih ograničenja.
-- **[Terenski Benchmark Izveštaj Flote (`FIELD-2026-11`)](docs/benchmark/FIELD-2026-11.md)** — Anonimizovana analiza 177 instalacija (P50/P90, 65 modela, 1.048 HWID-ova) koja je definisala unapređenja u `v3.1.0`.
+- **[Tehnički opis sistema WIS v3.1.1](docs/TEHNICKI_OPIS_SISTEMA_WIS.md)** — Detaljna specifikacija podsistema, telemetrijskih ugovora i poznatih inženjerskih ograničenja (**IG-Systems**).
+- **[Terenski Benchmark Izveštaj Flote (`FIELD-2026-11`)](docs/benchmark/FIELD-2026-11.md)** — Anonimizovana analiza 177 instalacija (P50/P90, 65 modela, 1.048 HWID-ova) koja je definisala unapređenja u `v3.1.0`–`v3.1.1`.
 - **[Politika bezbednosti (`SECURITY.md`)](SECURITY.md)** — Model pretnji, četiri granice poverenja, Anti-BYOVD, Anti-Leak kontrole, rotacija ključeva i poslovna odluka za lokalni nalog.
 - **[Interna bezbednosna revizija (`docs/security/`)](docs/security/NEZAVISNA_BEZBEDNOSNA_REVIZIJA.md)** — Security Self-Audit izveštaj (`CTRL-01..12`, `SEC-WIS-001..007` i dopunska sanacija `WIS-TASK-253`).
 - **[Arhitektura podsistema (`docs/architecture/`)](docs/architecture/overview.md)** — Pregledi pajplajna, drajvera, Windows Update toka, aplikacija, mreže i ServiceHub-a.
-- **[Arhitektonske odluke (`docs/decisions/`)](docs/decisions/)** — Zbirka ADR zapisa (`ADR-0001` .. [`ADR-0253`](docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md)).
+- **[Arhitektonske odluke (`docs/decisions/`)](docs/decisions/)** — Zbirka ADR zapisa (`ADR-0001` .. [`ADR-0254`](docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md)).
 - **[Dnevnik izmena (`CHANGELOG.md`)](CHANGELOG.md)** i **[Smernice za doprinos (`CONTRIBUTING.md`)](CONTRIBUTING.md)**.
 
 ---
 
 ## Licenca i Autorska Prava Trećih Strana
 
-Ovaj projekat je objavljen pod [MIT licencom](LICENSE). Informacije o licencama i atribucijama za prateću biblioteku treće strane (`zxing.dll` `Apache-2.0`, uz belešku o trajnom uklanjanju `LibreHardwareMonitorLib` / `HidSharp` / `WinRing0` u v3.1.0) nalaze se u [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+Ovaj projekat i ceo **WIS** ekosistem nalaze se u vlasništvu **IG-Systems** i objavljeni su pod [MIT licencom](LICENSE). Informacije o licencama i atribucijama za prateću biblioteku treće strane (`zxing.dll` `Apache-2.0`, uz belešku o trajnom uklanjanju `LibreHardwareMonitorLib` / `HidSharp` / `WinRing0` u v3.1.0) nalaze se u [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

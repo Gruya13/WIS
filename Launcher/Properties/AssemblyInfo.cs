@@ -6,13 +6,13 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("IG-Systems")]
 [assembly: AssemblyProduct("WIS Automatizacija")]
-[assembly: AssemblyCopyright("Copyright © Igor Grujović 2026")]
+[assembly: AssemblyCopyright("Copyright © IG-Systems 2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
 [assembly: ComVisible(false)]
 [assembly: Guid("b2c68e1b-94e5-46d0-b0f6-96d7d31df202")]
 
-[assembly: AssemblyVersion("3.1.0.0")]
-[assembly: AssemblyFileVersion("3.1.0.0")]
-[assembly: AssemblyInformationalVersion("3.1.0")]
+[assembly: AssemblyVersion("3.1.1.0")]
+[assembly: AssemblyFileVersion("3.1.1.0")]
+[assembly: AssemblyInformationalVersion("3.1.1")]

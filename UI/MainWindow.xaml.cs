@@ -5194,6 +5194,41 @@ namespace WIS.UI
             });
         }
 
+        private static string SanitizeHardwareIdentityValue(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            string trimmed = value.Trim();
+            string lower = trimmed.ToLowerInvariant();
+            if (lower.Length == 0 || lower == "n/a" || lower == "none" ||
+                lower.StartsWith("učitavanje") || lower.StartsWith("detekcija") ||
+                lower.StartsWith("nepoznat") || lower.StartsWith("greška"))
+            {
+                return "";
+            }
+            return trimmed;
+        }
+
+        private static string PostDriverResolveJson(string resolveUrl, byte[] reqBytes)
+        {
+            var httpReq = (HttpWebRequest)WebRequest.Create(resolveUrl);
+            httpReq.Method = "POST";
+            httpReq.ContentType = "application/json; charset=utf-8";
+            httpReq.Timeout = 120000;
+            httpReq.ReadWriteTimeout = 120000;
+            httpReq.ContentLength = reqBytes.Length;
+
+            using (var reqStream = httpReq.GetRequestStream())
+            {
+                reqStream.Write(reqBytes, 0, reqBytes.Length);
+            }
+
+            using (var httpResp = (HttpWebResponse)httpReq.GetResponse())
+            using (var reader = new StreamReader(httpResp.GetResponseStream(), Encoding.UTF8))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
         private bool InstallSingleDriverInternal(DriverItemViewModel item, bool triggerRescan)
         {
             try
@@ -5209,6 +5244,26 @@ namespace WIS.UI
                 string hubUrl = GetServisHubBaseUrl();
                 string resolveUrl = hubUrl + "/api/drivers/resolve";
 
+                string resolvedModel = SanitizeHardwareIdentityValue(ViewModel != null ? ViewModel.ComputerModel : "");
+                if (string.IsNullOrEmpty(resolvedModel) && ViewModel != null && ViewModel.Autopilot != null)
+                {
+                    resolvedModel = SanitizeHardwareIdentityValue(ViewModel.Autopilot.HwModel);
+                }
+                if (string.IsNullOrEmpty(resolvedModel) && ViewModel != null && ViewModel.HardwareInfo != null)
+                {
+                    resolvedModel = SanitizeHardwareIdentityValue(ViewModel.HardwareInfo.MotherboardModel);
+                }
+
+                string resolvedSerial = SanitizeHardwareIdentityValue(ViewModel != null ? ViewModel.SerialNumber : "");
+                if (string.IsNullOrEmpty(resolvedSerial) && ViewModel != null && ViewModel.Autopilot != null)
+                {
+                    resolvedSerial = SanitizeHardwareIdentityValue(ViewModel.Autopilot.HwSerialNumber);
+                }
+                if (string.IsNullOrEmpty(resolvedSerial) && ViewModel != null && ViewModel.HardwareInfo != null)
+                {
+                    resolvedSerial = SanitizeHardwareIdentityValue(ViewModel.HardwareInfo.SerialNumber);
+                }
+
                 // 1. Priprema JSON zahteva za POST /api/drivers/resolve
                 var reqDict = new Dictionary<string, object>();
                 var hwidList = new List<string>();
@@ -5223,29 +5278,14 @@ namespace WIS.UI
                 reqDict["hwids"] = hwidList;
                 reqDict["device_name"] = item.Name ?? "UnknownDevice";
                 reqDict["manufacturer"] = item.Manufacturer ?? "";
-                reqDict["model"] = "";
+                reqDict["model"] = resolvedModel;
+                reqDict["serial_number"] = resolvedSerial;
+                reqDict["async_download"] = true;
 
                 string jsonReq = JsonHelper.Serialize(reqDict);
                 byte[] reqBytes = Encoding.UTF8.GetBytes(jsonReq);
 
-                var httpReq = (HttpWebRequest)WebRequest.Create(resolveUrl);
-                httpReq.Method = "POST";
-                httpReq.ContentType = "application/json; charset=utf-8";
-                httpReq.Timeout = 30000;
-                httpReq.ContentLength = reqBytes.Length;
-
-                using (var reqStream = httpReq.GetRequestStream())
-                {
-                    reqStream.Write(reqBytes, 0, reqBytes.Length);
-                }
-
-                string respJson = "";
-                using (var httpResp = (HttpWebResponse)httpReq.GetResponse())
-                using (var reader = new StreamReader(httpResp.GetResponseStream(), Encoding.UTF8))
-                {
-                    respJson = reader.ReadToEnd();
-                }
-
+                string respJson = PostDriverResolveJson(resolveUrl, reqBytes);
                 JsonNode rootNode = JsonHelper.Parse(respJson);
                 JsonNode resultsNode = rootNode["results"];
                 if (resultsNode.IsNull || resultsNode.Count == 0)
@@ -5262,6 +5302,43 @@ namespace WIS.UI
 
                 JsonNode firstRes = resultsNode[0];
                 string status = firstRes["status"].AsString("");
+
+                // Ako ServisHub preuzima veliki OEM paket sa Microsoft CDN-a u pozadini, čekaj završetak bez 30s timeouta
+                Stopwatch pollSw = Stopwatch.StartNew();
+                bool asyncLogEmitted = false;
+                while (status.Equals("downloading", StringComparison.OrdinalIgnoreCase) && pollSw.Elapsed.TotalSeconds < 900)
+                {
+                    int retryAfterSec = firstRes["retry_after_sec"].AsInt(5);
+                    if (retryAfterSec < 2) retryAfterSec = 2;
+                    if (retryAfterSec > 15) retryAfterSec = 15;
+                    int elapsedSec = (int)pollSw.Elapsed.TotalSeconds;
+
+                    bool logNow = !asyncLogEmitted;
+                    asyncLogEmitted = true;
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        item.InstallStatusText = elapsedSec > 0
+                            ? string.Format("ServiceHub preuzima OEM paket na keš ({0}s)...", elapsedSec)
+                            : "ServiceHub preuzima OEM paket na keš...";
+                        item.InstallProgressPercent = 12;
+                        if (logNow)
+                        {
+                            ViewModel.AddLog("INFO", "Drajveri", string.Format("ServiceHub preuzima paket za '{0}' u pozadini — čekam keširanje...", item.Name));
+                        }
+                    });
+
+                    Thread.Sleep(retryAfterSec * 1000);
+                    respJson = PostDriverResolveJson(resolveUrl, reqBytes);
+                    rootNode = JsonHelper.Parse(respJson);
+                    resultsNode = rootNode["results"];
+                    if (resultsNode.IsNull || resultsNode.Count == 0)
+                    {
+                        status = "not_found";
+                        break;
+                    }
+                    firstRes = resultsNode[0];
+                    status = firstRes["status"].AsString("");
+                }
 
                 if (status.Equals("ready", StringComparison.OrdinalIgnoreCase))
                 {

@@ -1,6 +1,6 @@
 # Third-Party Notices and Open-Source Attributions
 
-The **WIS (Windows Installation Assistant)** project is licensed under the [MIT License](LICENSE).
+The **WIS (Windows Installation Assistant)** project (owned by **IG-Systems**) is licensed under the [MIT License](LICENSE).
 To ensure deterministic, offline-capable builds (`UI/Build-UI.py`, `UI/HwTest/Build-HwTest.py`, and `ISO/Skripte/Build-WIS.ps1`), the repository includes only the managed library below under its respective license:
 
 ---

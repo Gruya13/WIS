@@ -14,14 +14,14 @@ tags:
   - screen-mirror
 ---
 
-# ⚡ WIS Service Centralni Servisni Hub (`ServiceHub/` v3.3.0)
-## Sveobuhvatna Tehnička i Arhitektonska Specifikacija u WIS Monorepo-u (v3.0.0)
+# ⚡ WIS Centralni Servisni Hub (`ServiceHub/` v3.4.1 — IG-Systems)
+## Sveobuhvatna Tehnička i Arhitektonska Specifikacija u WIS Monorepo-u (v3.1.1)
 
 ---
 
 ## 1. Pregled i Svrha Podsistema
 
-**ServiceHub** (komponentna verzija **3.3.0** u okviru WIS paketa **3.0.0**, smeštena u kanonskom direktorijumu `/home/gru/Projects/WIS/ServiceHub/`) je centralni kontrolni server, telemetrijski agregator, verifikator potpisanih OTA izdanja, dvosmerni HTTP keš za zakrpe i drajvere, analitički **WIS Benchmark** agregator, **Predictive Cache** (`Model DNA`) pre-arrival motor, registar profila modela za `WIS.HwTest` i upravljač butabilnih USB medijuma za servis računara **Tehno kutak**.
+**ServiceHub** (komponentna verzija **3.4.1** u okviru WIS paketa **3.1.1**, u vlasništvu **IG-Systems**, smešten u kanonskom direktorijumu `/home/gru/Projects/WIS/ServiceHub/`) je centralni kontrolni server, telemetrijski agregator, verifikator potpisanih OTA izdanja, dvosmerni HTTP keš za zakrpe i drajvere, analitički **WIS Benchmark** agregator, **Predictive Cache** (`Model DNA`) pre-arrival motor, registar profila modela za `WIS.HwTest` i upravljač butabilnih USB medijuma.
 
 ### Ključne Funkcionalnosti (v3.3.0):
 1. **Imutabilna Kriptografski Potpisana Izdanja (`servishub/releases.py` & `payload.py`):** Služi isključivo RSA-2048 PKCS#1 v1.5 potpisana i SHA-256 verifikovana `wis-payload.zip` izdanja (`releases/<release_id>/` i atomarni `current.json`). Ne vrši nesigurno automatsko prepakivanje pri HTTP GET zahtevu.

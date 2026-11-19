@@ -4,7 +4,7 @@
 Prihvaćeno i implementirano (2026-11-12; dopunjeno do 2026-11-14 u `WIS v3.0.0`)
 
 ## Kontekst
-U procesu instalacije i pripreme računara u servisu Tehno kutak, automatizovana instalacija drajvera i softvera uspešno dovodi operativni sistem do stanja spremnosti. Međutim, pored dubinske automatske provere komponenti (baterija, mreža, TPM/SecureBoot/BitLocker bezbednost, SMART/disk, RAM, CPU, GPU), fizička ispravnost korisničkih periferija (mrtvi pikseli na matrici ekrana, zaglavljeni ili neodzivni tasteri na tastaturi, TrackPoint, pozadinsko osvetljenje, levi/desni klik i skrol na touchpadu, digitajzer i Stylus na touchscreen-u, stereo zvučnici, mikrofon, kamera sa IR senzorom, fizički USB portovi uključujući USB-to-LAN adapter i čitač otiska prsta) ne može se pouzdano utvrditi bez standardizovanog test suite-a.
+U procesu instalacije i pripreme računara u okviru sistema **IG-Systems**, automatizovana instalacija drajvera i softvera uspešno dovodi operativni sistem do stanja spremnosti. Međutim, pored dubinske automatske provere komponenti (baterija, mreža, TPM/SecureBoot/BitLocker bezbednost, SMART/disk, RAM, CPU, GPU), fizička ispravnost korisničkih periferija (mrtvi pikseli na matrici ekrana, zaglavljeni ili neodzivni tasteri na tastaturi, TrackPoint, pozadinsko osvetljenje, levi/desni klik i skrol na touchpadu, digitajzer i Stylus na touchscreen-u, stereo zvučnici, mikrofon, kamera sa IR senzorom, fizički USB portovi uključujući USB-to-LAN adapter i čitač otiska prsta) ne može se pouzdano utvrditi bez standardizovanog test suite-a.
 
 Prethodno stanje:
 1. Nije postojao standardizovan postupak automatske + ručne provere hardvera; serviseri su improvizovali provere ili preskakali testiranje pojedinih portova/tastera.

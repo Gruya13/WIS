@@ -1,6 +1,6 @@
-# Smernice za doprinos (Contributing Guide) — WIS
+# Smernice za doprinos (Contributing Guide) — WIS (`IG-Systems`)
 
-Hvala što doprinosite razvoju projekta **Windows Installation Assistant (WIS)**.
+Hvala što doprinosite razvoju projekta **Windows Installation Assistant (WIS)** u vlasništvu **IG-Systems**.
 
 ---
 

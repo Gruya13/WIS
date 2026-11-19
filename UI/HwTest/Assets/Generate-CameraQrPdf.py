@@ -82,7 +82,7 @@ def draw_qr_card(ctx, matrix, card_top, card_height, card_index):
     # Zaglavlje kartice
     draw_centered_text(
         ctx,
-        "TEHNO KUTAK — WIS TEST KAMERE (#{0})".format(card_index),
+        "IG-SYSTEMS — WIS TEST KAMERE (#{0})".format(card_index),
         cx,
         box_y + 21.0,
         "Sans",

@@ -37,7 +37,7 @@ from hub_server import (
     sanitize_id
 )
 
-TEST_DEVICE_NAME = "QA-TEHNO-NODE01"
+TEST_DEVICE_NAME = "QA-IGS-NODE01"
 TEST_SERIAL = "SN-QA-TEST-8899"
 
 def http_post_json(url: str, payload: dict) -> tuple[int, dict]:

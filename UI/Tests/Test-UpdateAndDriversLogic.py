@@ -357,6 +357,59 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("ThreadPool.QueueUserWorkItem", autodiag_cs)
         self.assertIn('FACIAL RECOGNITION', probe_cs)
 
+    def test_13_wis_task_254_bug02_to_bug08_fixes(self):
+        """Proverava WIS-TASK-254 (v3.1.1) sanaciju BUG-02..BUG-08 u PS modulima, Fazi 6 i WIS.UI."""
+        main_cs = "\n".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "UI").glob("MainWindow*.cs")))
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+
+        # BUG-02 & BUG-07 (PS klijent): network recovery retry + 2s PnP pauza + async_download polling
+        res_block = self.hw_src.split("function Resolve-MissingDriversFromHub", 1)[1].split("function Send-WisModelDnaToHub", 1)[0]
+        self.assertIn("Restore-ServisNetworkConnectivityIfNeeded -WaitSeconds 15", res_block)
+        self.assertIn("async_download = $true", res_block)
+        self.assertIn('$_.status -eq "downloading"', res_block)
+        self.assertIn("Start-Sleep -Seconds 2", res_block)
+
+        # BUG-03: Select-RelevantDriverInfFiles prag <= 12 + Extension/SoftwareComponent + /subdirs /install
+        sel_block = self.hw_src.split("function Select-RelevantDriverInfFiles", 1)[1].split("function ", 1)[0]
+        self.assertIn("$allInfs.Count -le 12", sel_block)
+        self.assertIn("SOFTWARECOMPONENT", sel_block)
+        self.assertIn("/subdirs /install", self.hw_src)
+
+        # BUG-04: P2.WuDrivers ForceQuiet, ResultCode, retry i logovanje bez praznog catch {}
+        p2_block = self.update_src.split("function Invoke-Phase2Drivers", 1)[1].split("function Write-BackgroundWuStatus", 1)[0]
+        self.assertIn("$installer.ForceQuiet = $true", p2_block)
+        self.assertIn("$resCode -in @(2, 3)", p2_block)
+        self.assertIn("for ($drvTry = 1; $drvTry -le 2; $drvTry++)", p2_block)
+        self.assertNotIn("installRes = $installer.Install()\n", p2_block)
+
+        # BUG-05: Invoke-WindowsUpdateSecondPass bez (,$updateTitles) u Start-Job
+        sp_block = self.update_src.split("function Invoke-WindowsUpdateSecondPass", 1)[1].split("function Wait-WindowsUpdateCompletionBarrier", 1)[0]
+        self.assertNotIn("-ArgumentList (,$updateTitles)", sp_block)
+        self.assertIn("$titlesJson = ConvertTo-Json -InputObject @($updateTitles) -Compress", sp_block)
+        self.assertIn("ConvertFrom-Json -InputObject $titlesJson", sp_block)
+        self.assertIn("GetUpdateResult($k)", sp_block)
+
+        # BUG-06: BgWinUpdate ceka do 900s (300 ciklusa) i belezi WARN pri 0/N; Phase6 radi finalni Resolve
+        bg_block = self.update_src.split("function Invoke-BackgroundWindowsUpdateWorker", 1)[1].split("function Invoke-WindowsUpdateSecondPass", 1)[0]
+        self.assertIn("while ($waitCycles -lt 300)", bg_block)
+        self.assertIn("$totalFoundAll -gt 0 -and $totalInstalledAll -eq 0", bg_block)
+        self.assertIn('Write-BackgroundWuStatus -Status "WARN"', bg_block)
+        self.assertIn("WIS.Hardware.psm1", phase6_src)
+        self.assertIn("Resolve-MissingDriversFromHub", phase6_src)
+
+        # BUG-07 (UI klijent): stvarni model/serial_number, Timeout = 120000 i "downloading" polling
+        self.assertNotIn('reqDict["model"] = "";', main_cs)
+        self.assertIn('reqDict["model"] = resolvedModel;', main_cs)
+        self.assertIn('reqDict["serial_number"] = resolvedSerial;', main_cs)
+        self.assertIn('reqDict["async_download"] = true;', main_cs)
+        self.assertIn("httpReq.Timeout = 120000;", main_cs)
+        self.assertIn('status.Equals("downloading"', main_cs)
+
+        # BUG-08: Zabrana prljave berbe u Fazi 2 i odlaganje za kraj Faze 6
+        self.assertIn("function Test-WisDeviceManagerReadyForHarvest", self.update_src)
+        self.assertIn("driver-harvest-deferred.flag", p2_block)
+        self.assertIn("driver-harvest-deferred.flag", phase6_src)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2158,6 +2158,42 @@ function Export-ServisWindowsUpdates {
     }
 }
 
+function Test-WisDeviceManagerReadyForHarvest {
+    <#
+    .SYNOPSIS
+        Proverava da li je Device Manager bez kriticnih ne-virtualnih PnP gresaka ili GenericDisplayDriver pre berbe drajvera.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (-not (Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue)) {
+        return @{
+            Ready    = $true
+            Problems = @()
+            Reason   = "Test-WisDeviceManagerClean nije ucitan"
+        }
+    }
+
+    $dmCheck = Test-WisDeviceManagerClean
+    if (-not $dmCheck) {
+        return @{
+            Ready    = $false
+            Problems = @()
+            Reason   = "Test-WisDeviceManagerClean nije vratio rezultat"
+        }
+    }
+
+    $realProblems = @($dmCheck.ProblemDevices | Where-Object {
+        $_.Type -eq "GenericDisplayDriver" -or ($_.DeviceID -notmatch '(?i)^(SWD\\DRIVERENUM|ROOT\\)')
+    })
+    $isReady = [bool]($dmCheck.Clean -or $realProblems.Count -eq 0)
+    return @{
+        Ready    = $isReady
+        Problems = $realProblems
+        Reason   = "$($dmCheck.Reason)"
+    }
+}
+
 function Export-ServisHardwareDrivers {
     <#
     .SYNOPSIS
@@ -2194,6 +2230,15 @@ function Export-ServisHardwareDrivers {
                 Write-ServisLog "Export-ServisHardwareDrivers: Detektovan genericki model ($cleanModel) - preskacem arhiviranje u <Model>.tar i Models\$cleanModel radi sprecavanja mesanja drajvera." -Level "INFO" -Component "DriverHarvest"
             }
             return
+        }
+        if (-not $Force -and $effectiveHarvestMode -ne "NetOnly" -and (Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue)) {
+            $harvestDmGuard = Test-WisDeviceManagerReadyForHarvest
+            if (-not $harvestDmGuard.Ready) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Export-ServisHardwareDrivers: Blokiram berbu <Model>.tar ($cleanModel) jer Device Manager ima $($harvestDmGuard.Problems.Count) kriticnih PnP/GPU problema ($($harvestDmGuard.Reason))." -Level "WARN" -Component "DriverHarvest"
+                }
+                return
+            }
         }
         $hubUrl = Get-WisUpdateHubEndpoint
         $smbReady = $false
@@ -3547,37 +3592,6 @@ function Invoke-Phase2Drivers {
                         $batchDlColl.Add($bDrv) | Out-Null
                     }
                 }
-                if ($batchDlColl.Count -gt 0) {
-                    try {
-                        $swBatchDl = [System.Diagnostics.Stopwatch]::StartNew()
-                        $batchDownloader = $uSession.CreateUpdateDownloader()
-                        $batchDownloader.Updates = $batchDlColl
-                        $batchDownloader.Download() | Out-Null
-                        $swBatchDl.Stop()
-                        if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
-                            $batchTotalBytes = [long]0
-                            $dlItemsCount = 0
-                            for ($bi = 0; $bi -lt $batchDlColl.Count; $bi++) {
-                                $bItem = $batchDlColl.Item($bi)
-                                if ($bItem.IsDownloaded) {
-                                    $dlItemsCount++
-                                    try { if ($bItem.MaxDownloadSize) { $batchTotalBytes += [long]$bItem.MaxDownloadSize } } catch {}
-                                }
-                            }
-                            if ($dlItemsCount -gt 0) {
-                                $perItemDurMs = $swBatchDl.Elapsed.TotalMilliseconds / [double]$dlItemsCount
-                                for ($bi = 0; $bi -lt $batchDlColl.Count; $bi++) {
-                                    $bItem = $batchDlColl.Item($bi)
-                                    if ($bItem.IsDownloaded) {
-                                        $bBytes = [long]0
-                                        try { if ($bItem.MaxDownloadSize) { $bBytes = [long]$bItem.MaxDownloadSize } } catch {}
-                                        Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $bBytes -DurationMs $perItemDurMs -ItemName $bItem.Title | Out-Null
-                                    }
-                                }
-                            }
-                        }
-                    } catch {}
-                }
 
                 try {
                     if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) { New-Item -Path "HKLM:\SOFTWARE\WIS" -Force -ErrorAction SilentlyContinue | Out-Null }
@@ -3585,6 +3599,40 @@ function Invoke-Phase2Drivers {
                 } catch {}
 
                 try {
+                    if ($batchDlColl.Count -gt 0) {
+                        try {
+                            $swBatchDl = [System.Diagnostics.Stopwatch]::StartNew()
+                            $batchDownloader = $uSession.CreateUpdateDownloader()
+                            $batchDownloader.Updates = $batchDlColl
+                            $batchDownloader.Download() | Out-Null
+                            $swBatchDl.Stop()
+                            if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
+                                $dlItemsCount = 0
+                                for ($bi = 0; $bi -lt $batchDlColl.Count; $bi++) {
+                                    $bItem = $batchDlColl.Item($bi)
+                                    if ($bItem.IsDownloaded) {
+                                        $dlItemsCount++
+                                    }
+                                }
+                                if ($dlItemsCount -gt 0) {
+                                    $perItemDurMs = $swBatchDl.Elapsed.TotalMilliseconds / [double]$dlItemsCount
+                                    for ($bi = 0; $bi -lt $batchDlColl.Count; $bi++) {
+                                        $bItem = $batchDlColl.Item($bi)
+                                        if ($bItem.IsDownloaded) {
+                                            $bBytes = [long]0
+                                            try { if ($bItem.MaxDownloadSize) { $bBytes = [long]$bItem.MaxDownloadSize } } catch {}
+                                            Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $bBytes -DurationMs $perItemDurMs -ItemName $bItem.Title | Out-Null
+                                        }
+                                    }
+                                }
+                            }
+                        } catch {
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "P2.WuDrivers: Batch preuzimanje WU drajvera prijavilo upozorenje: $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
+                            }
+                        }
+                    }
+
                     for ($dIdx = 0; $dIdx -lt $totalDrv; $dIdx++) {
                         $drv = $driverUpdates.Item($dIdx)
                         $drvNum = $dIdx + 1
@@ -3594,27 +3642,58 @@ function Invoke-Phase2Drivers {
                             Send-IpcProgress -Progress $drvPct -Phase 2 -PhaseName "Drajveri" -SubPhase "Windows Update ($drvNum/$totalDrv)" -StatusMessage "Instaliram: $($drv.Title)"
                         }
 
-                        try {
-                            $singleColl = New-Object -ComObject Microsoft.Update.UpdateColl
-                            $singleColl.Add($drv) | Out-Null
+                        $drvInstalledOk = $false
+                        for ($drvTry = 1; $drvTry -le 2; $drvTry++) {
+                            try {
+                                $singleColl = New-Object -ComObject Microsoft.Update.UpdateColl
+                                $singleColl.Add($drv) | Out-Null
 
-                            if (-not $drv.IsDownloaded) {
-                                $swSingleDl = [System.Diagnostics.Stopwatch]::StartNew()
-                                $downloader = $uSession.CreateUpdateDownloader()
-                                $downloader.Updates = $singleColl
-                                $downloader.Download() | Out-Null
-                                $swSingleDl.Stop()
-                                if ($drv.IsDownloaded -and (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue)) {
-                                    $drvBytes = [long]0
-                                    try { if ($drv.MaxDownloadSize) { $drvBytes = [long]$drv.MaxDownloadSize } } catch {}
-                                    Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $drvBytes -DurationMs $swSingleDl.Elapsed.TotalMilliseconds -ItemName $drv.Title | Out-Null
+                                if (-not $drv.IsDownloaded) {
+                                    $swSingleDl = [System.Diagnostics.Stopwatch]::StartNew()
+                                    $downloader = $uSession.CreateUpdateDownloader()
+                                    $downloader.Updates = $singleColl
+                                    $downloader.Download() | Out-Null
+                                    $swSingleDl.Stop()
+                                    if ($drv.IsDownloaded -and (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue)) {
+                                        $drvBytes = [long]0
+                                        try { if ($drv.MaxDownloadSize) { $drvBytes = [long]$drv.MaxDownloadSize } } catch {}
+                                        Add-WisBenchmarkTransfer -Source "wan_miss" -Category "driver" -Bytes $drvBytes -DurationMs $swSingleDl.Elapsed.TotalMilliseconds -ItemName $drv.Title | Out-Null
+                                    }
+                                }
+
+                                $installer = $uSession.CreateUpdateInstaller()
+                                $installer.Updates = $singleColl
+                                $installer.ForceQuiet = $true
+                                $instRes = $installer.Install()
+                                $resCode = if ($instRes) { [int]$instRes.ResultCode } else { -1 }
+                                $hResHex = ""
+                                try {
+                                    if ($instRes) {
+                                        $uRes0 = $instRes.GetUpdateResult(0)
+                                        if ($uRes0) { $hResHex = ("0x{0:X8}" -f $uRes0.HResult) }
+                                    }
+                                } catch {}
+
+                                if ($resCode -in @(2, 3)) {
+                                    $drvInstalledOk = $true
+                                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                        Write-ServisLog "P2.WuDrivers ($drvNum/$totalDrv): Instalirano '$($drv.Title)' (ResultCode: $resCode, HResult: $hResHex, RebootRequired: $($instRes.RebootRequired))." -Level "INFO" -Component "WinUpdate"
+                                    }
+                                    break
+                                } else {
+                                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                        Write-ServisLog "P2.WuDrivers ($drvNum/$totalDrv): Neuspeh '$($drv.Title)' na pokusaju $drvTry/2 (ResultCode: $resCode, HResult: $hResHex)." -Level "WARN" -Component "WinUpdate"
+                                    }
+                                }
+                            } catch {
+                                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                    Write-ServisLog "P2.WuDrivers ($drvNum/$totalDrv): Izuzetak pri instalaciji '$($drv.Title)' (pokusaj $drvTry/2): $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
                                 }
                             }
-
-                            $installer = $uSession.CreateUpdateInstaller()
-                            $installer.Updates = $singleColl
-                            $null = $installer.Install()
-                        } catch {}
+                            if (-not $drvInstalledOk -and $drvTry -lt 2) {
+                                Start-Sleep -Seconds 3
+                            }
+                        }
                     }
                 } finally {
                     try {
@@ -3629,13 +3708,45 @@ function Invoke-Phase2Drivers {
         }
     }
 
-    # Provera i eventualni oporavak mrezne konekcije pre berbe drajvera
+    # Provera i eventualni oporavak mrezne konekcije pre dopunske Hub rezolucije i berbe drajvera
     $null = Restore-ServisNetworkConnectivityIfNeeded
 
-    # Samouceca berba hardverskih drajvera u <Model>.tar na TrueNAS serveru
+    # Ako Device Manager i dalje nije cist nakon P2.WuDrivers, ponovi Resolve-MissingDriversFromHub (novi child uredjaji / kesirani paketi)
     try {
-        Export-ServisHardwareDrivers
-    } catch {}
+        if ((Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue) -and (Get-Command Resolve-MissingDriversFromHub -ErrorAction SilentlyContinue)) {
+            $postWuDm = Test-WisDeviceManagerClean
+            if ($postWuDm -and -not $postWuDm.Clean) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-Phase2Drivers: Device Manager nije cist posle P2.WuDrivers ($($postWuDm.Reason)) — pokrecem dopunski Resolve-MissingDriversFromHub..." -Level "INFO" -Component "Drivers"
+                }
+                $null = Resolve-MissingDriversFromHub
+            }
+        }
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-Phase2Drivers: Upozorenje pri dopunskom Resolve-MissingDriversFromHub: $($_.Exception.Message)" -Level "WARN" -Component "Drivers"
+        }
+    }
+
+    # Samouceca berba hardverskih drajvera u <Model>.tar na TrueNAS serveru samo ako je Device Manager cist
+    try {
+        $harvestReadyCheck = Test-WisDeviceManagerReadyForHarvest
+        if ($harvestReadyCheck.Ready) {
+            Export-ServisHardwareDrivers
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Invoke-Phase2Drivers: Device Manager nije cist ($($harvestReadyCheck.Reason)) — odlazem berbu <Model>.tar za kraj Faze 6!" -Level "WARN" -Component "DriverHarvest"
+            }
+            try {
+                if (-not (Test-Path "C:\setup")) { New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
+                Set-Content -Path "C:\setup\driver-harvest-deferred.flag" -Value (Get-Date).ToString("o") -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+            } catch {}
+        }
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-Phase2Drivers: Upozorenje pri berbi drajvera: $($_.Exception.Message)" -Level "WARN" -Component "DriverHarvest"
+        }
+    }
 
     # Slanje azuriranog hardverskog statusa ka UI-ju
     $hwData = [ordered]@{
@@ -3994,7 +4105,10 @@ function Invoke-BackgroundWindowsUpdateWorker {
             $item = $filteredUpdates[$idx]
 
             $waitCycles = 0
-            while ($waitCycles -lt 120) {
+            while ($waitCycles -lt 300) {
+                if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                    break
+                }
                 $msiBusy = $false
                 try {
                     $p4Flag = (Get-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "Phase4Active" -ErrorAction SilentlyContinue).Phase4Active
@@ -4073,9 +4187,16 @@ function Invoke-BackgroundWindowsUpdateWorker {
         } catch {}
     }
 
-    Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($totalInstalledAll/$totalFoundAll instalirano)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $totalInstalledAll/$totalFoundAll, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
+    if ($totalFoundAll -gt 0 -and $totalInstalledAll -eq 0) {
+        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Nijedna zakrpa nije instalirana (0/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pronadjeno $totalFoundAll zakrpi, ali nijedna nije instalirana (0/$totalFoundAll) — obelezeno kao WARN za Invoke-WindowsUpdateSecondPass." -Level "WARN" -Component "BgWinUpdate"
+        }
+    } else {
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($totalInstalledAll/$totalFoundAll instalirano)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $totalInstalledAll/$totalFoundAll, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
+        }
     }
 }
 
@@ -4342,11 +4463,23 @@ function Invoke-WindowsUpdateSecondPass {
     $timedOut = $false
     $swPass = [System.Diagnostics.Stopwatch]::StartNew()
 
+    $titlesJson = ConvertTo-Json -InputObject @($updateTitles) -Compress
     $job = $null
     try {
         $job = Start-Job -ScriptBlock {
-            param([string[]]$titles, [string]$muSvcId, [bool]$useMu)
+            param([string]$titlesJson, [string]$muSvcId, [bool]$useMu)
             try {
+                $titles = @()
+                if (-not [string]::IsNullOrWhiteSpace($titlesJson)) {
+                    try {
+                        $parsedTitles = ConvertFrom-Json -InputObject $titlesJson
+                        if ($null -ne $parsedTitles) {
+                            $titles = @($parsedTitles)
+                        }
+                    } catch {
+                        $titles = @()
+                    }
+                }
                 $session = New-Object -ComObject Microsoft.Update.Session
                 $searcher = $session.CreateUpdateSearcher()
                 $searcher.Online = $true
@@ -4363,7 +4496,7 @@ function Invoke-WindowsUpdateSecondPass {
                     $res = $searcher.Search("IsInstalled=0 and IsHidden=0")
                 }
                 if (-not $res -or -not $res.Updates -or $res.Updates.Count -eq 0) {
-                    return @{ Success = $true; Installed = 0; Reboot = $false }
+                    return @{ Success = $true; Installed = 0; FailedCount = 0; Reboot = $false }
                 }
                 $coll = New-Object -ComObject Microsoft.Update.UpdateColl
                 for ($j = 0; $j -lt $res.Updates.Count; $j++) {
@@ -4374,7 +4507,7 @@ function Invoke-WindowsUpdateSecondPass {
                     }
                 }
                 if ($coll.Count -eq 0) {
-                    return @{ Success = $true; Installed = 0; Reboot = $false }
+                    return @{ Success = $true; Installed = 0; FailedCount = 0; Reboot = $false }
                 }
                 $dl = $session.CreateUpdateDownloader()
                 $dl.Updates = $coll
@@ -4385,19 +4518,45 @@ function Invoke-WindowsUpdateSecondPass {
                 $inst.ForceQuiet = $true
                 $instRes = $inst.Install()
 
+                $jobInstalledOk = 0
+                $jobFailedCount = 0
+                for ($k = 0; $k -lt $coll.Count; $k++) {
+                    $itemRc = -1
+                    try {
+                        if ($instRes) {
+                            $itemResObj = $instRes.GetUpdateResult($k)
+                            if ($itemResObj) { $itemRc = [int]$itemResObj.ResultCode }
+                        }
+                    } catch {
+                        $itemRc = if ($instRes) { [int]$instRes.ResultCode } else { -1 }
+                    }
+                    if ($itemRc -in @(2, 3)) {
+                        $jobInstalledOk++
+                    } else {
+                        $jobFailedCount++
+                    }
+                }
+                if ($jobInstalledOk -eq 0 -and $jobFailedCount -eq 0 -and $instRes -and $instRes.ResultCode -in @(2, 3)) {
+                    $jobInstalledOk = $coll.Count
+                }
+
                 return @{
-                    Success   = $true
-                    Installed = $coll.Count
-                    Reboot    = [bool]($instRes -and $instRes.RebootRequired)
-                    Code      = if ($instRes) { $instRes.ResultCode } else { 0 }
+                    Success     = $true
+                    Installed   = $jobInstalledOk
+                    FailedCount = $jobFailedCount
+                    TotalCount  = $coll.Count
+                    Reboot      = [bool]($instRes -and $instRes.RebootRequired)
+                    Code        = if ($instRes) { $instRes.ResultCode } else { 0 }
                 }
             } catch {
                 return @{
-                    Success = $false
-                    Error   = $_.Exception.Message
+                    Success     = $false
+                    Installed   = 0
+                    FailedCount = 0
+                    Error       = $_.Exception.Message
                 }
             }
-        } -ArgumentList (,$updateTitles), $muServiceId, $isMuRegistered
+        } -ArgumentList $titlesJson, $muServiceId, $isMuRegistered
     } catch {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Upozorenje: Nije moguće pokrenuti Start-Job za WU drugi prolaz ($($_.Exception.Message)), prelazim na direktno izvršavanje." -Level "WARN" -Component "Update"
@@ -4443,8 +4602,13 @@ function Invoke-WindowsUpdateSecondPass {
                 $jobResult = Receive-Job $job -ErrorAction SilentlyContinue
                 Remove-Job $job -Force -ErrorAction SilentlyContinue
                 if ($jobResult -and $jobResult.Success) {
-                    $installedOk = $jobResult.Installed
+                    $installedOk = [int]$jobResult.Installed
                     if ($jobResult.Reboot) { $rebootReq = $true }
+                    if ($jobResult.FailedCount -and [int]$jobResult.FailedCount -gt 0) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Invoke-WindowsUpdateSecondPass: Instalirano $installedOk/$($jobResult.TotalCount) zakrpi u drugom prolazu, neuspelih: $($jobResult.FailedCount) (ResultCode: $($jobResult.Code))." -Level "WARN" -Component "Update"
+                        }
+                    }
                 } elseif ($jobResult -and $jobResult.Error) {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                         Write-ServisLog "Invoke-WindowsUpdateSecondPass: Upozorenje iz posla zaostalih zakrpi: $($jobResult.Error)" -Level "WARN" -Component "Update"
@@ -4718,6 +4882,7 @@ Export-ModuleMember -Function `
     Optimize-WUPerformance, `
     Invoke-NasUpdatePrePatch, `
     Invoke-ModelDriversPreInstall, `
+    Test-WisDeviceManagerReadyForHarvest, `
     Export-ServisHardwareDrivers, `
     Export-ServisNetworkDrivers, `
     Get-UpdateKbArticleId, `

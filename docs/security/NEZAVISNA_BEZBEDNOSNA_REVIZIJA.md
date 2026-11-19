@@ -1,7 +1,8 @@
-# Interna Bezbednosna Revizija (Security Self-Audit) — WIS Ekosistem
+# Interna Bezbednosna Revizija (Security Self-Audit) — WIS Ekosistem (`IG-Systems`)
 
-- **Datum revizije:** `2026-11-17` (sanacija: `2026-11-18` / `WIS-TASK-249`; dopunsko očvršćavanje: `2026-11-19` / `WIS-TASK-253`)
-- **Aktuelna verzija:** `WIS v3.1.0` / `ServiceHub v3.4.0` (polazna Git baza prvobitne revizije: `3.0.0` / `3.3.0`)
+- **Vlasnik sistema:** `IG-Systems`
+- **Datum revizije:** `2026-11-17` (sanacija: `2026-11-18` / `WIS-TASK-249`; dopunsko očvršćavanje: `2026-11-19` / `WIS-TASK-253` & `WIS-TASK-254`)
+- **Aktuelna verzija:** `WIS v3.1.1` / `ServiceHub v3.4.1` (polazna Git baza prvobitne revizije: `3.0.0` / `3.3.0`)
 - **Vrsta pregleda:** Interna tehnička bezbednosna samoprocena (*Security Self-Audit*, nije eksterni audit treće strane).
 - **Opseg revizije:** Sve razvojne celine (`ISO/`, `Launcher/`, `UI/`, `ServiceHub/`), forenzički alat (`Tools/AutopilotAuditor/`), mehanizmi potpisivanja i objave, upravljanje tajnama, TrueNAS Docker konfiguracija i Git higijena.
 - **Metodologija:** Statička analiza izvornog koda (C# 4.0/5.0, PowerShell 5.1, Python 3, Batch/XML), pregled granica poverenja (*Trust Boundaries*), provera kriptografskih tokova (`RSA-2048` / `SHA-256`), HTTP/API regresioni testovi i provera Git indeksa/tajni.

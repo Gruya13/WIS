@@ -19,6 +19,8 @@ namespace WIS.HwTest.Tests
         private Thread _captureThread;
         private volatile bool _isClosing = false;
         private bool _isClosingOrDone = false;
+        private int _micInitGeneration = 0;
+        private readonly object _waveInLock = new object();
 
         private IntPtr _pBuffer1 = IntPtr.Zero;
         private IntPtr _pBuffer2 = IntPtr.Zero;
@@ -254,12 +256,27 @@ namespace WIS.HwTest.Tests
             Content = root;
 
             Loaded += (s, e) => {
-                PopulateMicDevices();
-                StartWaveIn();
+                _btnRecordManual.IsEnabled = false;
+                _statusText.Text = "⏳ Inicijalizacija audio ulaza (mikrofon)...";
+                _statusText.Foreground = Brushes.White;
+                StartMicInitAsync(true);
             };
             Closed += (s, e) => {
-                StopWaveIn();
-                RestoreCaptureEndpointVolume();
+                _isClosingOrDone = true;
+                _isClosing = true;
+                Interlocked.Increment(ref _micInitGeneration);
+                Thread cleanupThread = new Thread(() => {
+                    try
+                    {
+                        StopWaveIn();
+                        RestoreCaptureEndpointVolume();
+                    }
+                    catch { }
+                });
+                cleanupThread.IsBackground = true;
+                cleanupThread.SetApartmentState(ApartmentState.STA);
+                cleanupThread.Start();
+                try { cleanupThread.Join(1200); } catch { }
             };
         }
 
@@ -270,20 +287,98 @@ namespace WIS.HwTest.Tests
             public override string ToString() { return Label; }
         }
 
-        private void PopulateMicDevices()
+        private void UpdateStatusSafe(string text, Color fgColor, bool? enableManualRecord = null)
         {
-            if (_micCombo == null) return;
+            if (_isClosingOrDone) return;
+            Dispatcher.BeginInvoke(new Action(() => {
+                if (_isClosingOrDone) return;
+                _statusText.Text = text;
+                _statusText.Foreground = new SolidColorBrush(fgColor);
+                if (enableManualRecord.HasValue)
+                {
+                    _btnRecordManual.IsEnabled = enableManualRecord.Value;
+                }
+            }));
+        }
+
+        private void StartMicInitAsync(bool populateDevices)
+        {
+            int myGen = Interlocked.Increment(ref _micInitGeneration);
+            Thread initThread = new Thread(() => {
+                try
+                {
+                    // Kratka grace pauza posle AudioTestWindow waveOutClose da audio drajver oslobodi sesiju
+                    if (populateDevices)
+                    {
+                        Thread.Sleep(100);
+                    }
+                    if (_isClosingOrDone || myGen != _micInitGeneration) return;
+
+                    StopWaveIn();
+                    if (_isClosingOrDone || myGen != _micInitGeneration) return;
+
+                    if (populateDevices)
+                    {
+                        List<MicDeviceChoice> choices = CollectMicDevices();
+                        if (_isClosingOrDone || myGen != _micInitGeneration) return;
+
+                        Dispatcher.BeginInvoke(new Action(() => {
+                            PopulateMicDevices(choices, myGen);
+                        }));
+                    }
+
+                    TryUnmuteAndLogCaptureEndpoint();
+                    if (_isClosingOrDone || myGen != _micInitGeneration) return;
+
+                    StartWaveInCore(myGen);
+                }
+                catch (Exception ex)
+                {
+                    HwTestLogger.Error("MIC", "StartMicInitAsync exception: " + ex.Message);
+                    UpdateStatusSafe("⚠ Greška pri pokretanju mikrofona: " + ex.Message, Color.FromRgb(220, 53, 69), false);
+                }
+            });
+            initThread.IsBackground = true;
+            initThread.SetApartmentState(ApartmentState.STA);
+            initThread.Start();
+        }
+
+        private void PopulateMicDevices(List<MicDeviceChoice> choices, int expectedGen)
+        {
+            if (_isClosingOrDone || expectedGen != _micInitGeneration || _micCombo == null || choices == null) return;
+            try
+            {
+                _suppressMicComboEvent = true;
+                _micCombo.Items.Clear();
+                foreach (MicDeviceChoice ch in choices)
+                {
+                    _micCombo.Items.Add(ch);
+                }
+                _micCombo.SelectedIndex = 0;
+                _suppressMicComboEvent = false;
+                if (_micSelectPanel != null)
+                {
+                    _micSelectPanel.Visibility = (choices.Count > 2) ? Visibility.Visible : Visibility.Collapsed;
+                }
+            }
+            catch
+            {
+                _suppressMicComboEvent = false;
+            }
+        }
+
+        private List<MicDeviceChoice> CollectMicDevices()
+        {
+            List<MicDeviceChoice> choices = new List<MicDeviceChoice>();
+            choices.Add(new MicDeviceChoice
+            {
+                DeviceId = NativeMethods.WAVE_MAPPER,
+                Label = "Podrazumevani mikrofon (Windows Mapper)"
+            });
+
             try
             {
                 uint numDevs = NativeMethods.waveInGetNumDevs();
-                _suppressMicComboEvent = true;
-                _micCombo.Items.Clear();
-                _micCombo.Items.Add(new MicDeviceChoice
-                {
-                    DeviceId = NativeMethods.WAVE_MAPPER,
-                    Label = "Podrazumevani mikrofon (Windows Mapper)"
-                });
-
                 uint capsSize = (uint)Marshal.SizeOf(typeof(NativeMethods.WAVEINCAPSW));
                 for (uint i = 0; i < numDevs; i++)
                 {
@@ -293,26 +388,16 @@ namespace WIS.HwTest.Tests
                     {
                         devName = caps.szPname.Trim();
                     }
-                    _micCombo.Items.Add(new MicDeviceChoice
+                    choices.Add(new MicDeviceChoice
                     {
                         DeviceId = i,
                         Label = string.Format("[{0}] {1}", i + 1, devName)
                     });
                     HwTestLogger.Info("MIC", string.Format("Ulazni audio uređaj #{0}: {1}", i, devName));
                 }
-
-                _micCombo.SelectedIndex = 0;
-                _suppressMicComboEvent = false;
-
-                if (_micSelectPanel != null)
-                {
-                    _micSelectPanel.Visibility = (numDevs > 1) ? Visibility.Visible : Visibility.Collapsed;
-                }
             }
-            catch
-            {
-                _suppressMicComboEvent = false;
-            }
+            catch { }
+            return choices;
         }
 
         private void OnMicSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -333,94 +418,99 @@ namespace WIS.HwTest.Tests
             _consecutiveAboveThreshold = 0;
             _btnPass.IsEnabled = false;
             _btnReplay.IsEnabled = false;
+            _btnRecordManual.IsEnabled = false;
             _statusText.Foreground = Brushes.White;
-            _statusText.Text = "Prebačeno na: " + choice.Label + " — recite nešto u mikrofon...";
+            _statusText.Text = "Prebačeno na: " + choice.Label + " — inicijalizacija...";
 
-            StopWaveIn();
-            StartWaveIn();
+            StartMicInitAsync(false);
         }
 
-        private void StartWaveIn()
+        private void StartWaveInCore(int expectedGen)
         {
-            try
+            lock (_waveInLock)
             {
-                uint numDevs = NativeMethods.waveInGetNumDevs();
-                HwTestLogger.Info("MIC", "waveInGetNumDevs=" + numDevs + " | SelectedDeviceId=" + _selectedDeviceId);
-                if (numDevs == 0)
+                try
                 {
-                    _statusText.Text = "⚠ Nije detektovan nijedan ulazni audio uređaj (mikrofon).";
-                    _statusText.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                    return;
+                    if (_isClosingOrDone || expectedGen != _micInitGeneration) return;
+
+                    uint numDevs = NativeMethods.waveInGetNumDevs();
+                    HwTestLogger.Info("MIC", "waveInGetNumDevs=" + numDevs + " | SelectedDeviceId=" + _selectedDeviceId);
+                    if (numDevs == 0)
+                    {
+                        UpdateStatusSafe("⚠ Nije detektovan nijedan ulazni audio uređaj (mikrofon).", Color.FromRgb(220, 53, 69), false);
+                        return;
+                    }
+
+                    NativeMethods.WAVEFORMATEX wfx = new NativeMethods.WAVEFORMATEX
+                    {
+                        wFormatTag = NativeMethods.WAVE_FORMAT_PCM,
+                        nChannels = 1,
+                        nSamplesPerSec = 16000,
+                        wBitsPerSample = 16,
+                        nBlockAlign = 2,
+                        nAvgBytesPerSec = 32000,
+                        cbSize = 0
+                    };
+
+                    _waveEvent = new AutoResetEvent(false);
+                    int openRes = NativeMethods.waveInOpen(
+                        out _hwi,
+                        _selectedDeviceId,
+                        ref wfx,
+                        _waveEvent.SafeWaitHandle.DangerousGetHandle(),
+                        IntPtr.Zero,
+                        NativeMethods.CALLBACK_EVENT
+                    );
+
+                    if (_isClosingOrDone || expectedGen != _micInitGeneration)
+                    {
+                        StopWaveIn();
+                        return;
+                    }
+
+                    if (openRes != 0 || _hwi == IntPtr.Zero)
+                    {
+                        string err = string.Format("waveInOpen neuspešan (MMSYSERR={0}). Proverite privatnost mikrofona u Windowsu.", openRes);
+                        HwTestLogger.Error("MIC", err);
+                        UpdateStatusSafe("⚠ " + err, Color.FromRgb(220, 53, 69), false);
+                        return;
+                    }
+
+                    int hdrSize = Marshal.SizeOf(typeof(NativeMethods.WAVEHDR));
+                    _pBuffer1 = Marshal.AllocHGlobal(BUFFER_SIZE);
+                    _pBuffer2 = Marshal.AllocHGlobal(BUFFER_SIZE);
+                    _pHdr1 = Marshal.AllocHGlobal(hdrSize);
+                    _pHdr2 = Marshal.AllocHGlobal(hdrSize);
+
+                    NativeMethods.WAVEHDR h1 = new NativeMethods.WAVEHDR { lpData = _pBuffer1, dwBufferLength = BUFFER_SIZE };
+                    NativeMethods.WAVEHDR h2 = new NativeMethods.WAVEHDR { lpData = _pBuffer2, dwBufferLength = BUFFER_SIZE };
+                    Marshal.StructureToPtr(h1, _pHdr1, false);
+                    Marshal.StructureToPtr(h2, _pHdr2, false);
+
+                    int p1 = NativeMethods.waveInPrepareHeader(_hwi, _pHdr1, (uint)hdrSize);
+                    int p2 = NativeMethods.waveInPrepareHeader(_hwi, _pHdr2, (uint)hdrSize);
+                    int a1 = NativeMethods.waveInAddBuffer(_hwi, _pHdr1, (uint)hdrSize);
+                    int a2 = NativeMethods.waveInAddBuffer(_hwi, _pHdr2, (uint)hdrSize);
+                    int sRes = NativeMethods.waveInStart(_hwi);
+
+                    HwTestLogger.Info("MIC", string.Format("waveInStart res={0} (prep={1}/{2}, add={3}/{4})", sRes, p1, p2, a1, a2));
+
+                    if (sRes != 0)
+                    {
+                        UpdateStatusSafe(string.Format("⚠ waveInStart neuspešan (code={0}).", sRes), Color.FromRgb(220, 53, 69), false);
+                        return;
+                    }
+
+                    _isClosing = false;
+                    _captureThread = new Thread(CaptureLoop) { IsBackground = true };
+                    _captureThread.Start();
+                    UpdateStatusSafe("Recite nešto glasno u mikrofon (npr. 'Test jedan dva tri')...", Colors.White, true);
                 }
-
-                TryUnmuteAndLogCaptureEndpoint();
-
-                NativeMethods.WAVEFORMATEX wfx = new NativeMethods.WAVEFORMATEX
+                catch (Exception ex)
                 {
-                    wFormatTag = NativeMethods.WAVE_FORMAT_PCM,
-                    nChannels = 1,
-                    nSamplesPerSec = 16000,
-                    wBitsPerSample = 16,
-                    nBlockAlign = 2,
-                    nAvgBytesPerSec = 32000,
-                    cbSize = 0
-                };
-
-                _waveEvent = new AutoResetEvent(false);
-                int openRes = NativeMethods.waveInOpen(
-                    out _hwi,
-                    _selectedDeviceId,
-                    ref wfx,
-                    _waveEvent.SafeWaitHandle.DangerousGetHandle(),
-                    IntPtr.Zero,
-                    NativeMethods.CALLBACK_EVENT
-                );
-
-                if (openRes != 0 || _hwi == IntPtr.Zero)
-                {
-                    string err = string.Format("waveInOpen neuspešan (MMSYSERR={0}). Proverite privatnost mikrofona u Windowsu.", openRes);
-                    HwTestLogger.Error("MIC", err);
-                    _statusText.Text = "⚠ " + err;
-                    _statusText.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                    return;
+                    HwTestLogger.Error("MIC", "StartWaveInCore exception: " + ex.Message);
+                    UpdateStatusSafe("⚠ Greška pri pokretanju mikrofona: " + ex.Message, Color.FromRgb(220, 53, 69), false);
                 }
-
-                int hdrSize = Marshal.SizeOf(typeof(NativeMethods.WAVEHDR));
-                _pBuffer1 = Marshal.AllocHGlobal(BUFFER_SIZE);
-                _pBuffer2 = Marshal.AllocHGlobal(BUFFER_SIZE);
-                _pHdr1 = Marshal.AllocHGlobal(hdrSize);
-                _pHdr2 = Marshal.AllocHGlobal(hdrSize);
-
-                NativeMethods.WAVEHDR h1 = new NativeMethods.WAVEHDR { lpData = _pBuffer1, dwBufferLength = BUFFER_SIZE };
-                NativeMethods.WAVEHDR h2 = new NativeMethods.WAVEHDR { lpData = _pBuffer2, dwBufferLength = BUFFER_SIZE };
-                Marshal.StructureToPtr(h1, _pHdr1, false);
-                Marshal.StructureToPtr(h2, _pHdr2, false);
-
-                int p1 = NativeMethods.waveInPrepareHeader(_hwi, _pHdr1, (uint)hdrSize);
-                int p2 = NativeMethods.waveInPrepareHeader(_hwi, _pHdr2, (uint)hdrSize);
-                int a1 = NativeMethods.waveInAddBuffer(_hwi, _pHdr1, (uint)hdrSize);
-                int a2 = NativeMethods.waveInAddBuffer(_hwi, _pHdr2, (uint)hdrSize);
-                int sRes = NativeMethods.waveInStart(_hwi);
-
-                HwTestLogger.Info("MIC", string.Format("waveInStart res={0} (prep={1}/{2}, add={3}/{4})", sRes, p1, p2, a1, a2));
-
-                if (sRes != 0)
-                {
-                    _statusText.Text = string.Format("⚠ waveInStart neuspešan (code={0}).", sRes);
-                    _statusText.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                    return;
-                }
-
-                _btnRecordManual.IsEnabled = true;
-                _isClosing = false;
-                _captureThread = new Thread(CaptureLoop) { IsBackground = true };
-                _captureThread.Start();
-            }
-            catch (Exception ex)
-            {
-                HwTestLogger.Error("MIC", "StartWaveIn exception: " + ex.Message);
-                _statusText.Text = "⚠ Greška pri pokretanju mikrofona: " + ex.Message;
-                _statusText.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
             }
         }
 
@@ -605,25 +695,28 @@ namespace WIS.HwTest.Tests
                 try { _captureThread.Join(1000); } catch { }
             }
 
-            if (_hwi != IntPtr.Zero)
+            lock (_waveInLock)
             {
-                int hdrSize = Marshal.SizeOf(typeof(NativeMethods.WAVEHDR));
-                try { NativeMethods.waveInStop(_hwi); } catch { }
-                try { NativeMethods.waveInReset(_hwi); } catch { }
-                if (_pHdr1 != IntPtr.Zero) { try { NativeMethods.waveInUnprepareHeader(_hwi, _pHdr1, (uint)hdrSize); } catch { } }
-                if (_pHdr2 != IntPtr.Zero) { try { NativeMethods.waveInUnprepareHeader(_hwi, _pHdr2, (uint)hdrSize); } catch { } }
-                try { NativeMethods.waveInClose(_hwi); } catch { }
-                _hwi = IntPtr.Zero;
-            }
+                if (_hwi != IntPtr.Zero)
+                {
+                    int hdrSize = Marshal.SizeOf(typeof(NativeMethods.WAVEHDR));
+                    try { NativeMethods.waveInStop(_hwi); } catch { }
+                    try { NativeMethods.waveInReset(_hwi); } catch { }
+                    if (_pHdr1 != IntPtr.Zero) { try { NativeMethods.waveInUnprepareHeader(_hwi, _pHdr1, (uint)hdrSize); } catch { } }
+                    if (_pHdr2 != IntPtr.Zero) { try { NativeMethods.waveInUnprepareHeader(_hwi, _pHdr2, (uint)hdrSize); } catch { } }
+                    try { NativeMethods.waveInClose(_hwi); } catch { }
+                    _hwi = IntPtr.Zero;
+                }
 
-            if (_pHdr1 != IntPtr.Zero) { Marshal.FreeHGlobal(_pHdr1); _pHdr1 = IntPtr.Zero; }
-            if (_pHdr2 != IntPtr.Zero) { Marshal.FreeHGlobal(_pHdr2); _pHdr2 = IntPtr.Zero; }
-            if (_pBuffer1 != IntPtr.Zero) { Marshal.FreeHGlobal(_pBuffer1); _pBuffer1 = IntPtr.Zero; }
-            if (_pBuffer2 != IntPtr.Zero) { Marshal.FreeHGlobal(_pBuffer2); _pBuffer2 = IntPtr.Zero; }
-            if (_waveEvent != null)
-            {
-                try { _waveEvent.Close(); } catch { }
-                _waveEvent = null;
+                if (_pHdr1 != IntPtr.Zero) { Marshal.FreeHGlobal(_pHdr1); _pHdr1 = IntPtr.Zero; }
+                if (_pHdr2 != IntPtr.Zero) { Marshal.FreeHGlobal(_pHdr2); _pHdr2 = IntPtr.Zero; }
+                if (_pBuffer1 != IntPtr.Zero) { Marshal.FreeHGlobal(_pBuffer1); _pBuffer1 = IntPtr.Zero; }
+                if (_pBuffer2 != IntPtr.Zero) { Marshal.FreeHGlobal(_pBuffer2); _pBuffer2 = IntPtr.Zero; }
+                if (_waveEvent != null)
+                {
+                    try { _waveEvent.Close(); } catch { }
+                    _waveEvent = null;
+                }
             }
         }
 
@@ -941,6 +1034,8 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
+            _isClosing = true;
+            Interlocked.Increment(ref _micInitGeneration);
             StopAutoPassTimer();
             Result.Status = TestStatus.Pass;
             Result.Attempts = 1;
@@ -957,6 +1052,8 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
+            _isClosing = true;
+            Interlocked.Increment(ref _micInitGeneration);
             StopAutoPassTimer();
             Result.Status = TestStatus.Fail;
             Result.Attempts = 1;
@@ -972,6 +1069,8 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
+            _isClosing = true;
+            Interlocked.Increment(ref _micInitGeneration);
             StopAutoPassTimer();
             Result.Status = TestStatus.Skip;
             Result.Reason = "Korisnik preskočio test mikrofona";

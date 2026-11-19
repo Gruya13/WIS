@@ -567,20 +567,22 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.1.0 u root version.json i komponentama
+        # 1. Verzije v3.1.1 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.1.0")
-        self.assertEqual(root_ver["release_package"]["version"], "3.1.0")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.1.0")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.1.0")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.1.0")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.1.0")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.4.0")
+        self.assertEqual(root_ver["version"], "3.1.1")
+        self.assertEqual(root_ver["release_package"]["version"], "3.1.1")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.1.1")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.1.1")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.1.1")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.1.1")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.4.1")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
-        # 2. AudioTestWindow.cs ne sme biti menjan
-        audio_sha = hashlib.sha256((HWTEST_DIR / "Tests" / "AudioTestWindow.cs").read_bytes()).hexdigest()
-        self.assertEqual(audio_sha, "503fd688d9a409d75180f60742e6125a76597b71d062bde385fb2de37c1a535c")
+        # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
+        audio_src = (HWTEST_DIR / "Tests" / "AudioTestWindow.cs").read_text(encoding="utf-8")
+        self.assertIn("ManualResetEventSlim _waveOutDoneEvent", audio_src)
+        self.assertIn("_waveOutDoneEvent.Wait(1500)", audio_src)
+        self.assertIn("PlayWaveOutTracked(pcmStereo, 22050, 2, myGen)", audio_src)
 
         # 3. Ugradjeni HwTestShell rezim i Phase 5 orkestracija
         shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
@@ -835,7 +837,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.1.0";', result_src)
+        self.assertIn('AppVersion = "3.1.1";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -862,6 +864,48 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("Remove-LegacyWinRing0Driver", cleanup_src)
         self.assertIn("$Global:WisSecurityHardeningVerified", cleanup_src)
         self.assertIn("security_hardening_verified", p6_src)
+
+    def test_wis_task_254_v311_bug01_bug09_and_ig_systems(self):
+        # BUG-01: Audio -> Mic bez deadloka (STA Dispatcher + ManualResetEventSlim + STA background Mic init)
+        audio_src = (HWTEST_DIR / "Tests" / "AudioTestWindow.cs").read_text(encoding="utf-8")
+        self.assertIn("ManualResetEventSlim _waveOutDoneEvent", audio_src)
+        self.assertIn("_waveOutDoneEvent.Wait(1500)", audio_src)
+        self.assertIn("ApplyMasterVolumeScalarDirect", audio_src)
+        self.assertIn("Dispatcher.BeginInvoke", audio_src)
+
+        mic_src = (HWTEST_DIR / "Tests" / "MicTestWindow.cs").read_text(encoding="utf-8")
+        self.assertIn("StartMicInitAsync(true);", mic_src)
+        self.assertIn("StartWaveInCore(myGen);", mic_src)
+        self.assertIn("ApartmentState.STA", mic_src)
+        loaded_block = mic_src.split("Loaded += (s, e) => {", 1)[1].split("};", 1)[0]
+        self.assertNotIn("TryUnmuteAndLogCaptureEndpoint", loaded_block)
+
+        # BUG-09: Dual-GPU provera svih adaptera u AutoHardwareDiagnostics & GpuStressWindow
+        autodiag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        gpustress_src = (HWTEST_DIR / "Tests" / "GpuStressWindow.cs").read_text(encoding="utf-8")
+        self.assertIn("out bool hasAnyBasicDisplay", autodiag_src)
+        self.assertIn("out bool hasAnyErrorAdapter", autodiag_src)
+        self.assertIn("out string problemAdaptersSummary", autodiag_src)
+        self.assertIn("hasAnyBasicDisplay || hasAnyErrorAdapter", autodiag_src)
+        self.assertIn("has_any_basic_display", gpustress_src)
+        self.assertIn("_hasAnyBasicDisplay || _hasAnyErrorAdapter", gpustress_src)
+
+        # IG-Systems rebrending dokumentacije i konfiguracionih primera (bez starog imena)
+        label_src = (ROOT / "UI" / "LabelPrintService.cs").read_text(encoding="utf-8")
+        self.assertIn('ShopName = "IG-Systems";', label_src)
+        forbidden_brand = "tehno " + "kutak"
+        for path in [
+            ROOT / "README.md",
+            ROOT / "LICENSE",
+            ROOT / "SECURITY.md",
+            ROOT / "Wifi-Servis.example.ini",
+            ROOT / "ISO" / "Wifi-Servis.example.ini",
+        ]:
+            low = path.read_text(encoding="utf-8").lower()
+            self.assertNotIn(forbidden_brand, low, f"Zaostali brend u {path}")
+            self.assertIn("ig-systems", low, f"Nedostaje IG-Systems u {path}")
+        for doc_md in (ROOT / "docs").rglob("*.md"):
+            self.assertNotIn(forbidden_brand, doc_md.read_text(encoding="utf-8").lower(), f"Zaostali brend u {doc_md}")
 
 
 if __name__ == "__main__":

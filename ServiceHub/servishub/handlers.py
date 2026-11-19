@@ -177,6 +177,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
     predictive_cache_mgr = None
     start_time = time.time()
     reset_wis_burn_state = staticmethod(reset_wis_burn_state)
+    _driver_dl_lock = threading.Lock()
+    _driver_dl_jobs = {}  # (cache_scope, token) -> aktivan ili sveže završen pozadinski download drajvera
 
     def _get_predictive_mgr(self):
         if self.predictive_cache_mgr is not None:
@@ -309,12 +311,104 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
         self.wfile.flush()
 
-    def _resolve_single_device_hwids(self, raw_hwids, device_name="UnknownDevice", manufacturer="", model=""):
+    @classmethod
+    def _prune_driver_dl_jobs_locked(cls):
+        now = time.time()
+        expired_keys = [
+            k for k, j in cls._driver_dl_jobs.items()
+            if j.get("state") in ("ready", "error") and (now - float(j.get("finished_at") or now)) > 120.0
+        ]
+        for k in expired_keys:
+            cls._driver_dl_jobs.pop(k, None)
+
+    @staticmethod
+    def _build_ready_driver_entry(hwid_str, drv_info, source="catalog_download"):
+        drv_id = (drv_info or {}).get("driver_id", "")
+        return {
+            "hwid": hwid_str,
+            "status": "ready",
+            "driver_id": drv_id,
+            "download_url": f"/api/drivers/download?id={drv_id}",
+            "title": (drv_info or {}).get("title", ""),
+            "version": (drv_info or {}).get("version", ""),
+            "date": (drv_info or {}).get("date", ""),
+            "device_class": (drv_info or {}).get("device_class", ""),
+            "size_bytes": (drv_info or {}).get("size_bytes", 0),
+            "sha256": (drv_info or {}).get("sha256", ""),
+            "source": source,
+        }
+
+    def _start_or_join_driver_download_job(self, cache_scope, hwid_str, clean_hwids, resolved):
+        cab_url = resolved.get("download_url")
+        aliases = list(dict.fromkeys(clean_hwids + ([str(resolved.get("matched_query")).strip()] if resolved.get("matched_query") else [])))
+        cache_mgr = self.driver_cache_mgr
+        scraper = self.ms_catalog_scraper
+
+        with ServisHubHandler._driver_dl_lock:
+            self._prune_driver_dl_jobs_locked()
+            existing = ServisHubHandler._driver_dl_jobs.get((cache_scope, hwid_str.upper()))
+            if not existing and cab_url:
+                existing = ServisHubHandler._driver_dl_jobs.get((cache_scope, f"URL:{cab_url}"))
+            if existing and existing.get("state") == "downloading":
+                return existing
+
+            job = {
+                "job_id": uuid.uuid4().hex[:12],
+                "hwid": hwid_str,
+                "cab_url": cab_url,
+                "title": resolved.get("title", ""),
+                "event": threading.Event(),
+                "state": "downloading",
+                "saved": None,
+                "error": None,
+                "finished_at": None,
+            }
+            for alias in aliases:
+                if alias:
+                    ServisHubHandler._driver_dl_jobs[(cache_scope, alias.upper())] = job
+            if cab_url:
+                ServisHubHandler._driver_dl_jobs[(cache_scope, f"URL:{cab_url}")] = job
+
+            def _worker():
+                try:
+                    cab_data = scraper.download_cab(cab_url)
+                    saved = cache_mgr.save_cache(hwid_str, cab_data, resolved, alias_hwids=aliases) if cache_mgr else resolved
+                    with ServisHubHandler._driver_dl_lock:
+                        job["saved"] = saved
+                        job["state"] = "ready"
+                        job["finished_at"] = time.time()
+                    print(f"  [+] [RESOLVED & CACHED] {hwid_str} -> {saved.get('title')} ({saved.get('size_bytes')} B)")
+                except Exception as ex:
+                    print(f"  [!] [ERROR] Greška pri preuzimanju drajvera sa Microsoft CDN-a: {ex}", file=sys.stderr)
+                    with ServisHubHandler._driver_dl_lock:
+                        job["error"] = str(ex)
+                        job["state"] = "error"
+                        job["finished_at"] = time.time()
+                finally:
+                    job["event"].set()
+
+            threading.Thread(target=_worker, daemon=True).start()
+            return job
+
+    def _resolve_single_device_hwids(
+        self,
+        raw_hwids,
+        device_name="UnknownDevice",
+        manufacturer="",
+        model="",
+        async_download=False,
+        inline_wait_sec=None,
+    ):
         clean_hwids = [str(h).strip() for h in (raw_hwids or []) if str(h).strip()]
         results = []
         if not clean_hwids:
             return results
 
+        wait_sec = None
+        if async_download:
+            wait_sec = 3.0 if inline_wait_sec is None else max(0.0, min(15.0, float(inline_wait_sec)))
+
+        cache_scope = os.path.abspath(str(getattr(self.driver_cache_mgr, "cache_dir", "no-cache")))
         print(f"[*] [DriverResolve] Primljen upit za {len(clean_hwids)} HWID-ja (Uređaj: {device_name} / {manufacturer} {model})...")
 
         # 1. Cache-first provera svih HWID kandidata uz early-stop na prvom pogotku
@@ -324,22 +418,38 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 if cached:
                     drv_id = cached.get("driver_id", "")
                     print(f"  [+] [CACHE HIT] {hwid_str} -> {cached.get('title', 'Driver')} (ID: {drv_id[:12]}...)")
-                    results.append({
-                        "hwid": hwid_str,
-                        "status": "ready",
-                        "driver_id": drv_id,
-                        "download_url": f"/api/drivers/download?id={drv_id}",
-                        "title": cached.get("title", ""),
-                        "version": cached.get("version", ""),
-                        "date": cached.get("date", ""),
-                        "device_class": cached.get("device_class", ""),
-                        "size_bytes": cached.get("size_bytes", 0),
-                        "sha256": cached.get("sha256", ""),
-                        "source": "cache",
-                    })
+                    results.append(self._build_ready_driver_entry(hwid_str, cached, source="cache"))
                     return results
 
-        # 2. Pretraga Microsoft Update Kataloga uz early-stop na prvom uspešno preuzetom drajveru
+        # 1b. Provera da li je za neki od HWID-jeva već u toku dedupovano pozadinsko preuzimanje
+        active_job = None
+        active_hwid = clean_hwids[0]
+        with ServisHubHandler._driver_dl_lock:
+            self._prune_driver_dl_jobs_locked()
+            for hwid_str in clean_hwids:
+                candidate_job = ServisHubHandler._driver_dl_jobs.get((cache_scope, hwid_str.upper()))
+                if candidate_job and candidate_job.get("state") == "downloading":
+                    active_job = candidate_job
+                    active_hwid = hwid_str
+                    break
+
+        if active_job is not None:
+            active_job["event"].wait(timeout=wait_sec)
+            if active_job.get("state") == "ready" and active_job.get("saved"):
+                results.append(self._build_ready_driver_entry(active_hwid, active_job["saved"], source="catalog_download"))
+                return results
+            if active_job.get("state") == "downloading" and async_download:
+                results.append({
+                    "hwid": active_hwid,
+                    "status": "downloading",
+                    "job_id": active_job.get("job_id", ""),
+                    "retry_after_sec": 5,
+                    "title": active_job.get("title", ""),
+                    "source": "catalog_download_async",
+                })
+                return results
+
+        # 2. Pretraga Microsoft Update Kataloga uz dedupovani background download
         for hwid_str in clean_hwids:
             print(f"  [*] [CACHE MISS] Pretražujem Microsoft Update Catalog za: {hwid_str}...")
             resolved = self.ms_catalog_scraper.resolve_driver(hwid_str) if self.ms_catalog_scraper else None
@@ -354,33 +464,28 @@ class ServisHubHandler(BaseHTTPRequestHandler):
 
             cab_url = resolved.get("download_url")
             print(f"  [*] [DOWNLOAD] Preuzimam zvanični CAB drajver sa Microsoft CDN-a: {resolved.get('title')} ({str(cab_url)[:70]}...)...")
-            try:
-                cab_data = self.ms_catalog_scraper.download_cab(cab_url)
-                aliases = list(dict.fromkeys(clean_hwids + ([str(resolved.get("matched_query")).strip()] if resolved.get("matched_query") else [])))
-                saved = self.driver_cache_mgr.save_cache(hwid_str, cab_data, resolved, alias_hwids=aliases) if self.driver_cache_mgr else resolved
-                drv_id = saved.get("driver_id", "")
-                print(f"  [+] [RESOLVED & CACHED] {hwid_str} -> {saved.get('title')} ({saved.get('size_bytes')} B)")
+            job = self._start_or_join_driver_download_job(cache_scope, hwid_str, clean_hwids, resolved)
+            job["event"].wait(timeout=wait_sec)
+
+            if job.get("state") == "ready" and job.get("saved"):
+                results.append(self._build_ready_driver_entry(hwid_str, job["saved"], source="catalog_download"))
+                return results
+            if job.get("state") == "downloading" and async_download:
                 results.append({
                     "hwid": hwid_str,
-                    "status": "ready",
-                    "driver_id": drv_id,
-                    "download_url": f"/api/drivers/download?id={drv_id}",
-                    "title": saved.get("title", ""),
-                    "version": saved.get("version", ""),
-                    "date": saved.get("date", ""),
-                    "device_class": saved.get("device_class", ""),
-                    "size_bytes": saved.get("size_bytes", 0),
-                    "sha256": saved.get("sha256", ""),
-                    "source": "catalog_download",
+                    "status": "downloading",
+                    "job_id": job.get("job_id", ""),
+                    "retry_after_sec": 5,
+                    "title": resolved.get("title", ""),
+                    "source": "catalog_download_async",
                 })
                 return results
-            except Exception as ex:
-                print(f"  [!] [ERROR] Greška pri preuzimanju drajvera sa Microsoft CDN-a: {ex}", file=sys.stderr)
-                results.append({
-                    "hwid": hwid_str,
-                    "status": "error",
-                    "error": f"Greška pri preuzimanju ili verifikaciji drajvera: {str(ex)}",
-                })
+
+            results.append({
+                "hwid": hwid_str,
+                "status": "error",
+                "error": f"Greška pri preuzimanju ili verifikaciji drajvera: {job.get('error') or 'Nepoznata greška'}",
+            })
 
         return results
 
@@ -1471,6 +1576,14 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             manufacturer = str(payload.get("manufacturer") or "").strip()
             model = str(payload.get("model") or "").strip()
             serial_number = str(payload.get("serial_number") or payload.get("serial") or "").strip()
+            async_download = bool(payload.get("async_download", False))
+            inline_wait_raw = payload.get("inline_wait_sec")
+            inline_wait_sec = None
+            if inline_wait_raw is not None:
+                try:
+                    inline_wait_sec = float(inline_wait_raw)
+                except (TypeError, ValueError):
+                    inline_wait_sec = None
 
             has_devices_batch = isinstance(devices_payload, list) and len(devices_payload) > 0
             if not raw_hwids and not has_devices_batch and not (manufacturer and (serial_number or model)):
@@ -1529,6 +1642,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                         device_name=d_name,
                         manufacturer=manufacturer,
                         model=model,
+                        async_download=async_download,
+                        inline_wait_sec=inline_wait_sec,
                     )
                     resolved_item = next((r for r in d_res if r.get("status") == "ready"), None)
                     return {
@@ -1552,6 +1667,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     device_name=device_name,
                     manufacturer=manufacturer,
                     model=model,
+                    async_download=async_download,
+                    inline_wait_sec=inline_wait_sec,
                 )
 
             if model and model.lower() not in ("unknown", "standardni pc", "pc", "system product name", "to be filled by o.e.m.", "none", "default string"):

@@ -22,7 +22,7 @@ Pouzdan i brz pristup servisnoj mreži (`192.168.170.0/24`) i internetu ključan
 Parametri servisne bežične mreže, `ServiceHub` servera i TrueNAS SMB deljenja definisani su u `Wifi-Servis.ini`:
 - **`[ServisWifi]`:** Podržava više SSID naziva odvojenih zarezom (primarni 5 GHz i rezervni 2.4 GHz) i lozinku.
 - **`[ServisHub]`:** Port `8080` i UDP Discovery port `8888`.
-- **`[ServisNas]` / `[WindowsUpdate]` / `[Printer]`:** Definiše TrueNAS host (`192.168.170.254` / `truenas.servis`), servisno deljenje `ShareName=Servis`, deljenje aplikacija `ProgramiShare=Programi`, poddirektorijum zakrpa `UpdatesSubfolder=Updates\Win11`, bazu drajvera `DriversSubDir=Drivers\Harvested\Models`, `[WindowsUpdate] Mode=All` i sekciju `[Printer]` za Star TSP700II termalni štampač (`Transport=Usb|Queue|Network`, `Emulation=StarLine|EscPos`, port `9100`, širina `576` tačaka, `ShopName=Tehno kutak`). Podaci za SMB nalog ostaju van Git-a (`.example.ini` koristi `Password=CHANGE_ME`).
+- **`[ServisNas]` / `[WindowsUpdate]` / `[Printer]`:** Definiše TrueNAS host (`192.168.170.254` / `truenas.servis`), servisno deljenje `ShareName=Servis`, deljenje aplikacija `ProgramiShare=Programi`, poddirektorijum zakrpa `UpdatesSubfolder=Updates\Win11`, bazu drajvera `DriversSubDir=Drivers\Harvested\Models`, `[WindowsUpdate] Mode=All` i sekciju `[Printer]` za Star TSP700II termalni štampač (`Transport=Usb|Queue|Network`, `Emulation=StarLine|EscPos`, port `9100`, širina `576` tačaka, `ShopName=IG-Systems`). Podaci za SMB nalog ostaju van Git-a (`.example.ini` koristi `Password=CHANGE_ME`). Obavezno vlasništvo konfiguracionog profila sistema pripada **IG-Systems**.
 
 ---
 

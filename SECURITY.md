@@ -1,6 +1,6 @@
-# Politika Bezbednosti (Security Policy) — WIS Ekosistem
+# Politika Bezbednosti (Security Policy) — WIS Ekosistem (`IG-Systems`)
 
-Ova bezbednosna politika definiše obavezujuće bezbednosne zahteve, granice poverenja, mehanizme zaštite podataka i operativne kontrole za sve komponente **Windows Installation Assistant (WIS)** ekosistema (`WIS v3.1.0` / `ServiceHub v3.4.0`).
+Ova bezbednosna politika definiše obavezujuće bezbednosne zahteve, granice poverenja, mehanizme zaštite podataka i operativne kontrole za sve komponente **Windows Installation Assistant (WIS)** ekosistema u vlasništvu **IG-Systems** (`WIS v3.1.1` / `ServiceHub v3.4.1`).
 
 ---
 
@@ -10,12 +10,12 @@ Politika se primenjuje na sve razvojne celine i alate definisane u kanonskom man
 
 | Komponenta / Celina | Verzija | Podržana | Uloga u Bezbednosnoj Arhitekturi |
 | :--- | :--- | :--- | :--- |
-| **WIS Paket Izdanja** | `3.1.0` | :white_check_mark: | Jedinstveni RSA-2048 potpisani OTA paket (`wis-payload.zip`) bez `WinRing0`/`LHM` DLL-ova (`REQUIRED_310_COMPONENTS`). |
-| [`ISO/`](ISO/) | `3.1.0` | :white_check_mark: | WinPE / Unattend / `SetupComplete.ps1` / `PreOOBE-Network.ps1`, priprema medijuma i `Release-WIS.py` objava. |
-| [`Launcher/`](Launcher/) | `3.1.0` (`min: 3.1.0`) | :white_check_mark: | Koren poverenja (*Root of Trust*) na klijentu (`WIS.Launcher.exe`): anti-downgrade zaštita (`>= 3.1.0`), RSA-2048 verifikacija, Zip-Slip/`.sys` zaštita i transakcioni rollback. |
-| [`UI/`](UI/) i `WIS.HwTest` | `3.1.0` | :white_check_mark: | Master orkestrator faza (`WIS.UI.exe`), 6-fazni PowerShell 5.1 pajplajn, Anti-BYOVD senzorika, post-verifikacija OS hardeninga i Faza 6 Anti-Leak čišćenje. |
-| [`ServiceHub/`](ServiceHub/) | `3.4.0` | :white_check_mark: | Read-only payload servis, fail-closed LAN autentifikacija (`SERVIS_HUB_ADMIN_TOKEN` / `CLIENT_TOKEN`), CORS allowlist, `.tar` sanitizacija i ZFS/disk zaštita u USB Builder-u. |
-| [`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/) | `3.1.0` | :white_check_mark: | Troslojna Autopilot/ZTD forenzika uz `try/finally` očuvanje OOBE ključeva i keša. |
+| **WIS Paket Izdanja** | `3.1.1` | :white_check_mark: | Jedinstveni RSA-2048 potpisani OTA paket (`wis-payload.zip`) bez `WinRing0`/`LHM` DLL-ova (`REQUIRED_310_COMPONENTS`). |
+| [`ISO/`](ISO/) | `3.1.1` | :white_check_mark: | WinPE / Unattend / `SetupComplete.ps1` / `PreOOBE-Network.ps1`, priprema medijuma i `Release-WIS.py` objava. |
+| [`Launcher/`](Launcher/) | `3.1.1` (`min: 3.1.0`) | :white_check_mark: | Koren poverenja (*Root of Trust*) na klijentu (`WIS.Launcher.exe`): anti-downgrade zaštita (`>= 3.1.0`), RSA-2048 verifikacija, Zip-Slip/`.sys` zaštita i transakcioni rollback. |
+| [`UI/`](UI/) i `WIS.HwTest` | `3.1.1` | :white_check_mark: | Master orkestrator faza (`WIS.UI.exe`), 6-fazni PowerShell 5.1 pajplajn, Anti-BYOVD senzorika, post-verifikacija OS hardeninga i Faza 6 Anti-Leak čišćenje. |
+| [`ServiceHub/`](ServiceHub/) | `3.4.1` | :white_check_mark: | Read-only payload servis, fail-closed LAN autentifikacija (`SERVIS_HUB_ADMIN_TOKEN` / `CLIENT_TOKEN`), CORS allowlist, `.tar` sanitizacija i ZFS/disk zaštita u USB Builder-u. |
+| [`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/) | `3.1.1` | :white_check_mark: | Troslojna Autopilot/ZTD forenzika uz `try/finally` očuvanje OOBE ključeva i keša. |
 | Starije verzije (`< 3.1.0`) | `< 3.1.0` | :x: | Zastarele i blokirane podrazumevanom anti-downgrade zaštitom u `WIS.Launcher.exe` v3.1.0+. |
 
 ---

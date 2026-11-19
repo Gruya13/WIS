@@ -179,16 +179,22 @@ class MsUpdateCatalogScraper:
         unique_links.sort(key=lambda u: (0 if u.startswith("https://") else 1))
         return unique_links
 
-    def download_cab(self, cab_url: str, timeout: int = 60) -> bytes:
+    def download_cab(self, cab_url: str, timeout: int = 90) -> bytes:
         """
-        Preuzima .cab arhivu sa Microsoft CDN-a i verifikuje MSCF zaglavlje.
+        Preuzima .cab arhivu sa Microsoft CDN-a u chunkovima i verifikuje MSCF zaglavlje.
         """
         if not cab_url:
             raise ValueError("URL za preuzimanje drajvera je prazan")
 
         req = urllib.request.Request(cab_url, headers={"User-Agent": self.user_agent})
+        buf = bytearray()
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
+            while True:
+                chunk = resp.read(262144)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+        data = bytes(buf)
 
         if len(data) < 4 or data[:4] != b"MSCF":
             raise ValueError(f"Preuzeta datoteka ne sadrži validan Microsoft Cabinet potpis (MSCF). Veličina: {len(data)} B")

@@ -5,6 +5,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Speech.Synthesis;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -27,6 +28,8 @@ namespace WIS.HwTest.Tests
         private volatile bool _stopMusic = false;
         private IntPtr _activeWaveOut = IntPtr.Zero;
         private readonly object _waveLock = new object();
+        private readonly ManualResetEventSlim _waveOutDoneEvent = new ManualResetEventSlim(true);
+        private int _activeWaveOutCount = 0;
         private bool _isClosingOrDone = false;
 
         private float _savedVolume = 0.5f;
@@ -344,7 +347,7 @@ namespace WIS.HwTest.Tests
             }
         }
 
-        private void SetMasterVolumeScalarSafe(float level)
+        private void ApplyMasterVolumeScalarDirect(float level)
         {
             try
             {
@@ -360,7 +363,27 @@ namespace WIS.HwTest.Tests
             catch { }
         }
 
-        private void StopActivePlayback()
+        private void SetMasterVolumeScalarSafe(float level)
+        {
+            try
+            {
+                if (_audioVolume == null) return;
+                if (Dispatcher != null && !Dispatcher.CheckAccess())
+                {
+                    Dispatcher.BeginInvoke(new Action(() => {
+                        if (!_isClosingOrDone && !_stopMusic)
+                        {
+                            ApplyMasterVolumeScalarDirect(level);
+                        }
+                    }));
+                    return;
+                }
+                ApplyMasterVolumeScalarDirect(level);
+            }
+            catch { }
+        }
+
+        private void StopActivePlayback(bool waitForExit = true)
         {
             _stopMusic = true;
             _musicGeneration++;
@@ -371,11 +394,15 @@ namespace WIS.HwTest.Tests
                     try { NativeMethods.waveOutReset(_activeWaveOut); } catch { }
                 }
             }
+            if (waitForExit)
+            {
+                try { _waveOutDoneEvent.Wait(1500); } catch { }
+            }
         }
 
         private void StartMusicSweepPhase()
         {
-            StopActivePlayback();
+            StopActivePlayback(true);
             _stopMusic = false;
             _inMusicPhase = true;
             int myGen = _musicGeneration;
@@ -536,6 +563,11 @@ namespace WIS.HwTest.Tests
 
         private void PlayWaveOutTracked(byte[] pcm, uint sampleRate, ushort channels, int expectedGen)
         {
+            if (pcm == null || pcm.Length == 0 || _stopMusic || expectedGen != _musicGeneration)
+            {
+                return;
+            }
+
             NativeMethods.WAVEFORMATEX wfx = new NativeMethods.WAVEFORMATEX
             {
                 wFormatTag = NativeMethods.WAVE_FORMAT_PCM,
@@ -547,38 +579,88 @@ namespace WIS.HwTest.Tests
                 cbSize = 0
             };
 
-            IntPtr hwo;
-            if (NativeMethods.waveOutOpen(out hwo, NativeMethods.WAVE_MAPPER, ref wfx, IntPtr.Zero, IntPtr.Zero, 0) == 0)
+            lock (_waveLock)
             {
-                lock (_waveLock) { _activeWaveOut = hwo; }
-                IntPtr pData = Marshal.AllocHGlobal(pcm.Length);
-                Marshal.Copy(pcm, 0, pData, pcm.Length);
+                _activeWaveOutCount++;
+                _waveOutDoneEvent.Reset();
+            }
 
-                NativeMethods.WAVEHDR wh = new NativeMethods.WAVEHDR
+            IntPtr hwo = IntPtr.Zero;
+            IntPtr pData = IntPtr.Zero;
+            NativeMethods.WAVEHDR wh = new NativeMethods.WAVEHDR();
+            bool hdrPrepared = false;
+
+            try
+            {
+                if (_stopMusic || expectedGen != _musicGeneration)
                 {
-                    lpData = pData,
-                    dwBufferLength = (uint)pcm.Length
-                };
-
-                NativeMethods.waveOutPrepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-                NativeMethods.waveOutWrite(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-
-                int totalMs = (int)((pcm.Length / (double)wfx.nAvgBytesPerSec) * 1000.0) + 120;
-                int waited = 0;
-                while (waited < totalMs && !_stopMusic && expectedGen == _musicGeneration)
-                {
-                    System.Threading.Thread.Sleep(50);
-                    waited += 50;
+                    return;
                 }
 
+                if (NativeMethods.waveOutOpen(out hwo, NativeMethods.WAVE_MAPPER, ref wfx, IntPtr.Zero, IntPtr.Zero, 0) == 0 && hwo != IntPtr.Zero)
+                {
+                    lock (_waveLock)
+                    {
+                        if (!_stopMusic && expectedGen == _musicGeneration)
+                        {
+                            _activeWaveOut = hwo;
+                        }
+                    }
+
+                    if (!_stopMusic && expectedGen == _musicGeneration)
+                    {
+                        pData = Marshal.AllocHGlobal(pcm.Length);
+                        Marshal.Copy(pcm, 0, pData, pcm.Length);
+
+                        wh.lpData = pData;
+                        wh.dwBufferLength = (uint)pcm.Length;
+
+                        NativeMethods.waveOutPrepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh));
+                        hdrPrepared = true;
+                        NativeMethods.waveOutWrite(hwo, ref wh, (uint)Marshal.SizeOf(wh));
+
+                        int totalMs = (int)((pcm.Length / (double)wfx.nAvgBytesPerSec) * 1000.0) + 120;
+                        int waited = 0;
+                        while (waited < totalMs && !_stopMusic && expectedGen == _musicGeneration)
+                        {
+                            Thread.Sleep(50);
+                            waited += 50;
+                        }
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
                 lock (_waveLock)
                 {
-                    if (_activeWaveOut == hwo) _activeWaveOut = IntPtr.Zero;
+                    if (hwo != IntPtr.Zero && _activeWaveOut == hwo)
+                    {
+                        _activeWaveOut = IntPtr.Zero;
+                    }
                 }
-                NativeMethods.waveOutReset(hwo);
-                NativeMethods.waveOutUnprepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-                NativeMethods.waveOutClose(hwo);
-                Marshal.FreeHGlobal(pData);
+                if (hwo != IntPtr.Zero)
+                {
+                    try { NativeMethods.waveOutReset(hwo); } catch { }
+                    if (hdrPrepared)
+                    {
+                        try { NativeMethods.waveOutUnprepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh)); } catch { }
+                    }
+                    try { NativeMethods.waveOutClose(hwo); } catch { }
+                }
+                if (pData != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(pData);
+                }
+                lock (_waveLock)
+                {
+                    _activeWaveOutCount--;
+                    if (_activeWaveOutCount <= 0)
+                    {
+                        _activeWaveOutCount = 0;
+                        _waveOutDoneEvent.Set();
+                    }
+                }
             }
         }
 
@@ -657,11 +739,15 @@ namespace WIS.HwTest.Tests
 
         private void PlayDigitPanned(int digit, bool isLeft)
         {
-            System.Threading.ThreadPool.QueueUserWorkItem((state) => {
+            StopActivePlayback(true);
+            _stopMusic = false;
+            int myGen = _musicGeneration;
+
+            ThreadPool.QueueUserWorkItem((state) => {
                 try
                 {
                     byte[] pcmMono = LoadDigitPcm(digit);
-                    if (pcmMono == null || pcmMono.Length == 0) return;
+                    if (pcmMono == null || pcmMono.Length == 0 || _stopMusic || myGen != _musicGeneration) return;
 
                     // Pretvaramo mono 16-bit PCM (22050 Hz) u stereo 16-bit sa jednim utišanim kanalom
                     byte[] pcmStereo = new byte[pcmMono.Length * 2];
@@ -688,7 +774,7 @@ namespace WIS.HwTest.Tests
                         }
                     }
 
-                    PlayWaveOut(pcmStereo, 22050, 2);
+                    PlayWaveOutTracked(pcmStereo, 22050, 2, myGen);
                 }
                 catch { }
             });
@@ -780,41 +866,7 @@ namespace WIS.HwTest.Tests
 
         private void PlayWaveOut(byte[] pcm, uint sampleRate, ushort channels)
         {
-            NativeMethods.WAVEFORMATEX wfx = new NativeMethods.WAVEFORMATEX
-            {
-                wFormatTag = NativeMethods.WAVE_FORMAT_PCM,
-                nChannels = channels,
-                nSamplesPerSec = sampleRate,
-                wBitsPerSample = 16,
-                nBlockAlign = (ushort)(channels * 2),
-                nAvgBytesPerSec = (uint)(sampleRate * channels * 2),
-                cbSize = 0
-            };
-
-            IntPtr hwo;
-            if (NativeMethods.waveOutOpen(out hwo, NativeMethods.WAVE_MAPPER, ref wfx, IntPtr.Zero, IntPtr.Zero, 0) == 0)
-            {
-                IntPtr pData = Marshal.AllocHGlobal(pcm.Length);
-                Marshal.Copy(pcm, 0, pData, pcm.Length);
-
-                NativeMethods.WAVEHDR wh = new NativeMethods.WAVEHDR
-                {
-                    lpData = pData,
-                    dwBufferLength = (uint)pcm.Length
-                };
-
-                NativeMethods.waveOutPrepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-                NativeMethods.waveOutWrite(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-
-                // Sačekaj reprodukciju
-                int durationMs = (int)((pcm.Length / (double)wfx.nAvgBytesPerSec) * 1000.0) + 150;
-                System.Threading.Thread.Sleep(durationMs);
-
-                NativeMethods.waveOutReset(hwo);
-                NativeMethods.waveOutUnprepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh));
-                NativeMethods.waveOutClose(hwo);
-                Marshal.FreeHGlobal(pData);
-            }
+            PlayWaveOutTracked(pcm, sampleRate, channels, _musicGeneration);
         }
 
         private void OnDigitSubmitted(int digit)

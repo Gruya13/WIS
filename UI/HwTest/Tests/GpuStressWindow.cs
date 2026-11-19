@@ -48,6 +48,9 @@ namespace WIS.HwTest.Tests
         private long _vramMb;
         private uint _pnpErr;
         private bool _isBasicDisplay;
+        private bool _hasAnyBasicDisplay;
+        private bool _hasAnyErrorAdapter;
+        private string _problemAdapters;
         private string _allAdapters;
         private int _renderTier;
 
@@ -57,7 +60,9 @@ namespace WIS.HwTest.Tests
             Result = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
             Result.IsAutomated = true;
 
-            AutoDiagnosticsEngine.InspectGpuAdapters(out _gpuName, out _driverVer, out _vramMb, out _pnpErr, out _isBasicDisplay, out _allAdapters);
+            AutoDiagnosticsEngine.InspectGpuAdapters(
+                out _gpuName, out _driverVer, out _vramMb, out _pnpErr, out _isBasicDisplay, out _allAdapters,
+                out _hasAnyBasicDisplay, out _hasAnyErrorAdapter, out _problemAdapters);
             _renderTier = (RenderCapability.Tier >> 16);
 
             Title = "GPU 3D Hardverski Stres Test";
@@ -412,6 +417,9 @@ namespace WIS.HwTest.Tests
             Result.Details["vram_mb"] = _vramMb;
             Result.Details["pnp_error_code"] = _pnpErr;
             Result.Details["is_basic_display"] = _isBasicDisplay;
+            Result.Details["has_any_basic_display"] = _hasAnyBasicDisplay;
+            Result.Details["has_any_error_adapter"] = _hasAnyErrorAdapter;
+            Result.Details["problem_adapters"] = _problemAdapters;
             Result.Details["wpf_render_tier"] = _renderTier;
             Result.Details["all_adapters"] = _allAdapters;
             Result.Details["avg_fps"] = avgFps;
@@ -434,6 +442,11 @@ namespace WIS.HwTest.Tests
             {
                 Result.Status = TestStatus.Fail;
                 Result.Reason = string.Format("Greška grafičke kartice u Device Manager-u (Error Code {0})", _pnpErr);
+            }
+            else if (_hasAnyBasicDisplay || _hasAnyErrorAdapter)
+            {
+                Result.Status = TestStatus.Fail;
+                Result.Reason = string.Format("Sekundarni GPU nema drajver ili ima grešku: {0}", _problemAdapters);
             }
             else if (_renderTier == 0)
             {

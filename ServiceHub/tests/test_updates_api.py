@@ -927,6 +927,112 @@ class TestUpdatesApi(unittest.TestCase):
             httpd.server_close()
             ServisHubHandler.config = prev_cfg
 
+    def test_15_async_driver_resolve_downloading_dedup_and_ready(self):
+        """BUG-07: async_download vraca status=downloading tokom preuzimanja, dedupuje paralelni upit i vraca ready po kesiranju."""
+        cache_dir = os.path.join(self.test_dir, "drivers_cache_async")
+        cache_mgr = DriverCacheManager(cache_dir)
+        download_gate = threading.Event()
+        download_calls = []
+        dl_lock = threading.Lock()
+
+        class SlowResolveScraper(MsUpdateCatalogScraper):
+            def resolve_driver(self, hwid):
+                return {
+                    "title": f"Big OEM Driver {hwid}",
+                    "version": "32.0.16.1771",
+                    "date_str": "11/10/2026",
+                    "device_class": "Display",
+                    "download_url": "http://mock.local/big_gpu_driver.cab",
+                    "matched_query": hwid,
+                }
+
+            def download_cab(self, url):
+                with dl_lock:
+                    download_calls.append(url)
+                download_gate.wait(timeout=5.0)
+                return b"MSCF" + (b"GPU_CAB_PAYLOAD" * 100)
+
+        cfg = HubConfig(
+            host="127.0.0.1",
+            port=0,
+            base_dir=self.test_dir,
+            storage_dir=os.path.join(self.test_dir, "storage_async"),
+            logs_dir=os.path.join(self.test_dir, "logs_async"),
+        )
+        prev_cfg = getattr(ServisHubHandler, "config", None)
+        prev_cache = getattr(ServisHubHandler, "driver_cache_mgr", None)
+        prev_scraper = getattr(ServisHubHandler, "ms_catalog_scraper", None)
+        ServisHubHandler.config = cfg
+        ServisHubHandler.driver_cache_mgr = cache_mgr
+        ServisHubHandler.ms_catalog_scraper = SlowResolveScraper()
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), ServisHubHandler)
+        port = httpd.server_address[1]
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        try:
+            body = json.dumps({
+                "device_name": "Discrete GPU",
+                "hwids": ["PCI\\VEN_10DE&DEV_2DD8"],
+                "async_download": True,
+                "inline_wait_sec": 0.05,
+            }).encode("utf-8")
+
+            req1 = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/drivers/resolve",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+            with urllib.request.urlopen(req1, timeout=10) as r1:
+                j1 = json.loads(r1.read().decode("utf-8"))
+                self.assertEqual(j1["status"], "ok")
+                self.assertEqual(j1["results"][0]["status"], "downloading")
+                self.assertEqual(j1["results"][0]["retry_after_sec"], 5)
+                job_id_1 = j1["results"][0]["job_id"]
+
+            # Drugi polling zahtev tokom preuzimanja mora pogoditi isti job bez duplog download_cab poziva
+            req2 = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/drivers/resolve",
+                data=body,
+                method="POST",
+                headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            )
+            with urllib.request.urlopen(req2, timeout=10) as r2:
+                j2 = json.loads(r2.read().decode("utf-8"))
+                self.assertEqual(j2["results"][0]["status"], "downloading")
+                self.assertEqual(j2["results"][0]["job_id"], job_id_1)
+
+            self.assertEqual(len(download_calls), 1)
+            download_gate.set()
+
+            # Po zavrsetku preuzimanja polling dobija status=ready (iz kesa ili upravo kesiranog posla)
+            final_res = None
+            for _ in range(25):
+                req3 = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/drivers/resolve",
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+                )
+                with urllib.request.urlopen(req3, timeout=10) as r3:
+                    j3 = json.loads(r3.read().decode("utf-8"))
+                    if j3["results"][0]["status"] == "ready":
+                        final_res = j3["results"][0]
+                        break
+                time.sleep(0.05)
+
+            self.assertIsNotNone(final_res, "Drajver mora preci u status=ready nakon zavrsetka preuzimanja")
+            self.assertTrue(final_res["driver_id"])
+            self.assertEqual(len(download_calls), 1)
+        finally:
+            download_gate.set()
+            httpd.shutdown()
+            httpd.server_close()
+            ServisHubHandler.config = prev_cfg
+            ServisHubHandler.driver_cache_mgr = prev_cache
+            ServisHubHandler.ms_catalog_scraper = prev_scraper
+
 
 if __name__ == "__main__":
     unittest.main()

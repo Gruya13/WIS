@@ -35,9 +35,11 @@ def main():
         "using System.Reflection;\n"
         "[assembly: global::System.Runtime.Versioning.TargetFrameworkAttribute(\".NETFramework,Version=v4.8\", FrameworkDisplayName = \".NET Framework 4.8\")]\n"
         "[assembly: AssemblyTitle(\"WIS.HwTest\")]\n"
+        "[assembly: AssemblyCompany(\"IG-Systems\")]\n"
         "[assembly: AssemblyProduct(\"WIS Hardware Test Suite\")]\n"
-        "[assembly: AssemblyVersion(\"3.1.0.0\")]\n"
-        "[assembly: AssemblyFileVersion(\"3.1.0.0\")]\n",
+        "[assembly: AssemblyCopyright(\"Copyright © IG-Systems 2026\")]\n"
+        "[assembly: AssemblyVersion(\"3.1.1.0\")]\n"
+        "[assembly: AssemblyFileVersion(\"3.1.1.0\")]\n",
         encoding="utf-8"
     )
 
