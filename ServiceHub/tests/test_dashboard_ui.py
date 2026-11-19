@@ -225,6 +225,26 @@ class TestDashboardUI(unittest.TestCase):
         self.assertIn("var(--warning)", HTML_DASHBOARD)
         self.assertIn("var(--warning-glow)", HTML_DASHBOARD)
 
+    def test_10_driver_pool_and_oem_catalogs_panel(self):
+        """Verifikacija Web Cockpit kartice za Jedinstveni Driver Pool i OEM Kataloge (v3.5.0)."""
+        self.assertEqual(HTML_DASHBOARD.count('id="driver-pool-panel"'), 1)
+        self.assertIn('id="dp-unique-packages"', HTML_DASHBOARD)
+        self.assertIn('id="dp-models-count"', HTML_DASHBOARD)
+        self.assertIn('id="dp-dedup-saved"', HTML_DASHBOARD)
+        self.assertIn('id="dp-catalogs-status"', HTML_DASHBOARD)
+        self.assertIn('id="dp-manifests-body"', HTML_DASHBOARD)
+        self.assertIn("/api/drivers/pool/stats", HTML_DASHBOARD)
+        self.assertIn("/api/drivers/pool/manifests", HTML_DASHBOARD)
+        self.assertIn("function loadDriverPoolStats()", HTML_DASHBOARD)
+        self.assertIn("function syncOemCatalogs()", HTML_DASHBOARD)
+        self.assertIn("function ingestOemPackToPool()", HTML_DASHBOARD)
+        self.assertIn("function migrateLegacyToPool()", HTML_DASHBOARD)
+        self.assertIn("function pruneDriverPool()", HTML_DASHBOARD)
+        self.assertIn("adminFetch('/api/drivers/pool/sync-catalogs'", HTML_DASHBOARD)
+        self.assertIn("adminFetch('/api/drivers/pool/ingest-oem'", HTML_DASHBOARD)
+        self.assertIn("adminFetch('/api/drivers/pool/migrate'", HTML_DASHBOARD)
+        self.assertIn("adminFetch('/api/drivers/pool/prune'", HTML_DASHBOARD)
+
 
 if __name__ == "__main__":
     unittest.main()

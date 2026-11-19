@@ -426,6 +426,88 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Jedinstveni Driver Pool & OEM Enterprise Katalozi -->
+                    <div id="driver-pool-panel" class="panel-card" style="margin-top: 24px;">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <span>🧬</span> Jedinstveni Driver Pool &amp; OEM Enterprise Katalozi
+                            </div>
+                            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                <button class="btn-refresh" onclick="loadDriverPoolStats()">🔄 Osveži Pool</button>
+                                <button class="btn-refresh" onclick="syncOemCatalogs()">🌐 Sinhronizuj OEM Kataloge</button>
+                                <button class="btn-refresh" onclick="migrateLegacyToPool()">📦 Migriraj Postojeće Arhive</button>
+                                <button class="btn-refresh" onclick="pruneDriverPool()">🧹 Prune Zastarelih</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div class="stat-overview-grid" style="margin-bottom: 14px;">
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">Jedinstveni Drajver Paketi</div>
+                                    <div class="stat-card-value" id="dp-unique-packages" style="color:var(--accent);">0</div>
+                                    <div class="stat-card-sub" id="dp-pool-size">0 MB na disku</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">Pokriveni Modeli</div>
+                                    <div class="stat-card-value" id="dp-models-count" style="color:var(--green);">0</div>
+                                    <div class="stat-card-sub" id="dp-hwids-count">0 HWID pobednika</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">Ušteda Deduplikacijom</div>
+                                    <div class="stat-card-value" id="dp-dedup-saved" style="color:var(--cyan);">0 MB</div>
+                                    <div class="stat-card-sub" id="dp-dedup-hits">0 CAS pogodaka | 0 starijih preskočeno</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">OEM Katalozi</div>
+                                    <div id="dp-catalogs-status" style="font-size:0.78rem; color:var(--text-muted); margin-top:6px;">Provera...</div>
+                                </div>
+                            </div>
+
+                            <div style="display:grid; grid-template-columns: minmax(160px, 220px) 1fr auto; gap: 12px; align-items: end; margin-bottom: 12px;">
+                                <div class="form-group">
+                                    <label class="form-label" for="dp-oem-vendor">OEM Proizvođač</label>
+                                    <select id="dp-oem-vendor" class="usb-select">
+                                        <option value="HP">HP (SoftPaq Katalog)</option>
+                                        <option value="Dell">Dell (Command | Deploy)</option>
+                                        <option value="Lenovo">Lenovo (CDRT SCCM)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="dp-oem-model">Model ili MTM uređaja</label>
+                                    <input type="text" id="dp-oem-model" class="search-input" style="min-width:0;" placeholder="npr. EliteBook 840 G8, Latitude 5420, ThinkPad T14 Gen 3">
+                                </div>
+                                <div>
+                                    <button id="btn-dp-ingest-oem" class="btn-primary" onclick="ingestOemPackToPool()">
+                                        <span>⬇️</span> Preuzmi OEM Pack u Pool
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="dp-action-result" class="burn-log-text" style="display:none; margin-bottom: 12px;"></div>
+
+                            <div class="table-container">
+                                <div class="table-toolbar">
+                                    <strong style="color:#fff; font-size:0.86rem;">📋 Model Manifesti u Driver Pool-u</strong>
+                                    <span id="dp-manifests-count" class="header-badge">0 modela</span>
+                                </div>
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Model</th>
+                                            <th>Proizvođač</th>
+                                            <th>Paketa</th>
+                                            <th>Izvori</th>
+                                            <th>Veličina</th>
+                                            <th>Ažurirano</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="dp-manifests-body">
+                                        <tr><td colspan="6" style="text-align:center; color:var(--text-muted);">Nema manifesta u Driver Pool-u.</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </section>
             </main>
         </div>

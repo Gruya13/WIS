@@ -59,6 +59,25 @@ def expected_files(root):
             loc_src,
         )
         result[p] = loc_src
+    ui_ver = data['components']['ui']['version']
+    p_hw_res = Path('UI/HwTest/Core/ResultModel.cs')
+    if (root / p_hw_res).is_file():
+        rm_src = (root / p_hw_res).read_text(encoding='utf-8')
+        rm_src = re.sub(
+            r'(AppVersion\s*=\s*")\d+\.\d+\.\d+(";)',
+            lambda m: m[1] + ui_ver + m[2],
+            rm_src,
+        )
+        result[p_hw_res] = rm_src
+    p_hw_bld = Path('UI/HwTest/Build-HwTest.py')
+    if (root / p_hw_bld).is_file():
+        hb_src = (root / p_hw_bld).read_text(encoding='utf-8')
+        hb_src = re.sub(
+            r'(Assembly(?:File)?Version\(\\")\d+\.\d+\.\d+\.\d+(\\"\))',
+            lambda m: m[1] + ui_ver + '.0' + m[2],
+            hb_src,
+        )
+        result[p_hw_bld] = hb_src
     p = Path('Launcher/PayloadManager.cs')
     s = (root / p).read_text(encoding='utf-8')
     launcher = data['components']['launcher']['version']

@@ -1,6 +1,6 @@
 # ServisHub u WIS monorepo-u (`IG-Systems`)
 
-Komponentna razvojna verzija: **3.4.1**, u WIS paketu **3.1.1**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
+Komponentna razvojna verzija: **3.5.0**, u WIS paketu **3.2.0**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
 
 Aktivni razvoj servera nalazi se u `ServiceHub/` ovog repozitorijuma. Prethodni samostalni direktorijum je arhiva; produkcioni NAS nije menjan. Opis API-ja ispod čuva prethodne funkcionalnosti, dok je sledeći ugovor merodavan za release pipeline razvoja 2.17.
 
@@ -16,13 +16,13 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 ---
 
 # ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
-### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.4.1)
+### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), jedinstveni Driver Pool (CAS) & OEM XML kataloge, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.5.0)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-brightgreen.svg)]()
 [![Docker Ready](https://img.shields.io/badge/Docker-TrueNAS%20SCALE-blueviolet.svg)]()
 
-[![Version](https://img.shields.io/badge/Release-v3.4.1-orange.svg)]()
+[![Version](https://img.shields.io/badge/Release-v3.5.0-orange.svg)]()
 
 ---
 
@@ -792,7 +792,7 @@ Kompletan test suite se pokreće pomoću ugrađenog `unittest` mehanizma:
 python3 -m unittest discover -s tests -v
 ```
 
-Pokriveni scenariji (`299` unittest metoda u `32` test modula — `279 PASS, 20 skipped` u baznom Python 3 okruženju bez opcionih `Pillow`/`FastAPI`/`Node` paketa):
+Pokriveni scenariji (`309` unittest metoda u `33` test modula — `289 PASS, 20 skipped` u baznom Python 3 okruženju bez opcionih `Pillow`/`FastAPI`/`Node` paketa):
 - **`test_benchmark_and_predictive.py`:** `WIS Benchmark` izračunavanje, spajanje `DESKTOP-*`/`TK-*` izveštaja, `"HH:MM:SS"` fallback, MTM normalizacija, `Model DNA` alijasi i `Predictive Cache` pre-warming.
 - **`test_hwid.py`:** ACPI, HDAudio, PCI i USB normalizacija.
 - **`test_driver_versions.py`:** Poređenje semantičkih verzija i formata datuma (ISO, WMI, evropski).
@@ -813,7 +813,8 @@ Pokriveni scenariji (`299` unittest metoda u `32` test modula — `279 PASS, 20 
 - **`test_wis_and_oem_api.py`:** Integracioni testovi za `/api/wis/*` rute, SSE strim narezivanja i OEM integraciju u `/api/drivers/resolve`.
 - **`test_agy_sync_api.py`:** Pre-flight pull i post-flight push servisnih sesija Antigravity CLI alata.
 - **`test_historical_devices.py`:** Perzistencija i automatsko učitavanje istorijskih uređaja iz ranijih JSON izveštaja i AGY sesija.
-- **`test_dashboard_ui.py`:** Validacija HTML strukture Modern Enterprise Dark Mode Cockpita, collapsible sidebara, navigacionih sekcija i modala.
+- **`test_dashboard_ui.py`:** Validacija HTML strukture Modern Enterprise Dark Mode Cockpita, collapsible sidebara, navigacionih sekcija, Driver Pool kartice i modala.
+- **`test_driver_pool.py`:** CAS deduplikacija preko OEM/MS/Harvest izvora, WHQL/DriverVer pobednik, bezbednosni filteri (`prnms009`, skripte, traversal/symlink), Dell/HP/Lenovo XML katalozi i HTTP/auth rute.
 - **`test_tui_cli.py`:** Testovi TUI terminal monitora flote (`hub_cli.py`).
 
 ---
@@ -839,4 +840,4 @@ Pokriveni scenariji (`299` unittest metoda u `32` test modula — `279 PASS, 20 
   - **Operativni Runbook:** `wiki/memory/ops-runbook.md`
   - **Glavni Indeks (MOC):** `wiki/index.md`
 
-`servishub.__version__` koristi generisani `VERSION=3.4.1` (`WIS v3.1.1`, **IG-Systems**). Za razvoj i bezbednosna unapređenja `v3.4.0`–`v3.4.1`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0254](../docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).
+`servishub.__version__` koristi generisani `VERSION=3.5.0` (`WIS v3.2.0`, **IG-Systems**). Za razvoj i unapređenja `v3.4.0`–`v3.5.0`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0254](../docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [ADR-0258](../docs/decisions/ADR-0258-jedinstveni-driver-pool-i-oem-katalozi.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).

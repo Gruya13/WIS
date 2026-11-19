@@ -140,6 +140,7 @@
                 stopCockpitScreenMirror();
                 loadUpdatesStatus();
                 loadPredictiveStatus();
+                loadDriverPoolStats();
             } else if (tabId === 'fleet') {
                 updateFleet();
                 if (selectedCockpitDeviceId && (!mirrorTimer || currentMirrorDevId !== selectedCockpitDeviceId)) {
@@ -1780,6 +1781,166 @@
             })
             .catch(err => {
                 if (resBox) resBox.textContent = `[GREŠKA] ${err.message}`;
+                showToast(`❌ ${err.message}`, 'error');
+            });
+        }
+
+        // =====================================================================
+        // Jedinstveni Driver Pool & OEM Enterprise Katalozi
+        // =====================================================================
+        function _setDriverPoolMsg(text) {
+            const box = document.getElementById('dp-action-result');
+            if (!box) return;
+            box.style.display = text ? 'block' : 'none';
+            box.textContent = text || '';
+        }
+
+        function loadDriverPoolStats() {
+            Promise.all([
+                fetch('/api/drivers/pool/stats').then(r => r.json()),
+                fetch('/api/drivers/pool/manifests').then(r => r.json())
+            ])
+            .then(([stats, manResp]) => {
+                const pkgEl = document.getElementById('dp-unique-packages');
+                const sizeEl = document.getElementById('dp-pool-size');
+                const modEl = document.getElementById('dp-models-count');
+                const hwEl = document.getElementById('dp-hwids-count');
+                const dedupEl = document.getElementById('dp-dedup-saved');
+                const hitsEl = document.getElementById('dp-dedup-hits');
+                const catEl = document.getElementById('dp-catalogs-status');
+                const manCntEl = document.getElementById('dp-manifests-count');
+                const manBody = document.getElementById('dp-manifests-body');
+
+                if (pkgEl) pkgEl.textContent = String(stats.unique_packages || 0);
+                if (sizeEl) sizeEl.textContent = `${stats.total_pool_mb || 0} MB na disku`;
+                if (modEl) modEl.textContent = String(stats.models_count || 0);
+                if (hwEl) hwEl.textContent = `${stats.hwid_winners_count || 0} HWID pobednika`;
+                if (dedupEl) dedupEl.textContent = `${stats.dedup_saved_mb || 0} MB`;
+                if (hitsEl) hitsEl.textContent = `${stats.dedup_hits || 0} CAS pogodaka | ${stats.older_skipped_count || 0} starijih preskočeno`;
+
+                if (catEl && stats.oem_catalogs) {
+                    const cats = stats.oem_catalogs;
+                    const pills = ['dell', 'hp', 'lenovo'].map(v => {
+                        const info = cats[v] || {};
+                        const label = v.toUpperCase();
+                        const stColor = info.synced ? (info.stale ? 'var(--warning)' : 'var(--green)') : 'var(--text-muted)';
+                        const cnt = info.entries_count || 0;
+                        return `<span class="kb-pill" style="border-color:${stColor}; color:${stColor};">${escapeHtml(label)}: ${cnt}</span>`;
+                    });
+                    catEl.innerHTML = pills.join(' ');
+                }
+
+                const manifests = (manResp && manResp.manifests) ? manResp.manifests : [];
+                if (manCntEl) manCntEl.textContent = `${manifests.length} modela`;
+                if (manBody) {
+                    if (manifests.length === 0) {
+                        manBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">Nema manifesta u Driver Pool-u.</td></tr>';
+                    } else {
+                        manBody.innerHTML = manifests.slice(0, 40).map(m => {
+                            const srcList = (m.sources || []).map(s => `<span class="kb-pill">${escapeHtml(s)}</span>`).join(' ');
+                            const upd = (m.updated_at || '').substring(0, 19).replace('T', ' ');
+                            return `
+                                <tr>
+                                    <td style="font-weight:600; color:#fff;">${escapeHtml(m.model || '')}</td>
+                                    <td>${escapeHtml(m.manufacturer || '-')}</td>
+                                    <td>${m.package_count || 0}</td>
+                                    <td>${srcList || '-'}</td>
+                                    <td>${m.total_mb || 0} MB</td>
+                                    <td style="font-size:0.78rem; color:var(--text-muted);">${escapeHtml(upd || '-')}</td>
+                                </tr>
+                            `;
+                        }).join('');
+                    }
+                }
+            })
+            .catch(err => console.error("Greška pri učitavanju Driver Pool statistike:", err));
+        }
+
+        function syncOemCatalogs() {
+            _setDriverPoolMsg('Sinhronizacija zvaničnih Dell/HP/Lenovo OEM XML kataloga u toku...');
+            adminFetch('/api/drivers/pool/sync-catalogs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vendor: 'all', force: true })
+            })
+            .then(res => res.json().then(d => ({ ok: res.ok, data: d })))
+            .then(({ ok, data }) => {
+                if (!ok) throw new Error(data.error || 'Greška pri sinhronizaciji kataloga');
+                const cats = data.catalogs || {};
+                const summary = Object.keys(cats).map(k => `${k.toUpperCase()}: ${cats[k].entries_count || cats[k].status}`).join(' | ');
+                _setDriverPoolMsg(`[OK] OEM katalozi sinhronizovani: ${summary}`);
+                showToast('✅ Zvanični OEM katalozi uspešno sinhronizovani.', 'success');
+                loadDriverPoolStats();
+            })
+            .catch(err => {
+                _setDriverPoolMsg(`[GREŠKA] ${err.message}`);
+                showToast(`❌ ${err.message}`, 'error');
+            });
+        }
+
+        function ingestOemPackToPool() {
+            const vendor = (document.getElementById('dp-oem-vendor')?.value || '').trim();
+            const model = (document.getElementById('dp-oem-model')?.value || '').trim();
+            if (!model) {
+                showToast('Unesite naziv modela računara ili MTM kod.', 'warning');
+                return;
+            }
+            _setDriverPoolMsg(`Pokrećem preuzimanje i deduplikaciju OEM paketa (${vendor} ${model})...`);
+            adminFetch('/api/drivers/pool/ingest-oem', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ manufacturer: vendor, model: model, os_ver: 'win11', async_mode: true })
+            })
+            .then(res => res.json().then(d => ({ ok: res.ok, data: d })))
+            .then(({ ok, data }) => {
+                if (!ok) throw new Error(data.error || 'Greška pri pokretanju OEM preuzimanja');
+                const jobId = data.job ? data.job.job_id : '';
+                _setDriverPoolMsg(`[U TOKU] Pozadinski OEM ingest pokrenut (${jobId}) za ${vendor} ${model}. Osvežite za 10-30s.`);
+                showToast(`⬇️ OEM paket za ${vendor} ${model} se preuzima u Driver Pool.`, 'success');
+                setTimeout(loadDriverPoolStats, 4000);
+            })
+            .catch(err => {
+                _setDriverPoolMsg(`[GREŠKA] ${err.message}`);
+                showToast(`❌ ${err.message}`, 'error');
+            });
+        }
+
+        function migrateLegacyToPool() {
+            _setDriverPoolMsg('Indeksiranje i deduplikacija postojećih <Model>.tar arhiva i drivers_cache/*.cab...');
+            adminFetch('/api/drivers/pool/migrate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ async_mode: true })
+            })
+            .then(res => res.json().then(d => ({ ok: res.ok, data: d })))
+            .then(({ ok, data }) => {
+                if (!ok) throw new Error(data.error || 'Greška pri migraciji');
+                _setDriverPoolMsg('[U TOKU] Migracija postojećih arhiva u Driver Pool je pokrenuta u pozadini.');
+                showToast('📦 Migracija postojećih arhiva pokrenuta.', 'success');
+                setTimeout(loadDriverPoolStats, 4000);
+            })
+            .catch(err => {
+                _setDriverPoolMsg(`[GREŠKA] ${err.message}`);
+                showToast(`❌ ${err.message}`, 'error');
+            });
+        }
+
+        function pruneDriverPool() {
+            _setDriverPoolMsg('Čišćenje zastarelih i nekorišćenih drajver paketa iz Pool-a...');
+            adminFetch('/api/drivers/pool/prune', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            })
+            .then(res => res.json().then(d => ({ ok: res.ok, data: d })))
+            .then(({ ok, data }) => {
+                if (!ok) throw new Error(data.error || 'Greška pri čišćenju Pool-a');
+                _setDriverPoolMsg(`[OK] Uklonjeno ${data.removed_packages || 0} paketa i ${data.removed_bundles || 0} bundle-ova (oslobođeno ${data.freed_mb || 0} MB).`);
+                showToast(`🧹 Driver Pool očišćen (${data.freed_mb || 0} MB oslobođeno).`, 'success');
+                loadDriverPoolStats();
+            })
+            .catch(err => {
+                _setDriverPoolMsg(`[GREŠKA] ${err.message}`);
                 showToast(`❌ ${err.message}`, 'error');
             });
         }

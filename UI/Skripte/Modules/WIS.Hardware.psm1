@@ -2138,12 +2138,16 @@ function Resolve-MissingDriversFromHub {
         Write-ServisLog "Resolve-MissingDriversFromHub: Započinjem proveru problematičnih uređaja preko ServisHub-a ($HubUrl)..." -Level "STEP" -Component "Hardware"
     }
 
-    # Dohvatanje modela i serijskog broja sistema za slanje ka ServisHub OEM API-ju
+    # Dohvatanje proizvodjaca, modela i serijskog broja sistema za slanje ka ServisHub OEM API-ju
+    $sysMfg = ""
     $sysModel = ""
     $sysSerial = ""
     try {
         $csInfo = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-        if ($csInfo -and $csInfo.Model) { $sysModel = $csInfo.Model.Trim() }
+        if ($csInfo) {
+            if ($csInfo.Manufacturer) { $sysMfg = $csInfo.Manufacturer.Trim() }
+            if ($csInfo.Model) { $sysModel = $csInfo.Model.Trim() }
+        }
         $biosInfo = Get-CimInstance Win32_BIOS -ErrorAction SilentlyContinue
         if ($biosInfo -and $biosInfo.SerialNumber) { $sysSerial = $biosInfo.SerialNumber.Trim() }
     } catch {}
@@ -2194,6 +2198,54 @@ function Resolve-MissingDriversFromHub {
     $errorCount = 0
     $resultsList = [System.Collections.Generic.List[PSCustomObject]]::new()
 
+    # Batch pokusaj preko jedinstvenog Driver Pool bundle-a za sve detektovane missing_hwids pre pojedinacnih upita
+    if (Get-Command Invoke-DriverPoolBundleInstall -ErrorAction SilentlyContinue) {
+        $batchMissingHwids = @()
+        foreach ($bDev in $badDevices) {
+            $bHw = @($bDev.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($bHw.Count -gt 0) {
+                $batchMissingHwids += $bHw
+            }
+        }
+        $batchMissingHwids = @($batchMissingHwids | Select-Object -Unique)
+        if ($batchMissingHwids.Count -gt 0) {
+            $poolCleanModel = if (Get-Command Get-CleanComputerModel -ErrorAction SilentlyContinue) { Get-CleanComputerModel } else { $sysModel }
+            try {
+                if (Invoke-DriverPoolBundleInstall -HubUrl $HubUrl -CleanModel $poolCleanModel -Manufacturer $sysMfg -MissingHwids $batchMissingHwids) {
+                    $remainingBad = @()
+                    try {
+                        $remainingBad = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
+                            $_.ConfigManagerErrorCode -and
+                            $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
+                            $_.HardwareID -and
+                            $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
+                            $_.DeviceID -notmatch '^(ROOT|SWD)\\'
+                        })
+                    } catch {
+                        $remainingBad = @($badDevices)
+                    }
+                    $poolSolved = [math]::Max(0, ($badDevices.Count - $remainingBad.Count))
+                    $resolvedCount += $poolSolved
+                    $badDevices = $remainingBad
+                    if ($badDevices.Count -eq 0) {
+                        try { Send-WisModelDnaToHub -HubUrl $HubUrl | Out-Null } catch {}
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Resolve-MissingDriversFromHub: Svi problematični uređaji ($totalProblematic) rešeni u jednom potezu preko ServiceHub Driver Pool-a." -Level "SUCCESS" -Component "Hardware"
+                        }
+                        return [PSCustomObject]@{
+                            TotalProblematic = $totalProblematic
+                            ResolvedCount    = $resolvedCount
+                            NotFoundCount    = 0
+                            ErrorCount       = 0
+                            AllResolved      = $true
+                            Results          = @($resultsList)
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+
     function Invoke-HubDriverResolvePost {
         param(
             [string]$Url,
@@ -2209,7 +2261,7 @@ function Resolve-MissingDriversFromHub {
                 $req.ContentType = "application/json; charset=utf-8"
                 $req.Timeout = 90000
                 $req.ReadWriteTimeout = 90000
-                $req.UserAgent = "WIS-DriverEngine/3.1"
+                $req.UserAgent = "WIS-DriverEngine/3.2"
 
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($BodyJson)
                 $req.ContentLength = $bytes.Length

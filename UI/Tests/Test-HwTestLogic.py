@@ -567,15 +567,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.1.1 u root version.json i komponentama
+        # 1. Verzije v3.2.0 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.1.1")
-        self.assertEqual(root_ver["release_package"]["version"], "3.1.1")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.1.1")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.1.1")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.1.1")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.1.1")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.4.1")
+        self.assertEqual(root_ver["version"], "3.2.0")
+        self.assertEqual(root_ver["release_package"]["version"], "3.2.0")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.2.0")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.2.0")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.2.0")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.2.0")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.5.0")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -837,7 +837,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.1.1";', result_src)
+        self.assertIn('AppVersion = "3.2.0";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")

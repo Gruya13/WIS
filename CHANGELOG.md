@@ -4,6 +4,27 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.2.0] / ServiceHub [v3.5.0] — 2026-11-19
+
+### Jedinstveni deduplikovani Driver Pool (CAS) & Zvanični OEM Enterprise Katalozi (`WIS-TASK-258`)
+- **Jedinstveni Content-Addressable Driver Pool (`ServiceHub/servishub/drivers/pool.py`):**
+  - Centralno skladište pojedinačnih `.inf` drajver jedinica indeksiranih po determinističkom `SHA-256` sadržaja (`packages/<pkg_sha256>/`), globalnom pobedniku po HWID-u (`hwid_winners` u `pool_index.json`) i lakim manifestima po modelu (`manifests/<clean_model>.json`).
+  - **0 B dupliranja preko sva 3 izvora** (**OEM Enterprise Driver Packs**, **Microsoft Update Catalog** `.cab` paketi i **klijentska berba** `<Model>.tar`): identičan paket se nikada ne čuva dvaput na disku, stariji paketi za isti HWID se odbacuju bez degradacije, dok novija verzija (`DriverDate`/`DriverVer`) i WHQL `.cat` potpis automatski pobeđuju i ažuriraju manifeste.
+  - Stroga bezbednost na ulazu i izlazu: automatsko ignorisanje inbox štampača `prnms009.inf`, odbijanje nepoptisanih paketa sa skriptama, uklanjanje `.ps1`/`.bat`/`.cmd`/... iz paketa u Pool-u, i zaštita od path traversal-a i symlinkova za `.tar`, `.zip`, `.cab`, `.7z` i SFX `.exe` arhive.
+  - Dinamičko sklapanje i keširanje optimizovanih `.tar` paketa (`build_bundle_tar`) — po punom manifestu modela (uz `all_hwids` dopunu za generičke desktop ploče) ili ciljanih mini-paketa po `missing_hwids` sa prioritetom tačnog `SUBSYS` meča.
+- **Zvanični OEM Enterprise XML Katalozi (`ServiceHub/servishub/drivers/oem/catalogs.py`):**
+  - `OemCatalogManager` sinhronizuje i lokalno kešira zvanične kataloge za **Dell** (`DriverPackCatalog.cab`), **HP** (`HPClientDriverPackCatalog.cab`) i **Lenovo** (`catalogv2.xml`), sa XXE zaštitom (`<!ENTITY`/`<!DOCTYPE` blokada), strogom HTTPS host allowlist-om i verifikacijom `SHA-256`/`MD5` kontrolnih suma pri preuzimanju paketa.
+  - `ServiceHub/Dockerfile` proširen je alatima `p7zip-full` i `cabextract` uz `libarchive-tools` (`bsdtar`) radi raspakivanja `.cab` i SFX `.exe` OEM paketa.
+- **REST API, Auto-Ingest, Migracija i Web Cockpit UI (`ServiceHub v3.5.0`):**
+  - Nove rute u `handlers.py`: `GET /api/drivers/pool/{stats,manifests}`, klijentski `POST /api/drivers/pool/bundle` i fail-closed admin rute `POST /api/drivers/pool/{sync-catalogs,ingest-oem,migrate,prune}` (`_require_admin_token`).
+  - Automatsko punjenje Pool-a u pozadini pri `POST /api/drivers/model-pack/upload` (`harvest`) i `DriverCacheManager.save_cache` (`ms_catalog`), kao i transparentni fallback na Driver Pool manifest u `GET /api/drivers/model-pack/{status,download}` i integracija u `PredictiveCacheManager`.
+  - Nova kartica u Web Cockpit-u (`tab-updates`): pregled statistike deduplikacije, statusa OEM kataloga, manifesta modela i `adminFetch` kontrole za sinhronizaciju kataloga, preuzimanje OEM paketa, migraciju i `prune`.
+- **Klijentska PowerShell 5.1 integracija (`UI/Skripte/Modules/WIS.Update.psm1`, `WIS.Hardware.psm1`):**
+  - Dodat `Invoke-DriverPoolBundleInstall` i ugrađen kao **Prioritet 1** u `Invoke-ModelDriversPreInstall` (uključujući HWID rezoluciju i za generičke matične ploče) uz potpuni SMB/`model-pack` fallback, kao i jednokratni batch pre-pass za `missing_hwids` u `Resolve-MissingDriversFromHub` (`WIS-DriverEngine/3.2`).
+- **Verzionisanje i Testovi:** Root [`version.json`](version.json) podignut na `WIS v3.2.0` / `ServiceHub v3.5.0` (`Sync-Versions.py` proširen i za `UI/HwTest`), dodat obiman test paket [`ServiceHub/tests/test_driver_pool.py`](ServiceHub/tests/test_driver_pool.py) i prošireni [`test_dashboard_ui.py`](ServiceHub/tests/test_dashboard_ui.py) i [`Test-UpdateAndDriversLogic.py`](UI/Tests/Test-UpdateAndDriversLogic.py).
+
+---
+
 ## [v3.1.1] / ServiceHub [v3.4.1] — 2026-11-19
 
 ### Ispravke bagova sa terena (`BUG-01` – `BUG-09`)

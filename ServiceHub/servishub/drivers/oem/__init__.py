@@ -13,12 +13,15 @@ from servishub.drivers.oem.base import BaseOEMProvider
 from servishub.drivers.oem.lenovo import LenovoOEMProvider
 from servishub.drivers.oem.dell import DellOEMProvider
 from servishub.drivers.oem.hp import HpOEMProvider
+from servishub.drivers.oem.catalogs import OemCatalogManager, detect_oem_vendor
 
 __all__ = [
     "BaseOEMProvider",
     "LenovoOEMProvider",
     "DellOEMProvider",
     "HpOEMProvider",
+    "OemCatalogManager",
+    "detect_oem_vendor",
     "get_oem_provider",
 ]
 

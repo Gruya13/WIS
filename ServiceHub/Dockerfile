@@ -3,6 +3,8 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     libarchive-tools \
+    p7zip-full \
+    cabextract \
     util-linux \
     parted \
     gdisk \
@@ -14,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Osnovna struktura direktorijuma
-RUN mkdir -p /app/servishub /app/storage/cache /app/storage/drivers_cache /app/storage/wis /app/storage/updates/Win11 /app/harvested/Archives /app/Logs/reports /app/Logs/live
+RUN mkdir -p /app/servishub /app/storage/cache /app/storage/drivers_cache /app/storage/driver_pool /app/storage/wis /app/storage/updates/Win11 /app/harvested/Archives /app/harvested/Pool /app/Logs/reports /app/Logs/live
 
 # Kopiranje izvornog koda ServisHub-a
 COPY servishub/ /app/servishub/

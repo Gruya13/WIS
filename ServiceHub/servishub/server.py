@@ -10,12 +10,14 @@ import time
 import socket
 import subprocess
 import signal
+import threading
 from http.server import ThreadingHTTPServer
 
 from servishub.config import HubConfig, active_config
 from servishub.telemetry import FleetStore, FLEET_STORE
 from servishub.payload import PayloadManager
 from servishub.drivers.cache import DriverCacheManager
+from servishub.drivers.pool import DriverPoolManager
 from servishub.drivers.scraper import MsUpdateCatalogScraper
 from servishub.discovery import UdpDiscoveryServer
 from servishub.handlers import ServisHubHandler
@@ -50,7 +52,17 @@ def run_hub_server(
     # Inicijalizacija servisa
     fleet_store = FleetStore(live_logs_dir=cfg.live_logs_dir, reports_dir=cfg.reports_dir)
     print(f" [*] Učitano {len(fleet_store.fleet_devices)} uređaja iz istorijske arhive.")
-    driver_cache_mgr = DriverCacheManager(cache_dir=cfg.drivers_cache_dir)
+    driver_pool_mgr = DriverPoolManager(pool_dir=cfg.driver_pool_dir)
+
+    def _on_driver_cab_cached(cab_path: str, saved_meta: dict):
+        def _bg_ingest():
+            try:
+                driver_pool_mgr.ingest_archive(cab_path, source="ms_catalog")
+            except Exception as exc:
+                print(f"[WARN] Pozadinski Driver Pool ingest za .cab nije uspeo: {exc}", file=sys.stderr)
+        threading.Thread(target=_bg_ingest, daemon=True).start()
+
+    driver_cache_mgr = DriverCacheManager(cache_dir=cfg.drivers_cache_dir, on_driver_cached=_on_driver_cab_cached)
     ms_catalog_scraper = MsUpdateCatalogScraper()
     payload_mgr = PayloadManager(base_dir=cfg.base_dir, cache_dir=cfg.cache_dir, source_dir=cfg.payload_source_dir)
 
@@ -65,6 +77,7 @@ def run_hub_server(
     ServisHubHandler.config = cfg
     ServisHubHandler.payload_mgr = payload_mgr
     ServisHubHandler.driver_cache_mgr = driver_cache_mgr
+    ServisHubHandler.driver_pool_mgr = driver_pool_mgr
     ServisHubHandler.ms_catalog_scraper = ms_catalog_scraper
     ServisHubHandler.predictive_cache_mgr = PredictiveCacheManager(
         queue_file=os.path.join(cfg.storage_dir, "predictive_queue.json")
@@ -118,8 +131,10 @@ def run_hub_server(
     print(f" [*] UDP Auto-Discovery:         Port {cfg.udp_port} (aktivan)")
     if meta:
         print(f" [*] Potpisano WIS izdanje:  v{meta.get('version')} ({meta.get('size_bytes', 0)} B, SHA256: {meta.get('sha256', '')[:10]}...)")
+    pool_stats = driver_pool_mgr.get_stats()
     print(f" [*] Payload Download URL:       http://localhost:{cfg.port}/api/payload/download")
     print(f" [*] Drivers Smart Cache:        {cfg.drivers_cache_dir} ({len(cached_drivers)} keširanih drajvera)")
+    print(f" [*] Driver Pool (CAS):          {cfg.driver_pool_dir} ({pool_stats['unique_packages']} paketa / {pool_stats['models_count']} modela)")
     print(f" [*] MS Update Catalog Scraper:  Aktivan (OEM Driver Proxy)")
     updates_avail = "dostupan" if os.path.isdir(cfg.updates_dir) else "nedostupan"
     print(f" [*] Win11 Updates Cache:        {cfg.updates_dir} ({updates_avail})")

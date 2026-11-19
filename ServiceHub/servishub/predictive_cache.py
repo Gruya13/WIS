@@ -85,6 +85,7 @@ class PredictiveCacheManager:
         driver_cache_mgr: Any = None,
         ms_catalog_scraper: Any = None,
         config: Any = None,
+        driver_pool_mgr: Any = None,
     ) -> Dict[str, Any]:
         """
         Izvršava prediktivno zagrevanje keša za najavljeni uređaj.
@@ -215,12 +216,22 @@ class PredictiveCacheManager:
 
         model_pack_available = False
         model_pack_info = None
+        pool_manifest_available = False
+        pool_packages_count = 0
         if clean_model:
             try:
                 model_pack_info = get_model_pack_status(clean_model, active_config=config)
                 model_pack_available = bool(model_pack_info.get("available"))
             except Exception:
                 model_pack_info = None
+            if driver_pool_mgr is not None:
+                try:
+                    m_info = driver_pool_mgr._find_manifest_for_model(clean_model)
+                    if isinstance(m_info, dict) and (m_info.get("packages") or []):
+                        pool_manifest_available = True
+                        pool_packages_count = len(m_info.get("packages") or [])
+                except Exception:
+                    pass
 
         # Korak D: Windows Update Readiness
         updates_dir = getattr(config, "updates_dir", None) if config else None
@@ -233,12 +244,13 @@ class PredictiveCacheManager:
         score = 0.0
         total_hw = len(merged_hwids)
         has_oem_pack = bool(isinstance(oem_driver_pack, dict) and oem_driver_pack.get("available"))
+        has_any_model_pack = model_pack_available or pool_manifest_available or has_oem_pack
         if total_hw > 0:
             covered = drivers_cached_hits + drivers_downloaded
             score += (covered / float(total_hw)) * 40.0
-            if model_pack_available or has_oem_pack:
+            if has_any_model_pack:
                 score += 10.0
-        elif model_pack_available or has_oem_pack:
+        elif has_any_model_pack:
             score += 45.0
 
         if updates_ready:
@@ -268,6 +280,8 @@ class PredictiveCacheManager:
             "bios_info": bios_info,
             "model_pack_available": model_pack_available,
             "model_pack": model_pack_info,
+            "pool_manifest_available": pool_manifest_available,
+            "pool_packages_count": pool_packages_count,
             "drivers_total_hwids": total_hw,
             "drivers_cached_hits": drivers_cached_hits,
             "drivers_downloaded": drivers_downloaded,

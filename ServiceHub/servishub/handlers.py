@@ -173,18 +173,37 @@ class ServisHubHandler(BaseHTTPRequestHandler):
     config = active_config
     payload_mgr = None
     driver_cache_mgr = None
+    driver_pool_mgr = None
     ms_catalog_scraper = None
     predictive_cache_mgr = None
     start_time = time.time()
     reset_wis_burn_state = staticmethod(reset_wis_burn_state)
     _driver_dl_lock = threading.Lock()
     _driver_dl_jobs = {}  # (cache_scope, token) -> aktivan ili sveže završen pozadinski download drajvera
+    _driver_pool_lock = threading.Lock()
+    _driver_pool_instances = {}
 
     def _get_predictive_mgr(self):
         if self.predictive_cache_mgr is not None:
             return self.predictive_cache_mgr
         from servishub.predictive_cache import PREDICTIVE_CACHE_MGR
         return PREDICTIVE_CACHE_MGR
+
+    def _get_driver_pool_mgr(self):
+        if self.driver_pool_mgr is not None:
+            return self.driver_pool_mgr
+        pool_dir = getattr(self.config, "driver_pool_dir", None) if self.config else None
+        if not pool_dir:
+            storage_dir = getattr(self.config, "storage_dir", None) if self.config else None
+            pool_dir = os.path.join(storage_dir or active_config.storage_dir, "driver_pool")
+        abs_pool = os.path.abspath(pool_dir)
+        with ServisHubHandler._driver_pool_lock:
+            mgr = ServisHubHandler._driver_pool_instances.get(abs_pool)
+            if mgr is None:
+                from servishub.drivers.pool import DriverPoolManager
+                mgr = DriverPoolManager(pool_dir=abs_pool)
+                ServisHubHandler._driver_pool_instances[abs_pool] = mgr
+            return mgr
 
     def log_message(self, format, *args):
         # Isključujemo bučno logovanje svakog pojedinačnog GET/POST zahteva
@@ -343,6 +362,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
         aliases = list(dict.fromkeys(clean_hwids + ([str(resolved.get("matched_query")).strip()] if resolved.get("matched_query") else [])))
         cache_mgr = self.driver_cache_mgr
         scraper = self.ms_catalog_scraper
+        pool_mgr = self._get_driver_pool_mgr()
 
         with ServisHubHandler._driver_dl_lock:
             self._prune_driver_dl_jobs_locked()
@@ -373,6 +393,15 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 try:
                     cab_data = scraper.download_cab(cab_url)
                     saved = cache_mgr.save_cache(hwid_str, cab_data, resolved, alias_hwids=aliases) if cache_mgr else resolved
+                    if pool_mgr is not None and not getattr(cache_mgr, "on_driver_cached", None):
+                        cab_fp = saved.get("cab_path") if isinstance(saved, dict) else None
+                        if cab_fp and os.path.isfile(cab_fp):
+                            def _bg_pool_cab():
+                                try:
+                                    pool_mgr.ingest_archive(cab_fp, source="ms_catalog")
+                                except Exception:
+                                    pass
+                            threading.Thread(target=_bg_pool_cab, daemon=True).start()
                     with ServisHubHandler._driver_dl_lock:
                         job["saved"] = saved
                         job["state"] = "ready"
@@ -810,6 +839,23 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 self.fleet_store.release_sse_slot(sse_channel)
             return
 
+        if path == "/api/drivers/pool/stats":
+            try:
+                pool_mgr = self._get_driver_pool_mgr()
+                self._send_json(pool_mgr.get_stats())
+            except Exception as e:
+                self._send_json({"error": f"Greška pri čitanju statistike Driver Pool-a: {e}"}, 500)
+            return
+
+        if path == "/api/drivers/pool/manifests":
+            try:
+                pool_mgr = self._get_driver_pool_mgr()
+                manifests = pool_mgr.list_manifests()
+                self._send_json({"status": "ok", "count": len(manifests), "manifests": manifests})
+            except Exception as e:
+                self._send_json({"error": f"Greška pri čitanju manifesta Driver Pool-a: {e}"}, 500)
+            return
+
         if path == "/api/drivers/model-pack/status":
             from servishub.api.updates import get_model_pack_status, validate_http_storage_directory
             query_params = parse_qs(parsed.query)
@@ -821,6 +867,24 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             try:
                 safe_dir = validate_http_storage_directory(custom_dir, default_root=None, active_config=self.config)
                 status_info = get_model_pack_status(model_name, directory=safe_dir, active_config=self.config)
+                if not status_info.get("available") and not custom_dir:
+                    pool_mgr = self._get_driver_pool_mgr()
+                    if pool_mgr.has_model_manifest(model_name):
+                        bundle = pool_mgr.build_bundle_tar(model=model_name)
+                        if bundle.get("available"):
+                            status_info = {
+                                "available": True,
+                                "model": bundle["model"],
+                                "filename": bundle["bundle_filename"],
+                                "directory": pool_mgr.bundles_dir,
+                                "path": bundle["bundle_path"],
+                                "size_bytes": bundle["size_bytes"],
+                                "size_mb": bundle["size_mb"],
+                                "modified_at": datetime.fromtimestamp(os.path.getmtime(bundle["bundle_path"])).isoformat(),
+                                "sha256": bundle["sha256"],
+                                "source": "driver_pool",
+                                "package_count": bundle["package_count"],
+                            }
                 self._send_json(status_info)
             except ValueError as ve:
                 self._send_json({"error": str(ve)}, 400)
@@ -837,6 +901,19 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             try:
                 safe_dir = validate_http_storage_directory(custom_dir, default_root=None, active_config=self.config)
                 status_info = get_model_pack_status(model_name, directory=safe_dir, active_config=self.config)
+                if not status_info.get("available") and not custom_dir:
+                    pool_mgr = self._get_driver_pool_mgr()
+                    if pool_mgr.has_model_manifest(model_name):
+                        bundle = pool_mgr.build_bundle_tar(model=model_name)
+                        if bundle.get("available"):
+                            status_info = {
+                                "available": True,
+                                "model": bundle["model"],
+                                "filename": bundle["bundle_filename"],
+                                "path": bundle["bundle_path"],
+                                "sha256": bundle["sha256"],
+                                "source": "driver_pool",
+                            }
             except ValueError as ve:
                 self._send_json({"error": str(ve)}, 400)
                 return
@@ -849,6 +926,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 extra = {"X-Model-Name": status_info.get("model")}
                 if status_info.get("sha256"):
                     extra["X-Model-SHA256"] = status_info.get("sha256")
+                if status_info.get("source"):
+                    extra["X-Driver-Pool-Source"] = status_info.get("source")
                 self._stream_file(pack_path, status_info.get("filename"), content_type="application/x-tar", extra_headers=extra)
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -1384,6 +1463,16 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     filename=filename,
                     active_config=self.config,
                 )
+                saved_path = saved.get("path")
+                saved_model = saved.get("model")
+                if saved_path and os.path.isfile(saved_path):
+                    pool_mgr = self._get_driver_pool_mgr()
+                    def _bg_ingest_tar():
+                        try:
+                            pool_mgr.ingest_archive(saved_path, source="harvest", model=saved_model)
+                        except Exception as pool_ex:
+                            print(f"[WARN] Pozadinski Driver Pool ingest za {saved_model}.tar nije uspeo: {pool_ex}", file=sys.stderr)
+                    threading.Thread(target=_bg_ingest_tar, daemon=True).start()
                 self._send_json(saved, 200)
             except ValueError as ve:
                 self._send_json({"error": str(ve)}, 400)
@@ -1497,6 +1586,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     driver_cache_mgr=self.driver_cache_mgr,
                     ms_catalog_scraper=self.ms_catalog_scraper,
                     config=self.config,
+                    driver_pool_mgr=self._get_driver_pool_mgr(),
                 )
                 self._send_json(res, 200)
             except ValueError as ve:
@@ -1554,6 +1644,203 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 "message": "Narezivanje USB-a je pokrenuto.",
                 "device_path": device_path,
             })
+            return
+
+        if path == "/api/drivers/pool/bundle":
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            model_val = str(payload.get("model") or "").strip()
+            mfg_val = str(payload.get("manufacturer") or "").strip()
+            missing_hwids = payload.get("missing_hwids")
+            if isinstance(missing_hwids, str):
+                missing_hwids = [missing_hwids]
+            elif not isinstance(missing_hwids, list):
+                missing_hwids = None
+            all_hwids = payload.get("hwids")
+            if isinstance(all_hwids, str):
+                all_hwids = [all_hwids]
+            elif not isinstance(all_hwids, list):
+                all_hwids = None
+            metadata_only = bool(payload.get("metadata_only", False))
+
+            pool_mgr = self._get_driver_pool_mgr()
+            try:
+                bundle = pool_mgr.build_bundle_tar(
+                    model=model_val,
+                    missing_hwids=missing_hwids,
+                    all_hwids=all_hwids,
+                )
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri sklapanju Driver Pool paketa: {ex}"}, 500)
+                return
+
+            if metadata_only:
+                out_meta = dict(bundle)
+                out_meta.pop("bundle_path", None)
+                self._send_json(out_meta, 200)
+                return
+
+            if not bundle.get("available") or not bundle.get("bundle_path") or not os.path.isfile(bundle["bundle_path"]):
+                oem_entry = pool_mgr.catalog_mgr.find_driver_pack(manufacturer=mfg_val, model=model_val)
+                self._send_json({
+                    "status": "not_found",
+                    "available": False,
+                    "model": model_val,
+                    "oem_pack_available": bool(oem_entry),
+                    "oem_entry": {
+                        "package_id": oem_entry.get("package_id"),
+                        "package_name": oem_entry.get("package_name"),
+                        "version": oem_entry.get("version"),
+                        "release_date": oem_entry.get("release_date"),
+                    } if oem_entry else None,
+                }, 404)
+                return
+
+            try:
+                extra = {
+                    "X-Model-Name": bundle.get("model") or model_val or "pool",
+                    "X-Model-SHA256": bundle.get("sha256") or "",
+                    "X-Driver-Pool-Count": str(bundle.get("package_count") or 0),
+                    "X-Driver-Pool-Sources": ",".join(bundle.get("sources") or []),
+                }
+                self._stream_file(
+                    bundle["bundle_path"],
+                    bundle.get("bundle_filename") or "driver_pool_bundle.tar",
+                    content_type="application/x-tar",
+                    extra_headers=extra,
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                print(f"[ERROR] Greška pri strimovanju Driver Pool bundle-a: {e}", file=sys.stderr)
+            return
+
+        if path == "/api/drivers/pool/sync-catalogs":
+            if not self._require_admin_token_if_configured():
+                return
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            vendor_val = str(payload.get("vendor") or "all").strip().lower()
+            force_val = bool(payload.get("force", False))
+            pool_mgr = self._get_driver_pool_mgr()
+            try:
+                if vendor_val in ("", "all"):
+                    res = pool_mgr.catalog_mgr.sync_all_catalogs(force=force_val)
+                else:
+                    res = pool_mgr.catalog_mgr.sync_catalog(vendor_val, force=force_val)
+                self._send_json(res, 200)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri sinhronizaciji OEM kataloga: {ex}"}, 502)
+            return
+
+        if path == "/api/drivers/pool/ingest-oem":
+            if not self._require_admin_token_if_configured():
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            mfg_val = str(payload.get("manufacturer") or "").strip()
+            model_val = str(payload.get("model") or "").strip()
+            os_ver = str(payload.get("os_ver") or "win11").strip()
+            sys_id = str(payload.get("system_id") or "").strip()
+            force_sync = bool(payload.get("force_sync", False))
+            async_mode = bool(payload.get("async_mode", True))
+            if not (mfg_val or model_val) or not model_val:
+                self._send_json({"error": "Polja 'manufacturer' i 'model' su obavezna."}, 400)
+                return
+            pool_mgr = self._get_driver_pool_mgr()
+            if async_mode:
+                job = pool_mgr.start_background_job(
+                    "ingest_oem",
+                    pool_mgr.ingest_oem_pack,
+                    mfg_val,
+                    model_val,
+                    os_ver=os_ver,
+                    system_id=sys_id,
+                    force_sync=force_sync,
+                )
+                self._send_json({"status": "started", "job": job}, 202)
+                return
+            try:
+                res = pool_mgr.ingest_oem_pack(
+                    mfg_val,
+                    model_val,
+                    os_ver=os_ver,
+                    system_id=sys_id,
+                    force_sync=force_sync,
+                )
+                st = res.get("status")
+                code = 400 if st == "unsupported_vendor" else (404 if st == "not_found" else (502 if st == "catalog_error" else 200))
+                self._send_json(res, code)
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri OEM ingestu: {ex}"}, 500)
+            return
+
+        if path == "/api/drivers/pool/migrate":
+            if not self._require_admin_token_if_configured():
+                return
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            from servishub.api.updates import validate_http_storage_directory
+            try:
+                packs_dir = validate_http_storage_directory(
+                    payload.get("model_packs_dir"),
+                    default_root=getattr(self.config, "model_packs_dir", None),
+                    active_config=self.config,
+                )
+                cabs_dir = validate_http_storage_directory(
+                    payload.get("drivers_cache_dir"),
+                    default_root=getattr(self.config, "drivers_cache_dir", None),
+                    active_config=self.config,
+                )
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+                return
+            async_mode = bool(payload.get("async_mode", False))
+            pool_mgr = self._get_driver_pool_mgr()
+            if async_mode:
+                job = pool_mgr.start_background_job(
+                    "migrate",
+                    pool_mgr.migrate_legacy_stores,
+                    model_packs_dir=packs_dir,
+                    drivers_cache_dir=cabs_dir,
+                )
+                self._send_json({"status": "started", "job": job}, 202)
+                return
+            try:
+                res = pool_mgr.migrate_legacy_stores(model_packs_dir=packs_dir, drivers_cache_dir=cabs_dir)
+                self._send_json(res, 200)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri migraciji Driver Pool-a: {ex}"}, 500)
+            return
+
+        if path == "/api/drivers/pool/prune":
+            if not self._require_admin_token_if_configured():
+                return
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            try:
+                max_age = int(payload.get("max_bundle_age_sec", 86400))
+            except (TypeError, ValueError):
+                self._send_json({"error": "Nevalidan parametar 'max_bundle_age_sec'."}, 400)
+                return
+            pool_mgr = self._get_driver_pool_mgr()
+            res = pool_mgr.prune_unused_packages(max_bundle_age_sec=max_age)
+            self._send_json(res, 200)
             return
 
         if path == "/api/drivers/resolve":

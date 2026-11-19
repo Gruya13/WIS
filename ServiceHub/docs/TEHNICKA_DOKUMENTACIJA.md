@@ -1,5 +1,5 @@
 # ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
-# Sveobuhvatna Tehnička i Arhitektonska Dokumentacija (v3.4.1 / WIS v3.1.1)
+# Sveobuhvatna Tehnička i Arhitektonska Dokumentacija (v3.5.0 / WIS v3.2.0)
 
 ---
 
@@ -796,4 +796,4 @@ cd ServiceHub && python3 -m unittest tests/test_benchmark_and_predictive.py test
 ```
 
 ---
-*Dokumentacija izdanja v3.4.1 (WIS v3.1.1) | Vlasnik sistema: **IG-Systems** | Održava razvojni tim.*
+*Dokumentacija izdanja v3.5.0 (WIS v3.2.0) | Jedinstveni Driver Pool (CAS) + Zvanični OEM XML Katalozi (`drivers/pool.py`, `drivers/oem/catalogs.py`) | Vlasnik sistema: **IG-Systems** | Održava razvojni tim.*

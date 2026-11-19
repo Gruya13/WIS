@@ -488,16 +488,162 @@ function Install-DriverTarArchive {
     }
 }
 
+function Invoke-DriverPoolBundleInstall {
+    <#
+    .SYNOPSIS
+        Preuzima i instalira jedinstveni deduplikovani paket drajvera sa ServiceHub Driver Pool API-ja (/api/drivers/pool/bundle).
+    .COMPATIBILITY
+        Windows PowerShell 5.1+
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HubUrl,
+
+        [Parameter(Mandatory = $false)]
+        [string]$CleanModel = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$Manufacturer = "",
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$MissingHwids = @(),
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$AllHwids = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HubUrl)) { return $false }
+    $baseUrl = $HubUrl.TrimEnd('/')
+    $missItems = @($MissingHwids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+    $allItems = @($AllHwids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 80 -Unique)
+
+    if ([string]::IsNullOrWhiteSpace($CleanModel) -and $missItems.Count -eq 0 -and $allItems.Count -eq 0) {
+        return $false
+    }
+
+    $bundleUrl = "$baseUrl/api/drivers/pool/bundle"
+    $safeLbl = if ([string]::IsNullOrWhiteSpace($CleanModel)) { "PoolHardware" } else { $CleanModel }
+
+    $missArrJson = "[" + ((@($missItems | ForEach-Object { ConvertTo-Json -InputObject ([string]$_) -Compress })) -join ",") + "]"
+    $allArrJson = "[" + ((@($allItems | ForEach-Object { ConvertTo-Json -InputObject ([string]$_) -Compress })) -join ",") + "]"
+    $bodyObj = [ordered]@{
+        model         = $CleanModel
+        manufacturer  = $Manufacturer
+        missing_hwids = "__WIS_MISS_HWIDS__"
+        hwids         = "__WIS_ALL_HWIDS__"
+    }
+    $bodyJson = ($bodyObj | ConvertTo-Json -Compress).Replace('"__WIS_MISS_HWIDS__"', $missArrJson).Replace('"__WIS_ALL_HWIDS__"', $allArrJson)
+
+    $localTemp = Join-Path $env:TEMP ("WIS_DriverPool_" + [Guid]::NewGuid().ToString().Substring(0, 8))
+    $localTar = Join-Path $localTemp "$safeLbl.tar"
+    $reqStream = $null
+    $resp = $null
+    $inStream = $null
+    $outStream = $null
+    $swPool = [System.Diagnostics.Stopwatch]::StartNew()
+
+    try {
+        try {
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+        } catch {}
+
+        if (-not (Test-Path $localTemp)) {
+            New-Item -Path $localTemp -ItemType Directory -Force | Out-Null
+        }
+
+        $req = [System.Net.HttpWebRequest]::Create($bundleUrl)
+        $req.Method = "POST"
+        $req.ContentType = "application/json; charset=utf-8"
+        $req.Timeout = 180000
+        $req.ReadWriteTimeout = 300000
+        $req.UserAgent = "WIS-DriverPool/3.2"
+
+        $reqBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyJson)
+        $req.ContentLength = $reqBytes.Length
+        $reqStream = $req.GetRequestStream()
+        $reqStream.Write($reqBytes, 0, $reqBytes.Length)
+        $reqStream.Close()
+        $reqStream = $null
+
+        $resp = $req.GetResponse()
+        $ctype = ""
+        try { $ctype = [string]$resp.ContentType } catch {}
+        if ($ctype -and ($ctype -match 'json')) {
+            $resp.Close()
+            $resp = $null
+            return $false
+        }
+
+        $inStream = $resp.GetResponseStream()
+        $outStream = [System.IO.File]::Create($localTar)
+        $buffer = New-Object byte[] 65536
+        while (($read = $inStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outStream.Write($buffer, 0, $read)
+        }
+        $outStream.Close()
+        $outStream = $null
+        $inStream.Close()
+        $inStream = $null
+        $resp.Close()
+        $resp = $null
+        $swPool.Stop()
+
+        if (-not (Test-Path $localTar)) { return $false }
+        $fi = Get-Item -Path $localTar -ErrorAction SilentlyContinue
+        if (-not $fi -or $fi.Length -lt 512) { return $false }
+
+        if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
+            Add-WisBenchmarkTransfer -Source "lan_hit" -Category "driver_pool" -Bytes ([long]$fi.Length) -DurationMs $swPool.Elapsed.TotalMilliseconds -ItemName "$safeLbl.tar" | Out-Null
+        }
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            $mbPool = [math]::Round(($fi.Length / 1MB), 2)
+            Write-ServisLog "Preuzet jedinstveni Driver Pool bundle za $safeLbl (${mbPool} MB). Pokrecem instalaciju..." -Level "STEP" -Component "NAS"
+        }
+
+        $okInst = Install-DriverTarArchive -TarPath $localTar -CleanModel $safeLbl -ExtractRoot $localTemp -SourceLabel "ServiceHub Driver Pool"
+        return [bool]$okInst
+    } catch {
+        $httpCode = 0
+        try {
+            $exWalk = $_.Exception
+            while ($exWalk) {
+                if ($exWalk.PSObject.Properties['Response'] -and $exWalk.Response) {
+                    $httpCode = [int]$exWalk.Response.StatusCode
+                    break
+                }
+                $exWalk = $exWalk.InnerException
+            }
+        } catch {}
+        if ($httpCode -eq 404) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "ServiceHub Driver Pool trenutno nema paket za $safeLbl (HTTP 404). Prelazim na fallback izvore..." -Level "INFO" -Component "NAS"
+            }
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Driver Pool upit za $safeLbl nije uspeo ($($_.Exception.Message)). Prelazim na fallback izvore..." -Level "INFO" -Component "NAS"
+            }
+        }
+        return $false
+    } finally {
+        if ($reqStream) { try { $reqStream.Dispose() } catch {} }
+        if ($outStream) { try { $outStream.Dispose() } catch {} }
+        if ($inStream) { try { $inStream.Dispose() } catch {} }
+        if ($resp) { try { $resp.Close() } catch {} }
+        if ($localTemp -and (Test-Path $localTemp)) {
+            Remove-Item -Path $localTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Invoke-ModelDriversPreInstall {
     <#
     .SYNOPSIS
-        Pre-instalacija kompletnih hardverskih drajvera za model racunara sa lokalnog NAS servera ili ServiceHub HTTP kesa.
+        Pre-instalacija kompletnih hardverskih drajvera za model racunara sa ServiceHub Driver Pool-a, NAS SMB ili ServiceHub HTTP kesa.
     .DESCRIPTION
-        Cita konfiguraciju [ServisNas] iz Wifi-Servis.ini. Ako je PreInstallDrivers=1 i NAS dostupan,
-        proverava postojanje namenskog paketa drajvera na \\<NasHost>\<Share>\Drivers\Harvested\Archives\<Model>.tar
-        ili u Drivers\Harvested\Models\<Model>\.
-        Ukoliko SMB nije dostupan ili paket nije pronadjen preko SMB-a, koristi ServiceHub HTTP fallback
-        (/api/drivers/model-pack/status i /api/drivers/model-pack/download).
+        Prioritet 1: Jedinstveni deduplikovani ServiceHub Driver Pool (/api/drivers/pool/bundle).
+        Prioritet 2: SMB deljenje \\<NasHost>\<Share>\Drivers\Harvested\Archives\<Model>.tar ili Models\<Model>\.
+        Prioritet 3: ServiceHub HTTP model-pack (/api/drivers/model-pack/status i /download).
     #>
     [CmdletBinding()]
     param(
@@ -518,17 +664,64 @@ function Invoke-ModelDriversPreInstall {
         }
 
         $cleanModel = Get-CleanComputerModel
-        if (Test-IsGenericComputerModel -CleanModel $cleanModel) {
+        $isGenericModel = Test-IsGenericComputerModel -CleanModel $cleanModel
+        $installedAny = $false
+        $skipHttpModelFallback = $false
+
+        # PRIORITET 1: Jedinstveni deduplikovani ServiceHub Driver Pool (/api/drivers/pool/bundle)
+        $poolHubUrl = ""
+        if (Get-Command Get-WisUpdateHubEndpoint -ErrorAction SilentlyContinue) {
+            $poolHubUrl = Get-WisUpdateHubEndpoint
+        }
+        if (-not [string]::IsNullOrWhiteSpace($poolHubUrl)) {
+            $sysMfg = ""
+            try {
+                $csInfoPool = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+                if ($csInfoPool -and $csInfoPool.Manufacturer) { $sysMfg = $csInfoPool.Manufacturer.Trim() }
+            } catch {}
+            $allPoolHwids = @()
+            try {
+                $pnpAll = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
+                    $_.HardwareID -and $_.DeviceID -notmatch '^(ROOT|SWD)\\' -and $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice')
+                })
+                $allPoolHwids = @($pnpAll | ForEach-Object {
+                    $hwFirst = @($_.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
+                    if ($hwFirst.Count -gt 0 -and $hwFirst[0] -match '^(PCI|USB|ACPI|HDAUDIO|INTELAUDIO|BTH|HID)\\') {
+                        [string]$hwFirst[0]
+                    }
+                } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 80 -Unique)
+            } catch {}
+
+            $poolTargetModel = if ($isGenericModel) { "" } else { $cleanModel }
+            if ((-not $isGenericModel) -or $allPoolHwids.Count -gt 0) {
+                try {
+                    if (Invoke-DriverPoolBundleInstall -HubUrl $poolHubUrl -CleanModel $poolTargetModel -Manufacturer $sysMfg -AllHwids $allPoolHwids) {
+                        $installedAny = $true
+                    }
+                } catch {}
+            }
+        }
+
+        if ($isGenericModel) {
+            if ($installedAny) {
+                try {
+                    if (-not (Test-Path "C:\setup" -ErrorAction SilentlyContinue)) {
+                        New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                    }
+                    Set-Content -Path "C:\setup\model-drivers-preinstalled.flag" -Value "DONE" -Encoding ASCII -Force -ErrorAction SilentlyContinue
+                } catch {}
+                return
+            }
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Invoke-ModelDriversPreInstall: Detektovan genericki model ($cleanModel) - preskacem deljeni <Model>.tar paket radi izbegavanja mesanja drajvera razlicitih ploca." -Level "INFO" -Component "NAS"
             }
             return
         }
-        $installedAny = $false
-        $skipHttpModelFallback = $false
+
         $uncShare = $null
         $ownsSmbSession = $false
 
+        if (-not $installedAny) {
         if (-not [string]::IsNullOrWhiteSpace($ExistingUncShare) -and (Test-Path $ExistingUncShare -ErrorAction SilentlyContinue)) {
             $uncShare = $ExistingUncShare
             $ownsSmbSession = $false
@@ -540,9 +733,10 @@ function Invoke-ModelDriversPreInstall {
             } elseif (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Invoke-ModelDriversPreInstall: Nije moguce mapirati SMB share na NAS serveru $($nas.NasHost). Provericu ServiceHub HTTP fallback..." -Level "WARN" -Component "NAS"
             }
-        } else {
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Invoke-ModelDriversPreInstall: NAS SMB ($($nas.NasHost)) nije dostupan. Provericu ServiceHub HTTP fallback..." -Level "INFO" -Component "NAS"
+            } else {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-ModelDriversPreInstall: NAS SMB ($($nas.NasHost)) nije dostupan. Provericu ServiceHub HTTP fallback..." -Level "INFO" -Component "NAS"
+                }
             }
         }
 
@@ -4965,6 +5159,7 @@ Export-ModuleMember -Function `
     Start-AppWorker, `
     Optimize-WUPerformance, `
     Invoke-NasUpdatePrePatch, `
+    Invoke-DriverPoolBundleInstall, `
     Invoke-ModelDriversPreInstall, `
     Test-WisDeviceManagerReadyForHarvest, `
     Export-ServisHardwareDrivers, `

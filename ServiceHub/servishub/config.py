@@ -5,6 +5,7 @@ Konfiguracija i upravljanje putanjama za ServisHub.
 """
 
 import os
+import tempfile
 
 # Podrazumevane mrežne konstante
 DEFAULT_HOST = os.environ.get("SERVIS_HUB_HOST", "0.0.0.0")
@@ -66,6 +67,7 @@ class HubConfig:
         live_log_retention_days: int = 30,
         max_sse_subscribers_total: int = 64,
         max_sse_subscribers_per_device: int = 8,
+        driver_pool_dir: str = None,
     ):
         self.host = host
         self.port = port
@@ -134,6 +136,22 @@ class HubConfig:
 
         self.wis_dir = os.environ.get("SERVIS_HUB_WIS_DIR", os.path.join(self.storage_dir, "wis"))
 
+        tmp_root = os.path.abspath(tempfile.gettempdir()).rstrip(os.sep) + os.sep
+        is_temp_storage = (
+            os.path.abspath(self.storage_dir).startswith(tmp_root)
+            or os.path.abspath(self.base_dir).startswith(tmp_root)
+        )
+        if driver_pool_dir:
+            self.driver_pool_dir = os.path.abspath(driver_pool_dir)
+        elif os.environ.get("SERVIS_DRIVER_POOL_DIR"):
+            self.driver_pool_dir = os.path.abspath(os.environ["SERVIS_DRIVER_POOL_DIR"])
+        elif not is_temp_storage and os.path.isdir("/app/harvested") and os.access("/app/harvested", os.W_OK):
+            self.driver_pool_dir = "/app/harvested/Pool"
+        elif not is_temp_storage and os.path.isdir("/mnt/Servis/Drivers/Harvested") and os.access("/mnt/Servis/Drivers/Harvested", os.W_OK):
+            self.driver_pool_dir = "/mnt/Servis/Drivers/Harvested/Pool"
+        else:
+            self.driver_pool_dir = os.path.join(self.storage_dir, "driver_pool")
+
         self.ensure_directories()
 
     def ensure_directories(self):
@@ -147,6 +165,10 @@ class HubConfig:
         os.makedirs(self.reports_dir, exist_ok=True)
         try:
             os.makedirs(self.model_packs_dir, exist_ok=True)
+        except OSError:
+            pass
+        try:
+            os.makedirs(self.driver_pool_dir, exist_ok=True)
         except OSError:
             pass
 

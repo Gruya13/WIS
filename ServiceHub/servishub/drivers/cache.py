@@ -103,8 +103,9 @@ class DriverCacheManager:
     Putanja: storage/drivers_cache/ (<hash>.cab i <hash>_meta.json).
     Ključ: SHA-256 heš normalizovanog malim slovima HWID-ja.
     """
-    def __init__(self, cache_dir: str):
+    def __init__(self, cache_dir: str, on_driver_cached=None):
         self.cache_dir = os.path.abspath(cache_dir)
+        self.on_driver_cached = on_driver_cached
         self.lock = threading.Lock()
         self.inf_index_path = os.path.join(self.cache_dir, "inf_hwid_index.json")
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -286,6 +287,12 @@ class DriverCacheManager:
                     self._save_inf_index_locked(inf_index)
 
         print(f"[+] [DriverCache] Keširan drajver '{saved_meta['title']}' ({size_bytes} B, ID: {h[:12]}...) za HWID: {hwid}")
+        cb = getattr(self, "on_driver_cached", None)
+        if callable(cb):
+            try:
+                cb(cab_path, saved_meta)
+            except Exception:
+                pass
         return saved_meta
 
     def list_cached(self) -> list:

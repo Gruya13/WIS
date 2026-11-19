@@ -466,10 +466,30 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.1.1 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.1.1 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.1.1 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.2.0 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.2.0 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.2.0 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
+
+    def test_15_wis_task_258_driver_pool_client_integration(self):
+        """Proverava WIS-TASK-258 (v3.2.0) integraciju Jedinstvenog Driver Pool-a u WIS.Update i WIS.Hardware."""
+        pool_block = self.update_src.split("function Invoke-DriverPoolBundleInstall", 1)[1].split("function Invoke-ModelDriversPreInstall", 1)[0]
+        self.assertIn("/api/drivers/pool/bundle", pool_block)
+        self.assertIn("Install-DriverTarArchive", pool_block)
+        self.assertIn('Category "driver_pool"', pool_block)
+        self.assertIn("WIS-DriverPool/3.2", pool_block)
+
+        pre_block = self.update_src.split("function Invoke-ModelDriversPreInstall", 1)[1].split("function Get-WisUpdateHubEndpoint", 1)[0]
+        self.assertIn("Invoke-DriverPoolBundleInstall", pre_block)
+        self.assertIn("$poolTargetModel", pre_block)
+        self.assertIn("Export-ModuleMember", self.update_src)
+        export_tail = self.update_src.split("Export-ModuleMember", 1)[1]
+        self.assertIn("Invoke-DriverPoolBundleInstall", export_tail)
+
+        res_block = self.hw_src.split("function Resolve-MissingDriversFromHub", 1)[1].split("function Send-WisModelDnaToHub", 1)[0]
+        self.assertIn("Invoke-DriverPoolBundleInstall", res_block)
+        self.assertIn("$batchMissingHwids", res_block)
+        self.assertIn("WIS-DriverEngine/3.2", res_block)
 
 
 if __name__ == "__main__":
