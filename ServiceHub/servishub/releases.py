@@ -101,6 +101,26 @@ def public_pem(xml_path):
     return ('-----BEGIN RSA PUBLIC KEY-----\n' + '\n'.join(value[i:i+64] for i in range(0, len(value), 64)) + '\n-----END RSA PUBLIC KEY-----\n').encode()
 
 
+def is_valid_vm_record(vm, commit):
+    """Proverava da li je VM zapis validan PASS ili eksplicitno WAIVED_BY_OPERATOR izveštaj."""
+    if not isinstance(vm, dict) or vm.get('source_commit') != commit:
+        return False
+    vm_pass = (
+        vm.get('status') == 'PASS'
+        and vm.get('restart_verified') is True
+        and vm.get('anti_leak_verified') is True
+    )
+    vm_waived = (
+        vm.get('status') == 'WAIVED_BY_OPERATOR'
+        and vm.get('operator_confirmed') is True
+        and vm.get('restart_verified') is False
+        and vm.get('anti_leak_verified') is False
+        and isinstance(vm.get('reason'), str)
+        and bool(vm['reason'].strip())
+    )
+    return vm_pass or vm_waived
+
+
 def verify_release(zip_path, meta_path, public_key):
     """Proverava stvarni potpis, ZIP i sve deklarisane komponente; ništa ne piše."""
     zip_path, meta_path = Path(zip_path), Path(meta_path)
@@ -226,7 +246,7 @@ def verify_release(zip_path, meta_path, public_key):
                 if receipt.get('files', {}).get(name) != hashes.get(path):
                     raise ReleaseError('Build potvrda ne odgovara binarnoj komponenti.')
             vm = json.loads(vm_data.decode('utf-8-sig'))
-            if vm.get('source_commit') != commit or vm.get('status') != 'PASS' or vm.get('restart_verified') is not True or vm.get('anti_leak_verified') is not True:
+            if not is_valid_vm_record(vm, commit):
                 raise ReleaseError('VM potvrda ne odgovara izdanju.')
     return meta
 

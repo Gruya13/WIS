@@ -174,3 +174,43 @@ class ReleasePipelineTests(unittest.TestCase):
         bad_dll.write_bytes(b'banned winring0')
         with self.assertRaises(ReleaseError):
             publish_release(bundle310, self.cache, '3.1.0', self.commit, self.key, self.public, min_launcher_version='3.1.0')
+
+    def test_v311_waived_by_operator_accepted_while_not_run_rejected(self):
+        from servishub.releases import REQUIRED_310_COMPONENTS, verify_release
+        bundle311 = self.workspace / 'bundle311'
+        bundle311.mkdir()
+        for name in REQUIRED_310_COMPONENTS:
+            p = bundle311 / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(('fixture-311: ' + name).encode())
+        files = {
+            'WIS.UI.exe': sha256(bundle311 / 'Skripte/WIS.UI/WIS.UI.exe'),
+            'WIS.Launcher.exe': sha256(bundle311 / 'WIS.Launcher.exe'),
+        }
+        (bundle311 / 'build-attestation.json').write_text(json.dumps(dict(
+            source_commit=self.commit, version='3.1.1', windows_powershell='5.1', validation='passed', files=files)))
+
+        waived_report = {
+            'source_commit': self.commit,
+            'status': 'WAIVED_BY_OPERATOR',
+            'operator_confirmed': True,
+            'restart_verified': False,
+            'anti_leak_verified': False,
+            'reason': 'Ručni test u radionici',
+        }
+        (bundle311 / 'vm-validation.json').write_text(json.dumps(waived_report, ensure_ascii=False))
+        meta = publish_release(bundle311, self.cache, '3.1.1', self.commit, self.key, self.public, min_launcher_version='3.1.0')
+        self.assertEqual(meta['version'], '3.1.1')
+        rel_dir = self.cache / 'releases' / meta['release_id']
+        verified = verify_release(rel_dir / 'wis-payload.zip', rel_dir / 'payload_meta.json', self.public)
+        self.assertEqual(verified['release_id'], meta['release_id'])
+
+        for bad_vm in (
+            {'source_commit': self.commit, 'status': 'not_run', 'restart_verified': False, 'anti_leak_verified': False},
+            {'source_commit': self.commit, 'status': 'WAIVED_BY_OPERATOR', 'operator_confirmed': False, 'restart_verified': False, 'anti_leak_verified': False, 'reason': 'Ručni test'},
+            {'source_commit': self.commit, 'status': 'WAIVED_BY_OPERATOR', 'operator_confirmed': True, 'restart_verified': False, 'anti_leak_verified': False, 'reason': '   '},
+            {'source_commit': self.commit, 'status': 'WAIVED_BY_OPERATOR', 'operator_confirmed': True, 'restart_verified': True, 'anti_leak_verified': False, 'reason': 'Kontradikcija'},
+        ):
+            (bundle311 / 'vm-validation.json').write_text(json.dumps(bad_vm, ensure_ascii=False))
+            with self.assertRaises(ReleaseError):
+                publish_release(bundle311, self.cache, '3.1.1', self.commit, self.key, self.public, min_launcher_version='3.1.0')

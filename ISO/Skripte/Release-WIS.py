@@ -11,7 +11,7 @@ import tempfile
 ISO_ROOT = Path(__file__).resolve().parents[1]
 ROOT = ISO_ROOT.parent
 sys.path.insert(0, str(ROOT / 'ServiceHub'))
-from servishub.releases import ReleaseError, publish_release, sha256, verify_release
+from servishub.releases import ReleaseError, is_valid_vm_record, publish_release, sha256, verify_release
 from servishub.releases import safe_name
 
 
@@ -83,8 +83,13 @@ def main():
     build.add_argument('--build-dir', type=Path, required=True)
     build.add_argument('--cache-dir', type=Path, required=True)
     build.add_argument('--private-key', type=Path, required=True)
-    build.add_argument('--vm-report', type=Path, required=True,
+    build.add_argument('--vm-report', type=Path, required=False,
                        help='PASS zapis namenske Windows VM za isti source commit.')
+    build.add_argument('--skip-vm-validation', action='store_true',
+                       help='Eksplicitno preskače VM validaciju (zapisuje WAIVED_BY_OPERATOR sa restart_verified=false i anti_leak_verified=false; ručna provera na uređaju).')
+    build.add_argument('--waive-reason',
+                       default='Preskočena VM validacija po eksplicitnom zahtevu operatera; ručno testiranje na fizičkom uređaju.',
+                       help='Razlog za preskakanje VM validacije kada je zadat --skip-vm-validation.')
     verify = sub.add_parser('verify')
     verify.add_argument('--release-dir', type=Path, required=True)
     args = parser.parse_args()
@@ -94,19 +99,41 @@ def main():
     else:
         if git('status', '--porcelain'):
             raise ReleaseError('Objava zahteva čist Git commit; prvo sačuvajte izmene.')
+        if bool(args.vm_report) == bool(args.skip_vm_validation):
+            raise ReleaseError('Navedite ili --vm-report ili --skip-vm-validation.')
         key = args.private_key.expanduser().resolve()
         if key.is_relative_to(ROOT):
             raise ReleaseError('Privatni ključ ne sme biti u repozitorijumu.')
         commit = git('rev-parse', 'HEAD')
-        vm = json.loads(args.vm_report.read_text(encoding='utf-8-sig'))
-        if vm.get('status') != 'PASS' or vm.get('source_commit') != commit or vm.get('restart_verified') is not True or vm.get('anti_leak_verified') is not True:
-            raise ReleaseError('VM restart/cleanup provera nije potvrđena za ovaj commit.')
+        vm_waived_data = None
+        if args.skip_vm_validation:
+            reason = (args.waive_reason or '').strip()
+            if not reason:
+                raise ReleaseError('Razlog za preskakanje VM validacije ne sme biti prazan.')
+            vm_waived_data = {
+                'source_commit': commit,
+                'status': 'WAIVED_BY_OPERATOR',
+                'operator_confirmed': True,
+                'restart_verified': False,
+                'anti_leak_verified': False,
+                'reason': reason,
+            }
+        else:
+            vm = json.loads(args.vm_report.read_text(encoding='utf-8-sig'))
+            if not is_valid_vm_record(vm, commit):
+                raise ReleaseError('VM restart/cleanup provera nije potvrđena za ovaj commit.')
         versions = json.loads((ROOT / 'version.json').read_text())
         version = versions['version']
         with tempfile.TemporaryDirectory(prefix='wis-bundle-') as d:
             bundle = Path(d)
             prepare_bundle(args.build_dir.resolve(), bundle, commit)
-            shutil.copy2(args.vm_report, bundle / 'vm-validation.json')
+            if vm_waived_data is not None:
+                (bundle / 'vm-validation.json').write_text(
+                    json.dumps(vm_waived_data, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8',
+                )
+            else:
+                shutil.copy2(args.vm_report, bundle / 'vm-validation.json')
             meta = publish_release(bundle, args.cache_dir, version, commit, key, public_key,
                                    min_launcher_version=versions['compatibility']['min_launcher_version'])
     print(json.dumps({k: meta[k] for k in ('version', 'release_id', 'source_commit', 'sha256') if k in meta}, indent=2))
