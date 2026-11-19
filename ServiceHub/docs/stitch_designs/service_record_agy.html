@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Servis Hub - Digital Service Record &amp; Diagnostics</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+              "on-error-container": "#ffdad6",
+              "on-tertiary-fixed-variant": "#653e00",
+              "on-tertiary": "#472a00",
+              "outline-variant": "#3e484f",
+              "tertiary-container": "#f1a02b",
+              "secondary": "#adc6ff",
+              "on-secondary-fixed": "#001a42",
+              "outline": "#87929a",
+              "on-secondary-fixed-variant": "#004395",
+              "on-primary-container": "#004965",
+              "on-primary": "#00354a",
+              "tertiary": "#ffc176",
+              "primary": "#8ed5ff",
+              "surface-container": "#1e293b",
+              "primary-fixed": "#c4e7ff",
+              "tertiary-fixed": "#ffddb8",
+              "surface-container-lowest": "#060e20",
+              "surface-container-high": "#222a3d",
+              "secondary-fixed": "#d8e2ff",
+              "surface-bright": "#31394d",
+              "tertiary-fixed-dim": "#ffb960",
+              "status-warning": "#f59e0b",
+              "background": "#0b1326",
+              "on-tertiary-fixed": "#2a1700",
+              "secondary-fixed-dim": "#adc6ff",
+              "primary-container": "#38bdf8",
+              "text-primary": "#f8fafc",
+              "border-divider": "#334155",
+              "surface-dim": "#0b1326",
+              "inverse-on-surface": "#283044",
+              "text-muted": "#94a3b8",
+              "inverse-primary": "#00668a",
+              "on-secondary-container": "#e6ecff",
+              "on-background": "#dae2fd",
+              "error-container": "#93000a",
+              "error": "#ffb4ab",
+              "canvas-background": "#0f172a",
+              "inverse-surface": "#dae2fd",
+              "on-secondary": "#002e6a",
+              "surface": "#0b1326",
+              "on-tertiary-container": "#613b00",
+              "surface-container-low": "#131b2e",
+              "on-primary-fixed-variant": "#004c69",
+              "on-primary-fixed": "#001e2c",
+              "on-surface": "#dae2fd",
+              "status-success": "#10b981",
+              "on-surface-variant": "#bdc8d1",
+              "primary-fixed-dim": "#7bd0ff",
+              "on-error": "#690005",
+              "surface-tint": "#7bd0ff",
+              "secondary-container": "#0566d9",
+              "surface-container-highest": "#2d3449",
+              "status-error": "#ef4444",
+              "surface-variant": "#2d3449"
+            },
+            "borderRadius": {
+              "DEFAULT": "0.25rem",
+              "lg": "0.5rem",
+              "xl": "0.75rem",
+              "full": "9999px"
+            },
+            "spacing": {
+              "space-xs": "0.25rem",
+              "space-lg": "1rem",
+              "space-3xl": "2rem",
+              "space-2xl": "1.5rem",
+              "gutter": "1rem",
+              "space-4xl": "3rem",
+              "margin-tablet": "1.5rem",
+              "space-xl": "1.25rem",
+              "space-sm": "0.5rem",
+              "margin": "1rem",
+              "gutter-desktop": "1.5rem",
+              "space-md": "0.75rem",
+              "margin-desktop": "2rem"
+            },
+            "fontFamily": {
+              "headline-3": ["Inter"],
+              "body-small": ["Inter"],
+              "display-hero-mobile": ["Inter"],
+              "headline-1": ["Inter"],
+              "code-telemetry": ["JetBrains Mono"],
+              "body-regular": ["Inter"],
+              "display-hero": ["Inter"],
+              "label-action": ["Inter"],
+              "headline-2": ["Inter"]
+            },
+            "fontSize": {
+              "headline-3": ["18px", { "lineHeight": "26px", "fontWeight": "500" }],
+              "body-small": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+              "display-hero-mobile": ["28px", { "lineHeight": "36px", "fontWeight": "700" }],
+              "headline-1": ["28px", { "lineHeight": "36px", "fontWeight": "600" }],
+              "code-telemetry": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+              "body-regular": ["15px", { "lineHeight": "24px", "fontWeight": "400" }],
+              "display-hero": ["36px", { "lineHeight": "44px", "fontWeight": "700" }],
+              "label-action": ["14px", { "lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "600" }],
+              "headline-2": ["22px", { "lineHeight": "30px", "fontWeight": "600" }]
+            }
+          }
+        }
+      }
+    </script>
+</head>
+<body class="bg-canvas-background text-on-surface font-body-regular antialiased min-h-screen flex flex-col selection:bg-primary-container selection:text-on-primary-container">
+<!-- SideNavBar Component -->
+<aside class="fixed left-0 top-0 h-screen w-64 z-40 flex flex-col justify-between p-space-md border-r border-border-divider dark:border-border-divider bg-surface-container dark:bg-surface-container">
+<div class="flex flex-col gap-space-lg">
+<div class="flex items-center gap-space-sm px-space-sm py-space-sm">
+<span class="material-symbols-outlined text-primary-container text-2xl" style="font-variation-settings: 'FILL' 1;">precision_manufacturing</span>
+<div>
+<h1 class="text-headline-3 font-headline-3 tracking-wide text-text-primary dark:text-text-primary">Servis Hub</h1>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Telemetry Cockpit v2.4</p>
+</div>
+</div>
+<nav class="flex flex-col gap-space-xs mt-space-sm">
+<!-- Active Item -->
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-high dark:bg-surface-container-high text-primary-container dark:text-primary-container border-l-2 border-primary-container font-label-action text-label-action" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">precision_manufacturing</span>
+                    Radionička Flota
+                </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">usb</span>
+                    WIS USB Builder
+                </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">system_update</span>
+                    Windows Updates
+                </a>
+</nav>
+</div>
+<div class="flex flex-col gap-space-xs border-t border-border-divider pt-space-md">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">dns</span>
+                Server Telemetry
+            </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined">settings</span>
+                Postavke Sustava
+            </a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-64 flex-1 flex flex-col min-h-screen bg-canvas-background">
+<!-- Top Navigation Bar -->
+<header class="flex justify-between items-center w-full px-space-xl h-14 bg-surface-container dark:bg-surface-container border-b border-border-divider dark:border-border-divider z-30 sticky top-0">
+<div class="flex items-center gap-space-md w-1/3">
+<div class="relative w-full max-w-xs">
+<span class="absolute inset-y-0 left-0 flex items-center pl-space-sm text-text-muted">
+<span class="material-symbols-outlined text-sm">search</span>
+</span>
+<input class="w-full bg-surface dark:bg-surface text-text-primary placeholder-text-muted text-body-small rounded-lg pl-8 pr-space-md py-1.5 border border-border-divider focus:outline-none focus:border-primary-container transition-all" placeholder="Search ticket #SH-9942 or serial..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-space-lg">
+<button class="flex items-center gap-space-xs text-text-muted hover:text-text-primary transition-colors">
+<span class="material-symbols-outlined">refresh</span>
+</button>
+<button class="flex items-center gap-space-xs text-text-muted hover:text-text-primary transition-colors">
+<span class="material-symbols-outlined">terminal</span>
+</button>
+<button class="flex items-center gap-space-xs text-text-muted hover:text-text-primary transition-colors relative">
+<span class="material-symbols-outlined">notifications</span>
+<span class="absolute top-0 right-0 w-2 h-2 bg-primary-container rounded-full"></span>
+</button>
+<div class="h-6 w-[1px] bg-border-divider"></div>
+<div class="flex items-center gap-space-sm">
+<img class="w-8 h-8 rounded-full border border-border-divider object-cover" data-alt="Operator Servis Hub avatar professional portrait showing technical specialist wearing headset inside high tech repair facility with blue neon illumination background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCWawq9JVmvOIPhYAh7QAZ3wWDEy-khAhD_5AtHNVDNBS6kmUfDxez7c58JxPqqIq4_q3i4r2fIAcdwsXiitlpaLEfq302Xe5mlw4bAY_hPIoFbDXiW7WPKBVk5HFphACDlA2z5iUwsTZ3wqTQo3OJKdjchj7qCOr7WbwxF10flleu6SgpASpVWY-7HRbmlFMz2qy9-lUg3XSE57jBU_dhelzex4hGfte1cQU2OIE8nA5DzzfpUBGVGJnd4mz44hoiqaK3e-pJx39ny"/>
+<span class="text-label-action font-label-action text-text-primary">Admin-Unit-04</span>
+</div>
+</div>
+</header>
+<!-- Viewport Workspace -->
+<div class="p-space-2xl max-w-7xl w-full mx-auto flex flex-col gap-space-2xl">
+<!-- Breadcrumbs & Quick Actions Bar -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md">
+<div class="flex flex-col gap-space-xs">
+<nav class="flex items-center gap-space-xs text-text-muted text-body-small font-code-telemetry">
+<a class="hover:text-primary-container transition-colors" href="#">Radionička Flota</a>
+<span>/</span>
+<a class="hover:text-primary-container transition-colors" href="#">Tickets</a>
+<span>/</span>
+<span class="text-text-primary">SH-9942-X</span>
+</nav>
+<h2 class="text-headline-1 font-headline-1 text-text-primary">Digital Service Record &amp; Diagnostics</h2>
+</div>
+<!-- Quick Actions Toolbar -->
+<div class="flex items-center gap-space-sm flex-wrap">
+<button class="flex items-center gap-space-xs bg-surface-container border border-border-divider hover:bg-surface-variant text-text-primary px-space-md py-2 rounded-lg text-label-action font-label-action transition-all cursor-pointer">
+<span class="material-symbols-outlined text-sm text-primary-container">markdown</span>
+                        Download Markdown
+                    </button>
+<button class="flex items-center gap-space-xs bg-surface-container border border-border-divider hover:bg-surface-variant text-text-primary px-space-md py-2 rounded-lg text-label-action font-label-action transition-all cursor-pointer">
+<span class="material-symbols-outlined text-sm text-primary-container">data_object</span>
+                        Export JSON
+                    </button>
+<button class="flex items-center gap-space-xs bg-primary-container hover:bg-primary-fixed text-on-primary-container px-space-md py-2 rounded-lg text-label-action font-label-action transition-all cursor-pointer font-semibold shadow-sm">
+<span class="material-symbols-outlined text-sm">qr_code_2</span>
+                        Print Service Receipt
+                    </button>
+</div>
+</div>
+<!-- Bento Grid Main View -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-space-xl">
+<!-- Left 2 Cols: Hardware Inspection Card & Pre-Flight -->
+<div class="lg:col-span-2 flex flex-col gap-space-xl">
+<!-- Comprehensive Hardware Inspection Card -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col gap-space-lg shadow-sm">
+<div class="flex items-center justify-between border-b border-border-divider pb-space-md">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container" style="font-variation-settings: 'FILL' 1;">developer_board</span>
+<h3 class="text-headline-2 font-headline-2 text-text-primary">Hardware Telemetry &amp; Inspection</h3>
+</div>
+<span class="px-space-sm py-1 bg-status-success/10 text-status-success rounded-full text-code-telemetry font-code-telemetry border border-status-success/20 flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse"></span>
+                                STABLE PASS
+                            </span>
+</div>
+<!-- Hardware Metrics Grid -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-space-md">
+<!-- Motherboard Unit -->
+<div class="bg-surface border border-border-divider p-space-md rounded-lg flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<span class="text-body-small text-text-muted font-code-telemetry">MOTHERBOARD</span>
+<span class="text-code-telemetry text-primary-container font-code-telemetry">Z690 AORUS ELITE</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">BIOS Version</span>
+<span class="text-text-primary font-code-telemetry">F22b (UEFI)</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">VRM Temp</span>
+<span class="text-text-primary font-code-telemetry">42.5°C (Optimal)</span>
+</div>
+</div>
+<!-- CPU Telemetry -->
+<div class="bg-surface border border-border-divider p-space-md rounded-lg flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<span class="text-body-small text-text-muted font-code-telemetry">CPU PROCESSOR</span>
+<span class="text-code-telemetry text-primary-container font-code-telemetry">Intel Core i9-13900K</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Core Voltage</span>
+<span class="text-text-primary font-code-telemetry">1.214V (Load)</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Package Power</span>
+<span class="text-text-primary font-code-telemetry">125W / 253W Max</span>
+</div>
+</div>
+<!-- RAM Health Status -->
+<div class="bg-surface border border-border-divider p-space-md rounded-lg flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<span class="text-body-small text-text-muted font-code-telemetry">MEMORY SUBSYSTEM</span>
+<span class="text-code-telemetry text-primary-container font-code-telemetry">32GB DDR5-5600</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">XMP Profile</span>
+<span class="text-status-success font-code-telemetry">Active (Stable)</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">ECC / Errors</span>
+<span class="text-text-primary font-code-telemetry">0 Correctable / 0 Fatal</span>
+</div>
+</div>
+<!-- NVMe SMART Health -->
+<div class="bg-surface border border-border-divider p-space-md rounded-lg flex flex-col gap-space-xs">
+<div class="flex justify-between items-center">
+<span class="text-body-small text-text-muted font-code-telemetry">STORAGE (NVMe)</span>
+<span class="text-code-telemetry text-primary-container font-code-telemetry">Samsung 980 PRO 2TB</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">SMART Health</span>
+<span class="text-status-success font-code-telemetry">99% Remaining</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Bad Sectors</span>
+<span class="text-text-primary font-code-telemetry">0 Blocks Reallocated</span>
+</div>
+</div>
+</div>
+<!-- GPU Benchmark Stats Full Span -->
+<div class="bg-surface border border-border-divider p-space-md rounded-lg flex flex-col gap-space-sm">
+<div class="flex justify-between items-center">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container text-sm">memory</span>
+<span class="text-label-action font-label-action text-text-primary">GPU Benchmark &amp; Thermal Stress Stats</span>
+</div>
+<span class="text-code-telemetry text-text-muted">NVIDIA RTX 4080 16GB OC Edition</span>
+</div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-space-md pt-space-xs border-t border-border-divider">
+<div>
+<span class="text-body-small text-text-muted block">Max Core Temp</span>
+<span class="text-text-primary font-code-telemetry text-base">64.2°C</span>
+</div>
+<div>
+<span class="text-body-small text-text-muted block">Hot Spot Temp</span>
+<span class="text-text-primary font-code-telemetry text-base">76.8°C</span>
+</div>
+<div>
+<span class="text-body-small text-text-muted block">Fan Speed Range</span>
+<span class="text-text-primary font-code-telemetry text-base">1450 RPM (42%)</span>
+</div>
+<div>
+<span class="text-body-small text-text-muted block">TimeSpy Score</span>
+<span class="text-status-success font-code-telemetry text-base font-bold">21,492 pts</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Pre-Flight Test Results Checklist -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col gap-space-lg shadow-sm">
+<div class="flex items-center justify-between border-b border-border-divider pb-space-md">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container" style="font-variation-settings: 'FILL' 1;">checklist</span>
+<h3 class="text-headline-2 font-headline-2 text-text-primary">Pre-Flight Test Results Checklist</h3>
+</div>
+<span class="text-code-telemetry text-text-muted">8/8 Passed</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-space-md">
+<!-- Check Item 1 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">CMOS Battery Voltage Validation</span>
+<span class="text-body-small text-text-muted">Readout stable at 3.14VDC under load.</span>
+</div>
+</label>
+<!-- Check Item 2 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">PSU Ripple &amp; Rail Stability</span>
+<span class="text-body-small text-text-muted">+12V, +5V, +3.3V within 0.5% tolerance.</span>
+</div>
+</label>
+<!-- Check Item 3 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">Thermal Paste Interface Integrity</span>
+<span class="text-body-small text-text-muted">PTM7950 phase change pad applied, zero pump-out.</span>
+</div>
+</label>
+<!-- Check Item 4 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">PCIe Bus Link Speed Verification</span>
+<span class="text-body-small text-text-muted">Running at Gen 4.0 x16 without CRC errors.</span>
+</div>
+</label>
+<!-- Check Item 5 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">RAM ECC &amp; MemTest86 Pass</span>
+<span class="text-body-small text-text-muted">4 full passes completed with zero errors.</span>
+</div>
+</label>
+<!-- Check Item 6 -->
+<label class="flex items-start gap-space-md p-space-sm rounded-lg bg-surface border border-border-divider cursor-pointer hover:border-primary-container transition-colors">
+<input checked="" class="mt-1 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0" disabled="" type="checkbox"/>
+<div class="flex flex-col">
+<span class="text-label-action font-label-action text-text-primary">NVMe TRIM &amp; Garbage Collection</span>
+<span class="text-body-small text-text-muted">Forced manual trim executed successfully.</span>
+</div>
+</label>
+</div>
+</div>
+</div>
+<!-- Right Col: Chronological Timeline of Antigravity CLI Technician Interventions -->
+<div class="flex flex-col gap-space-xl">
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col gap-space-lg shadow-sm">
+<div class="flex items-center justify-between border-b border-border-divider pb-space-md">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container" style="font-variation-settings: 'FILL' 1;">terminal</span>
+<h3 class="text-headline-2 font-headline-2 text-text-primary">Antigravity CLI Logs</h3>
+</div>
+<span class="px-space-sm py-1 bg-primary-container/10 text-primary-container rounded-full text-code-telemetry font-code-telemetry border border-primary-container/20">
+                                LIVE FEED
+                            </span>
+</div>
+<!-- Timeline Feed Container -->
+<div class="flex flex-col gap-space-lg relative before:absolute before:inset-0 before:left-3 before:w-[2px] before:bg-border-divider">
+<!-- Timeline Event 1 -->
+<div class="flex gap-space-md relative z-10">
+<div class="w-6 h-6 rounded-full bg-surface-container-high border-2 border-primary-container flex items-center justify-center shrink-0 mt-1">
+<div class="w-2 h-2 rounded-full bg-primary-container"></div>
+</div>
+<div class="flex flex-col gap-space-xs bg-surface border border-border-divider p-space-md rounded-lg w-full">
+<div class="flex justify-between items-center">
+<span class="text-code-telemetry text-text-muted">14:22:10 UTC</span>
+<span class="px-2 py-0.5 bg-status-success/10 text-status-success rounded text-code-telemetry font-code-telemetry">SUCCESS</span>
+</div>
+<p class="text-label-action font-label-action text-text-primary">System Initialization &amp; Telemetry Handshake</p>
+<div class="bg-surface-container-lowest p-space-sm rounded font-code-telemetry text-code-telemetry text-text-muted overflow-x-auto">
+<code>$ agcli connect --secure --port 443<br/>&gt; Handshake verified: RSA-4096</code>
+</div>
+</div>
+</div>
+<!-- Timeline Event 2 -->
+<div class="flex gap-space-md relative z-10">
+<div class="w-6 h-6 rounded-full bg-surface-container-high border-2 border-primary-container flex items-center justify-center shrink-0 mt-1">
+<div class="w-2 h-2 rounded-full bg-primary-container"></div>
+</div>
+<div class="flex flex-col gap-space-xs bg-surface border border-border-divider p-space-md rounded-lg w-full">
+<div class="flex justify-between items-center">
+<span class="text-code-telemetry text-text-muted">14:25:48 UTC</span>
+<span class="px-2 py-0.5 bg-status-warning/10 text-status-warning rounded text-code-telemetry font-code-telemetry">WARN FIXED</span>
+</div>
+<p class="text-label-action font-label-action text-text-primary">Corrupted Registry Hive Purged</p>
+<div class="bg-surface-container-lowest p-space-sm rounded font-code-telemetry text-code-telemetry text-text-muted overflow-x-auto">
+<code>$ agcli registry --fix --hive SAM<br/>&gt; Restored from shadow copy backup #42</code>
+</div>
+</div>
+</div>
+<!-- Timeline Event 3 -->
+<div class="flex gap-space-md relative z-10">
+<div class="w-6 h-6 rounded-full bg-surface-container-high border-2 border-primary-container flex items-center justify-center shrink-0 mt-1">
+<div class="w-2 h-2 rounded-full bg-primary-container"></div>
+</div>
+<div class="flex flex-col gap-space-xs bg-surface border border-border-divider p-space-md rounded-lg w-full">
+<div class="flex justify-between items-center">
+<span class="text-code-telemetry text-text-muted">14:31:02 UTC</span>
+<span class="px-2 py-0.5 bg-status-success/10 text-status-success rounded text-code-telemetry font-code-telemetry">SUCCESS</span>
+</div>
+<p class="text-label-action font-label-action text-text-primary">UEFI Microcode &amp; ME Firmware Flash</p>
+<div class="bg-surface-container-lowest p-space-sm rounded font-code-telemetry text-code-telemetry text-text-muted overflow-x-auto">
+<code>$ agcli firmware flash --target ME<br/>&gt; Flashed version 16.1.25.2124 successfully</code>
+</div>
+</div>
+</div>
+<!-- Timeline Event 4 -->
+<div class="flex gap-space-md relative z-10">
+<div class="w-6 h-6 rounded-full bg-surface-container-high border-2 border-primary-container flex items-center justify-center shrink-0 mt-1">
+<div class="w-2 h-2 rounded-full bg-primary-container"></div>
+</div>
+<div class="flex flex-col gap-space-xs bg-surface border border-border-divider p-space-md rounded-lg w-full">
+<div class="flex justify-between items-center">
+<span class="text-code-telemetry text-text-muted">14:40:15 UTC</span>
+<span class="px-2 py-0.5 bg-status-success/10 text-status-success rounded text-code-telemetry font-code-telemetry">COMPLETED</span>
+</div>
+<p class="text-label-action font-label-action text-text-primary">Final Burn-In Verification &amp; Seal</p>
+<div class="bg-surface-container-lowest p-space-sm rounded font-code-telemetry text-code-telemetry text-text-muted overflow-x-auto">
+<code>$ agcli audit --seal --sign-receipt<br/>&gt; Digital signature generated: SHA256-OK</code>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</main>
+</body></html>

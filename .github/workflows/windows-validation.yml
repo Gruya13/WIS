@@ -1,0 +1,45 @@
+name: Windows validation
+on:
+  workflow_dispatch:
+  push:
+    paths: ['ISO/Skripte/**', 'UI/**', 'Launcher/**', 'ServiceHub/**', 'Tools/**', 'version.json', '.github/workflows/windows-validation.yml']
+  pull_request:
+    paths: ['ISO/Skripte/**', 'UI/**', 'Launcher/**', 'ServiceHub/**', 'Tools/**', 'version.json', '.github/workflows/windows-validation.yml']
+permissions:
+  contents: read
+jobs:
+  windows-contract:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
+      - name: Windows PowerShell 5.1, Launcher behavior, WPF build and provenance
+        shell: powershell
+        run: |
+          & .\ISO\Skripte\Build-WIS.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: windows-build-${{ github.sha }}
+          path: .workspace/artifacts/windows/
+  linux-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y mono-devel libarchive-tools openssl
+      - run: python -m pip install -r ServiceHub/requirements-dev.txt ruff
+      - run: ruff check --select F821 "ISO/USB Tool/core/system_inspector.py" ServiceHub/servishub
+      - run: |
+          python -c "import pathlib, sys; bad=[p for p in ('UI/LibreHardwareMonitorLib.dll','UI/HidSharp.dll') if pathlib.Path(p).exists()]; sys.exit('Zabranjeni DLL fajlovi u repou: ' + ', '.join(bad) if bad else 0)"
+      - run: python -m unittest discover -s tests -q
+        working-directory: ServiceHub
+      - run: python ISO/Skripte/Sync-Versions.py --check
+      - run: python ISO/Skripte/Verify-PowerShellSyntax.py
+      - run: python ISO/Skripte/Verify-CSharpSyntax.py
+      - run: python Launcher/Tests/run_tests.py
+      - run: python -m unittest UI/Tests/Test-HwTestLogic.py UI/Tests/Test-AutopilotPreOobeCache.py UI/Tests/Test-UpdateAndDriversLogic.py
+      - run: git diff --check
+# Restart/cleanup harness runs only inside a dedicated disposable Windows VM.
+# Hosted CI above never runs the installer or modifies WLAN profiles.

@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="hr"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Servis Hub - Telemetry Cockpit v2.4</title>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+          "surface-tint": "#7bd0ff",
+          "secondary-container": "#0566d9",
+          "surface-container": "#1e293b",
+          "surface-container-high": "#222a3d",
+          "on-secondary": "#002e6a",
+          "on-primary-fixed": "#001e2c",
+          "on-secondary-fixed-variant": "#004395",
+          "outline": "#87929a",
+          "on-primary-fixed-variant": "#004c69",
+          "background": "#0b1326",
+          "inverse-primary": "#00668a",
+          "surface-bright": "#31394d",
+          "status-success": "#10b981",
+          "inverse-surface": "#dae2fd",
+          "surface-dim": "#0b1326",
+          "primary": "#8ed5ff",
+          "secondary-fixed-dim": "#adc6ff",
+          "on-tertiary-container": "#613b00",
+          "on-error": "#690005",
+          "secondary-fixed": "#d8e2ff",
+          "on-background": "#dae2fd",
+          "tertiary-container": "#f1a02b",
+          "error": "#ffb4ab",
+          "on-surface-variant": "#bdc8d1",
+          "on-secondary-container": "#e6ecff",
+          "primary-container": "#38bdf8",
+          "on-primary": "#00354a",
+          "border-divider": "#334155",
+          "surface": "#0b1326",
+          "on-tertiary": "#472a00",
+          "canvas-background": "#0f172a",
+          "status-warning": "#f59e0b",
+          "surface-container-low": "#131b2e",
+          "on-tertiary-fixed-variant": "#653e00",
+          "tertiary": "#ffc176",
+          "on-error-container": "#ffdad6",
+          "on-surface": "#dae2fd",
+          "outline-variant": "#3e484f",
+          "on-secondary-fixed": "#001a42",
+          "on-primary-container": "#004965",
+          "secondary": "#adc6ff",
+          "primary-fixed": "#c4e7ff",
+          "status-error": "#ef4444",
+          "primary-fixed-dim": "#7bd0ff",
+          "tertiary-fixed": "#ffddb8",
+          "surface-container-lowest": "#060e20",
+          "text-primary": "#f8fafc",
+          "surface-container-highest": "#2d3449",
+          "surface-variant": "#2d3449",
+          "tertiary-fixed-dim": "#ffb960",
+          "on-tertiary-fixed": "#2a1700",
+          "text-muted": "#94a3b8",
+          "inverse-on-surface": "#283044",
+          "error-container": "#93000a"
+        },
+        "borderRadius": {
+          "DEFAULT": "0.25rem",
+          "lg": "0.5rem",
+          "xl": "0.75rem",
+          "full": "9999px"
+        },
+        "spacing": {
+          "gutter": "1rem",
+          "space-2xl": "1.5rem",
+          "space-xs": "0.25rem",
+          "margin-desktop": "2rem",
+          "margin": "1rem",
+          "space-xl": "1.25rem",
+          "margin-tablet": "1.5rem",
+          "space-lg": "1rem",
+          "space-4xl": "3rem",
+          "space-sm": "0.5rem",
+          "space-3xl": "2rem",
+          "space-md": "0.75rem",
+          "gutter-desktop": "1.5rem"
+        },
+        "fontFamily": {
+          "display-hero-mobile": ["Inter"],
+          "body-small": ["Inter"],
+          "display-hero": ["Inter"],
+          "headline-3": ["Inter"],
+          "label-action": ["Inter"],
+          "body-regular": ["Inter"],
+          "headline-2": ["Inter"],
+          "headline-1": ["Inter"],
+          "code-telemetry": ["JetBrains Mono"]
+        },
+        "fontSize": {
+          "display-hero-mobile": ["28px", {"lineHeight": "36px", "fontWeight": "700"}],
+          "body-small": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+          "display-hero": ["36px", {"lineHeight": "44px", "fontWeight": "700"}],
+          "headline-3": ["18px", {"lineHeight": "26px", "fontWeight": "500"}],
+          "label-action": ["14px", {"lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "600"}],
+          "body-regular": ["15px", {"lineHeight": "24px", "fontWeight": "400"}],
+          "headline-2": ["22px", {"lineHeight": "30px", "fontWeight": "600"}],
+          "headline-1": ["28px", {"lineHeight": "36px", "fontWeight": "600"}],
+          "code-telemetry": ["12px", {"lineHeight": "16px", "fontWeight": "400"}]
+        }
+      }
+    }
+  }
+</script>
+</head>
+<body class="bg-canvas-background text-text-primary font-body-regular min-h-screen flex flex-col selection:bg-primary-container selection:text-on-primary">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-screen w-64 z-40 flex flex-col justify-between p-space-md border-r border-border-divider dark:border-border-divider bg-surface-container dark:bg-surface-container">
+<div>
+<div class="flex items-center gap-space-sm px-space-md py-space-sm mb-space-lg">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high flex items-center justify-center text-primary-container">
+<span class="material-symbols-outlined text-2xl" style="font-variation-settings: 'FILL' 1;">developer_board</span>
+</div>
+<div>
+<h1 class="text-headline-3 font-headline-3 text-text-primary tracking-wide">Servis Hub</h1>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Telemetry Cockpit v2.4</p>
+</div>
+</div>
+<nav class="flex flex-col gap-space-xs">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer active:scale-[0.99] transition-all duration-150" href="#">
+<span class="material-symbols-outlined text-xl">precision_manufacturing</span>
+          Radionička Flota
+        </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-high dark:bg-surface-container-high text-primary-container dark:text-primary-container border-l-2 border-primary-container font-label-action text-label-action cursor-pointer active:scale-[0.99] transition-all duration-150" href="#">
+<span class="material-symbols-outlined text-xl" style="font-variation-settings: 'FILL' 1;">usb</span>
+          WIS USB Builder
+        </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary dark:hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer active:scale-[0.99] transition-all duration-150" href="#">
+<span class="material-symbols-outlined text-xl">system_update</span>
+          Windows Updates
+        </a>
+</nav>
+</div>
+<div class="flex flex-col gap-space-xs pt-space-md border-t border-border-divider">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer" href="#">
+<span class="material-symbols-outlined text-xl">dns</span>
+        Server Telemetry
+      </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action cursor-pointer" href="#">
+<span class="material-symbols-outlined text-xl">settings</span>
+        Postavke Sustava
+      </a>
+</div>
+</aside>
+<!-- Main Content Wrapper -->
+<div class="pl-64 flex flex-col flex-1">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center w-full px-space-xl h-14 bg-surface-container dark:bg-surface-container border-b border-border-divider dark:border-border-divider z-30 sticky top-0">
+<div class="flex items-center gap-space-md w-1/3">
+<div class="relative w-full max-w-xs">
+<span class="material-symbols-outlined absolute left-3 top-2.5 text-text-muted text-lg">search</span>
+<input class="w-full bg-surface-container-high border border-border-divider rounded-lg pl-10 pr-space-md py-1.5 text-body-small text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary-container" placeholder="Pretraži ISO i USB uređaje..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-space-lg">
+<span class="text-code-telemetry font-code-telemetry text-text-muted bg-surface-container-high px-space-sm py-1 rounded border border-border-divider">NODE: SVR-ZAG-02</span>
+<button class="text-text-muted hover:text-text-primary transition-colors cursor-pointer"><span class="material-symbols-outlined">refresh</span></button>
+<button class="text-text-muted hover:text-text-primary transition-colors cursor-pointer"><span class="material-symbols-outlined">terminal</span></button>
+<button class="text-text-muted hover:text-text-primary transition-colors cursor-pointer"><span class="material-symbols-outlined">notifications</span></button>
+<div class="h-6 w-[1px] bg-border-divider"></div>
+<div class="flex items-center gap-space-sm">
+<div class="w-8 h-8 rounded-full bg-surface-container-high border border-border-divider flex items-center justify-center text-primary-container font-label-action text-label-action">OP</div>
+<span class="text-body-small font-semibold">Operator Servis Hub</span>
+</div>
+</div>
+</header>
+<!-- Canvas View -->
+<main class="p-space-2xl md:p-space-4xl max-w-7xl w-full mx-auto flex flex-col gap-space-2xl">
+<!-- Header Section -->
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-space-md">
+<div>
+<div class="flex items-center gap-space-sm mb-1">
+<span class="px-2 py-0.5 rounded text-[11px] font-code-telemetry bg-primary-container/10 text-primary-container border border-primary-container/20">UEFI MULTI-BOOT ENGINE</span>
+<span class="text-text-muted text-body-small">• WIMLIB 1.14 INTEGRATED</span>
+</div>
+<h2 class="text-headline-1 font-headline-1 text-text-primary">WIS USB &amp; ISO Builder Center</h2>
+<p class="text-body-regular text-text-muted">Kreiranje UEFI butabilnih medija sa naprednom injekcijom drajvera i bezbjednosnim zaštitama.</p>
+</div>
+<div class="flex items-center gap-space-md">
+<button class="px-space-md py-2 rounded-lg border border-border-divider text-text-primary hover:bg-surface-container-high text-label-action font-label-action transition-all cursor-pointer">Diagnostic Report</button>
+<button class="px-space-md py-2 rounded-lg bg-primary-container text-on-primary-fixed hover:opacity-90 text-label-action font-label-action transition-all cursor-pointer shadow-lg shadow-primary-container/10">Preuzmi Kontrolu</button>
+</div>
+</div>
+<!-- Interactive 4-Step Media Creation Wizard -->
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-space-2xl">
+<!-- Left Column: Steps 1 & 2 -->
+<div class="lg:col-span-6 flex flex-col gap-space-2xl">
+<!-- Step 1: Target USB Flash Drive Selector -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-2xl relative flex flex-col gap-space-lg">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-md">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high border border-border-divider flex items-center justify-center text-primary-container font-code-telemetry">01</div>
+<h3 class="text-headline-3 font-headline-3">Target USB Flash Drive Selector</h3>
+</div>
+<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-status-success/10 text-status-success border border-status-success/20 flex items-center gap-1">
+<span class="w-1.5 h-1.5 rounded-full bg-status-success animate-pulse"></span> Ready
+              </span>
+</div>
+<!-- Drive Card Selected -->
+<div class="bg-surface-container-high border border-primary-container/50 rounded-lg p-space-lg flex flex-col gap-space-md relative ring-1 ring-primary-container/3id">
+<div class="flex justify-between items-start">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-3xl text-primary-container" style="font-variation-settings: 'FILL' 1;">usb</span>
+<div>
+<h4 class="text-body-regular font-semibold text-text-primary">Kingston DataTraveler 64GB</h4>
+<p class="text-code-telemetry text-text-muted">Device node: /dev/sdb • USB 3.2 Gen 1</p>
+</div>
+</div>
+<span class="px-2 py-0.5 rounded text-xs font-code-telemetry bg-surface-container border border-border-divider">SCSI / Removable</span>
+</div>
+<!-- Capacity Usage Bar -->
+<div class="flex flex-col gap-1.5">
+<div class="flex justify-between text-code-telemetry text-text-muted">
+<span>Kapacitet: 57.8 GB slobodno / 58.9 GB ukupno</span>
+<span>98% slobodno</span>
+</div>
+<div class="w-full h-2 rounded-full bg-surface-container overflow-hidden border border-border-divider">
+<div class="h-full bg-primary-container w-[2%] rounded-full"></div>
+</div>
+</div>
+</div>
+<!-- Strict Red Safety Guardrail Badge -->
+<div class="bg-error-container/20 border border-status-error/40 rounded-lg p-space-md flex items-start gap-space-md">
+<span class="material-symbols-outlined text-status-error text-xl mt-0.5" style="font-variation-settings: 'FILL' 1;">gpp_maybe</span>
+<div class="flex flex-col gap-1">
+<span class="text-body-small font-semibold text-error">Safety Guardrail Active</span>
+<p class="text-body-small text-text-muted">System Disks (<code class="font-code-telemetry text-text-primary">nvme0n1</code>) and TrueNAS ZFS storage pools are explicitly locked out to prevent accidental erasure.</p>
+</div>
+</div>
+</div>
+<!-- Step 2: Windows 11 ISO Image Picker -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-2xl flex flex-col gap-space-lg">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-md">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high border border-border-divider flex items-center justify-center text-primary-container font-code-telemetry">02</div>
+<h3 class="text-headline-3 font-headline-3">Windows 11 ISO Image Picker</h3>
+</div>
+<span class="px-2.5 py-1 rounded-full text-xs font-semibold bg-primary-container/10 text-primary-container border border-primary-container/20">Verified</span>
+</div>
+<!-- ISO Dropdown / Selected file -->
+<div class="bg-surface-container-high border border-border-divider rounded-lg p-space-lg flex flex-col gap-space-md">
+<div class="flex justify-between items-center">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-3xl text-tertiary">disc_full</span>
+<div>
+<h4 class="text-body-regular font-semibold text-text-primary">Win11_24H2_Croatian_x64.iso</h4>
+<p class="text-code-telemetry text-text-muted">Pro / Enterprise / 23H2 IoT Multi-Edition</p>
+</div>
+</div>
+<button class="px-3 py-1.5 rounded-lg border border-border-divider bg-surface-container text-text-primary hover:bg-surface-variant text-body-small font-semibold transition-all">Promijeni ISO</button>
+</div>
+<div class="grid grid-cols-2 gap-space-md pt-space-sm border-t border-border-divider">
+<div>
+<span class="text-code-telemetry text-text-muted block">Veličina datoteke</span>
+<span class="text-body-small font-semibold text-text-primary">5.4 GB (5,812,490,240 bytes)</span>
+</div>
+<div>
+<span class="text-code-telemetry text-text-muted block">Repozitorij putanja</span>
+<span class="text-code-telemetry text-primary-container truncate block">/var/lib/servis-hub/isos/</span>
+</div>
+</div>
+<!-- SHA256 Checksum Status -->
+<div class="bg-surface-container rounded p-space-sm flex items-center justify-between border border-border-divider">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-status-success text-base">verified</span>
+<span class="text-code-telemetry text-text-muted">SHA256: 4E92B...8F10C (Verified OK)</span>
+</div>
+<span class="text-[11px] text-status-success font-semibold uppercase">Valid</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: Steps 3 & 4 -->
+<div class="lg:col-span-6 flex flex-col gap-space-2xl">
+<!-- Step 3: Partition Scheme & Boot Configuration -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-2xl flex flex-col gap-space-lg">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-md">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high border border-border-divider flex items-center justify-center text-primary-container font-code-telemetry">03</div>
+<h3 class="text-headline-3 font-headline-3">Partition Scheme &amp; Boot Configuration</h3>
+</div>
+<span class="text-code-telemetry text-text-muted">UEFI GPT</span>
+</div>
+<!-- Partition layout visualization -->
+<div class="grid grid-cols-3 gap-space-sm">
+<div class="bg-surface-container-high border border-border-divider rounded-lg p-space-md flex flex-col gap-1">
+<span class="text-code-telemetry text-primary-container font-semibold">EFI_SYSTEM</span>
+<span class="text-[11px] text-text-muted">FAT32 • 500 MB</span>
+<span class="text-[10px] text-text-muted">Boot Partition</span>
+</div>
+<div class="col-span-2 bg-surface-container-high border border-border-divider rounded-lg p-space-md flex flex-col gap-1">
+<span class="text-code-telemetry text-secondary font-semibold">WIS_DATA_STORE</span>
+<span class="text-[11px] text-text-muted">NTFS • 63.5 GB</span>
+<span class="text-[10px] text-text-muted">Payload &amp; Drivers Storage</span>
+</div>
+</div>
+<!-- Toggles for TPM/SecureBoot bypass -->
+<div class="flex flex-col gap-space-md pt-2">
+<label class="flex items-center justify-between p-space-md bg-surface-container-high border border-border-divider rounded-lg cursor-pointer hover:border-primary-container/50 transition-colors">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-primary-container">security</span>
+<div>
+<span class="text-body-small font-semibold text-text-primary block">Bypass TPM 2.0 &amp; Secure Boot Check</span>
+<span class="text-[12px] text-text-muted">Omogućuje instalaciju na stariji ili nepodržan hardver</span>
+</div>
+</div>
+<input checked="" class="w-4 h-4 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0 focus:ring-offset-0 cursor-pointer" type="checkbox"/>
+</label>
+<label class="flex items-center justify-between p-space-md bg-surface-container-high border border-border-divider rounded-lg cursor-pointer hover:border-primary-container/50 transition-colors">
+<div class="flex items-center gap-space-md">
+<span class="material-symbols-outlined text-primary-container">account_circle</span>
+<div>
+<span class="text-body-small font-semibold text-text-primary block">Bypass Microsoft Account (Create Local Admin)</span>
+<span class="text-[12px] text-text-muted">Automatski kreira lokalni račun tokom OOBE faze</span>
+</div>
+</div>
+<input checked="" class="w-4 h-4 rounded bg-surface-container border-border-divider text-primary-container focus:ring-0 focus:ring-offset-0 cursor-pointer" type="checkbox"/>
+</label>
+</div>
+</div>
+<!-- Step 4: Real-time SSE Burn & Injection Progress -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-2xl flex flex-col gap-space-lg">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-space-md">
+<div class="w-8 h-8 rounded-lg bg-surface-container-high border border-border-divider flex items-center justify-center text-primary-container font-code-telemetry">04</div>
+<h3 class="text-headline-3 font-headline-3">Real-time SSE Burn &amp; Injection Progress</h3>
+</div>
+<span class="px-2 py-0.5 rounded text-xs font-code-telemetry bg-primary-container/10 text-primary-container border border-primary-container/20">Active Operation</span>
+</div>
+<!-- Progress Details -->
+<div class="bg-surface-container-high border border-border-divider rounded-lg p-space-lg flex flex-col gap-space-md">
+<div class="flex justify-between items-center">
+<span class="text-body-small font-semibold text-text-primary flex items-center gap-space-sm">
+<span class="w-2 h-2 rounded-full bg-primary-container animate-ping"></span>
+                  Active stage: Wimlib payload extraction (install.wim)
+                </span>
+<span class="text-code-telemetry font-bold text-primary-container text-lg">68%</span>
+</div>
+<!-- Progress Bar -->
+<div class="w-full h-3 rounded-full bg-surface-container overflow-hidden border border-border-divider">
+<div class="h-full bg-primary-container w-[68%] rounded-full transition-all duration-300"></div>
+</div>
+<div class="grid grid-cols-3 gap-space-md text-code-telemetry text-text-muted pt-1">
+<div>Brzina: <span class="text-text-primary font-semibold">84 MB/s</span></div>
+<div>Prošlo: <span class="text-text-primary font-semibold">02:45</span></div>
+<div>Preostalo: <span class="text-text-primary font-semibold">01:12</span></div>
+</div>
+</div>
+<!-- Live Diagnostic Terminal Log -->
+<div class="bg-surface-container-lowest border border-border-divider rounded-lg p-space-md font-code-telemetry text-code-telemetry flex flex-col gap-1.5 h-36 overflow-y-auto">
+<div class="text-text-muted">[09:12:01] Initializing Diskpart partition table cleanup on /dev/sdb...</div>
+<div class="text-text-muted">[09:12:03] Creating GPT structure: EFI (FAT32, 500MB) + WIS_DATA (NTFS)...</div>
+<div class="text-text-muted">[09:12:08] Mounting EFI system partition and copying bootmgr / bootx64.efi...</div>
+<div class="text-text-muted">[09:12:15] Applying Wimlib extraction engine for install.wim (5.1 GB payload)...</div>
+<div class="text-primary-container font-semibold">[09:12:44] Injecting OEM storage &amp; network controller drivers (IRST, Realtek 2.5G)...</div>
+<div class="text-text-muted">[09:13:02] Patching registry hives for TPM 2.0 and Secure Boot bypass flags...</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Confirmation Footer & Action Section -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-2xl flex flex-col md:flex-row justify-between items-center gap-space-lg">
+<!-- Confirmation Checkbox -->
+<label class="flex items-center gap-space-md cursor-pointer select-none">
+<input class="w-5 h-5 rounded bg-surface-container-high border-border-divider text-primary-container focus:ring-0 focus:ring-offset-0 cursor-pointer" required="" type="checkbox"/>
+<span class="text-body-small font-semibold text-text-primary">Potvrđujem brisanje svih podataka sa izabranog USB diska</span>
+</label>
+<!-- Primary Action Button -->
+<button class="w-full md:w-auto px-8 py-3.5 rounded-xl bg-primary-container text-on-primary-fixed hover:opacity-90 font-label-action text-label-action transition-all cursor-pointer shadow-lg shadow-primary-container/20 flex items-center justify-center gap-space-sm">
+<span class="material-symbols-outlined text-xl">bolt</span>
+          Kreiraj Butabilni USB
+        </button>
+</div>
+</main>
+</div>
+</body></html>

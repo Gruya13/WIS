@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Servis Hub - OEM Drivers &amp; Firmware Hub</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+              "error-container": "#93000a",
+              "surface-container-high": "#222a3d",
+              "secondary-fixed-dim": "#adc6ff",
+              "tertiary-fixed-dim": "#ffb960",
+              "surface-container": "#1e293b",
+              "inverse-on-surface": "#283044",
+              "on-secondary-container": "#e6ecff",
+              "text-primary": "#f8fafc",
+              "secondary-container": "#0566d9",
+              "background": "#0b1326",
+              "primary-fixed": "#c4e7ff",
+              "secondary-fixed": "#d8e2ff",
+              "status-warning": "#f59e0b",
+              "surface-container-highest": "#2d3449",
+              "outline-variant": "#3e484f",
+              "inverse-primary": "#00668a",
+              "on-secondary-fixed": "#001a42",
+              "on-surface-variant": "#bdc8d1",
+              "tertiary-fixed": "#ffddb8",
+              "on-primary-container": "#004965",
+              "surface-variant": "#2d3449",
+              "surface-tint": "#7bd0ff",
+              "tertiary": "#ffc176",
+              "border-divider": "#334155",
+              "on-primary-fixed-variant": "#004c69",
+              "surface-dim": "#0b1326",
+              "status-error": "#ef4444",
+              "on-surface": "#dae2fd",
+              "inverse-surface": "#dae2fd",
+              "surface-container-lowest": "#060e20",
+              "primary-container": "#38bdf8",
+              "on-error": "#690005",
+              "on-background": "#dae2fd",
+              "secondary": "#adc6ff",
+              "on-tertiary-fixed": "#2a1700",
+              "surface": "#0b1326",
+              "on-primary-fixed": "#001e2c",
+              "tertiary-container": "#f1a02b",
+              "primary": "#8ed5ff",
+              "surface-bright": "#31394d",
+              "on-secondary": "#002e6a",
+              "on-error-container": "#ffdad6",
+              "on-primary": "#00354a",
+              "error": "#ffb4ab",
+              "on-tertiary": "#472a00",
+              "on-tertiary-fixed-variant": "#653e00",
+              "canvas-background": "#0f172a",
+              "on-secondary-fixed-variant": "#004395",
+              "primary-fixed-dim": "#7bd0ff",
+              "surface-container-low": "#131b2e",
+              "status-success": "#10b981",
+              "text-muted": "#94a3b8",
+              "on-tertiary-container": "#613b00",
+              "outline": "#87929a"
+            },
+            "borderRadius": {
+              "DEFAULT": "0.25rem",
+              "lg": "0.5rem",
+              "xl": "0.75rem",
+              "full": "9999px"
+            },
+            "spacing": {
+              "space-md": "0.75rem",
+              "margin-tablet": "1.5rem",
+              "space-2xl": "1.5rem",
+              "space-4xl": "3rem",
+              "space-xl": "1.25rem",
+              "space-xs": "0.25rem",
+              "margin-desktop": "2rem",
+              "space-sm": "0.5rem",
+              "gutter": "1rem",
+              "margin": "1rem",
+              "space-lg": "1rem",
+              "space-3xl": "2rem",
+              "gutter-desktop": "1.5rem"
+            },
+            "fontFamily": {
+              "headline-2": ["Inter"],
+              "display-hero": ["Inter"],
+              "body-regular": ["Inter"],
+              "headline-3": ["Inter"],
+              "headline-1": ["Inter"],
+              "code-telemetry": ["JetBrains Mono"],
+              "label-action": ["Inter"],
+              "body-small": ["Inter"]
+            },
+            "fontSize": {
+              "headline-2": ["22px", { "lineHeight": "30px", "fontWeight": "600" }],
+              "display-hero": ["36px", { "lineHeight": "44px", "fontWeight": "700" }],
+              "body-regular": ["15px", { "lineHeight": "24px", "fontWeight": "400" }],
+              "headline-3": ["18px", { "lineHeight": "26px", "fontWeight": "500" }],
+              "headline-1": ["28px", { "lineHeight": "36px", "fontWeight": "600" }],
+              "code-telemetry": ["12px", { "lineHeight": "16px", "fontWeight": "400" }],
+              "label-action": ["14px", { "lineHeight": "20px", "letterSpacing": "0.02em", "fontWeight": "600" }],
+              "body-small": ["13px", { "lineHeight": "18px", "fontWeight": "400" }]
+            }
+          }
+        }
+      }
+    </script>
+</head>
+<body class="bg-canvas-background text-text-primary font-body-regular min-h-screen flex flex-col antialiased selection:bg-primary-container selection:text-on-primary-container">
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-0 h-screen w-64 z-40 flex flex-col justify-between p-space-md border-r border-border-divider dark:border-border-divider bg-surface-container dark:bg-surface-container">
+<div>
+<!-- Header Brand -->
+<div class="flex items-center gap-space-md px-space-md py-space-md mb-space-lg">
+<div class="w-10 h-10 rounded-lg bg-surface-container-high flex items-center justify-center border border-border-divider">
+<span class="material-symbols-outlined text-primary-container text-xl" style="font-variation-settings: 'FILL' 1;">hub</span>
+</div>
+<div>
+<h1 class="text-headline-3 font-headline-3 tracking-wide text-text-primary">Servis Hub</h1>
+<p class="text-code-telemetry font-code-telemetry text-text-muted">Telemetry v2.4</p>
+</div>
+</div>
+<!-- Nav Links -->
+<nav class="space-y-space-xs">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-xl">precision_manufacturing</span>
+                    Radionička Flota
+                </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-xl">usb</span>
+                    WIS USB Builder
+                </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-xl">system_update</span>
+                    Windows Updates
+                </a>
+<!-- Active Custom Page: OEM Drivers & Firmware Hub -->
+<div class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg bg-surface-container-high dark:bg-surface-container-high text-primary-container dark:text-primary-container border-l-2 border-primary-container font-label-action text-label-action cursor-pointer">
+<span class="material-symbols-outlined text-xl" style="font-variation-settings: 'FILL' 1;">memory</span>
+                    OEM Drivers Hub
+                </div>
+</nav>
+</div>
+<!-- Footer Navigation -->
+<div class="space-y-space-xs pt-space-md border-t border-border-divider">
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-xl">dns</span>
+                Server Telemetry
+            </a>
+<a class="flex items-center gap-space-sm px-space-md py-space-sm rounded-lg text-text-muted dark:text-text-muted hover:text-text-primary hover:bg-surface-variant font-label-action text-label-action transition-colors duration-150" href="#">
+<span class="material-symbols-outlined text-xl">settings</span>
+                Postavke Sustava
+            </a>
+</div>
+</aside>
+<!-- Main Wrapper -->
+<div class="pl-64 flex flex-col flex-1 min-h-screen">
+<!-- TopNavBar -->
+<header class="flex justify-between items-center w-full px-space-xl h-14 bg-surface-container dark:bg-surface-container border-b border-border-divider dark:border-border-divider sticky top-0 z-30">
+<div class="flex items-center gap-space-lg w-1/3">
+<div class="relative w-full max-w-xs">
+<span class="material-symbols-outlined absolute left-3 top-2.5 text-text-muted text-lg">search</span>
+<input class="w-full bg-surface-container-low border border-border-divider rounded-lg pl-10 pr-space-md py-1.5 text-body-regular text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary-container transition-colors" placeholder="Lookup Serial / Service Tag..." type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-space-md">
+<div class="hidden lg:flex items-center gap-space-sm px-space-md py-1 rounded-full bg-surface-container-high border border-border-divider text-code-telemetry text-text-muted">
+<span class="w-2 h-2 rounded-full bg-status-success animate-pulse"></span>
+                    ZFS Cache: 10 GbE Active
+                </div>
+<button class="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-container-high transition-colors relative">
+<span class="material-symbols-outlined text-xl">refresh</span>
+</button>
+<button class="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-container-high transition-colors relative">
+<span class="material-symbols-outlined text-xl">terminal</span>
+</button>
+<button class="p-2 rounded-lg text-text-muted hover:text-text-primary hover:bg-surface-container-high transition-colors relative">
+<span class="material-symbols-outlined text-xl">notifications</span>
+<span class="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-primary-container"></span>
+</button>
+<div class="h-6 w-px bg-border-divider mx-1"></div>
+<div class="flex items-center gap-space-sm">
+<img class="w-8 h-8 rounded-full border border-border-divider object-cover" data-alt="Professional operator portrait in an enterprise IT service center, featuring sleek dark mode ambiance, glowing monitor displays, and high-end technical workspace lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBc1_1jL9EOXfIC-dvhPcndnZBRUJx_5soN2cz3Ts_KBqqDuZEkzI7yU7TTsO5cVh5vkCjaXZEfLj5PflXR-6MRxKgfAjA3yBdH2J1910EyIgVsxq-TMl8UHJbS3gL5zWYgFFfoqLXYtqHSwFV5HUn2q-hegdkLbZuN8XSHHDErHc8eQaI9pfmfTtL5qwZNADMZzQ4MUcV2B2tx_9aqBPhoUKmX2oowaH0qkUa2dfpCILdSWmybPG58z9cLT9Uw8aH91p0Jl0CyiiaY"/>
+<div class="hidden md:block text-left">
+<div class="text-body-small font-label-action text-text-primary leading-tight">Admin-01</div>
+<div class="text-code-telemetry text-text-muted leading-tight">Tier-3 Support</div>
+</div>
+</div>
+</div>
+</header>
+<!-- Content Canvas -->
+<main class="flex-1 p-space-2xl space-y-space-2xl max-w-[1600px] w-full mx-auto">
+<!-- Page Header -->
+<div class="flex flex-col md:flex-row md:items-center justify-between gap-space-md">
+<div>
+<h2 class="text-headline-1 font-headline-1 text-text-primary tracking-tight">OEM Drivers &amp; Firmware Hub</h2>
+<p class="text-body-regular text-text-muted">Centralized SCCM driver repository, automated BIOS validation, and multi-vendor warranty telemetry for Lenovo, Dell, and HP fleets.</p>
+</div>
+<div class="flex items-center gap-space-md">
+<button class="bg-surface-container border border-border-divider hover:bg-surface-variant text-text-primary font-label-action px-space-lg py-2 rounded-lg flex items-center gap-space-sm transition-all">
+<span class="material-symbols-outlined text-lg">download</span>
+                        Diagnostic Report
+                    </button>
+<button class="bg-primary-container hover:bg-surface-tint text-on-primary-container font-label-action px-space-lg py-2 rounded-lg flex items-center gap-space-sm transition-all shadow-lg shadow-primary-container/10">
+<span class="material-symbols-outlined text-lg">bolt</span>
+                        Preuzmi Kontrolu
+                    </button>
+</div>
+</div>
+<!-- Bento Grid Section 1: Warranty & Service Tag Checker -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-space-xl">
+<!-- Service Tag Lookup Box -->
+<div class="lg:col-span-1 bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between mb-space-md">
+<h3 class="text-headline-3 font-headline-3 text-text-primary flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container">verified_user</span>
+                                Warranty Checker
+                            </h3>
+<span class="text-code-telemetry px-2 py-0.5 rounded bg-surface-container-high text-text-muted">API v4.2</span>
+</div>
+<p class="text-body-small text-text-muted mb-space-lg">Enter OEM serial number for instant entitlement and Premier support status lookup.</p>
+<div class="space-y-space-md">
+<div>
+<label class="block text-body-small font-label-action text-text-primary mb-space-xs">Serial Number / Service Tag</label>
+<div class="flex gap-space-sm">
+<input class="w-full bg-surface-container-low border border-border-divider rounded-lg px-space-md py-2 text-code-telemetry text-text-primary focus:outline-none focus:border-primary-container" type="text" value="PF3X89L2"/>
+<button class="bg-surface-container-high border border-border-divider hover:bg-surface-variant px-space-lg py-2 rounded-lg font-label-action text-text-primary transition-colors">Query</button>
+</div>
+</div>
+<div class="p-space-md bg-surface-container-low border border-border-divider rounded-lg space-y-space-sm">
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Detected Vendor:</span>
+<span class="text-text-primary font-semibold">Lenovo ThinkPad X1</span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Service Level:</span>
+<span class="text-status-success font-semibold flex items-center gap-1">
+<span class="material-symbols-outlined text-sm">workspace_premium</span> Premier Onsite
+                                    </span>
+</div>
+<div class="flex justify-between items-center text-body-small">
+<span class="text-text-muted">Status:</span>
+<span class="px-2 py-0.5 rounded-full bg-status-success/10 text-status-success text-code-telemetry font-bold">ACTIVE</span>
+</div>
+</div>
+</div>
+</div>
+<div class="mt-space-lg pt-space-md border-t border-border-divider flex items-center justify-between">
+<span class="text-code-telemetry text-text-muted">Expires in 412 Days</span>
+<div class="w-24 bg-surface-container-high h-2 rounded-full overflow-hidden">
+<div class="bg-status-success h-full w-3/4"></div>
+</div>
+</div>
+</div>
+<!-- Bento Grid Section 2: SCCM Driver Pack & OEM Package Repository -->
+<div class="lg:col-span-2 bg-surface-container border border-border-divider rounded-xl p-space-xl flex flex-col justify-between">
+<div>
+<div class="flex items-center justify-between mb-space-md">
+<h3 class="text-headline-3 font-headline-3 text-text-primary flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container">dns</span>
+                                TrueNAS ZFS Cache &amp; SCCM Repository
+                            </h3>
+<div class="flex items-center gap-2">
+<span class="text-code-telemetry text-text-muted">Cache Hit: 99.4%</span>
+<span class="text-code-telemetry px-2 py-0.5 rounded bg-status-success/10 text-status-success">10 GbE Synchronized</span>
+</div>
+</div>
+<p class="text-body-small text-text-muted mb-space-lg">Local high-speed cache mirroring vendor catalogs for automated deployment via SCCM/MECM.</p>
+<div class="overflow-x-auto">
+<table class="w-full text-left text-body-small">
+<thead class="border-b border-border-divider text-text-muted text-code-telemetry">
+<tr>
+<th class="pb-3 font-medium">OEM Vendor</th>
+<th class="pb-3 font-medium">Package Family</th>
+<th class="pb-3 font-medium">Win Version</th>
+<th class="pb-3 font-medium">Size</th>
+<th class="pb-3 font-medium">ZFS Status</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-border-divider">
+<tr class="hover:bg-surface-container-high transition-colors">
+<td class="py-3 font-medium text-text-primary flex items-center gap-space-sm">
+<span class="w-2 h-2 rounded-full bg-error"></span> Lenovo
+                                        </td>
+<td class="py-3 text-text-muted">ThinkPad T14 Gen 3 SCCM Cab</td>
+<td class="py-3 text-code-telemetry">Win 11 23H2</td>
+<td class="py-3 text-code-telemetry">1.42 GB</td>
+<td class="py-3"><span class="px-2 py-0.5 rounded bg-status-success/10 text-status-success text-code-telemetry">Cached</span></td>
+</tr>
+<tr class="hover:bg-surface-container-high transition-colors">
+<td class="py-3 font-medium text-text-primary flex items-center gap-space-sm">
+<span class="w-2 h-2 rounded-full bg-primary-container"></span> Dell
+                                        </td>
+<td class="py-3 text-text-muted">Latitude 5530 Driver CAB Pack</td>
+<td class="py-3 text-code-telemetry">Win 11 22H2</td>
+<td class="py-3 text-code-telemetry">2.18 GB</td>
+<td class="py-3"><span class="px-2 py-0.5 rounded bg-status-success/10 text-status-success text-code-telemetry">Cached</span></td>
+</tr>
+<tr class="hover:bg-surface-container-high transition-colors">
+<td class="py-3 font-medium text-text-primary flex items-center gap-space-sm">
+<span class="w-2 h-2 rounded-full bg-status-warning"></span> HP
+                                        </td>
+<td class="py-3 text-text-muted">EliteBook 840 G9 Client Catalog</td>
+<td class="py-3 text-code-telemetry">Win 10 22H2</td>
+<td class="py-3 text-code-telemetry">1.89 GB</td>
+<td class="py-3"><span class="px-2 py-0.5 rounded bg-status-warning/10 text-status-warning text-code-telemetry">Syncing</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="mt-space-lg pt-space-md border-t border-border-divider flex justify-between items-center">
+<span class="text-code-telemetry text-text-muted">Pool Usage: 4.8 TB / 64 TB (NVMe Tier)</span>
+<button class="text-primary-container text-body-small font-label-action hover:underline flex items-center gap-1">
+                            Manage Repositories <span class="material-symbols-outlined text-sm">arrow_forward</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Bento Grid Section 3: Automatic BIOS/UEFI Version Check & CVE Advisories -->
+<div class="bg-surface-container border border-border-divider rounded-xl p-space-xl">
+<div class="flex flex-col md:flex-row justify-between items-start md:items-center mb-space-lg gap-space-md">
+<div>
+<h3 class="text-headline-3 font-headline-3 text-text-primary flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-primary-container">security</span>
+                            UEFI Firmware &amp; Security Advisories
+                        </h3>
+<p class="text-body-small text-text-muted">Real-time comparison of installed device firmware against latest vendor CVE patches.</p>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="px-3 py-1 rounded-lg bg-error/10 text-error text-code-telemetry font-bold flex items-center gap-1">
+<span class="material-symbols-outlined text-sm">warning</span> 2 Critical CVEs Pending
+                        </span>
+<button class="bg-surface-container-high hover:bg-surface-variant text-text-primary text-body-small font-label-action px-space-md py-1.5 rounded-lg border border-border-divider transition-colors">
+                            Run Fleet Scan
+                        </button>
+</div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-space-lg">
+<!-- Lenovo Card -->
+<div class="bg-surface-container-low border border-border-divider rounded-lg p-space-lg space-y-space-md">
+<div class="flex justify-between items-start">
+<div>
+<span class="text-code-telemetry text-text-muted">LENOVO-SYSTEM-2024</span>
+<h4 class="text-headline-3 font-headline-3 text-text-primary">ThinkPad X1 Carbon Gen 10</h4>
+</div>
+<span class="px-2 py-0.5 rounded bg-error/10 text-error text-code-telemetry">Outdated</span>
+</div>
+<div class="space-y-1 text-body-small">
+<div class="flex justify-between"><span class="text-text-muted">Installed BIOS:</span> <span class="text-code-telemetry text-text-primary">N3ET68W (1.45)</span></div>
+<div class="flex justify-between"><span class="text-text-muted">Latest Vendor:</span> <span class="text-code-telemetry text-status-success">N3ET72W (1.49)</span></div>
+<div class="flex justify-between"><span class="text-text-muted">CVE Patch:</span> <span class="text-code-telemetry text-error">CVE-2023-5058</span></div>
+</div>
+<button class="w-full bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-label-action py-2 rounded-lg transition-colors text-center block">
+                            Push Firmware Update
+                        </button>
+</div>
+<!-- Dell Card -->
+<div class="bg-surface-container-low border border-border-divider rounded-lg p-space-lg space-y-space-md">
+<div class="flex justify-between items-start">
+<div>
+<span class="text-code-telemetry text-text-muted">DELL-CLIENT-BIOS</span>
+<h4 class="text-headline-3 font-headline-3 text-text-primary">Latitude 7430 Business</h4>
+</div>
+<span class="px-2 py-0.5 rounded bg-status-success/10 text-status-success text-code-telemetry">Up-to-date</span>
+</div>
+<div class="space-y-1 text-body-small">
+<div class="flex justify-between"><span class="text-text-muted">Installed BIOS:</span> <span class="text-code-telemetry text-text-primary">1.14.0</span></div>
+<div class="flex justify-between"><span class="text-text-muted">Latest Vendor:</span> <span class="text-code-telemetry text-status-success">1.14.0</span></div>
+<div class="flex justify-between"><span class="text-text-muted">CVE Patch:</span> <span class="text-code-telemetry text-status-success">None Pending</span></div>
+</div>
+<button class="w-full bg-surface-container-high hover:bg-surface-variant text-text-muted font-label-action py-2 rounded-lg transition-colors text-center block border border-border-divider">
+                            Verify Integrity
+                        </button>
+</div>
+<!-- HP Card -->
+<div class="bg-surface-container-low border border-border-divider rounded-lg p-space-lg space-y-space-md">
+<div class="flex justify-between items-start">
+<div>
+<span class="text-code-telemetry text-text-muted">HP-UEFI-ADMIN</span>
+<h4 class="text-headline-3 font-headline-3 text-text-primary">ZBook Firefly 14 G9</h4>
+</div>
+<span class="px-2 py-0.5 rounded bg-status-warning/10 text-status-warning text-code-telemetry">Review</span>
+</div>
+<div class="space-y-1 text-body-small">
+<div class="flex justify-between"><span class="text-text-muted">Installed BIOS:</span> <span class="text-code-telemetry text-text-primary">F.08</span></div>
+<div class="flex justify-between"><span class="text-text-muted">Latest Vendor:</span> <span class="text-code-telemetry text-status-success">F.12</span></div>
+<div class="flex justify-between"><span class="text-text-muted">CVE Patch:</span> <span class="text-code-telemetry text-status-warning">CVE-2024-1182</span></div>
+</div>
+<button class="w-full bg-primary-container/10 hover:bg-primary-container/20 text-primary-container font-label-action py-2 rounded-lg transition-colors text-center block">
+                            Push Firmware Update
+                        </button>
+</div>
+</div>
+</div>
+</main>
+</div>
+</body></html>

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{D8C4E8A1-41F5-4D1A-8E5B-1E3A7F9B2C11}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>WIS.HwTest</RootNamespace>
+    <AssemblyName>WIS.HwTest</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <AddAdditionalExplicitAssemblyReferences>false</AddAdditionalExplicitAssemblyReferences>
+    <FileAlignment>512</FileAlignment>
+    <WarningLevel>4</WarningLevel>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+    <ApplicationManifest>..\app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\Assets\WIS.ico</ApplicationIcon>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Speech" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Xaml">
+      <RequiredTargetFramework>4.0</RequiredTargetFramework>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="WindowsBase">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="PresentationCore">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="PresentationFramework">
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="zxing">
+      <HintPath>zxing.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="HwTestShell.cs" />
+    <Compile Include="Interop\NativeMethods.cs" />
+    <Compile Include="..\ThermalSensorEngine.cs">
+      <Link>ThermalSensorEngine.cs</Link>
+    </Compile>
+    <Compile Include="Core\ResultModel.cs" />
+    <Compile Include="Core\HwTestLogger.cs" />
+    <Compile Include="Core\ModelProfileClient.cs" />
+    <Compile Include="Core\HardwareProbe.cs" />
+    <Compile Include="Core\FactorySpecProbe.cs" />
+    <Compile Include="Core\MazeGenerator.cs" />
+    <Compile Include="Core\AutoHardwareDiagnostics.cs" />
+    <Compile Include="Tests\DisplayTestWindow.cs" />
+    <Compile Include="Tests\KeyboardTestWindow.cs" />
+    <Compile Include="Tests\TouchpadTestWindow.cs" />
+    <Compile Include="Tests\TouchscreenMazeWindow.cs" />
+    <Compile Include="Tests\AudioTestWindow.cs" />
+    <Compile Include="Tests\MicTestWindow.cs" />
+    <Compile Include="Tests\CameraTestWindow.cs" />
+    <Compile Include="Tests\FingerprintTestWindow.cs" />
+    <Compile Include="Tests\UsbPortTestWindow.cs" />
+    <Compile Include="Tests\GpuStressWindow.cs" />
+    <Compile Include="Tests\AutoTestDetailsWindow.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="zxing.dll">
+      <LogicalName>Assets.zxing.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\keyboard_layouts.json">
+      <LogicalName>Assets.keyboard_layouts.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\0.wav">
+      <LogicalName>Assets.digits_en.0.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\1.wav">
+      <LogicalName>Assets.digits_en.1.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\2.wav">
+      <LogicalName>Assets.digits_en.2.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\3.wav">
+      <LogicalName>Assets.digits_en.3.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\4.wav">
+      <LogicalName>Assets.digits_en.4.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\5.wav">
+      <LogicalName>Assets.digits_en.5.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\6.wav">
+      <LogicalName>Assets.digits_en.6.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\7.wav">
+      <LogicalName>Assets.digits_en.7.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\8.wav">
+      <LogicalName>Assets.digits_en.8.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Assets\digits_en\9.wav">
+      <LogicalName>Assets.digits_en.9.wav</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+</Project>
