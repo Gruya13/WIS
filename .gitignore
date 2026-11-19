@@ -1,0 +1,87 @@
+# Kod se prati; instalacioni mediji, tajne i runtime podaci ostaju van Git-a.
+# Open-source redistributabilni DLL-ovi (LibreHardwareMonitorLib.dll, HidSharp.dll, UI/HwTest/zxing.dll)
+# prate se radi deterministickog offline build-a uz atribuciju u THIRD-PARTY-NOTICES.md.
+/ISO/Programi/
+/ISO/Programi.tar
+/ISO/Za disk 10+ gen/
+/ISO/Zakrpe/
+/ISO/boot/
+/ISO/efi/
+/ISO/sources/
+/sources/
+/ISO/support/
+/ISO/bootmgfw.efi
+/ISO/bootmgr.efi
+/ISO/bootmgr
+/ISO/wis-payload.zip
+/ISO/payload_meta.json
+/ISO/Install-ServisApps.ps1
+/ISO/Skripte/Install-ServisApps.ps1
+/ISO/System Volume Information/
+/ISO/archive/
+/.agents/
+/.claude/
+/.workspace/
+/AGENTS.md
+/ISO/USB Tool/ISO/storage/
+/ISO/Logs/
+/ISO/storage/
+/ServiceHub/storage/
+/*.exe
+/*.dll
+/*.iso
+/*.wim
+/*.esd
+/*.tar
+/*.zip
+/ISO/__chunk_data
+**/bin/
+**/obj/
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/ISO/storage/
+**/ISO/Logs/
+**/backup_v3.0/
+*.pyc
+*.pdb
+*.log
+*.exe
+*.pem
+*.key
+*.pfx
+*Wifi-Servis.ini
+!Wifi-Servis.example.ini
+!ISO/Wifi-Servis.example.ini
+*WLAN*.xml
+*WiFi*.xml
+.env
+.env.*
+!.env.example
+!ServiceHub/.env.example
+/artifacts/
+/releases/
+/.tools/
+/ISO/.wis-media-attestation.json
+/ISO/tmp_ps_test.ps1
+
+# Lokalne migracione kopije i izvestaji; nisu razvojni izvor.
+/archives/
+/NAS-snapshot/
+/*SHA256.json
+/*inventory.json
+/*manifest.json
+/NVMe-NAS-comparison.json
+/COPY-VERIFICATION.json
+/ServisHub-history.bundle
+/IZVESTAJ.md
+
+# Lokalni build artefakti
+/UI/artifacts/
+/Launcher/artifacts/
+/ISO/releases/
+/ISO/*.tar
+/ISO/*.dll
+/ISO/*.iso
+/ISO/*.wim
+/ISO/*.esd

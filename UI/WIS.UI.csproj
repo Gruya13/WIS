@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{F766C024-51A6-48BD-BE2A-5D11F9D4E2F1}</ProjectGuid>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>WIS.UI</RootNamespace>
+    <AssemblyName>WIS.UI</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <AddAdditionalExplicitAssemblyReferences>false</AddAdditionalExplicitAssemblyReferences>
+    <FileAlignment>512</FileAlignment>
+    <ProjectTypeGuids>{60dc8134-eba5-43b8-bcc9-bb4bc16c2548};{fae04ec0-301f-11d3-bf4b-00c04f79efbc}</ProjectTypeGuids>
+    <WarningLevel>4</WarningLevel>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Deterministic>true</Deterministic>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\WIS.ico</ApplicationIcon>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' Or '$(Configuration)|$(Platform)' == 'Debug|Any CPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' Or '$(Configuration)|$(Platform)' == 'Release|Any CPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Xml" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Xaml">
+      <HintPath Condition="Exists('$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\System.Xaml.dll')">$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\System.Xaml.dll</HintPath>
+      <RequiredTargetFramework>4.0</RequiredTargetFramework>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="WindowsBase">
+      <HintPath Condition="Exists('$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll')">$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\WindowsBase.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="PresentationCore">
+      <HintPath Condition="Exists('$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll')">$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationCore.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="PresentationFramework">
+      <HintPath Condition="Exists('$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll')">$(SystemRoot)\Microsoft.NET\Framework64\v4.0.30319\WPF\PresentationFramework.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System.Runtime.Serialization" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Speech" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="zxing">
+      <HintPath>HwTest\zxing.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <ApplicationDefinition Include="App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </ApplicationDefinition>
+    <Page Include="MainWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Compile Include="App.xaml.cs">
+      <DependentUpon>App.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="MainWindow.xaml.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="MainWindow.Hardware.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="MainWindow.HwTest.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="MainWindow.Reboot.cs">
+      <DependentUpon>MainWindow.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="Models.cs" />
+    <Compile Include="JsonHelper.cs" />
+    <Compile Include="HardwareIdentityService.cs" />
+    <Compile Include="DeviceChangeMonitor.cs" />
+    <Compile Include="TelemetryService.cs" />
+    <Compile Include="ThermalSensorEngine.cs" />
+    <Compile Include="LocalizationService.cs" />
+    <Compile Include="LabelPrintService.cs" />
+    <Compile Include="HwTest\HwTestShell.cs" />
+    <Compile Include="HwTest\Interop\NativeMethods.cs" />
+    <Compile Include="HwTest\Core\ResultModel.cs" />
+    <Compile Include="HwTest\Core\HwTestLogger.cs" />
+    <Compile Include="HwTest\Core\ModelProfileClient.cs" />
+    <Compile Include="HwTest\Core\HardwareProbe.cs" />
+    <Compile Include="HwTest\Core\FactorySpecProbe.cs" />
+    <Compile Include="HwTest\Core\MazeGenerator.cs" />
+    <Compile Include="HwTest\Core\AutoHardwareDiagnostics.cs" />
+    <Compile Include="HwTest\Tests\DisplayTestWindow.cs" />
+    <Compile Include="HwTest\Tests\KeyboardTestWindow.cs" />
+    <Compile Include="HwTest\Tests\TouchpadTestWindow.cs" />
+    <Compile Include="HwTest\Tests\TouchscreenMazeWindow.cs" />
+    <Compile Include="HwTest\Tests\AudioTestWindow.cs" />
+    <Compile Include="HwTest\Tests\MicTestWindow.cs" />
+    <Compile Include="HwTest\Tests\CameraTestWindow.cs" />
+    <Compile Include="HwTest\Tests\FingerprintTestWindow.cs" />
+    <Compile Include="HwTest\Tests\UsbPortTestWindow.cs" />
+    <Compile Include="HwTest\Tests\GpuStressWindow.cs" />
+    <Compile Include="HwTest\Tests\AutoTestDetailsWindow.cs" />
+    <Compile Include="Properties\AssemblyInfo.cs">
+      <SubType>Code</SubType>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="App.config" />
+    <Resource Include="Assets\WIS.ico" />
+    <EmbeddedResource Include="HwTest\zxing.dll">
+      <LogicalName>Assets.zxing.dll</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\keyboard_layouts.json">
+      <LogicalName>Assets.keyboard_layouts.json</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\0.wav">
+      <LogicalName>Assets.digits_en.0.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\1.wav">
+      <LogicalName>Assets.digits_en.1.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\2.wav">
+      <LogicalName>Assets.digits_en.2.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\3.wav">
+      <LogicalName>Assets.digits_en.3.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\4.wav">
+      <LogicalName>Assets.digits_en.4.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\5.wav">
+      <LogicalName>Assets.digits_en.5.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\6.wav">
+      <LogicalName>Assets.digits_en.6.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\7.wav">
+      <LogicalName>Assets.digits_en.7.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\8.wav">
+      <LogicalName>Assets.digits_en.8.wav</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="HwTest\Assets\digits_en\9.wav">
+      <LogicalName>Assets.digits_en.9.wav</LogicalName>
+    </EmbeddedResource>
+    <None Include="app.manifest" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

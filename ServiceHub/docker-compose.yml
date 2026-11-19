@@ -1,0 +1,24 @@
+services:
+  servis-hub:
+    container_name: servis-hub
+    build: .
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SERVIS_HUB_PORT=${SERVIS_HUB_PORT:-8080}
+      - SERVIS_HUB_UDP_PORT=${SERVIS_HUB_UDP_PORT:-8888}
+      - SERVIS_UPDATES_DIR=/app/storage/updates/Win11
+      - SERVIS_MODEL_PACKS_DIR=/app/harvested/Archives
+      - SERVIS_HUB_ADMIN_TOKEN=${SERVIS_HUB_ADMIN_TOKEN:-}
+      - SERVIS_HUB_CLIENT_TOKEN=${SERVIS_HUB_CLIENT_TOKEN:-}
+      - SERVIS_HUB_ALLOW_UNAUTHENTICATED_LAN=${SERVIS_HUB_ALLOW_UNAUTHENTICATED_LAN:-0}
+      - SERVIS_HUB_CORS_ORIGINS=${SERVIS_HUB_CORS_ORIGINS:-}
+    volumes:
+      - /dev:/dev:ro
+      - ${SERVIS_HUB_STORAGE_SRC:-/mnt/TK_NAS/Servis/servis-hub/storage}:/app/storage:rw
+      - ${SERVIS_HUB_REPORTS_SRC:-/mnt/TK_NAS/Servis/servis-hub/Logs/reports}:/app/Logs/reports:rw
+      - ${SERVIS_HUB_LIVE_LOGS_SRC:-/mnt/TK_NAS/Servis/servis-hub/Logs/live}:/app/Logs/live:rw
+      - ${SERVIS_UPDATES_SRC:-/mnt/TK_NAS/Servis/Updates/Win11}:/app/storage/updates/Win11:rw
+      - ${SERVIS_HARVESTED_SRC:-/mnt/TK_NAS/Servis/Drivers/Harvested/Archives}:/app/harvested/Archives:rw

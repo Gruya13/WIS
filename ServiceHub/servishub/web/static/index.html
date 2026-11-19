@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WIS Service | ServisHub Centralni Sistem</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+    <!-- __DASHBOARD_CSS__ -->
+</head>
+<body>
+    <div class="app-layout">
+        <!-- =====================================================================
+             Collapsible Levi Sidebar (.sidebar)
+             ===================================================================== -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
+                    <span class="brand-icon">⚡</span>
+                    <div class="brand-info">
+                        <span class="brand-title">WIS Service</span>
+                        <span class="brand-version">ServisHub v__WIS_VERSION__</span>
+                    </div>
+                </div>
+                <button class="sidebar-toggle-btn" id="sidebar-toggle-btn" onclick="toggleSidebar()" title="Smanji / Proširi bočni meni">◀</button>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section-title">Glavna Navigacija</div>
+                <button class="nav-tab active" id="tab-btn-fleet" onclick="switchTab('fleet')">
+                    <span class="nav-tab-icon">🖥️</span>
+                    <span class="nav-tab-label">Radionička Flota & Telemetrija</span>
+                </button>
+                <button class="nav-tab" id="tab-btn-wis" onclick="switchTab('wis')">
+                    <span class="nav-tab-icon">💿</span>
+                    <span class="nav-tab-label">WIS Centar (ISO & USB Builder)</span>
+                </button>
+                <button class="nav-tab" id="tab-btn-updates" onclick="switchTab('updates')">
+                    <span class="nav-tab-icon">🔄</span>
+                    <span class="nav-tab-label">Windows 11 Zakrpe</span>
+                </button>
+
+                <div class="sidebar-subnav">
+                    <div class="nav-section-title">Brzi Filteri Flote</div>
+                    <button class="filter-chip active" id="filter-chip-all" onclick="setFleetFilter('all')">
+                        <span>🌐</span> <span class="nav-tab-label">Sve mašine</span>
+                    </button>
+                    <button class="filter-chip" id="filter-chip-active" onclick="setFleetFilter('active')">
+                        <span>⚡</span> <span class="nav-tab-label">Aktivne u radu</span>
+                    </button>
+                    <button class="filter-chip" id="filter-chip-done" onclick="setFleetFilter('done')">
+                        <span>✓</span> <span class="nav-tab-label">Završeni servisi</span>
+                    </button>
+                    <button class="filter-chip" id="filter-chip-agy" onclick="setFleetFilter('agy')">
+                        <span>🛠️</span> <span class="nav-tab-label">AGY Intervencije</span>
+                    </button>
+                </div>
+            </nav>
+
+            <div class="sidebar-bottom">
+                <div class="server-status-panel">
+                    <div class="server-status-header">
+                        <span class="pulse-dot" id="stat-server-pulse"></span>
+                        <span class="nav-tab-label">Server Status: Online</span>
+                    </div>
+                    <div class="server-status-body">
+                        <div class="server-metric-row">
+                            <span>Uptime:</span>
+                            <span class="server-metric-val" id="stat-uptime">99.98%</span>
+                        </div>
+                        <div class="server-metric-row">
+                            <span>TrueNAS Keš:</span>
+                            <span class="server-metric-val" style="color:var(--success);">Aktivan (10 GbE)</span>
+                        </div>
+                        <div class="server-metric-row">
+                            <span>Skladište:</span>
+                            <span class="server-metric-val" title="/home/gru/Storage">ZFS Pool</span>
+                        </div>
+                        <div class="server-metric-row">
+                            <span>UDP Broadcast:</span>
+                            <span class="server-metric-val">Port 8888</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- =====================================================================
+             Glavno Radno Područje (.main-wrapper)
+             ===================================================================== -->
+        <div class="main-wrapper">
+            <header class="main-header">
+                <div class="header-title">
+                    <span class="pulse-dot"></span>
+                    <h1>WIS Service Centralni Servisni Hub</h1>
+                    <span class="header-badge">ServisHub v__WIS_VERSION__</span>
+                </div>
+                <div class="fleet-stats">
+                    <div class="stat-item">Ukupno mašina: <span class="stat-val" id="stat-total">0</span></div>
+                    <div class="stat-item">Aktivno u radu: <span class="stat-val" id="stat-active" style="color:var(--green)">0</span></div>
+                    <div class="stat-item">Završeno: <span class="stat-val" id="stat-done" style="color:var(--cyan)">0</span></div>
+                    <div class="stat-item stat-clock">
+                        <span>⏱️ LAN Sat:</span>
+                        <span id="clock-display">--:--:--</span>
+                    </div>
+                </div>
+            </header>
+
+            <main>
+                <!-- TAB 1: Radionička Flota & Telemetrija (Hibridni Cockpit) -->
+                <section id="tab-fleet" class="tab-content active">
+                    <div class="cockpit-layout">
+                        <!-- Leva polovina: Lista i tabela mašina sa statusima -->
+                        <div class="cockpit-fleet-column">
+                            <div class="column-header">
+                                <div class="column-title">
+                                    <span>🖥️</span>
+                                    <h3>Radne Stanice na Stolu</h3>
+                                    <span class="header-badge" id="fleet-count-badge">0 računara</span>
+                                </div>
+                                <div class="fleet-search-box">
+                                    <input type="text" id="fleet-search-input" class="search-input" placeholder="🔍 Pretraži mašinu, IP, S/N..." oninput="filterFleetCards()">
+                                </div>
+                            </div>
+                            <div class="fleet-grid" id="fleet-grid">
+                                <div class="empty-fleet">
+                                    <h2>Čekam povezivanje klijentskih računara...</h2>
+                                    <p>Čim se na nekom klijentu u servisu pokrene instalacija i uspostavi mreža, ovde će se pojaviti kartica uređaja.</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Desna polovina: Detaljni Cockpit sa 1 Hz ogledalom ekrana -->
+                        <div class="cockpit-monitor-column" id="cockpit-detail-pane">
+                            <!-- Inicijalni Cockpit Standby -->
+                            <div class="cockpit-card">
+                                <div class="cockpit-view-header">
+                                    <div class="cockpit-title-group">
+                                        <h2><span>⚡</span> Radionički Telemetry Cockpit</h2>
+                                        <div class="cockpit-title-sub">Izaberite radnu stanicu sa leve liste za 1 Hz praćenje ekrana i hardvera</div>
+                                    </div>
+                                    <span class="header-badge" style="color:var(--accent); border-color:var(--accent);">Standby Režim</span>
+                                </div>
+                                <div class="screen-mirror-frame">
+                                    <div class="screen-mirror-topbar">
+                                        <span><span class="pulse-dot"></span> 1 Hz OGLEDALO EKRANA RADNE STANICE</span>
+                                        <span>1920x1080 @ 60Hz Mirrored</span>
+                                    </div>
+                                    <div class="screen-mirror-viewport">
+                                        <div class="mirror-standby-container">
+                                            <div class="mirror-content-top">
+                                                <span style="color:var(--accent); font-weight:700;">[WIS SERVICE COCKPIT]</span>
+                                                <span style="color:var(--success);">UDP DISCOVERY AKTIVAN (PORT 8888)</span>
+                                            </div>
+                                            <div class="mirror-content-mid" style="text-align:center;">
+                                                <div style="font-size:1.1rem; color:#fff; font-weight:700;">Čekam heartbeat klijenta...</div>
+                                                <div style="font-size:0.75rem; color:var(--text-muted);">Kada računar pošalje telemetriju, ovde se aktivira 1 Hz ogledalo ekrana i dijagnostika u realnom vremenu.</div>
+                                            </div>
+                                            <div class="mirror-content-bottom">
+                                                <span>LAN: 10 GbE TrueNAS ZFS Keš Spreman</span>
+                                                <span id="mirror-standby-time">1 Hz SYNC</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB 2: WIS Centar (ISO & USB Builder) -->
+                <section id="tab-wis" class="tab-content">
+                    <div class="panel-grid-2">
+                        <!-- Panel A: WIS ISO -->
+                        <div class="panel-card">
+                            <div class="panel-header">
+                                <div class="panel-title">
+                                    <span>💿</span> WIS Master ISO Slika
+                                </div>
+                                <span id="wis-iso-status-badge" class="header-badge">Provera...</span>
+                            </div>
+                            <div class="panel-body">
+                                <div style="background:#090e17; border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px; display:flex; flex-direction:column; gap:10px; font-family:var(--font-mono); font-size:0.82rem;">
+                                    <div><strong>📦 Naziv datoteke:</strong> <span id="wis-iso-filename" style="color:#fff;">Učitavam...</span></div>
+                                    <div><strong>🏷️ Verzija:</strong> <span id="wis-iso-version" style="color:var(--accent); font-weight:700;">-</span></div>
+                                    <div><strong>📊 Veličina:</strong> <span id="wis-iso-size" style="color:#fff;">-</span></div>
+                                    <div><strong>📅 Ažurirano:</strong> <span id="wis-iso-modified" style="color:var(--text-muted);">-</span></div>
+                                    <div style="word-break:break-all;"><strong>🔐 SHA-256 Heš:</strong> <span id="wis-iso-sha256" style="color:#a78bfa; font-size:0.78rem;">-</span></div>
+                                    <div style="word-break:break-all; font-size:0.75rem; color:var(--text-muted);"><strong>📁 Putanja:</strong> <span id="wis-iso-path">-</span></div>
+                                </div>
+                                <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:auto;">
+                                    <a id="btn-download-iso" href="/api/wis/iso/download" class="btn-primary" style="display:inline-flex;">
+                                        <span>⬇️</span> Preuzmi WIS ISO
+                                    </a>
+                                    <button class="btn-refresh" onclick="loadWisIsoInfo()">
+                                        <span>🔄</span> Osveži ISO Info
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Panel B: UEFI USB Builder -->
+                        <div class="panel-card">
+                            <div class="panel-header">
+                                <div class="panel-title">
+                                    <span>⚡</span> Interaktivni UEFI USB Builder
+                                </div>
+                                <span class="header-badge" style="color:var(--magenta); border-color:var(--magenta);">Dual-Part (FAT32+NTFS)</span>
+                            </div>
+                            <div class="panel-body">
+                                <div class="form-group">
+                                    <label class="form-label" for="wis-usb-select">
+                                        <span>Izaberite prenosivi USB disk:</span>
+                                        <button class="btn-refresh" style="padding:2px 8px; font-size:0.72rem;" onclick="loadWisUsbList()" title="Skeniraj ponovo">🔄 Osveži Diskove</button>
+                                    </label>
+                                    <div class="select-row">
+                                        <select id="wis-usb-select" class="usb-select" onchange="validateUsbForm()">
+                                            <option value="">-- Tražim priključene USB diskove... --</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div class="safety-warning-box">
+                                    <span style="font-size:1.3rem;">⚠️</span>
+                                    <div>
+                                        <strong>SIGURNOSNA ZAŠTITA PODATAKA:</strong>
+                                        Izabrani USB disk biće u potpunosti obrisan i formatiran u GPT layout sa UEFI boot podrškom. Sistemski i ZFS diskovi su automatski blokirani.
+                                    </div>
+                                </div>
+
+                                <label class="checkbox-container">
+                                    <input type="checkbox" id="wis-confirm-wipe" onchange="validateUsbForm()">
+                                    <span class="checkbox-label">Potvrđujem brisanje svih podataka sa izabranog USB diska</span>
+                                </label>
+
+                                <div>
+                                    <button id="btn-burn-usb" class="btn-burn" style="width:100%;" disabled onclick="startUsbBurn()">
+                                        <span>⚡</span> Kreiraj Butabilni USB
+                                    </button>
+                                </div>
+
+                                <!-- Progress Box za kreiranje USB-a -->
+                                <div id="wis-burn-progress-box" class="burn-progress-box" style="display:none;">
+                                    <div class="burn-header">
+                                        <span><strong>Status narezivanja:</strong> <span id="wis-burn-phase" style="color:var(--accent); font-weight:700;">Inicijalizacija</span></span>
+                                        <span id="wis-burn-pct" style="font-weight:700; color:#fff; font-family:var(--font-mono);">0%</span>
+                                    </div>
+                                    <div class="burn-bar-bg">
+                                        <div id="wis-burn-bar-fill" class="burn-bar-fill" style="width:0%"></div>
+                                    </div>
+                                    <div id="wis-burn-message" class="burn-log-text">Priprema procesa...</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Panel C: WIS Benchmark Analitika -->
+                    <div id="wis-benchmark-panel" class="panel-card" style="margin-top: 24px;">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <span>📊</span> WIS Benchmark Analitika Flote
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <span id="bm-bottleneck-badge" class="header-badge" style="color:var(--warning); border-color:var(--warning);">Usko grlo: N/A</span>
+                                <button class="btn-refresh" onclick="loadBenchmarkSummary()">🔄 Osveži Benchmark</button>
+                            </div>
+                        </div>
+                        <div class="panel-body">
+                            <div class="stat-overview-grid" style="margin-bottom: 6px;">
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">First-Pass Success Rate</div>
+                                    <div class="stat-card-value" id="bm-success-rate" style="color:var(--green);">0%</div>
+                                    <div class="stat-card-sub" id="bm-install-counts">0 / 0 uspešnih</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">Cache Hit Ratio</div>
+                                    <div class="stat-card-value" id="bm-cache-hit-ratio" style="color:var(--accent);">0%</div>
+                                    <div class="stat-card-sub" id="bm-cache-saved">Ušteđeno 0 MB WAN</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">LAN Throughput (Prosek)</div>
+                                    <div class="stat-card-value" id="bm-lan-throughput" style="color:var(--cyan);">0 Mbps</div>
+                                    <div class="stat-card-sub" id="bm-wan-throughput">WAN: 0 Mbps</div>
+                                </div>
+                                <div class="stat-card-box">
+                                    <div class="stat-card-label">Prosečno Vreme (P50 / P90)</div>
+                                    <div class="stat-card-value" id="bm-avg-duration">0s</div>
+                                    <div class="stat-card-sub" id="bm-percentiles">P50: 0s | P90: 0s</div>
+                                </div>
+                            </div>
+                            <div id="bm-phases-grid" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;">
+                                <div class="gauge-card"><div class="gauge-header">Phase1</div><div class="gauge-value">-</div></div>
+                                <div class="gauge-card"><div class="gauge-header">Phase2</div><div class="gauge-value">-</div></div>
+                                <div class="gauge-card"><div class="gauge-header">Phase3</div><div class="gauge-value">-</div></div>
+                                <div class="gauge-card"><div class="gauge-header">Phase4</div><div class="gauge-value">-</div></div>
+                                <div class="gauge-card"><div class="gauge-header">Phase5</div><div class="gauge-value">-</div></div>
+                                <div class="gauge-card"><div class="gauge-header">Phase6</div><div class="gauge-value">-</div></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB 3: Windows 11 Zakrpe -->
+                <section id="tab-updates" class="tab-content">
+                    <div class="stat-overview-grid">
+                        <div class="stat-card-box">
+                            <div class="stat-card-label">
+                                <span>Status Keša</span>
+                                <span id="updates-zfs-badge" class="header-badge" style="color:var(--green); border-color:var(--green);">⚡ ZFS Keš Aktivan</span>
+                            </div>
+                            <div class="stat-card-value" id="updates-status-text" style="color:var(--green);">Dostupno</div>
+                            <div class="stat-card-sub" id="updates-directory-text">/home/gru/Storage/Updates/Win11</div>
+                        </div>
+                        <div class="stat-card-box">
+                            <div class="stat-card-label">Ukupno Paketa</div>
+                            <div class="stat-card-value" id="updates-total-count">0</div>
+                            <div class="stat-card-sub">.msu i .cab offline paketi</div>
+                        </div>
+                        <div class="stat-card-box">
+                            <div class="stat-card-label">Ukupna Veličina</div>
+                            <div class="stat-card-value" id="updates-total-size">0 MB</div>
+                            <div class="stat-card-sub">Optimizovano za lokalnu mrežu</div>
+                        </div>
+                        <div class="stat-card-box">
+                            <div class="stat-card-label">Prepoznati KB Brojevi</div>
+                            <div id="updates-kb-list" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px;">
+                                <span style="color:var(--text-muted); font-size:0.8rem;">Nema paketa</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="table-container">
+                        <div class="table-toolbar">
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <strong style="color:#fff; font-size:0.95rem;">📦 Skladište Offline Zakrpi</strong>
+                                <span id="updates-table-count" class="header-badge">0 paketa</span>
+                            </div>
+                            <div style="display:flex; gap:10px; align-items:center;">
+                                <input type="text" id="updates-search" class="search-input" placeholder="Pretraži KB ili naziv paketa..." oninput="filterUpdatesTable()">
+                                <button class="btn-refresh" onclick="loadUpdatesStatus()">🔄 Osveži</button>
+                            </div>
+                        </div>
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:70px;">Tip</th>
+                                    <th style="width:130px;">KB Broj</th>
+                                    <th>Naziv Datoteke</th>
+                                    <th style="width:110px;">Veličina</th>
+                                    <th style="width:170px;">Datum Izmene</th>
+                                </tr>
+                            </thead>
+                            <tbody id="updates-table-body">
+                                <tr>
+                                    <td colspan="5" style="text-align:center; padding:30px; color:var(--text-muted);">Učitavanje liste zakrpi...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Predictive Cache (Pre-Arrival Najava Uređaja & Model DNA) -->
+                    <div id="predictive-prewarm-panel" class="panel-card" style="margin-top: 24px;">
+                        <div class="panel-header">
+                            <div class="panel-title">
+                                <span>🧠</span> Predictive Cache — Pre-Arrival Najava Uređaja & Model DNA
+                            </div>
+                            <button class="btn-refresh" onclick="loadPredictiveStatus()">🔄 Osveži Status</button>
+                        </div>
+                        <div class="panel-body">
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end;">
+                                <div class="form-group">
+                                    <label class="form-label" for="pw-manufacturer">Proizvođač</label>
+                                    <input type="text" id="pw-manufacturer" class="search-input" style="min-width:0;" placeholder="HP / Lenovo / Dell">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="pw-model">Model računara</label>
+                                    <input type="text" id="pw-model" class="search-input" style="min-width:0;" placeholder="npr. ThinkPad T14 Gen 3">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="pw-serial">Serijski broj (S/N)</label>
+                                    <input type="text" id="pw-serial" class="search-input" style="min-width:0;" placeholder="npr. 5CD1234ABC">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="pw-os-build">Ciljni Win11 Build</label>
+                                    <select id="pw-os-build" class="usb-select">
+                                        <option value="24H2">24H2 (26100)</option>
+                                        <option value="25H2">25H2 (26200)</option>
+                                        <option value="23H2">23H2 (22631)</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <button id="btn-predictive-prewarm" class="btn-primary" style="width:100%; justify-content:center;" onclick="runPredictivePrewarm()">
+                                        <span>⚡</span> Pripremi Keš Unapred
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="pw-result-box" class="burn-log-text" style="display:none;"></div>
+                            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px;">
+                                <div class="table-container">
+                                    <div class="table-toolbar">
+                                        <strong style="color:#fff; font-size:0.86rem;">🧬 Naučeni Model DNA Profili</strong>
+                                        <span id="pw-models-count" class="header-badge">0 modela</span>
+                                    </div>
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr><th>Model</th><th>HWID otisak</th><th>OS Build</th></tr>
+                                        </thead>
+                                        <tbody id="pw-dna-models-body">
+                                            <tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Nema naučenih modela.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="table-container">
+                                    <div class="table-toolbar">
+                                        <strong style="color:#fff; font-size:0.86rem;">📥 Pre-Arrival Pre-Warm Zadaci</strong>
+                                        <span id="pw-jobs-count" class="header-badge">0 zadataka</span>
+                                    </div>
+                                    <table class="data-table">
+                                        <thead>
+                                            <tr><th>Uređaj</th><th>Spremnost</th><th>Drajveri / Zakrpe</th></tr>
+                                        </thead>
+                                        <tbody id="pw-jobs-body">
+                                            <tr><td colspan="3" style="text-align:center; color:var(--text-muted);">Nema pokrenutih zadataka.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- =====================================================================
+         Modali
+         ===================================================================== -->
+    <!-- Modal 1: Live Log Terminal -->
+    <div class="modal-overlay" id="log-modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span>📟 Live Log Terminal:</span>
+                    <span id="modal-client-name" style="color:#fff;">DESKTOP</span>
+                    <span class="header-badge" id="modal-phase-badge">Faza 2</span>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="btn-log" id="btn-download-log" style="display:inline-flex;">Preuzmi Log</button>
+                    <button class="modal-close" onclick="closeLogModal()">&times;</button>
+                </div>
+            </div>
+            <div class="terminal-container" id="terminal-content">
+                <div class="log-line DEBUG">Povezivanje na live stream loga...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal 2: Servisni Karton -->
+    <div class="modal-overlay" id="report-modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span>📋 Servisni Karton:</span>
+                    <span id="report-client-name" style="color:#fff;">DESKTOP</span>
+                    <span class="header-badge" id="report-duration-badge" style="color:var(--green); border-color:var(--green);">Završeno</span>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                    <button class="btn-report" id="btn-download-report">Preuzmi JSON</button>
+                    <button class="modal-close" onclick="closeReportModal()">&times;</button>
+                </div>
+            </div>
+            <div class="terminal-container" id="report-modal-content" style="padding: 20px; overflow-y: auto;">
+                <div class="log-line DEBUG">Učitavanje servisnog kartona...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal 3: Servisna Istorija i Dnevnik -->
+    <div class="modal-overlay" id="history-modal">
+        <div class="modal-box">
+            <div class="modal-header">
+                <div class="modal-title">
+                    <span>📜 Servisna Istorija & Dnevnik:</span>
+                    <span id="history-client-name" style="color:#fff;">UREĐAJ</span>
+                    <span class="header-badge" id="history-total-badge" style="color:var(--purple); border-color:var(--purple);">0 Intervencija</span>
+                </div>
+                <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div class="terminal-container" id="history-modal-content" style="padding: 20px; overflow-y: auto;">
+                <div class="log-line DEBUG">Učitavanje servisne istorije...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal 4: Potvrda Daljinske Komande (Remote BIOS Reboot) -->
+    <div class="modal-overlay" id="command-confirm-modal">
+        <div class="modal-box" style="max-width: 520px; height: auto; max-height: 90vh;">
+            <div class="modal-header">
+                <div class="modal-title" style="color:var(--warning);">
+                    <span>⚡</span> Potvrda Daljinske Komande
+                </div>
+                <button class="modal-close" onclick="closeCommandConfirmModal()">&times;</button>
+            </div>
+            <div style="padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+                <div id="command-confirm-message" style="font-size: 0.95rem; line-height: 1.5; color: var(--text-primary);">
+                    Da li ste sigurni da želite da pošaljete komandu na radnu stanicu?
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: var(--radius-sm); padding: 10px 14px; display: flex; align-items: center; gap: 8px;">
+                    <span>⚠️</span> Radna stanica će preuzeti i primeniti zadatu komandu pri sledećem heartbeat kontaktu sa serverom.
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px;">
+                    <button class="btn-cockpit btn-secondary" onclick="closeCommandConfirmModal()" style="padding: 8px 16px; font-size: 0.85rem;">
+                        Odustani
+                    </button>
+                    <button id="btn-confirm-command-action" class="btn-cockpit btn-warning-solid" onclick="executeConfirmedCommand()" style="padding: 8px 18px; font-size: 0.85rem; font-weight: 700;">
+                        <span>✓</span> Potvrdi i pošalji
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Kontejner za Toast Notifikacije -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- =====================================================================
+         Vanilla JavaScript Logika
+         ===================================================================== -->
+    <!-- __DASHBOARD_JS__ -->
