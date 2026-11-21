@@ -66,7 +66,7 @@ function Get-WUConfigMode {
             }
         }
     }
-    return "All"
+    return "DriversOnly"
 }
 
 function Test-IsDriverUpdate {
@@ -1061,6 +1061,22 @@ function Install-LocalUpdatePackageFile {
     }
 
     $ext = ([System.IO.Path]::GetExtension($PackagePath)).ToLower()
+    $pkgSizeLabel = ""
+    try {
+        $pkgItem = Get-Item -LiteralPath $PackagePath -ErrorAction SilentlyContinue
+        if ($pkgItem) {
+            $invCulture = [System.Globalization.CultureInfo]::InvariantCulture
+            if ($pkgItem.Length -ge 1GB) {
+                $pkgSizeLabel = ($pkgItem.Length / 1GB).ToString("0.00", $invCulture) + " GB"
+            } elseif ($pkgItem.Length -ge 1MB) {
+                $pkgSizeLabel = [Math]::Max(1, [Math]::Round($pkgItem.Length / 1MB)).ToString($invCulture) + " MB"
+            } else {
+                $pkgSizeLabel = [Math]::Max(1, [Math]::Round($pkgItem.Length / 1KB)).ToString($invCulture) + " KB"
+            }
+        }
+    } catch {}
+    $sizePrefix = if (-not [string]::IsNullOrWhiteSpace($pkgSizeLabel)) { "$pkgSizeLabel, " } else { "" }
+
     $proc = $null
     $timeoutSeconds = 2400
     try {
@@ -1088,21 +1104,33 @@ function Install-LocalUpdatePackageFile {
             if ($elapsedSec -ge $timeoutSeconds) {
                 $timedOutPkg = $true
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label prekoracio zastitni timeout (${timeoutSeconds}s). Prekidam proces (/T /F)." -Level "WARN" -Component "NAS"
+                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label (${sizePrefix}${elapsedSec}s) prekoracio zastitni timeout (${timeoutSeconds}s). Prekidam proces (/T /F)." -Level "WARN" -Component "NAS"
                 }
                 try { & taskkill.exe /PID $($proc.Id) /T /F >$null 2>&1 } catch {}
                 break
             }
             if (($elapsedSec - $lastIpcSec) -ge 20) {
                 $lastIpcSec = $elapsedSec
+                $pkgStatusMsg = "Instaliram lokalni paket $label (${sizePrefix}${elapsedSec}s)..."
                 if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
-                    Send-IpcStatus -SubPhase "Instalacija paketa (${elapsedSec}s)" -StatusMessage "Instaliram lokalni paket $label (${elapsedSec}s)..."
+                    Send-IpcStatus -SubPhase "Instalacija paketa (${elapsedSec}s)" -StatusMessage $pkgStatusMsg
+                }
+                $parsedProg = 0
+                if (($null -ne $Global:CurrentProgress) -and [int]::TryParse([string]$Global:CurrentProgress, [ref]$parsedProg)) {
+                    $safeProg = [Math]::Max(0, [Math]::Min(99, $parsedProg))
+                    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                        $curPhase = 0
+                        if (($null -ne $Global:CurrentPhase) -and [int]::TryParse([string]$Global:CurrentPhase, [ref]$curPhase) -and $curPhase -lt 0) {
+                            $curPhase = 0
+                        }
+                        Send-IpcProgress -Progress $safeProg -Phase $curPhase -SubPhase "Instalacija paketa (${elapsedSec}s)" -StatusMessage $pkgStatusMsg
+                    }
                 }
             }
             if (($elapsedSec - $lastLogSec) -ge 60) {
                 $lastLogSec = $elapsedSec
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label jos uvek se instalira (${elapsedSec}s)..." -Level "INFO" -Component "NAS"
+                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label (${sizePrefix}proteklo ${elapsedSec}s) jos uvek se instalira..." -Level "INFO" -Component "NAS"
                 }
             }
         }

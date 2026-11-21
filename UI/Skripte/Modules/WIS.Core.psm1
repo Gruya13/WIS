@@ -597,6 +597,112 @@ function Get-ServisNasSettings {
     }
 }
 
+function Get-ServisLicensingSettings {
+    <#
+    .SYNOPSIS
+        Ucitava parametre [Licensing] sekcije iz Wifi-Servis.ini konfiguracije.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $iniCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($Global:LocalSetupDir)) {
+        $iniCandidates += (Join-Path $Global:LocalSetupDir "Wifi-Servis.ini")
+        $iniCandidates += (Join-Path $Global:LocalSetupDir "Skripte\Wifi-Servis.ini")
+    }
+    $iniCandidates += "C:\setup\Wifi-Servis.ini"
+    $iniCandidates += "C:\setup\Skripte\Wifi-Servis.ini"
+    if (-not [string]::IsNullOrWhiteSpace($Global:SourceRoot)) {
+        $iniCandidates += (Join-Path $Global:SourceRoot "Wifi-Servis.ini")
+        $iniCandidates += (Join-Path $Global:SourceRoot "Skripte\Wifi-Servis.ini")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        $iniCandidates += (Join-Path $PSScriptRoot "Wifi-Servis.ini")
+        $iniCandidates += (Join-Path (Split-Path $PSScriptRoot -Parent) "Wifi-Servis.ini")
+        $iniCandidates += (Join-Path (Split-Path $PSScriptRoot -Parent) "Skripte\Wifi-Servis.ini")
+    }
+
+    $iniPath = $iniCandidates | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Leaf -ErrorAction SilentlyContinue)
+    } | Select-Object -First 1
+
+    $found = $false
+    $mode = "Auto"
+    $kmsHost = ""
+    $kmsPort = 1688
+    $productKey = ""
+
+    $validModes = @{
+        "auto"         = "Auto"
+        "kms"          = "Kms"
+        "mak"          = "Mak"
+        "externalhook" = "ExternalHook"
+        "skip"         = "Skip"
+    }
+
+    if ($iniPath) {
+        try {
+            $lines = Get-Content -LiteralPath $iniPath -Encoding UTF8 -ErrorAction SilentlyContinue
+            $inLicensing = $false
+            foreach ($rawLine in $lines) {
+                $line = if ($null -ne $rawLine) { ([string]$rawLine).Trim() } else { "" }
+                if (-not $line -or $line.StartsWith(";") -or $line.StartsWith("#")) { continue }
+
+                if ($line.StartsWith("[") -and $line.EndsWith("]")) {
+                    $secName = $line.Substring(1, $line.Length - 2).Trim()
+                    if ($secName -ieq "Licensing") {
+                        $inLicensing = $true
+                        $found = $true
+                    } else {
+                        $inLicensing = $false
+                    }
+                    continue
+                }
+
+                if ($inLicensing -and $line -match '^([^=]+)=(.*)$') {
+                    $k = $matches[1].Trim()
+                    $v = ($matches[2] -replace '[;#].*$', '').Trim()
+
+                    if ($k -ieq "OfficeActivationMode" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $vLower = $v.ToLowerInvariant()
+                        if ($validModes.ContainsKey($vLower)) {
+                            $mode = $validModes[$vLower]
+                        } else {
+                            Write-ServisLog "Nepoznata vrednost OfficeActivationMode='$v' u [Licensing]; vracam na podrazumevano 'Auto'." -Level "WARN" -Component "License"
+                            $mode = "Auto"
+                        }
+                    } elseif ($k -ieq "OfficeKmsHost") {
+                        if (-not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME") {
+                            $kmsHost = $v
+                        }
+                    } elseif ($k -ieq "OfficeKmsPort" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $parsedPort = 0
+                        if ([int]::TryParse($v, [ref]$parsedPort) -and $parsedPort -ge 1 -and $parsedPort -le 65535) {
+                            $kmsPort = $parsedPort
+                        }
+                    } elseif ($k -ieq "OfficeProductKey") {
+                        # Strogo zabranjeno logovanje vrednosti OfficeProductKey
+                        if (-not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME" -and $v -ne "promeni_kljuc") {
+                            $productKey = $v
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-ServisLog "Upozorenje pri ucitavanju [Licensing] sekcije iz ${iniPath}: $($_.Exception.Message)" -Level "WARN" -Component "License"
+        }
+    }
+
+    return [PSCustomObject]@{
+        Found                = [bool]$found
+        IniPath              = $iniPath
+        OfficeActivationMode = $mode
+        OfficeKmsHost        = $kmsHost
+        OfficeKmsPort        = [int]$kmsPort
+        OfficeProductKey     = $productKey
+    }
+}
+
 function Test-NasHostOnline {
     param([string]$NasHost)
     if ([string]::IsNullOrWhiteSpace($NasHost)) { return $false }
@@ -824,6 +930,360 @@ function Sync-ProgramiFromNas {
     }
     # Sesija se ne pamti (/persistent:no), ali ostaje dostupna drugim fazama.
     # Ne prekidati deljenja koja koriste UI, Office ili drugi servisni procesi.
+}
+
+function Format-WisCoreProcessArg {
+    param([string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '""' }
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return ('"' + $escaped + '"')
+}
+
+function Invoke-WisCoreNetUse {
+    param(
+        [ValidateSet("Connect", "DisconnectAll")]
+        [string]$Action,
+        [string]$ShareUnc = "",
+        [string]$Password = "",
+        [string]$User = ""
+    )
+
+    $netExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\net.exe" } else { "net.exe" }
+    if (-not (Test-Path -LiteralPath $netExe -PathType Leaf -ErrorAction SilentlyContinue)) {
+        $netExe = "net.exe"
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $netExe
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    if ($Action -eq "DisconnectAll") {
+        $psi.Arguments = "use * /delete /y"
+    } else {
+        $cleanShare = ([string]$ShareUnc) -replace '[\x00-\x1F]', ''
+        $cleanUser  = ([string]$User) -replace '[\x00-\x1F]', ''
+        $cleanPass  = ([string]$Password) -replace '[\x00\r\n]', ''
+        if ([string]::IsNullOrWhiteSpace($cleanShare) -or [string]::IsNullOrWhiteSpace($cleanUser)) {
+            return -1
+        }
+        $qShare = Format-WisCoreProcessArg -Value $cleanShare
+        $qPass  = Format-WisCoreProcessArg -Value $cleanPass
+        $qUser  = Format-WisCoreProcessArg -Value ("/user:" + $cleanUser)
+        $psi.Arguments = "use $qShare $qPass $qUser /persistent:no"
+    }
+
+    $proc = $null
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        if (-not $proc) { return -1 }
+        $proc.BeginOutputReadLine()
+        $proc.BeginErrorReadLine()
+        if (-not $proc.WaitForExit(15000)) {
+            try { $proc.Kill() } catch {}
+            return -2
+        }
+        $proc.WaitForExit()
+        return [int]$proc.ExitCode
+    } catch {
+        return -1
+    } finally {
+        if ($proc) {
+            try { $proc.Dispose() } catch {}
+        }
+    }
+}
+
+function Test-WisSafeLicensingItem {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.FileSystemInfo]$Item
+    )
+    if (-not $Item) { return $false }
+    $attrs = $Item.Attributes
+    $forbiddenAttrs = [System.IO.FileAttributes]::ReparsePoint -bor `
+                      [System.IO.FileAttributes]::Hidden -bor `
+                      [System.IO.FileAttributes]::System
+    if (($attrs -band $forbiddenAttrs) -ne 0) {
+        return $false
+    }
+    $name = $Item.Name
+    if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+    if ($name -eq "." -or $name -eq ".." -or $name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+        return $false
+    }
+    $junkNames = @("thumbs.db", "desktop.ini", ".ds_store", "ehthumbs.db", ".git", "__macosx")
+    if ($junkNames -contains $name.ToLowerInvariant()) { return $false }
+    if ($name.StartsWith("._")) { return $false }
+    return $true
+}
+
+function Test-WisSafeLicensingDirHasFiles {
+    param([string]$SourcePath)
+    if ([string]::IsNullOrWhiteSpace($SourcePath) -or -not (Test-Path -LiteralPath $SourcePath -PathType Container -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    try {
+        $rootInfo = Get-Item -LiteralPath $SourcePath -Force -ErrorAction Stop
+        if (-not (Test-WisSafeLicensingItem -Item $rootInfo)) { return $false }
+
+        $queue = New-Object 'System.Collections.Generic.Queue[string]'
+        $queue.Enqueue($rootInfo.FullName)
+        while ($queue.Count -gt 0) {
+            $curDir = $queue.Dequeue()
+            $children = @(Get-ChildItem -LiteralPath $curDir -Force -ErrorAction SilentlyContinue)
+            foreach ($child in $children) {
+                if (-not (Test-WisSafeLicensingItem -Item $child)) { continue }
+                if ($child.PSIsContainer) {
+                    $queue.Enqueue($child.FullName)
+                } else {
+                    return $true
+                }
+            }
+        }
+    } catch {}
+    return $false
+}
+
+function Copy-WisSafeLicensingTree {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $copiedFiles = 0
+    $srcRootInfo = Get-Item -LiteralPath $SourcePath -Force -ErrorAction Stop
+    if (-not $srcRootInfo.PSIsContainer -or -not (Test-WisSafeLicensingItem -Item $srcRootInfo)) {
+        return 0
+    }
+
+    $destRootFull = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd('\', '/')
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $destPrefix = $destRootFull + $sep
+
+    if (-not (Test-Path -LiteralPath $destRootFull -PathType Container -ErrorAction SilentlyContinue)) {
+        New-Item -Path $destRootFull -ItemType Directory -Force | Out-Null
+    }
+
+    $queue = New-Object 'System.Collections.Generic.Queue[object]'
+    $queue.Enqueue([PSCustomObject]@{ Src = $srcRootInfo.FullName; Dst = $destRootFull })
+
+    while ($queue.Count -gt 0) {
+        $node = $queue.Dequeue()
+        $children = @(Get-ChildItem -LiteralPath $node.Src -Force -ErrorAction Stop)
+        foreach ($child in $children) {
+            if (-not (Test-WisSafeLicensingItem -Item $child)) { continue }
+
+            $candidateDst = [System.IO.Path]::GetFullPath((Join-Path $node.Dst $child.Name))
+            if (-not $candidateDst.StartsWith($destPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Detektovana nedozvoljena putanja izvan ciljnog direktorijuma: $candidateDst"
+            }
+
+            if ($child.PSIsContainer) {
+                if (-not (Test-Path -LiteralPath $candidateDst -PathType Container -ErrorAction SilentlyContinue)) {
+                    New-Item -Path $candidateDst -ItemType Directory -Force | Out-Null
+                }
+                $queue.Enqueue([PSCustomObject]@{ Src = $child.FullName; Dst = $candidateDst })
+            } else {
+                if (Test-Path -LiteralPath $candidateDst -PathType Leaf -ErrorAction SilentlyContinue) {
+                    try { [System.IO.File]::SetAttributes($candidateDst, [System.IO.FileAttributes]::Normal) } catch {}
+                }
+                Copy-Item -LiteralPath $child.FullName -Destination $candidateDst -Force -ErrorAction Stop
+                # Uklanjanje MOTW (Zone.Identifier) na svakom prekopiranom fajlu preko -LiteralPath
+                try { Unblock-File -LiteralPath $candidateDst -ErrorAction SilentlyContinue } catch {}
+                try { Remove-Item -LiteralPath "${candidateDst}:Zone.Identifier" -Force -ErrorAction SilentlyContinue } catch {}
+                $copiedFiles++
+            }
+        }
+    }
+
+    return $copiedFiles
+}
+
+function Sync-ServisLicensingFromNas {
+    <#
+    .SYNOPSIS
+        Brza i ciljana sinhronizacija iskljucivo Licensing i CustomScripts podfoldera sa NAS SMB deljenja u lokalni kes.
+        Nikada ne preuzima gigabajtne Office/Adobe instalere niti sadrzi imena third-party alata.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$DestinationDir = "C:\setup\Cache\Licensing"
+    )
+
+    $synced = $false
+    $hasLicensingDir = $false
+    $hasCustomScriptsDir = $false
+    $sourceDir = $null
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($DestinationDir)) {
+            $DestinationDir = "C:\setup\Cache\Licensing"
+        }
+        $destBaseFull = [System.IO.Path]::GetFullPath($DestinationDir).TrimEnd('\', '/')
+
+        $nas = Get-ServisNasSettings
+        if ($nas -and $nas.Enabled -ne "1") {
+            Write-ServisLog "NAS sinhronizacija licensing foldera je iskljucena u konfiguraciji." -Level "DEBUG" -Component "NasLicensing"
+            return [PSCustomObject]@{
+                Synced              = $false
+                DestinationDir      = $DestinationDir
+                HasLicensingDir     = $false
+                HasCustomScriptsDir = $false
+                SourceDir           = $null
+            }
+        }
+        if (-not $nas) {
+            $nas = [PSCustomObject]@{
+                NasHost       = "192.168.170.254"
+                ShareName     = "Servis"
+                ProgramiShare = "Programi"
+                Username      = "admin"
+                Password      = ""
+            }
+        }
+
+        $nasHost = if (-not [string]::IsNullOrWhiteSpace($nas.NasHost)) { ($nas.NasHost -replace '[\x00-\x1F]', '').Trim() } else { "192.168.170.254" }
+        if (-not (Test-NasHostOnline -NasHost $nasHost)) {
+            Write-ServisLog "NAS host $nasHost nije dostupan na SMB portu za sinhronizaciju licensing foldera." -Level "WARN" -Component "NasLicensing"
+            return [PSCustomObject]@{
+                Synced              = $false
+                DestinationDir      = $DestinationDir
+                HasLicensingDir     = $false
+                HasCustomScriptsDir = $false
+                SourceDir           = $null
+            }
+        }
+
+        # SMB konfiguracija po uzoru na Sync-ProgramiFromNas
+        try {
+            $lanmanPath = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters"
+            if (-not (Test-Path $lanmanPath)) {
+                New-Item -Path $lanmanPath -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-ItemProperty -Path $lanmanPath -Name "AllowInsecureGuestAuth" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $lanmanPath -Name "RequireSecuritySignature" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        } catch {}
+
+        $shareCandidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($nas.ProgramiShare)) { $shareCandidates += $nas.ProgramiShare }
+        $shareCandidates += "Programi"
+        $shareCandidates += "Servis"
+        if (-not [string]::IsNullOrWhiteSpace($nas.ShareName) -and $shareCandidates -notcontains $nas.ShareName) {
+            $shareCandidates += $nas.ShareName
+        }
+        if ($shareCandidates -notcontains "WIS") { $shareCandidates += "WIS" }
+        $shareCandidates = @($shareCandidates | ForEach-Object { ([string]$_) -replace '[\x00-\x1F]', '' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+
+        $uName = if (-not [string]::IsNullOrWhiteSpace($nas.Username) -and ($nas.Username -ine "servis")) { ($nas.Username -replace '[\x00-\x1F]', '').Trim() } else { "admin" }
+        $uPass = if (-not [string]::IsNullOrWhiteSpace($nas.Password) -and $nas.Password -ne "promeni_lozinku" -and $nas.Password -ne "CHANGE_ME") { $nas.Password } else { "" }
+
+        foreach ($cand in $shareCandidates) {
+            $candUnc = "\\$nasHost\$cand"
+            $prevEap = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                    $userArg = if ($uName -match "\\") { $uName } else { "$nasHost\$uName" }
+                    if (-not [string]::IsNullOrWhiteSpace($uPass)) {
+                        $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $userArg
+                        if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                            $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $uName
+                        }
+                        if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                            # Oslobadjanje konfliktnih SMB sesija ka istom serveru (Error 1219 zastita) bez cmd.exe
+                            $null = Invoke-WisCoreNetUse -Action "DisconnectAll"
+                            $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $userArg
+                        }
+                    }
+                    if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                        $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
+                    }
+                    if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                        $null = Invoke-WisCoreNetUse -Action "DisconnectAll"
+                        $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
+                    }
+                }
+            } catch {} finally {
+                $ErrorActionPreference = $prevEap
+            }
+
+            if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                continue
+            }
+
+            # Na 'Programi' deljenju podfolderi su u korenu; na 'Servis' i 'WIS' mogu biti u 'Programi\' ili u korenu
+            $baseCandidates = @(
+                $candUnc,
+                (Join-Path $candUnc "Programi")
+            )
+
+            foreach ($baseDir in $baseCandidates) {
+                if (-not (Test-Path -LiteralPath $baseDir -PathType Container -ErrorAction SilentlyContinue)) {
+                    continue
+                }
+
+                $srcLic = Join-Path $baseDir "Licensing"
+                $srcCs  = Join-Path $baseDir "CustomScripts"
+
+                $foundLic = Test-WisSafeLicensingDirHasFiles -SourcePath $srcLic
+                $foundCs  = Test-WisSafeLicensingDirHasFiles -SourcePath $srcCs
+
+                if (-not $foundLic -and -not $foundCs) {
+                    continue
+                }
+
+                if (-not (Test-Path -LiteralPath $destBaseFull -PathType Container -ErrorAction SilentlyContinue)) {
+                    New-Item -Path $destBaseFull -ItemType Directory -Force | Out-Null
+                }
+
+                $subPairs = @(
+                    @{ Found = $foundLic; Source = $srcLic; Name = "Licensing" },
+                    @{ Found = $foundCs;  Source = $srcCs;  Name = "CustomScripts" }
+                )
+
+                foreach ($pair in $subPairs) {
+                    if (-not $pair.Found) { continue }
+                    $targetSub = [System.IO.Path]::GetFullPath((Join-Path $destBaseFull $pair.Name))
+                    if (-not $targetSub.StartsWith(($destBaseFull + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Nedozvoljena odredisna putanja: $targetSub"
+                    }
+
+                    $copiedCnt = Copy-WisSafeLicensingTree -SourcePath $pair.Source -DestinationPath $targetSub
+                    if ($copiedCnt -gt 0) {
+                        if ($pair.Name -eq "Licensing") { $hasLicensingDir = $true }
+                        if ($pair.Name -eq "CustomScripts") { $hasCustomScriptsDir = $true }
+                    }
+                }
+
+                if ($hasLicensingDir -or $hasCustomScriptsDir) {
+                    Grant-SetupAclPermissions -Path $destBaseFull
+                    $synced = $true
+                    $sourceDir = $baseDir
+                    Write-ServisLog "Sinhronizovani licensing folderi sa NAS lokacije $baseDir u $destBaseFull (Licensing=$hasLicensingDir, CustomScripts=$hasCustomScriptsDir)." -Level "INFO" -Component "NasLicensing"
+                    break
+                }
+            }
+
+            if ($synced) { break }
+        }
+
+        if (-not $synced) {
+            Write-ServisLog "Na NAS deljenjima nisu pronadjeni Licensing/CustomScripts podfolderi." -Level "INFO" -Component "NasLicensing"
+        }
+    } catch {
+        Write-ServisLog "Upozorenje pri NAS sinhronizaciji licensing foldera: $($_.Exception.Message)" -Level "WARN" -Component "NasLicensing"
+    }
+
+    return [PSCustomObject]@{
+        Synced              = [bool]$synced
+        DestinationDir      = $DestinationDir
+        HasLicensingDir     = [bool]$hasLicensingDir
+        HasCustomScriptsDir = [bool]$hasCustomScriptsDir
+        SourceDir           = $sourceDir
+    }
 }
 
 function Test-ProgramiDirComplete {
@@ -2165,8 +2625,10 @@ Export-ModuleMember -Function `
     Find-SourceDrive, `
     Get-ProgramiDir, `
     Get-ServisNasSettings, `
+    Get-ServisLicensingSettings, `
     Test-NasHostOnline, `
     Sync-ProgramiFromNas, `
+    Sync-ServisLicensingFromNas, `
     Ensure-ProgramiAvailable, `
     Grant-SetupAclPermissions, `
     Test-IsSingleInstance, `

@@ -4,6 +4,33 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.4.1] / ServiceHub [v3.6.1] — 2026-11-21
+
+### Dijagnostika Licenciranja u Fazi 4 i Strukturisana Telemetrija (`WIS-TASK-264`, `LIC-01`–`LIC-06`)
+- **Centralizovana konfiguracija i ciljani NAS fallback (`UI/Skripte/Modules/WIS.Core.psm1`, `Wifi-Servis.example.ini`, `ISO/Wifi-Servis.example.ini`):**
+  - Dodata funkcija `Get-ServisLicensingSettings` za čitanje `[Licensing]` sekcije iz `Wifi-Servis.ini` (`OfficeActivationMode`: `Auto` [podrazumevano], `Kms`, `Mak`, `ExternalHook`, `Skip`; `OfficeKmsHost`, `OfficeKmsPort` podrazumevano `1688`, `OfficeProductKey` bez logovanja vrednosti ključa).
+  - U oba `.example.ini` šablona dodata je zakomentarisana `; [Licensing]` sekcija sa objašnjenjima parametara bez tajni.
+  - Dodata ciljana funkcija `Sync-ServisLicensingFromNas` koja, kada je bar jedna licenca neaktivna, sa NAS deljenja (`Programi`, `Servis`, `WIS`) preuzima isključivo `Licensing` i `CustomScripts` u `C:\setup\Cache\Licensing`, nezavisno od toga da li je lokalni `C:\setup\Programi` već kompletan.
+- **Tačna detekcija Office-a, puna `sppsvc` / `OSPP.VBS` dijagnostika i bezbedan lokalni runner (`UI/Skripte/Modules/WIS.Apps.psm1`):**
+  - Uveden jedinstveni `Test-OfficeInstalled` (proverava svih 8 64-bit i 32-bit C2R/MSI putanja i uklanja dupliranu `WINWORD.EXE` putanju u `Get-WisAppPresence`), kao i `Get-OfficeLicenseStatus` (`$vfsSppPaths`, WMI/CIM `SoftwareLicensingProduct` i `OSPP.VBS /dstatus` sa `20s` timeoutom) uz očuvanje `Test-OfficeActivated` kao tankog wrappera.
+  - U `Invoke-WindowsOfficeActivation` odmah po detekciji Office-a poziva se `Wait-OfficeInstallationReady -TimeoutSec 45`, proverava i pokreće servis `sppsvc` (do `5s`), hvata izlaz i exit kod alata `slmgr.vbs` i `OSPP.VBS` preko `Invoke-CscriptWithTimeout` (`25s` timeout + `taskkill.exe /T /F`), izdvaja `ERROR CODE` (npr. `0xC004F074`) u `Write-ServisLog` / `Send-IpcLog` / `P4.Activation` i atomično upisuje `C:\setup\license-status.json` uz događaj `LICENSE_CHECK_RESULT`.
+  - Uveden jedinstven lokalni runner `Invoke-ServisExternalLicensingHook` sa keširanjem u `C:\setup\Cache\Licensing`, uklanjanjem MOTW oznaka (`Unblock-File` + `:Zone.Identifier`), lokalnim `WorkingDirectory`, kontekstnim promenljivama okruženja (`WIS_*`) i `180s` timeoutom sa prekidom stabla procesa.
+- **Strukturisani izveštaji i maskiranje ključeva u sva 3 sloja (`UI/Skripte/Modules/WIS.Cleanup.psm1`, `UI/Skripte/Phases/Phase6-Finalize.ps1`, `UI/TelemetryService.cs`, `ServiceHub/servishub/reports.py`, `ServiceHub/tests/test_reports.py`):**
+  - Prošireni završni podaci i servisni karton (`windows_activated`, `office_installed`, `office_activated`, `office_license_method`, `office_license_detail`, `office_activation_mode`, `licenses`) kroz `Export-ServisSummaryReport`, `EnrichLicenseTelemetryPayload` (za `COMPLETED` i `FINAL_REPORT`) i `reports.py` (`save_device_report`, `generate_markdown_report` sa sekcijom **`## 🔑 Status Licenciranja (Windows & Office)`**).
+  - Aktivno regex maskiranje 25-znakova product ključeva (`*****-*****-*****-*****-XXXXX`) kroz sva 3 sloja: `Protect-WisLicenseLogText` (PowerShell), `MaskLicenseKeyText` (C#) i `_mask_license_keys` (Python).
+
+### Bezbednosno Ojačanje Licenciranja i Izvršavanja Procesa (`[SECURITY GREEN]`)
+- **Eliminisana shell interpolacija SMB lozinke (`UI/Skripte/Modules/WIS.Core.psm1`):** `Sync-ServisLicensingFromNas` koristi direktan poziv `net.exe` preko `ProcessStartInfo` (`Invoke-WisCoreNetUse` + `Format-WisCoreProcessArg`) bez `cmd.exe /c` shell interpolacije i bez logovanja lozinke, uz zaštitu od Error 1219 i bezbedni obilazak stabla bez praćenja `ReparsePoint`/`Hidden`/`System` stavki i neželjenih fajlova (`Copy-WisSafeLicensingTree`).
+- **Path Traversal zaštita, `CommandLineToArgvW` citiranje i čišćenje keša (`UI/Skripte/Modules/WIS.Apps.psm1`, `WIS.Cleanup.psm1`, `Phase6-Finalize.ps1`):** `Invoke-ServisExternalLicensingHook` kanonizuje putanje (`GetFullPath`), primenjuje belu listu ekstenzija (`.ps1`/`.cmd`/`.bat`), odbija `ReparsePoint`-ove i opasne metakaraktere, koristi fail-closed `Copy-WisSafeDirectoryTree` keširanje u `C:\setup\Cache\Licensing`, pravilno Win32 citiranje (`Format-Win32CommandLineArgument`) i `cmd.exe /d /c`, dok `Invoke-WindowsOfficeActivation` validira `$officeKmsHost` i `$officeProductKey` i sanitizuje statuse. `Start-FinalCleanup` i `NEEDS_ATTENTION` grana brišu `C:\setup\Cache\Licensing` u Fazi 6.
+
+### Backlog Unapređenja (`B1`–`B3`) & Verzionisanje
+- **`B1` — Heartbeat sa veličinom za `.msu`/`.cab` (`UI/Skripte/Modules/WIS.Update.psm1`):** `Install-LocalUpdatePackageFile` izračunava veličinu paketa (`GB`/`MB`/`KB`), na svakih `20s` šalje `Send-IpcStatus` i `Send-IpcProgress` (uz clamp `0..99` kad je definisan `$Global:CurrentProgress`) i na svakih `60s` beleži napredak u log.
+- **`B2` — Responzivni `150% DPI` raspored (`UI/MainWindow.xaml`, `UI/MainWindow.xaml.cs`):** Uvedena metoda `ApplyCompactViewportLayoutIfNeeded()` (povezana na `Loaded` i `SizeChanged`, sa generičkim helperom `FindTaggedElement<T>`) koja za kompaktne visine prozora (`ActualHeight < 760`) prilagođava `ActiveStepBarsScroll` (`MaxHeight = 96.0`), `GlobalProgressCard.Padding` i `OverviewMiddleGrid` `MinHeight`.
+- **`B3` — Podrazumevani `DriversOnly` režim (`UI/Skripte/Modules/WIS.Update.psm1`):** Podrazumevani fallback u `Get-WUConfigMode` kada `[WindowsUpdate] Mode=` nije naveden promenjen je sa `All` na `DriversOnly`.
+- **Verzionisanje:** Root [`version.json`](version.json) i svi sinhronizovani podsistemi podignuti na **`WIS v3.4.1`** / **`ServiceHub v3.6.1`** (`Sync-Versions.py --check` `[PASS]`).
+
+---
+
 ## [v3.4.0] / ServiceHub [v3.6.0] — 2026-11-21
 
 ### UI/UX Redizajn i Live Kokpit (`WIS-TASK-261`, Koraci 1–35)

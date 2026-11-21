@@ -154,6 +154,8 @@ namespace WIS.UI
 
             DataContext = ViewModel;
             EnsureBackgroundWuVisualElements();
+            Loaded += (s, e) => ApplyCompactViewportLayoutIfNeeded();
+            SizeChanged += (s, e) => ApplyCompactViewportLayoutIfNeeded();
 
             // WIS-TASK-188: [Printer] konfiguracija se čita odmah (pre brisanja Wifi-Servis.ini u Fazi 6)
             try { LabelPrinterConfig.Preload(); } catch { }
@@ -2093,20 +2095,81 @@ namespace WIS.UI
             }
         }
 
-        private static bool HasTaggedElement(DependencyObject node, string tagValue)
+        private static T FindTaggedElement<T>(DependencyObject node, string tagValue) where T : FrameworkElement
         {
-            if (node == null) return false;
-            FrameworkElement selfFe = node as FrameworkElement;
+            if (node == null || string.IsNullOrEmpty(tagValue)) return null;
+            T selfFe = node as T;
             if (selfFe != null && string.Equals(Convert.ToString(selfFe.Tag), tagValue, StringComparison.Ordinal))
             {
-                return true;
+                return selfFe;
             }
             foreach (object child in LogicalTreeHelper.GetChildren(node))
             {
                 DependencyObject dep = child as DependencyObject;
-                if (dep != null && HasTaggedElement(dep, tagValue)) return true;
+                if (dep != null)
+                {
+                    T found = FindTaggedElement<T>(dep, tagValue);
+                    if (found != null) return found;
+                }
             }
-            return false;
+            return null;
+        }
+
+        private static bool HasTaggedElement(DependencyObject node, string tagValue)
+        {
+            return FindTaggedElement<FrameworkElement>(node, tagValue) != null;
+        }
+
+        /// <summary>
+        /// Prilagođava visinu srednjeg panela i kartice GlobalProgressCard na manjim ekranima
+        /// (npr. 13.3" 1920x1080 @ 150% DPI ili 1366x768 gde je ActualHeight &lt; 760 DIP)
+        /// kako bi GlobalProgressCard i aktivni koraci ostali u potpunosti vidljivi.
+        /// </summary>
+        private void ApplyCompactViewportLayoutIfNeeded()
+        {
+            try
+            {
+                if (ActualHeight <= 0) return;
+
+                bool isCompact = ActualHeight > 0 && ActualHeight < 760.0;
+                double targetScrollMaxHeight = isCompact ? 96.0 : 160.0;
+                Thickness targetCardPadding = isCompact
+                    ? new Thickness(14, 7, 14, 7)
+                    : new Thickness(14, 10, 14, 10);
+                double targetMiddleMinHeight = isCompact ? 260.0 : 320.0;
+
+                System.Windows.Controls.Border globalCard = FindTaggedElement<System.Windows.Controls.Border>(this, "GlobalProgressCard");
+                if (globalCard != null && globalCard.Padding != targetCardPadding)
+                {
+                    globalCard.Padding = targetCardPadding;
+                }
+
+                System.Windows.Controls.ScrollViewer activeStepsScroll = FindTaggedElement<System.Windows.Controls.ScrollViewer>(this, "ActiveStepBarsScroll");
+                if (activeStepsScroll == null && globalCard != null)
+                {
+                    activeStepsScroll = FindVisualChild<System.Windows.Controls.ScrollViewer>(globalCard);
+                }
+                if (activeStepsScroll != null && Math.Abs(activeStepsScroll.MaxHeight - targetScrollMaxHeight) > 0.1)
+                {
+                    activeStepsScroll.MaxHeight = targetScrollMaxHeight;
+                }
+
+                System.Windows.Controls.Grid middleGrid = FindTaggedElement<System.Windows.Controls.Grid>(this, "OverviewMiddleGrid");
+                if (middleGrid != null)
+                {
+                    System.Windows.Controls.Grid parentGrid = (LogicalTreeHelper.GetParent(middleGrid) ?? VisualTreeHelper.GetParent(middleGrid)) as System.Windows.Controls.Grid;
+                    if (parentGrid != null)
+                    {
+                        int rowIdx = System.Windows.Controls.Grid.GetRow(middleGrid);
+                        if (rowIdx >= 0 && rowIdx < parentGrid.RowDefinitions.Count &&
+                            Math.Abs(parentGrid.RowDefinitions[rowIdx].MinHeight - targetMiddleMinHeight) > 0.1)
+                        {
+                            parentGrid.RowDefinitions[rowIdx].MinHeight = targetMiddleMinHeight;
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         private void EnsureBottomDualProgressCard(
@@ -2296,6 +2359,7 @@ namespace WIS.UI
             var activeStepsHost = new System.Windows.Controls.StackPanel();
             var activeStepsScroll = new System.Windows.Controls.ScrollViewer
             {
+                Tag = "ActiveStepBarsScroll",
                 MaxHeight = 160,
                 VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled,

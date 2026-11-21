@@ -571,15 +571,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.4.0 / ServiceHub v3.6.0 u root version.json i komponentama
+        # 1. Verzije v3.4.1 / ServiceHub v3.6.1 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.4.0")
-        self.assertEqual(root_ver["release_package"]["version"], "3.4.0")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.0")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.0")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.0")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.0")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.0")
+        self.assertEqual(root_ver["version"], "3.4.1")
+        self.assertEqual(root_ver["release_package"]["version"], "3.4.1")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.1")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.1")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.1")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.1")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.1")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -841,7 +841,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.4.0";', result_src)
+        self.assertIn('AppVersion = "3.4.1";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1143,6 +1143,25 @@ class TestHwTestComponents(unittest.TestCase):
         harvest_notify_fn = upd_src.split("function Send-ServisHubHarvestNotify", 1)[1].split("function Copy-FileWithHeartbeat", 1)[0]
         self.assertIn("Get-ServisHubClientToken", harvest_notify_fn)
         self.assertIn("X-ServisHub-Client-Token", harvest_notify_fn)
+
+    def test_wis_task_264_v341_dpi_compact_layout_contract(self):
+        """Proverava Backlog B2 ugovor za 150% DPI / kompaktne ekrane (< 760 DIP) u MainWindow.xaml i MainWindow.xaml.cs."""
+        xaml_src = (ROOT / "UI" / "MainWindow.xaml").read_text(encoding="utf-8")
+        main_cs = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+
+        self.assertIn('<ScrollViewer Tag="ActiveStepBarsScroll" MaxHeight="160"', xaml_src)
+        for tok in (
+            "Loaded += (s, e) => ApplyCompactViewportLayoutIfNeeded();",
+            "SizeChanged += (s, e) => ApplyCompactViewportLayoutIfNeeded();",
+            "private void ApplyCompactViewportLayoutIfNeeded()",
+            "bool isCompact = ActualHeight > 0 && ActualHeight < 760.0;",
+            "double targetScrollMaxHeight = isCompact ? 96.0 : 160.0;",
+            "double targetMiddleMinHeight = isCompact ? 260.0 : 320.0;",
+            'FindTaggedElement<System.Windows.Controls.ScrollViewer>(this, "ActiveStepBarsScroll")',
+            "FindVisualChild<System.Windows.Controls.ScrollViewer>(globalCard);",
+            'Tag = "ActiveStepBarsScroll",',
+        ):
+            self.assertIn(tok, main_cs)
 
 
 if __name__ == "__main__":

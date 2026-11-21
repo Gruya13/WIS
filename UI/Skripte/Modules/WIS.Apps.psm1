@@ -520,8 +520,274 @@ function Test-WindowsActivated {
     return $false
 }
 
-function Test-OfficeActivated {
-    # 1. Provera lokalnih VFS / SPP biblioteka licenciranja (sppc.dll / sppcs.dll)
+function Test-OfficeInstalled {
+    <#
+    .SYNOPSIS
+        Proverava da li je Microsoft Office instaliran na jednoj od 64-bit ili 32-bit C2R/MSI putanja.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $officeExePaths = @(
+        "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+        "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+        "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE",
+        "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE",
+        "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+        "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+        "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
+        "C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE"
+    )
+    foreach ($p in $officeExePaths) {
+        if (Test-Path -LiteralPath $p -ErrorAction SilentlyContinue) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Protect-WisLicenseLogText {
+    <#
+    .SYNOPSIS
+        Maskira 25-karakterne product ključeve u tekstu radi bezbednog logovanja.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Text = ""
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return ""
+    }
+    $masked = $Text -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+    return $masked
+}
+
+function Format-Win32CommandLineArgument {
+    <#
+    .SYNOPSIS
+        Ispravno citira argument za Win32 CommandLineToArgvW (udvostručuje backslash-ove ispred navodnika i na kraju stringa).
+    #>
+    param(
+        [AllowEmptyString()]
+        [AllowNull()]
+        [string]$Value = "",
+        [switch]$AlwaysQuote
+    )
+
+    if ($null -eq $Value) { return '""' }
+    $strVal = [string]$Value
+    $needsQuote = $AlwaysQuote -or ($strVal.Length -eq 0) -or ($strVal -match '[\s"\\''&|<>()^%;]')
+    if (-not $needsQuote) {
+        return $strVal
+    }
+    $escaped = $strVal -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return ('"' + $escaped + '"')
+}
+
+function Copy-WisSafeDirectoryTree {
+    <#
+    .SYNOPSIS
+        Bezbedno rekurzivno kopiranje direktorijuma bez praćenja ReparsePoint (simlink/junction) stavki i neželjenih fajlova.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDir,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationDir
+    )
+
+    $resolvedSrc = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\')
+    $resolvedDst = [System.IO.Path]::GetFullPath($DestinationDir).TrimEnd('\')
+    $dstPrefix = $resolvedDst + '\'
+
+    $srcItem = Get-Item -LiteralPath $resolvedSrc -Force -ErrorAction Stop
+    if (($srcItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Izvorni direktorijum je ReparsePoint (simlink/junction) i odbijen je: $resolvedSrc"
+    }
+    if (-not (Test-Path -LiteralPath $resolvedDst -PathType Container -ErrorAction SilentlyContinue)) {
+        New-Item -Path $resolvedDst -ItemType Directory -Force -ErrorAction Stop | Out-Null
+    }
+
+    $skipFiles = @("thumbs.db", "desktop.ini", ".ds_store")
+    $children = @(Get-ChildItem -LiteralPath $resolvedSrc -Force -ErrorAction Stop)
+    foreach ($child in $children) {
+        if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Preskačem ReparsePoint (simlink/junction) stavku pri keširanju: $($child.FullName)" -Level "WARN" -Component "License"
+            }
+            continue
+        }
+        if ($child.Name -eq "." -or $child.Name -eq ".." -or $child.Name.IndexOfAny([System.IO.Path]::GetInvalidFileNameChars()) -ge 0) {
+            continue
+        }
+        $targetChild = [System.IO.Path]::GetFullPath((Join-Path $resolvedDst $child.Name))
+        if (-not $targetChild.StartsWith($dstPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ($child.PSIsContainer) {
+            Copy-WisSafeDirectoryTree -SourceDir $child.FullName -DestinationDir $targetChild
+        } else {
+            if ($skipFiles -contains $child.Name.ToLowerInvariant()) { continue }
+            Copy-Item -LiteralPath $child.FullName -Destination $targetChild -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Invoke-ProcessStartInfoWithTimeout {
+    <#
+    .SYNOPSIS
+        Interni pomoćnik za bezbedno izvršavanje ProcessStartInfo-a sa asinhronim čitanjem izlaza, timeoutom i taskkill čišćenjem.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [int]$TimeoutSec = 25,
+        [string]$Label = ""
+    )
+
+    $proc = $null
+    $timedOut = $false
+    $exitCode = -1
+    $stdoutText = ""
+    $stderrText = ""
+
+    try {
+        $proc = New-Object System.Diagnostics.Process
+        $proc.StartInfo = $StartInfo
+        if (-not $proc.Start()) {
+            return [PSCustomObject]@{
+                Success  = $false
+                TimedOut = $false
+                ExitCode = -1
+                Output   = "Neuspešno pokretanje procesa: $($StartInfo.FileName)"
+            }
+        }
+
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $waitMs = [math]::Max(1000, ($TimeoutSec * 1000))
+        $exited = $proc.WaitForExit($waitMs)
+
+        if (-not $exited) {
+            $timedOut = $true
+            if ($Label -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+                Write-ServisLog "Proces '$Label' je prekoračio timeout (${TimeoutSec}s). Prekidam stablo procesa (PID=$($proc.Id))..." -Level "WARN" -Component "License"
+            }
+            try {
+                Start-Process -FilePath "taskkill.exe" -ArgumentList "/PID $($proc.Id) /T /F" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+            } catch {}
+            try {
+                if (-not $proc.HasExited) { $proc.Kill() }
+            } catch {}
+            try { $null = $proc.WaitForExit(2000) } catch {}
+        }
+
+        try {
+            if ($stdoutTask.Wait(1500)) { $stdoutText = $stdoutTask.Result }
+        } catch {}
+        try {
+            if ($stderrTask.Wait(1500)) { $stderrText = $stderrTask.Result }
+        } catch {}
+
+        if (-not $timedOut) {
+            try { $exitCode = [int]$proc.ExitCode } catch { $exitCode = -1 }
+        }
+    } catch {
+        $stderrText = $_.Exception.Message
+    } finally {
+        if ($proc) {
+            try { $proc.Dispose() } catch {}
+        }
+    }
+
+    $parts = @()
+    if (-not [string]::IsNullOrWhiteSpace($stdoutText)) { $parts += $stdoutText.Trim() }
+    if (-not [string]::IsNullOrWhiteSpace($stderrText)) { $parts += $stderrText.Trim() }
+    $safeOut = Protect-WisLicenseLogText -Text ($parts -join "`n")
+
+    return [PSCustomObject]@{
+        Success  = ((-not $timedOut) -and ($exitCode -eq 0))
+        TimedOut = $timedOut
+        ExitCode = [int]$exitCode
+        Output   = $safeOut
+    }
+}
+
+function Invoke-CscriptWithTimeout {
+    <#
+    .SYNOPSIS
+        Izvršava VBScript (slmgr.vbs / OSPP.VBS) preko cscript.exe sa strogim timeoutom i sanitizovanim izlazom.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSec = 25
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ScriptPath) -or ($ScriptPath -match '[\r\n\0"]') -or -not (Test-Path -LiteralPath $ScriptPath -PathType Leaf -ErrorAction SilentlyContinue)) {
+        return [PSCustomObject]@{
+            Success  = $false
+            TimedOut = $false
+            ExitCode = -1
+            Output   = "Skripta nije pronađena ili je neispravna putanja: $ScriptPath"
+        }
+    }
+
+    $resolvedScript = [System.IO.Path]::GetFullPath($ScriptPath)
+    $cscriptExe = if (Test-Path -LiteralPath "C:\Windows\System32\cscript.exe" -PathType Leaf -ErrorAction SilentlyContinue) {
+        "C:\Windows\System32\cscript.exe"
+    } else {
+        "cscript.exe"
+    }
+
+    $argTokens = [System.Collections.Generic.List[string]]::new()
+    $argTokens.Add("//nologo")
+    $argTokens.Add((Format-Win32CommandLineArgument -Value $resolvedScript -AlwaysQuote))
+    foreach ($a in $Arguments) {
+        if ($null -ne $a) {
+            $s = [string]$a
+            if (-not [string]::IsNullOrWhiteSpace($s)) {
+                $argTokens.Add((Format-Win32CommandLineArgument -Value $s))
+            }
+        }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $cscriptExe
+    $psi.Arguments = ($argTokens -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = if (Test-Path -LiteralPath "C:\setup" -ErrorAction SilentlyContinue) { "C:\setup" } else { "C:\Windows\System32" }
+
+    return (Invoke-ProcessStartInfoWithTimeout -StartInfo $psi -TimeoutSec $TimeoutSec)
+}
+
+function Get-OfficeLicenseStatus {
+    <#
+    .SYNOPSIS
+        Vraća detaljan status licenciranja Microsoft Office paketa (VFS/SPP, WMI SoftwareLicensingProduct i OSPP.VBS /dstatus).
+    #>
+    [CmdletBinding()]
+    param()
+
+    $statusObj = [PSCustomObject]@{
+        Activated         = $false
+        Method            = "NONE"
+        SkuName           = ""
+        PartialProductKey = ""
+        LicenseStatusText = ""
+        LastErrorCode     = ""
+    }
+
+    # 1. Provera lokalnih VFS / SPP biblioteka licenciranja (sppc.dll / sppcs.dll > 5120 B)
     $vfsSppPaths = @(
         "C:\Program Files\Microsoft Office\root\vfs\System\sppc.dll",
         "C:\Program Files (x86)\Microsoft Office\root\vfs\SystemX86\sppc.dll",
@@ -529,43 +795,331 @@ function Test-OfficeActivated {
         "C:\Program Files\Common Files\Microsoft Shared\OfficeSoftwareProtectionPlatform\sppcs.dll"
     )
     foreach ($dll in $vfsSppPaths) {
-        if (Test-Path $dll) {
+        if (Test-Path -LiteralPath $dll -ErrorAction SilentlyContinue) {
             try {
-                $fItem = Get-Item $dll -ErrorAction SilentlyContinue
+                $fItem = Get-Item -LiteralPath $dll -ErrorAction SilentlyContinue
                 if ($fItem -and $fItem.Length -gt 5120) {
-                    return $true
+                    $statusObj.Activated = $true
+                    $statusObj.Method = "VFS_SPP"
+                    $statusObj.SkuName = "Microsoft Office (VFS/SPP)"
+                    $statusObj.LicenseStatusText = "Licensed (VFS_SPP)"
+                    return $statusObj
                 }
             } catch {}
         }
     }
 
-    # 2. Provera OSPP.VBS statusa (za standardne KMS/MAK/Retail licence)
+    # 2. Provera WMI / CIM SoftwareLicensingProduct za *Office* SKU-ove (razlikuje Licensed=1 od Grace/Notification/Unlicensed)
+    $wmiFallback = $null
+    try {
+        $officeLics = @(Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*Office*" -or $_.Description -like "*Office*" })
+
+        $licensedSku = $officeLics | Where-Object { [int]$_.LicenseStatus -eq 1 } | Select-Object -First 1
+        if ($licensedSku) {
+            $statusObj.Activated = $true
+            $statusObj.Method = "WMI_SPP"
+            $statusObj.SkuName = if ($licensedSku.Name) { [string]$licensedSku.Name } else { [string]$licensedSku.Description }
+            $statusObj.PartialProductKey = if ($licensedSku.PartialProductKey) { [string]$licensedSku.PartialProductKey } else { "" }
+            $statusObj.LicenseStatusText = "Licensed"
+            $statusObj.LastErrorCode = ""
+            return $statusObj
+        }
+
+        if ($officeLics.Count -gt 0) {
+            $firstUnlic = $officeLics | Select-Object -First 1
+            $licCode = [int]$firstUnlic.LicenseStatus
+            $licLabel = switch ($licCode) {
+                0 { "Unlicensed" }
+                1 { "Licensed" }
+                2 { "OOBGrace" }
+                3 { "OOTGrace" }
+                4 { "NonGenuineGrace" }
+                5 { "Notification" }
+                6 { "ExtendedGrace" }
+                default { "Status_$licCode" }
+            }
+            $wmiFallback = [PSCustomObject]@{
+                SkuName           = if ($firstUnlic.Name) { [string]$firstUnlic.Name } else { [string]$firstUnlic.Description }
+                PartialProductKey = if ($firstUnlic.PartialProductKey) { [string]$firstUnlic.PartialProductKey } else { "" }
+                LicenseStatusText = $licLabel
+            }
+        }
+    } catch {}
+
+    # 3. Provera OSPP.VBS /dstatus preko Invoke-CscriptWithTimeout (20s)
     $osppPaths = @(
         "C:\Program Files\Microsoft Office\Office16\OSPP.VBS",
         "C:\Program Files\Microsoft Office\root\Office16\OSPP.VBS",
         "C:\Program Files (x86)\Microsoft Office\Office16\OSPP.VBS",
         "C:\Program Files (x86)\Microsoft Office\root\Office16\OSPP.VBS"
     )
-    $ospp = $osppPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+    $ospp = $osppPaths | Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
     if ($ospp) {
         try {
-            $out = (cscript //nologo $ospp /dstatus 2>$null) -join "`n"
-            if ($out -match "LICENSE STATUS:\s+---LICENSED---") {
-                return $true
+            $dstatusRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/dstatus") -TimeoutSec 20
+            if ($dstatusRes.TimedOut) {
+                $statusObj.Method = "OSPP_TIMEOUT"
+                $statusObj.LicenseStatusText = "OSPP.VBS /dstatus timeout (20s)"
+                if ($wmiFallback) {
+                    $statusObj.SkuName = $wmiFallback.SkuName
+                    $statusObj.PartialProductKey = $wmiFallback.PartialProductKey
+                }
+                return $statusObj
+            }
+
+            $outText = [string]$dstatusRes.Output
+            if (-not [string]::IsNullOrWhiteSpace($outText)) {
+                $blocks = @($outText -split '-{5,}')
+                $parsedBlocks = [System.Collections.Generic.List[object]]::new()
+                foreach ($blk in $blocks) {
+                    if ([string]::IsNullOrWhiteSpace($blk)) { continue }
+                    $sku = ""
+                    if ($blk -match '(?mi)LICENSE NAME:\s*(.+)') {
+                        $sku = $matches[1].Trim()
+                    } elseif ($blk -match '(?mi)SKU(?:\s+ID)?:\s*(.+)') {
+                        $sku = $matches[1].Trim()
+                    }
+                    $licStat = ""
+                    if ($blk -match '(?mi)LICENSE STATUS:\s*(.+)') {
+                        $licStat = $matches[1].Trim()
+                    }
+                    $pKey = ""
+                    if ($blk -match '(?mi)Last 5 characters of installed product key:\s*([A-Z0-9]{5})') {
+                        $pKey = $matches[1].Trim()
+                    }
+                    $errCode = ""
+                    if ($blk -match '(?mi)ERROR CODE:\s*(0x[0-9A-Fa-f]+|-?\d+)') {
+                        $errCode = $matches[1].Trim()
+                    }
+                    $errDesc = ""
+                    if ($blk -match '(?mi)ERROR DESCRIPTION:\s*(.+)') {
+                        $errDesc = $matches[1].Trim()
+                    }
+                    if ($sku -or $licStat -or $pKey -or $errCode) {
+                        $isLicensedBlk = ($licStat -match '(?i)---LICENSED---')
+                        $parsedBlocks.Add([PSCustomObject]@{
+                            Activated = $isLicensedBlk
+                            SkuName   = $sku
+                            Partial   = $pKey
+                            StatusTxt = $licStat
+                            ErrCode   = $errCode
+                            ErrDesc   = $errDesc
+                        })
+                    }
+                }
+
+                $winBlk = $parsedBlocks | Where-Object { $_.Activated } | Select-Object -First 1
+                if ($winBlk) {
+                    $statusObj.Activated = $true
+                    $statusObj.Method = "OSPP"
+                    $statusObj.SkuName = $winBlk.SkuName
+                    $statusObj.PartialProductKey = $winBlk.Partial
+                    $statusObj.LicenseStatusText = $winBlk.StatusTxt
+                    $statusObj.LastErrorCode = ""
+                    return $statusObj
+                }
+
+                $bestFailBlk = $parsedBlocks | Where-Object { -not [string]::IsNullOrWhiteSpace($_.ErrCode) } | Select-Object -First 1
+                if (-not $bestFailBlk) {
+                    $bestFailBlk = $parsedBlocks | Select-Object -First 1
+                }
+                if ($bestFailBlk) {
+                    $statusObj.Activated = $false
+                    $statusObj.Method = "OSPP"
+                    $statusObj.SkuName = if ($bestFailBlk.SkuName) { $bestFailBlk.SkuName } elseif ($wmiFallback) { $wmiFallback.SkuName } else { "" }
+                    $statusObj.PartialProductKey = if ($bestFailBlk.Partial) { $bestFailBlk.Partial } elseif ($wmiFallback) { $wmiFallback.PartialProductKey } else { "" }
+                    $statusTxtOut = $bestFailBlk.StatusTxt
+                    if ($bestFailBlk.ErrDesc) {
+                        $statusTxtOut = if ($statusTxtOut) { "$statusTxtOut ($($bestFailBlk.ErrDesc))" } else { $bestFailBlk.ErrDesc }
+                    }
+                    $statusObj.LicenseStatusText = Protect-WisLicenseLogText -Text $statusTxtOut
+                    $statusObj.LastErrorCode = $bestFailBlk.ErrCode
+                    return $statusObj
+                }
             }
         } catch {}
     }
 
-    # 3. Provera WMI / CIM SoftwareLicensingProduct (za KMS/MAK/Retail licence)
-    try {
-        $c2rLic = Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "PartialProductKey IS NOT NULL" -ErrorAction SilentlyContinue |
-            Where-Object { ($_.Name -like "*Office*" -or $_.Description -like "*Office*") -and $_.LicenseStatus -eq 1 }
-        if ($c2rLic) {
-            return $true
-        }
-    } catch {}
+    if ($wmiFallback) {
+        $statusObj.Activated = $false
+        $statusObj.Method = "WMI_SPP"
+        $statusObj.SkuName = $wmiFallback.SkuName
+        $statusObj.PartialProductKey = $wmiFallback.PartialProductKey
+        $statusObj.LicenseStatusText = $wmiFallback.LicenseStatusText
+        return $statusObj
+    }
 
-    return $false
+    return $statusObj
+}
+
+function Test-OfficeActivated {
+    try {
+        $st = Get-OfficeLicenseStatus
+        return [bool]($st -and $st.Activated)
+    } catch {
+        return $false
+    }
+}
+
+function Get-WisLicensingSettingsLocal {
+    <#
+    .SYNOPSIS
+        Čita [Licensing] podešavanja iz WIS.Core ili preko bezbednog lokalnog INI fallback parsera.
+    #>
+    [CmdletBinding()]
+    param()
+
+    if (Get-Command Get-ServisLicensingSettings -ErrorAction SilentlyContinue) {
+        try {
+            $coreLic = Get-ServisLicensingSettings
+            if ($coreLic) {
+                $rawCoreMode = if ($coreLic.PSObject.Properties['OfficeActivationMode']) { [string]$coreLic.OfficeActivationMode } else { "Auto" }
+                $normCoreMode = switch -Regex ($rawCoreMode.Trim()) {
+                    '(?i)^kms$'          { "Kms" }
+                    '(?i)^mak$'          { "Mak" }
+                    '(?i)^externalhook$' { "ExternalHook" }
+                    '(?i)^skip$'         { "Skip" }
+                    default              { "Auto" }
+                }
+                $portVal = 1688
+                if ($coreLic.PSObject.Properties['OfficeKmsPort'] -and $coreLic.OfficeKmsPort) {
+                    try {
+                        $parsedPort = [int]$coreLic.OfficeKmsPort
+                        if ($parsedPort -gt 0 -and $parsedPort -le 65535) { $portVal = $parsedPort }
+                    } catch {}
+                }
+                return [PSCustomObject]@{
+                    Found                = [bool]$coreLic.Found
+                    IniPath              = [string]$coreLic.IniPath
+                    OfficeActivationMode = $normCoreMode
+                    OfficeKmsHost        = if ($coreLic.PSObject.Properties['OfficeKmsHost']) { ([string]$coreLic.OfficeKmsHost).Trim() } else { "" }
+                    OfficeKmsPort        = $portVal
+                    OfficeProductKey     = if ($coreLic.PSObject.Properties['OfficeProductKey']) { ([string]$coreLic.OfficeProductKey).Trim() } else { "" }
+                }
+            }
+        } catch {}
+    }
+
+    $officeActivationMode = "Auto"
+    $officeKmsHost = ""
+    $officeKmsPort = 1688
+    $officeProductKey = ""
+    $foundSection = $false
+
+    $licIniCandidates = @(
+        "C:\setup\Wifi-Servis.ini",
+        "C:\setup\Skripte\Wifi-Servis.ini"
+    )
+    if ($Global:LocalSetupDir) {
+        $licIniCandidates += (Join-Path $Global:LocalSetupDir "Wifi-Servis.ini")
+    }
+    if ($Global:SourceRoot) {
+        $licIniCandidates += (Join-Path $Global:SourceRoot "Wifi-Servis.ini")
+        $licIniCandidates += (Join-Path $Global:SourceRoot "Skripte\Wifi-Servis.ini")
+    }
+    if ($PSScriptRoot) {
+        $licIniCandidates += (Join-Path $PSScriptRoot "Wifi-Servis.ini")
+        $licIniCandidates += (Join-Path (Split-Path $PSScriptRoot -Parent) "Wifi-Servis.ini")
+    }
+    $licIniPath = $licIniCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+    if ($licIniPath) {
+        try {
+            $iniLines = Get-Content -LiteralPath $licIniPath -Encoding UTF8 -ErrorAction SilentlyContinue
+            $inLicensingSection = $false
+            foreach ($rawLine in $iniLines) {
+                $line = $rawLine.Trim()
+                if (-not $line -or $line.StartsWith(";") -or $line.StartsWith("#")) { continue }
+                if ($line.StartsWith("[") -and $line.EndsWith("]")) {
+                    $secName = $line.Substring(1, $line.Length - 2).Trim()
+                    $inLicensingSection = ($secName -ieq "Licensing")
+                    if ($inLicensingSection) { $foundSection = $true }
+                    continue
+                }
+                if ($inLicensingSection -and $line -match '^\s*([^=]+)=(.*)$') {
+                    $k = $matches[1].Trim()
+                    $v = $matches[2].Trim()
+                    if ($k -ieq "OfficeActivationMode" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $officeActivationMode = switch -Regex ($v) {
+                            '(?i)^kms$'          { "Kms" }
+                            '(?i)^mak$'          { "Mak" }
+                            '(?i)^externalhook$' { "ExternalHook" }
+                            '(?i)^skip$'         { "Skip" }
+                            default              { "Auto" }
+                        }
+                    } elseif ($k -ieq "OfficeKmsHost" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $officeKmsHost = $v
+                    } elseif ($k -ieq "OfficeKmsPort" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        try {
+                            $pNum = [int]$v
+                            if ($pNum -gt 0 -and $pNum -le 65535) { $officeKmsPort = $pNum }
+                        } catch {}
+                    } elseif ($k -ieq "OfficeProductKey" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $officeProductKey = $v
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    return [PSCustomObject]@{
+        Found                = $foundSection
+        IniPath              = if ($licIniPath) { [string]$licIniPath } else { "" }
+        OfficeActivationMode = $officeActivationMode
+        OfficeKmsHost        = $officeKmsHost
+        OfficeKmsPort        = [int]$officeKmsPort
+        OfficeProductKey     = $officeProductKey
+    }
+}
+
+function Write-WisLicenseStatusFile {
+    <#
+    .SYNOPSIS
+        Atomično upisuje sažetak statusa licenciranja u C:\setup\license-status.json (UTF-8 bez BOM-a, bez ključeva).
+    #>
+    [CmdletBinding()]
+    param(
+        [bool]$WindowsActivated,
+        [bool]$OfficeInstalled,
+        [bool]$OfficeActivated,
+        [string]$OfficeActivationMode = "Auto",
+        [string]$OfficeLicenseMethod = "NONE",
+        [string]$OfficeLicenseDetail = "",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+
+    $safeDetail = Protect-WisLicenseLogText -Text $OfficeLicenseDetail
+    $tsIso = (Get-Date).ToString("o")
+    $statusMap = [ordered]@{
+        windows_activated      = [bool]$WindowsActivated
+        office_installed       = [bool]$OfficeInstalled
+        office_activated       = [bool]$OfficeActivated
+        office_activation_mode = [string]$OfficeActivationMode
+        office_license_method  = [string]$OfficeLicenseMethod
+        office_license_detail  = [string]$safeDetail
+        timestamp              = $tsIso
+    }
+
+    $targets = @("C:\setup")
+    if ($LocalSetupDir -and ($targets -notcontains $LocalSetupDir)) {
+        $targets += $LocalSetupDir
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $jsonPayload = ConvertTo-Json -InputObject $statusMap -Depth 4
+
+    foreach ($dirPath in $targets) {
+        try {
+            if (-not (Test-Path -LiteralPath $dirPath -ErrorAction SilentlyContinue)) {
+                New-Item -Path $dirPath -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            $destPath = Join-Path $dirPath "license-status.json"
+            $tmpPath = "$destPath.tmp"
+            [System.IO.File]::WriteAllText($tmpPath, $jsonPayload, $utf8NoBom)
+            Move-Item -LiteralPath $tmpPath -Destination $destPath -Force -ErrorAction Stop
+        } catch {}
+    }
+
+    return $statusMap
 }
 
 function Test-BatteryPresent {
@@ -704,12 +1258,14 @@ function Get-WisAppPresence {
             $wordPaths = @(
                 "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
                 "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
-                "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE"
+                "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE",
+                "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE"
             )
             $excelPaths = @(
                 "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
                 "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
-                "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE"
+                "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
+                "C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE"
             )
             $wPath = $wordPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
             $ePath = $excelPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -814,10 +1370,12 @@ function Get-WisAppPresence {
                              (Test-Path "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")
             $wordInstalled = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
                              (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
-                             (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE")
+                             (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or `
+                             (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE")
             $excelInstalled = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
                               (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or `
-                              (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE")
+                              (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE") -or `
+                              (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE")
 
             if ($acroInstalled)  { $expectedShortcuts.Add("Adobe Acrobat.lnk") }
             if ($wordInstalled)  { $expectedShortcuts.Add("Word.lnk") }
@@ -894,25 +1452,26 @@ function Get-WisAppPresence {
 
         '(?i)^(Activation|WindowsActivation|OfficeActivation)$' {
             $winAct = Test-WindowsActivated
-            $hasOffice = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
-                         (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
-                         (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or `
-                         (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE") -or `
-                         (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
-                         (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") -or `
-                         (Test-Path "C:\Program Files\Microsoft Office\Office16\EXCEL.EXE") -or `
-                         (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE")
-            $offAct = if ($hasOffice) { Test-OfficeActivated } else { $true }
+            $hasOffice = Test-OfficeInstalled
+            $licCfg = Get-WisLicensingSettingsLocal
+            $licMode = if ($licCfg -and $licCfg.OfficeActivationMode) { [string]$licCfg.OfficeActivationMode } else { "Auto" }
+            $officeSkipped = ($licMode -ieq "Skip")
 
-            $result.WindowsActivated = $winAct
+            $offStatus = if ($hasOffice) { Get-OfficeLicenseStatus } else { $null }
+            $offAct = if ($hasOffice) { [bool]($offStatus -and $offStatus.Activated) } else { $true }
+
+            $result.WindowsActivated     = $winAct
             $result.OfficeInstalled  = $hasOffice
-            $result.OfficeActivated  = $offAct
+            $result.OfficeActivated      = $offAct
+            $result.OfficeActivationMode = $licMode
 
-            if ($winAct -and $offAct) {
-                $msg = if ($hasOffice) {
+            if ($winAct -and ($offAct -or $officeSkipped)) {
+                $msg = if (-not $hasOffice) {
+                    "Windows je trajno licenciran i aktiviran (Office nije instaliran)"
+                } elseif ($offAct) {
                     "Windows i Microsoft Office su trajno licencirani i aktivirani"
                 } else {
-                    "Windows je trajno licenciran i aktiviran (Office nije instaliran)"
+                    "Windows je trajno licenciran i aktiviran (Office aktivacija preskočena: OfficeActivationMode=Skip)"
                 }
                 $result.Installed = $true
                 $result.Done      = $true
@@ -921,7 +1480,32 @@ function Get-WisAppPresence {
             } else {
                 $parts = @()
                 if (-not $winAct) { $parts += "Windows nije aktiviran" }
-                if ($hasOffice -and -not $offAct) { $parts += "Office nije aktiviran" }
+                if ($hasOffice -and -not $offAct -and -not $officeSkipped) {
+                    $offDetailInfo = ""
+                    if ($offStatus) {
+                        if (-not [string]::IsNullOrWhiteSpace($offStatus.LastErrorCode)) {
+                            $offDetailInfo = "$($offStatus.Method) $($offStatus.LastErrorCode)"
+                        } elseif (-not [string]::IsNullOrWhiteSpace($offStatus.LicenseStatusText)) {
+                            $offDetailInfo = $offStatus.LicenseStatusText
+                        }
+                    }
+                    if ([string]::IsNullOrWhiteSpace($offDetailInfo) -and (Test-Path -LiteralPath "C:\setup\license-status.json" -ErrorAction SilentlyContinue)) {
+                        try {
+                            $lsRaw = Get-Content -LiteralPath "C:\setup\license-status.json" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                            if ($lsRaw) {
+                                $lsObj = ConvertFrom-Json -InputObject $lsRaw -ErrorAction SilentlyContinue
+                                if ($lsObj -and $lsObj.office_license_detail) {
+                                    $offDetailInfo = Protect-WisLicenseLogText -Text ([string]$lsObj.office_license_detail)
+                                }
+                            }
+                        } catch {}
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($offDetailInfo)) {
+                        $parts += "Office nije aktiviran ($offDetailInfo)"
+                    } else {
+                        $parts += "Office nije aktiviran"
+                    }
+                }
                 $msg = $parts -join "; "
                 $result.Message   = $msg
                 $result.Reason    = $msg
@@ -953,6 +1537,8 @@ function Test-AllServisProgramsInstalled {
     if (-not $dotnetRes.Installed)  { $missingList.Add("Microsoft .NET Runtime") }
     if ($bbRes.Required -and -not $bbRes.Installed) { $missingList.Add("BatteryBar (Laptop)") }
 
+    $offLicStatus = if ($officeRes.Installed) { Get-OfficeLicenseStatus } else { $null }
+
     $results = @{
         Chrome               = $chromeRes
         WinRAR               = $winrarRes
@@ -961,7 +1547,14 @@ function Test-AllServisProgramsInstalled {
         DotNet               = $dotnetRes
         BatteryBar           = $bbRes
         WindowsActivation    = @{ Activated = (Test-WindowsActivated) }
-        OfficeActivation     = @{ Activated = (Test-OfficeActivated) }
+        OfficeActivation     = @{
+            Activated         = if ($offLicStatus) { [bool]$offLicStatus.Activated } else { $false }
+            Method            = if ($offLicStatus) { [string]$offLicStatus.Method } else { "NotInstalled" }
+            SkuName           = if ($offLicStatus) { [string]$offLicStatus.SkuName } else { "" }
+            PartialProductKey = if ($offLicStatus) { [string]$offLicStatus.PartialProductKey } else { "" }
+            LicenseStatusText = if ($offLicStatus) { [string]$offLicStatus.LicenseStatusText } else { "" }
+            LastErrorCode     = if ($offLicStatus) { [string]$offLicStatus.LastErrorCode } else { "" }
+        }
         AllRequiredInstalled = ($missingList.Count -eq 0)
         MissingList          = $missingList
     }
@@ -2979,6 +3572,237 @@ function Wait-OfficeInstallationReady {
     return $false
 }
 
+function Invoke-ServisExternalLicensingHook {
+    <#
+    .SYNOPSIS
+        Bezbedno lokalno kešira i izvršava eksterni radionički hook za licenciranje sa 180s timeoutom i sanitizacijom logova.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptPath,
+        [string]$ProgramiDir = "C:\setup\Programi",
+        [bool]$OfficeInstalled = $false,
+        [bool]$WinActivated = $false,
+        [bool]$OffActivated = $false,
+        [int]$TimeoutSec = 180
+    )
+
+    $failHookResult = {
+        param([string]$ErrMessage)
+        return [PSCustomObject]@{
+            Success          = $false
+            TimedOut         = $false
+            ExitCode         = -1
+            Output           = $ErrMessage
+            TailSummary      = $ErrMessage
+            CachedScriptPath = ""
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($ScriptPath) -or ($ScriptPath -match '[\r\n\0"%]') -or -not (Test-Path -LiteralPath $ScriptPath -PathType Leaf -ErrorAction SilentlyContinue)) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Eksterni licensing hook nije pronađen ili ima nedozvoljenu putanju: $ScriptPath" -Level "WARN" -Component "License"
+        }
+        return (& $failHookResult "Skripta nije pronađena ili ima nedozvoljenu putanju")
+    }
+
+    $resolvedScriptPath = ""
+    try {
+        $resolvedScriptPath = [System.IO.Path]::GetFullPath($ScriptPath)
+        $scriptItem = Get-Item -LiteralPath $resolvedScriptPath -Force -ErrorAction Stop
+        if (($scriptItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Odbijen eksterni licensing hook jer je fajl ReparsePoint (simlink/junction): $resolvedScriptPath" -Level "WARN" -Component "License"
+            }
+            return (& $failHookResult "Fajl je ReparsePoint")
+        }
+    } catch {
+        return (& $failHookResult "Neispravna putanja hook-a: $($_.Exception.Message)")
+    }
+
+    $ext = [System.IO.Path]::GetExtension($resolvedScriptPath).ToLowerInvariant()
+    if (@(".ps1", ".cmd", ".bat") -notcontains $ext) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Odbijen eksterni licensing hook sa nedozvoljenom ekstenzijom ($ext): $resolvedScriptPath" -Level "WARN" -Component "License"
+        }
+        return (& $failHookResult "Nedozvoljena ekstenzija hook skripte: $ext")
+    }
+
+    $rawCacheRoot = if (Test-Path -LiteralPath "C:\setup" -PathType Container -ErrorAction SilentlyContinue) {
+        "C:\setup\Cache\Licensing"
+    } else {
+        Join-Path $env:TEMP "WIS\Cache\Licensing"
+    }
+    $cacheRoot = [System.IO.Path]::GetFullPath($rawCacheRoot).TrimEnd('\')
+    $cacheRootPrefix = $cacheRoot + '\'
+
+    $resolvedParentDir = [System.IO.Path]::GetFullPath((Split-Path -Path $resolvedScriptPath -Parent)).TrimEnd('\')
+    $parentLeaf = Split-Path -Path $resolvedParentDir -Leaf
+    $scriptName = Split-Path -Path $resolvedScriptPath -Leaf
+
+    if ([string]::IsNullOrWhiteSpace($scriptName) -or ($scriptName -eq ".") -or ($scriptName -eq "..") -or ($scriptName -match '[:\\/"%\r\n\0]')) {
+        return (& $failHookResult "Neispravno ime fajla skripte")
+    }
+
+    $alreadyInCache = $resolvedParentDir.Equals($cacheRoot, [System.StringComparison]::OrdinalIgnoreCase) -or $resolvedParentDir.StartsWith($cacheRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+
+    $effectiveWorkDir = ""
+    $effectiveScriptPath = ""
+
+    if ($alreadyInCache) {
+        try {
+            $cacheParentItem = Get-Item -LiteralPath $resolvedParentDir -Force -ErrorAction Stop
+            if (($cacheParentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                return (& $failHookResult "Keširani direktorijum je ReparsePoint")
+            }
+        } catch {
+            return (& $failHookResult "Neuspešna provera keširanog direktorijuma")
+        }
+        $effectiveWorkDir = $resolvedParentDir
+        $effectiveScriptPath = $resolvedScriptPath
+    } else {
+        $pathRoot = [System.IO.Path]::GetPathRoot($resolvedParentDir)
+        if ([string]::IsNullOrWhiteSpace($parentLeaf) -or ($parentLeaf -eq ".") -or ($parentLeaf -eq "..") -or ($parentLeaf -match '[:\\/"%\r\n\0]') -or ($resolvedParentDir.Equals($pathRoot.TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase))) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Odbijeno keširanje licensing hook-a iz nevalidnog/root direktorijuma: $resolvedParentDir" -Level "WARN" -Component "License"
+            }
+            return (& $failHookResult "Nedozvoljen izvorni direktorijum za keširanje hook-a")
+        }
+
+        $targetFolder = [System.IO.Path]::GetFullPath((Join-Path $cacheRoot $parentLeaf)).TrimEnd('\')
+        if (-not $targetFolder.StartsWith($cacheRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Detektovan pokušaj izlaska van keš korena pri keširanju hook-a: $targetFolder" -Level "WARN" -Component "License"
+            }
+            return (& $failHookResult "Path traversal detektovan pri keširanju hook-a")
+        }
+
+        try {
+            if (-not (Test-Path -LiteralPath $cacheRoot -PathType Container -ErrorAction SilentlyContinue)) {
+                New-Item -Path $cacheRoot -ItemType Directory -Force -ErrorAction Stop | Out-Null
+            }
+            if (Test-Path -LiteralPath $targetFolder -ErrorAction SilentlyContinue) {
+                Remove-Item -LiteralPath $targetFolder -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Copy-WisSafeDirectoryTree -SourceDir $resolvedParentDir -DestinationDir $targetFolder
+
+            $candidateLocal = [System.IO.Path]::GetFullPath((Join-Path $targetFolder $scriptName))
+            if (-not $candidateLocal.StartsWith($cacheRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "Ciljna putanja izlazi van keš direktorijuma: $candidateLocal"
+            }
+            if (-not (Test-Path -LiteralPath $candidateLocal -PathType Leaf -ErrorAction SilentlyContinue)) {
+                Copy-Item -LiteralPath $resolvedScriptPath -Destination $candidateLocal -Force -ErrorAction Stop
+            }
+            if (-not (Test-Path -LiteralPath $candidateLocal -PathType Leaf -ErrorAction SilentlyContinue)) {
+                throw "Keširani fajl skripte ne postoji nakon kopiranja: $candidateLocal"
+            }
+            $effectiveScriptPath = $candidateLocal
+            $effectiveWorkDir = $targetFolder
+        } catch {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Neuspešno bezbedno lokalno keširanje licensing hook-a '$scriptName': $($_.Exception.Message)" -Level "WARN" -Component "License"
+            }
+            return (& $failHookResult "Neuspešno lokalno keširanje licensing hook-a: $($_.Exception.Message)")
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($effectiveWorkDir) -or ($effectiveWorkDir -like "\\*") -or -not ($effectiveScriptPath.StartsWith($cacheRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) -or -not (Test-Path -LiteralPath $effectiveWorkDir -PathType Container -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath $effectiveScriptPath -PathType Leaf -ErrorAction SilentlyContinue)) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Prekinuto izvršavanje licensing hook-a: lokalna keširana putanja nije validna ($effectiveScriptPath)." -Level "WARN" -Component "License"
+        }
+        return (& $failHookResult "Lokalna keširana putanja hook-a nije validna")
+    }
+
+    # Skidanje MOTW i :Zone.Identifier sa svih keširanih fajlova (strogo preko -LiteralPath)
+    try {
+        Get-ChildItem -LiteralPath $effectiveWorkDir -Recurse -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if (($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) {
+                try { Unblock-File -LiteralPath $_.FullName -ErrorAction SilentlyContinue } catch {}
+                try {
+                    $zonePath = "$($_.FullName):Zone.Identifier"
+                    if (Test-Path -LiteralPath $zonePath -ErrorAction SilentlyContinue) {
+                        Remove-Item -LiteralPath $zonePath -Force -ErrorAction SilentlyContinue
+                    }
+                } catch {}
+            }
+        }
+    } catch {}
+    try { Unblock-File -LiteralPath $effectiveScriptPath -ErrorAction SilentlyContinue } catch {}
+    try {
+        $zoneMain = "$($effectiveScriptPath):Zone.Identifier"
+        if (Test-Path -LiteralPath $zoneMain -ErrorAction SilentlyContinue) {
+            Remove-Item -LiteralPath $zoneMain -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    if ($ext -ieq ".ps1") {
+        $psExe = Join-Path $PSHOME "powershell.exe"
+        if (-not (Test-Path -LiteralPath $psExe -PathType Leaf -ErrorAction SilentlyContinue)) {
+            $psExe = "powershell.exe"
+        }
+        $psi.FileName = $psExe
+        $quotedScript = Format-Win32CommandLineArgument -Value $effectiveScriptPath -AlwaysQuote
+        $progArg = if ($ProgramiDir) { ($ProgramiDir -replace '[\r\n\0]', '') } else { "C:\setup\Programi" }
+        $quotedProg = Format-Win32CommandLineArgument -Value $progArg -AlwaysQuote
+        $psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File $quotedScript -ProgramiDir $quotedProg"
+    } elseif ($ext -ieq ".cmd" -or $ext -ieq ".bat") {
+        if ($effectiveScriptPath -match '[&|<>^%!"]') {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Odbijen batch licensing hook zbog nedozvoljenih karaktera u putanji: $scriptName" -Level "WARN" -Component "License"
+            }
+            return (& $failHookResult "Nedozvoljeni karakteri u putanji batch skripte")
+        }
+        $comSpec = if ($env:ComSpec -and (Test-Path -LiteralPath $env:ComSpec -PathType Leaf -ErrorAction SilentlyContinue)) {
+            $env:ComSpec
+        } else {
+            "C:\Windows\System32\cmd.exe"
+        }
+        $psi.FileName = $comSpec
+        $psi.Arguments = "/d /c `"`"$effectiveScriptPath`"`""
+    } else {
+        return (& $failHookResult "Nepodržana ekstenzija skripte: $ext")
+    }
+
+    $psi.WorkingDirectory = $effectiveWorkDir
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.EnvironmentVariables["WIS_PROGRAMI_DIR"] = if ($ProgramiDir) { $ProgramiDir } else { "C:\setup\Programi" }
+    $psi.EnvironmentVariables["WIS_OFFICE_INSTALLED"] = if ($OfficeInstalled) { "1" } else { "0" }
+    $psi.EnvironmentVariables["WIS_WIN_ACTIVATED"] = if ($WinActivated) { "1" } else { "0" }
+    $psi.EnvironmentVariables["WIS_OFF_ACTIVATED"] = if ($OffActivated) { "1" } else { "0" }
+
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        Write-ServisLog "Pokrećem eksterni licensing hook '$scriptName' iz lokalne putanje ($effectiveWorkDir, Timeout=${TimeoutSec}s)..." -Level "STEP" -Component "License"
+    }
+
+    $procRes = Invoke-ProcessStartInfoWithTimeout -StartInfo $psi -TimeoutSec $TimeoutSec -Label $scriptName
+    $timedOut = [bool]$procRes.TimedOut
+    $exitCode = [int]$procRes.ExitCode
+    $safeOutput = [string]$procRes.Output
+
+    $tailLines = @($safeOutput -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Last 3)
+    $tailSummary = $tailLines -join " | "
+
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        $hookLevel = if ($timedOut) { "WARN" } elseif ($exitCode -eq 0) { "INFO" } else { "WARN" }
+        $tailPart = if ($tailSummary) { " | Izlaz: $tailSummary" } else { "" }
+        Write-ServisLog "Eksterni licensing hook '$scriptName' završen (ExitCode=$exitCode, TimedOut=$timedOut)$tailPart" -Level $hookLevel -Component "License"
+    }
+
+    return [PSCustomObject]@{
+        Success          = [bool]$procRes.Success
+        TimedOut         = $timedOut
+        ExitCode         = $exitCode
+        Output           = $safeOutput
+        TailSummary      = $tailSummary
+        CachedScriptPath = $effectiveScriptPath
+    }
+}
+
 function Invoke-WindowsOfficeActivation {
     param(
         [string]$ProgramiDir = ""
@@ -3000,188 +3824,387 @@ function Invoke-WindowsOfficeActivation {
         Write-ServisLog "Proveravam status sistemskih licenci za Windows i Office..." -Level "INFO" -Component "License"
     }
 
-    # Opcioni post-install hook iz eksternog skladišta (Programi\CustomScripts\*.ps1) ako postoji
-    $customScriptDirs = @()
-    if ($ProgramiDir) {
-        $customScriptDirs += (Join-Path $ProgramiDir "CustomScripts")
-    }
-    $customScriptDirs += "C:\setup\Programi\CustomScripts"
-    if ($Global:SourceRoot) {
-        $customScriptDirs += (Join-Path $Global:SourceRoot "Programi\CustomScripts")
-    }
-    foreach ($csDir in ($customScriptDirs | Select-Object -Unique)) {
-        if ($csDir -and (Test-Path $csDir)) {
-            $scripts = Get-ChildItem -Path $csDir -Filter "*.ps1" -File -ErrorAction SilentlyContinue
-            foreach ($sc in $scripts) {
-                try {
-                    Unblock-File -Path $sc.FullName -ErrorAction SilentlyContinue
-                    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sc.FullName -ProgramiDir $ProgramiDir
-                } catch {}
-            }
-            break
-        }
+    # 1. Detekcija prisustva Office-a i obavezno čekanje registracije PRE bilo kog pokušaja aktivacije ili hooka
+    $hasOffice = Test-OfficeInstalled
+    if ($hasOffice) {
+        $null = Wait-OfficeInstallationReady -TimeoutSec 45
     }
 
-    # Očitavanje BIOS OA3x OEM ključa ako sistem još nije aktiviran
+    # 2. Čitanje [Licensing] konfiguracije iz Wifi-Servis.ini (preko WIS.Core ako je dostupan, uz lokalni fallback)
+    $licSettings = Get-WisLicensingSettingsLocal
+    $officeActivationMode = if ($licSettings -and $licSettings.OfficeActivationMode) { [string]$licSettings.OfficeActivationMode } else { "Auto" }
+    $officeKmsHost = if ($licSettings -and $licSettings.OfficeKmsHost) { ([string]$licSettings.OfficeKmsHost).Trim() } else { "" }
+    $officeKmsPort = if ($licSettings -and $licSettings.OfficeKmsPort -gt 0) { [int]$licSettings.OfficeKmsPort } else { 1688 }
+    $officeProductKey = if ($licSettings -and $licSettings.OfficeProductKey) { ([string]$licSettings.OfficeProductKey).Trim() } else { "" }
+    $officeSkipped = ($officeActivationMode -ieq "Skip")
+
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        $cfgFoundTxt = if ($licSettings -and $licSettings.Found) { "Da ($($licSettings.IniPath))" } else { "Ne (podrazumevano)" }
+        $kmsTxt = if ($officeKmsHost) { "${officeKmsHost}:$officeKmsPort" } else { "nije podešen" }
+        $keyTxt = if ($officeProductKey.Length -ge 25) { "konfigurisan (maskiran)" } else { "nije podešen" }
+        Write-ServisLog "Konfiguracija [Licensing]: Pronađeno=$cfgFoundTxt | OfficeActivationMode=$officeActivationMode | KMS=$kmsTxt | ProductKey=$keyTxt" -Level "INFO" -Component "License"
+    }
+
+    # 3. Provera i buđenje Windows Software Protection servisa (sppsvc) pre slmgr.vbs / OSPP.VBS poziva
+    try {
+        $sppSvc = Get-Service -Name "sppsvc" -ErrorAction SilentlyContinue
+        if ($sppSvc -and $sppSvc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Servis Software Protection (sppsvc) je u stanju '$($sppSvc.Status)'. Pokrećem servis..." -Level "INFO" -Component "License"
+            }
+            Start-Service -Name "sppsvc" -ErrorAction SilentlyContinue
+            $sppSw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ($sppSw.Elapsed.TotalSeconds -lt 5) {
+                $sppSvc.Refresh()
+                if ($sppSvc.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                    break
+                }
+                Start-Sleep -Milliseconds 300
+            }
+        }
+    } catch {}
+
+    # 4. Očitavanje BIOS OA3x OEM ključa ako Windows još nije aktiviran
     $winActive = Test-WindowsActivated
     if (-not $winActive) {
         try {
             $sls = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction SilentlyContinue
             if ($sls -and -not [string]::IsNullOrWhiteSpace($sls.OA3xOriginalProductKey)) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Detektovan ugrađeni UEFI/BIOS OA3x OEM ključ. Primenjujem sistemsku licencu..." -Level "INFO" -Component "License"
+                    Write-ServisLog "Detektovan ugrađeni UEFI/BIOS OA3x OEM ključ. Primenjujem sistemsku Windows licencu..." -Level "INFO" -Component "License"
                 }
-                & cscript.exe //nologo C:\Windows\System32\slmgr.vbs /ipk $sls.OA3xOriginalProductKey >$null 2>&1
-                & cscript.exe //nologo C:\Windows\System32\slmgr.vbs /ato >$null 2>&1
+                $slmgrPath = "C:\Windows\System32\slmgr.vbs"
+                $ipkRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ipk", $sls.OA3xOriginalProductKey) -TimeoutSec 25
+                $atoRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ato") -TimeoutSec 25
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    $ipkTxt = if ($ipkRes.Output) { ($ipkRes.Output -replace '\r?\n', ' ').Trim() } else { "bez izlaza" }
+                    $atoTxt = if ($atoRes.Output) { ($atoRes.Output -replace '\r?\n', ' ').Trim() } else { "bez izlaza" }
+                    Write-ServisLog "Windows OA3x rezultat: /ipk ExitCode=$($ipkRes.ExitCode) ($ipkTxt) | /ato ExitCode=$($atoRes.ExitCode) ($atoTxt)" -Level "INFO" -Component "License"
+                }
                 $winActive = Test-WindowsActivated
             }
         } catch {}
     }
 
-    $hasOffice = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or `
-                 (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or `
-                 (Test-Path "C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") -or `
-                 (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE")
-    $offActive = if ($hasOffice) { Test-OfficeActivated } else { $true }
+    $offStatus = if ($hasOffice) { Get-OfficeLicenseStatus } else { $null }
+    $offActive = if ($hasOffice) { [bool]($offStatus -and $offStatus.Activated) } else { $true }
 
-    # 1. Standardna Office Volume/KMS/MAK aktivacija preko OSPP.VBS ako Office jos nije aktiviran
-    if ($hasOffice -and -not $offActive) {
+    $appliedAttemptMethod = ""
+    $lastOsppErrorCode = ""
+    $lastOsppErrorDesc = ""
+    $lastHookExitCode = $null
+    $lastHookTail = ""
+
+    # 5. Standardna Office Volume/KMS/MAK aktivacija preko OSPP.VBS
+    if ($hasOffice -and $officeSkipped) {
+        $appliedAttemptMethod = "Skip"
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Microsoft Office nije aktiviran. Proveravam standardnu Office OSPP licencu..." -Level "STEP" -Component "License"
+            Write-ServisLog "OfficeActivationMode=Skip je aktivan — preskačem aktivaciju Microsoft Office-a po konfiguraciji." -Level "INFO" -Component "License"
         }
-        $null = Wait-OfficeInstallationReady -TimeoutSec 45
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "Office aktivacija preskočena (OfficeActivationMode=Skip)." -Level "INFO" -Tag "[License]" -Phase 4
+        }
+    } elseif ($hasOffice -and -not $offActive -and ($officeActivationMode -in @("Auto", "Kms", "Mak"))) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Microsoft Office nije aktiviran (početni status: $($offStatus.Method) / $($offStatus.LicenseStatusText)). Pokušavam standardnu OSPP aktivaciju (Mod=$officeActivationMode)..." -Level "STEP" -Component "License"
+        }
         $osppPaths = @(
             "C:\Program Files\Microsoft Office\Office16\OSPP.VBS",
             "C:\Program Files\Microsoft Office\root\Office16\OSPP.VBS",
             "C:\Program Files (x86)\Microsoft Office\Office16\OSPP.VBS",
             "C:\Program Files (x86)\Microsoft Office\root\Office16\OSPP.VBS"
         )
-        $ospp = $osppPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+        $ospp = $osppPaths | Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
         if ($ospp) {
-            $officeKmsHost = ""
-            $officeProductKey = ""
-            $licIniCandidates = @(
-                "C:\setup\Wifi-Servis.ini",
-                "C:\setup\Skripte\Wifi-Servis.ini"
-            )
-            if ($Global:LocalSetupDir) {
-                $licIniCandidates += (Join-Path $Global:LocalSetupDir "Wifi-Servis.ini")
-            }
-            if ($PSScriptRoot) {
-                $licIniCandidates += (Join-Path $PSScriptRoot "Wifi-Servis.ini")
-            }
-            $licIniPath = $licIniCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
-            if ($licIniPath) {
-                try {
-                    $iniLines = Get-Content -LiteralPath $licIniPath -Encoding UTF8 -ErrorAction SilentlyContinue
-                    $inLicensingSection = $false
-                    foreach ($rawLine in $iniLines) {
-                        $line = $rawLine.Trim()
-                        if (-not $line -or $line.StartsWith(";") -or $line.StartsWith("#")) { continue }
-                        if ($line.StartsWith("[") -and $line.EndsWith("]")) {
-                            $secName = $line.Substring(1, $line.Length - 2).Trim()
-                            $inLicensingSection = ($secName -ieq "Licensing")
-                            continue
-                        }
-                        if ($inLicensingSection -and $line -match '^\s*([^=]+)=(.*)$') {
-                            $k = $matches[1].Trim()
-                            $v = $matches[2].Trim()
-                            if ($k -ieq "OfficeKmsHost" -and -not [string]::IsNullOrWhiteSpace($v)) {
-                                $officeKmsHost = $v
-                            } elseif ($k -ieq "OfficeProductKey" -and -not [string]::IsNullOrWhiteSpace($v)) {
-                                $officeProductKey = $v
-                            }
-                        }
-                    }
-                } catch {}
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($officeKmsHost)) {
-                try {
-                    & cscript.exe //nologo $ospp "/sethst:$officeKmsHost" >$null 2>&1
+            if (($officeActivationMode -in @("Auto", "Kms")) -and -not [string]::IsNullOrWhiteSpace($officeKmsHost)) {
+                if ($officeKmsHost -match '^[A-Za-z0-9._:-]+$') {
+                    $appliedAttemptMethod = "KMS"
+                    $sethstRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/sethst:$officeKmsHost") -TimeoutSec 25
+                    $setprtRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/setprt:$officeKmsPort") -TimeoutSec 25
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Primenjen lokalni Office KMS host iz konfiguracije ([Licensing])." -Level "INFO" -Component "License"
+                        $shMsg = ($sethstRes.Output -replace '\r?\n', ' ').Trim()
+                        $spMsg = ($setprtRes.Output -replace '\r?\n', ' ').Trim()
+                        Write-ServisLog "Primenjen Office KMS host (${officeKmsHost}:$officeKmsPort): /sethst ExitCode=$($sethstRes.ExitCode) ($shMsg) | /setprt ExitCode=$($setprtRes.ExitCode) ($spMsg)" -Level "INFO" -Component "License"
                     }
-                } catch {}
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($officeProductKey) -and $officeProductKey.Trim().Length -ge 25) {
-                try {
-                    & cscript.exe //nologo $ospp "/inpkey:$($officeProductKey.Trim())" >$null 2>&1
+                } else {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Primenjen legalni Office MAK/Volume ključ iz lokalne konfiguracije ([Licensing])." -Level "INFO" -Component "License"
-                    }
-                } catch {}
-            }
-
-            try {
-                & cscript.exe //nologo $ospp /act >$null 2>&1
-                Start-Sleep -Seconds 2
-                $offActive = Test-OfficeActivated
-            } catch {}
-        }
-    }
-
-    # 2. Opcioni eksterni radionicki hook za licenciranje iz Programi\Licensing (van Git repozitorijuma)
-    if (-not $winActive -or ($hasOffice -and -not $offActive)) {
-        $customLicCandidates = @()
-        if ($ProgramiDir) {
-            $customLicCandidates += (Join-Path $ProgramiDir "Licensing\Invoke-CustomLicensing.ps1")
-            $customLicCandidates += (Join-Path $ProgramiDir "Licensing\CustomLicense.cmd")
-        }
-        $customLicCandidates += "C:\setup\Programi\Licensing\Invoke-CustomLicensing.ps1"
-        $customLicCandidates += "C:\setup\Programi\Licensing\CustomLicense.cmd"
-        if ($Global:SourceRoot) {
-            $customLicCandidates += (Join-Path $Global:SourceRoot "Programi\Licensing\Invoke-CustomLicensing.ps1")
-            $customLicCandidates += (Join-Path $Global:SourceRoot "Programi\Licensing\CustomLicense.cmd")
-        }
-        $customLicScript = $customLicCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-        if ($customLicScript) {
-            Unblock-File -Path $customLicScript -ErrorAction SilentlyContinue
-            Remove-Item -Path "$($customLicScript):Zone.Identifier" -ErrorAction SilentlyContinue
-            if ($customLicScript.EndsWith(".ps1", [System.StringComparison]::OrdinalIgnoreCase)) {
-                try {
-                    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $customLicScript -ProgramiDir $ProgramiDir
-                } catch {
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Upozorenje pri eksternom licensing hook-u (.ps1): $($_.Exception.Message)" -Level "WARN" -Component "License"
+                        Write-ServisLog "Ignorisan nevalidan OfficeKmsHost u [Licensing] konfiguraciji (dozvoljeni su samo A-Za-z0-9._:-)." -Level "WARN" -Component "License"
                     }
                 }
-            } else {
-                $comSpec = if ($env:ComSpec) { $env:ComSpec } else { "cmd.exe" }
-                $licWorkDir = Split-Path $customLicScript -Parent
-                $licRunner = {
-                    param($cmdFile, $wDir)
-                    $effWork = if ($wDir -and -not ($wDir -like "\\*") -and (Test-Path $wDir)) { $wDir } else { "C:\setup" }
-                    $procLic = Start-Process -FilePath $comSpec -ArgumentList "/c `"`"$cmdFile`"`"" -WorkingDirectory $effWork -Wait -WindowStyle Hidden -PassThru
-                    if ($procLic) { return $procLic.ExitCode }
-                    return 0
-                }
-                $null = Invoke-InstallerWithLocalFallback -AppName "CustomLicensing" -InstallerPath $customLicScript -WorkingDirectory $licWorkDir -IsDirectoryPackage -PackageSourceDir $licWorkDir -CustomExecution $licRunner -VerificationCheck {
-                    (Test-WindowsActivated) -and ((-not $hasOffice) -or (Test-OfficeActivated))
+            }
+
+            if (($officeActivationMode -in @("Auto", "Mak")) -and -not [string]::IsNullOrWhiteSpace($officeProductKey) -and $officeProductKey.Length -ge 25) {
+                if ($officeProductKey -match '^[A-Za-z0-9-]+$') {
+                    $appliedAttemptMethod = if ($appliedAttemptMethod) { "$appliedAttemptMethod+MAK" } else { "MAK" }
+                    $inpRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/inpkey:$officeProductKey") -TimeoutSec 25
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        $inpMsg = ($inpRes.Output -replace '\r?\n', ' ').Trim()
+                        Write-ServisLog "Primenjen Office MAK/Volume ključ iz [Licensing]: /inpkey ExitCode=$($inpRes.ExitCode) ($inpMsg)" -Level "INFO" -Component "License"
+                    }
+                } else {
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Ignorisan nevalidan OfficeProductKey format u [Licensing] konfiguraciji (dozvoljeni su samo A-Za-z0-9-)." -Level "WARN" -Component "License"
+                    }
                 }
             }
+
+            $actRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/act") -TimeoutSec 25
+            $actOut = [string]$actRes.Output
+            if (-not $appliedAttemptMethod) {
+                $appliedAttemptMethod = "OSPP"
+            }
+
+            if ($actOut -match '(?mi)ERROR CODE:\s*(0x[0-9A-Fa-f]+|-?\d+)') {
+                $lastOsppErrorCode = $matches[1].Trim()
+            }
+            if ($actOut -match '(?mi)ERROR DESCRIPTION:\s*(.+)') {
+                $lastOsppErrorDesc = Protect-WisLicenseLogText -Text $matches[1].Trim()
+            }
+            $actSuccMatch = ($actOut -match '(?i)Product activation successful')
+
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                $actSummary = if ($actRes.TimedOut) {
+                    "OSPP.VBS /act je prekoračio timeout (25s)."
+                } elseif ($actSuccMatch) {
+                    "OSPP.VBS /act: Product activation successful."
+                } elseif ($lastOsppErrorCode) {
+                    "OSPP.VBS /act greška: $lastOsppErrorCode $(if ($lastOsppErrorDesc) { '(' + $lastOsppErrorDesc + ')' } else { '' })"
+                } else {
+                    $cleanAct = ($actOut -replace '\r?\n', ' ').Trim()
+                    if ($cleanAct.Length -gt 240) { $cleanAct = $cleanAct.Substring(0, 240) + "..." }
+                    "OSPP.VBS /act ExitCode=$($actRes.ExitCode): $cleanAct"
+                }
+                Write-ServisLog $actSummary -Level $(if ($actSuccMatch) { "SUCCESS" } else { "INFO" }) -Component "License"
+            }
+
             Start-Sleep -Seconds 2
+            $offStatus = Get-OfficeLicenseStatus
+            $offActive = [bool]($offStatus -and $offStatus.Activated)
+        } else {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "OSPP.VBS nije pronađen na očekivanim Office putanjama." -Level "WARN" -Component "License"
+            }
         }
     }
 
+    # 6. Eksterni radionički hook (Programi\Licensing i Programi\CustomScripts) + NAS Sync fallback
+    $needsExternalHook = ((-not $winActive) -or ($hasOffice -and -not $offActive -and -not $officeSkipped)) -and ($officeActivationMode -in @("Auto", "ExternalHook"))
+    if ($needsExternalHook) {
+        $hookBaseDirs = [System.Collections.Generic.List[string]]::new()
+        foreach ($candBase in @($ProgramiDir, "C:\setup\Programi")) {
+            if ($candBase -and (-not $hookBaseDirs.Contains($candBase))) {
+                $hookBaseDirs.Add($candBase)
+            }
+        }
+        if ($Global:SourceRoot) {
+            $srcProgDir = Join-Path $Global:SourceRoot "Programi"
+            if (-not $hookBaseDirs.Contains($srcProgDir)) {
+                $hookBaseDirs.Add($srcProgDir)
+            }
+        }
+        $licCacheDir = "C:\setup\Cache\Licensing"
+        if (-not $hookBaseDirs.Contains($licCacheDir)) {
+            $hookBaseDirs.Add($licCacheDir)
+        }
+
+        $findHooksInBases = {
+            param([string[]]$Bases)
+            $foundLic = $null
+            $foundCs = @()
+            foreach ($b in $Bases) {
+                if ([string]::IsNullOrWhiteSpace($b) -or -not (Test-Path -LiteralPath $b -ErrorAction SilentlyContinue)) { continue }
+                if (-not $foundLic) {
+                    $c1 = Join-Path $b "Licensing\Invoke-CustomLicensing.ps1"
+                    $c2 = Join-Path $b "Licensing\CustomLicense.cmd"
+                    if (Test-Path -LiteralPath $c1 -ErrorAction SilentlyContinue) { $foundLic = $c1 }
+                    elseif (Test-Path -LiteralPath $c2 -ErrorAction SilentlyContinue) { $foundLic = $c2 }
+                }
+                if ($foundCs.Count -eq 0) {
+                    $csSub = Join-Path $b "CustomScripts"
+                    if (Test-Path -LiteralPath $csSub -ErrorAction SilentlyContinue) {
+                        $psList = @(Get-ChildItem -Path $csSub -Filter "*.ps1" -File -ErrorAction SilentlyContinue)
+                        if ($psList.Count -gt 0) {
+                            $foundCs = $psList
+                        }
+                    }
+                }
+                if ($foundLic -and $foundCs.Count -gt 0) { break }
+            }
+            return [PSCustomObject]@{
+                LicensingHookPath  = $foundLic
+                CustomScriptFiles  = $foundCs
+            }
+        }
+
+        $discoveredHooks = & $findHooksInBases $hookBaseDirs.ToArray()
+        if (-not $discoveredHooks.LicensingHookPath -and $discoveredHooks.CustomScriptFiles.Count -eq 0) {
+            if (Get-Command Sync-ServisLicensingFromNas -ErrorAction SilentlyContinue) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Lokalni licensing hook nije pronađen. Pokušavam sinhronizaciju sa NAS-a (Sync-ServisLicensingFromNas)..." -Level "INFO" -Component "License"
+                }
+                try {
+                    $syncLicRes = Sync-ServisLicensingFromNas -DestinationDir "C:\setup\Cache\Licensing"
+                    if ($syncLicRes -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+                        Write-ServisLog "NAS licensing sync: Synced=$($syncLicRes.Synced), HasLicensingDir=$($syncLicRes.HasLicensingDir), HasCustomScriptsDir=$($syncLicRes.HasCustomScriptsDir)" -Level "INFO" -Component "License"
+                    }
+                } catch {}
+                $discoveredHooks = & $findHooksInBases @("C:\setup\Cache\Licensing")
+            }
+        }
+
+        if ($discoveredHooks.LicensingHookPath) {
+            $appliedAttemptMethod = "ExternalHook"
+            $hookRes = Invoke-ServisExternalLicensingHook -ScriptPath $discoveredHooks.LicensingHookPath -ProgramiDir $ProgramiDir -OfficeInstalled $hasOffice -WinActivated $winActive -OffActivated $offActive -TimeoutSec 180
+            $lastHookExitCode = $hookRes.ExitCode
+            $lastHookTail = $hookRes.TailSummary
+            Start-Sleep -Seconds 2
+            $winActive = Test-WindowsActivated
+            if ($hasOffice -and -not $officeSkipped) {
+                $offStatus = Get-OfficeLicenseStatus
+                $offActive = [bool]($offStatus -and $offStatus.Activated)
+            }
+        }
+
+        $stillNeedsHook = (-not $winActive) -or ($hasOffice -and -not $offActive -and -not $officeSkipped)
+        if ($stillNeedsHook -and $discoveredHooks.CustomScriptFiles.Count -gt 0) {
+            $appliedAttemptMethod = "ExternalHook"
+            foreach ($sc in $discoveredHooks.CustomScriptFiles) {
+                $csRes = Invoke-ServisExternalLicensingHook -ScriptPath $sc.FullName -ProgramiDir $ProgramiDir -OfficeInstalled $hasOffice -WinActivated $winActive -OffActivated $offActive -TimeoutSec 180
+                $lastHookExitCode = $csRes.ExitCode
+                $lastHookTail = $csRes.TailSummary
+                Start-Sleep -Seconds 2
+                $winActive = Test-WindowsActivated
+                if ($hasOffice -and -not $officeSkipped) {
+                    $offStatus = Get-OfficeLicenseStatus
+                    $offActive = [bool]($offStatus -and $offStatus.Activated)
+                }
+                if ($winActive -and ((-not $hasOffice) -or $officeSkipped -or $offActive)) {
+                    break
+                }
+            }
+        }
+
+        if (-not $discoveredHooks.LicensingHookPath -and $discoveredHooks.CustomScriptFiles.Count -eq 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Nije pronađen nijedan eksterni licensing hook (Licensing\Invoke-CustomLicensing.ps1, CustomLicense.cmd ili CustomScripts\*.ps1) ni lokalno ni na NAS-u." -Level "INFO" -Component "License"
+            }
+        }
+    }
+
+    # 7. Završna evaluacija i strukturirani podaci (bez ključeva)
     $winActive = Test-WindowsActivated
-    $offActive = if ($hasOffice) { Test-OfficeActivated } else { $true }
-    $overallSuccess = $winActive -and $offActive
+    if ($hasOffice) {
+        $offStatus = Get-OfficeLicenseStatus
+        $offActive = [bool]($offStatus -and $offStatus.Activated)
+    } else {
+        $offStatus = $null
+        $offActive = $true
+    }
+
+    $officeMethod = "NONE"
+    $officeDetail = ""
+    if (-not $hasOffice) {
+        $officeMethod = "NotInstalled"
+        $officeDetail = "Microsoft Office nije instaliran"
+    } elseif ($offActive) {
+        $officeMethod = if ($offStatus -and $offStatus.Method -and $offStatus.Method -ne "NONE") { [string]$offStatus.Method } elseif ($appliedAttemptMethod) { $appliedAttemptMethod } else { "Activated" }
+        $skuPart = if ($offStatus -and $offStatus.SkuName) { $offStatus.SkuName } else { "Microsoft Office" }
+        $statPart = if ($offStatus -and $offStatus.LicenseStatusText) { $offStatus.LicenseStatusText } else { "Licensed" }
+        $officeDetail = Protect-WisLicenseLogText -Text "$skuPart ($statPart)"
+    } elseif ($officeSkipped) {
+        $officeMethod = "Skip"
+        $officeDetail = "Office aktivacija preskočena (OfficeActivationMode=Skip)"
+    } else {
+        $officeMethod = if ($offStatus -and $offStatus.Method -and $offStatus.Method -ne "NONE") { [string]$offStatus.Method } elseif ($appliedAttemptMethod) { $appliedAttemptMethod } else { "NONE" }
+        $errCodeEff = if ($offStatus -and -not [string]::IsNullOrWhiteSpace($offStatus.LastErrorCode)) {
+            [string]$offStatus.LastErrorCode
+        } elseif (-not [string]::IsNullOrWhiteSpace($lastOsppErrorCode)) {
+            $lastOsppErrorCode
+        } else {
+            ""
+        }
+        $detailParts = [System.Collections.Generic.List[string]]::new()
+        if ($errCodeEff) {
+            $detailParts.Add("OSPP $errCodeEff")
+        }
+        if ($lastOsppErrorDesc) {
+            $detailParts.Add($lastOsppErrorDesc)
+        } elseif ($offStatus -and -not [string]::IsNullOrWhiteSpace($offStatus.LicenseStatusText)) {
+            $detailParts.Add([string]$offStatus.LicenseStatusText)
+        }
+        if ($null -ne $lastHookExitCode) {
+            $hookInfo = "ExternalHook ExitCode=$lastHookExitCode"
+            if ($lastHookTail) { $hookInfo += " ($lastHookTail)" }
+            $detailParts.Add($hookInfo)
+        } elseif (-not $officeKmsHost -and ($officeProductKey.Length -lt 25)) {
+            $detailParts.Add("nema podešenog KMS hosta/ključa u [Licensing] niti eksternog hooka")
+        }
+        $officeDetail = Protect-WisLicenseLogText -Text ($detailParts -join " — ")
+        if ([string]::IsNullOrWhiteSpace($officeDetail)) {
+            $officeDetail = "Office nije aktiviran (Mod=$officeActivationMode)"
+        }
+    }
+
+    $effectiveOfficeOk = (-not $hasOffice) -or $offActive -or $officeSkipped
+    $overallSuccess = $winActive -and $effectiveOfficeOk
+
+    $setupTargetDir = if ($Global:LocalSetupDir) { $Global:LocalSetupDir } else { "C:\setup" }
+    $writtenStatus = Write-WisLicenseStatusFile `
+        -WindowsActivated ([bool]$winActive) `
+        -OfficeInstalled ([bool]$hasOffice) `
+        -OfficeActivated ([bool]$offActive) `
+        -OfficeActivationMode $officeActivationMode `
+        -OfficeLicenseMethod $officeMethod `
+        -OfficeLicenseDetail $officeDetail `
+        -LocalSetupDir $setupTargetDir
 
     if (Get-Command Write-DiagnosticEvent -ErrorAction SilentlyContinue) {
-        Write-DiagnosticEvent -Event "LICENSE_CHECK_RESULT" -App "License" -Status $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Data @{ WindowsActivated = [bool]$winActive; OfficeInstalled = [bool]$hasOffice; OfficeActivated = [bool]$offActive } -Component "License"
-    }
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Status sistemskih licenci: WindowsActivated=$winActive, OfficeActivated=$offActive" -Level $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Component "License"
-    }
-    if (Get-Command Update-ServisUI -ErrorAction SilentlyContinue) {
-        Update-ServisUI -AppId "License" -AppStatus $(if ($overallSuccess) { "OK" } else { "WARN" }) -StatusMessage $(if ($overallSuccess) { "OEM i sistemske licence potvrđene" } else { "Potrebna provera licence" })
+        Write-DiagnosticEvent -Event "LICENSE_CHECK_RESULT" -App "License" -Status $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Data ([ordered]@{
+            windows_activated      = [bool]$winActive
+            office_installed       = [bool]$hasOffice
+            office_activated       = [bool]$offActive
+            office_activation_mode = [string]$officeActivationMode
+            office_license_method  = [string]$officeMethod
+            office_license_detail  = [string]$writtenStatus.office_license_detail
+            timestamp              = [string]$writtenStatus.timestamp
+        }) -Component "License"
     }
 
+    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+        Write-ServisLog "Status sistemskih licenci: WindowsActivated=$winActive, OfficeInstalled=$hasOffice, OfficeActivated=$offActive, Mode=$officeActivationMode, Method=$officeMethod, Detail=$($writtenStatus.office_license_detail)" -Level $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Component "License"
+    }
+
+    if ($hasOffice -and -not $offActive -and -not $officeSkipped) {
+        $actionMsg = "Office nije aktiviran: $($writtenStatus.office_license_detail)"
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog $actionMsg -Level "WARN" -Component "License"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message $actionMsg -Level "WARN" -Tag "[License]" -Phase 4
+        }
+    }
+
+    if (Get-Command Update-ServisUI -ErrorAction SilentlyContinue) {
+        $uiLicMsg = if ($overallSuccess) {
+            if ($officeSkipped -and $hasOffice) { "Windows licenca potvrđena (Office: Skip)" } else { "OEM i sistemske licence potvrđene" }
+        } else {
+            "Potrebna provera licence ($($writtenStatus.office_license_detail))"
+        }
+        Update-ServisUI -AppId "License" -AppStatus $(if ($overallSuccess) { "OK" } else { "WARN" }) -StatusMessage $uiLicMsg
+    }
+
+    $officeDashTxt = if (-not $hasOffice) {
+        "[OK] Nije instaliran"
+    } elseif ($offActive) {
+        "[OK] Licenciran"
+    } elseif ($officeSkipped) {
+        "[OK] Preskočeno (Skip)"
+    } else {
+        "[!] Nije aktiviran ($($writtenStatus.office_license_detail))"
+    }
     $actLogs = @(
         "Zavrsni Windows status: $(if ($winActive) { '[OK] Licenciran' } else { '[!] Nije aktiviran' })",
-        "Zavrsni Office status:  $(if (-not $hasOffice) { '[OK] Nije instaliran' } elseif ($offActive) { '[OK] Licenciran' } else { '[!] Nije aktiviran' })"
+        "Zavrsni Office status:  $officeDashTxt"
     )
     if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
         Show-ServisDashboard -LiveStatus "Provera sistemskih licenci zavrsena." -SubLogs $actLogs
@@ -4548,8 +5571,30 @@ function Invoke-Phase4Apps {
     }
 
     $appsStatusMap["License"] = if ($stepActivation.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    $licStatusFile = Join-Path $LocalSetupDir "license-status.json"
+    if ($stepActivation.State -eq "SKIPPED_DONE" -and -not (Test-Path -LiteralPath $licStatusFile -ErrorAction SilentlyContinue)) {
+        try {
+            $skipWinAct = Test-WindowsActivated
+            $skipHasOff = Test-OfficeInstalled
+            $skipOffSt = if ($skipHasOff) { Get-OfficeLicenseStatus } else { $null }
+            $skipOffAct = if ($skipHasOff) { [bool]($skipOffSt -and $skipOffSt.Activated) } else { $true }
+            $skipCfg = Get-WisLicensingSettingsLocal
+            $skipMode = if ($skipCfg -and $skipCfg.OfficeActivationMode) { [string]$skipCfg.OfficeActivationMode } else { "Auto" }
+            $skipMethod = if (-not $skipHasOff) { "NotInstalled" } elseif ($skipOffAct -and $skipOffSt) { [string]$skipOffSt.Method } elseif ($skipMode -ieq "Skip") { "Skip" } else { "NONE" }
+            $skipDetailTxt = if ($stepActivation.Reason) { [string]$stepActivation.Reason } else { "Već licencirano" }
+            $null = Write-WisLicenseStatusFile -WindowsActivated $skipWinAct -OfficeInstalled $skipHasOff -OfficeActivated $skipOffAct -OfficeActivationMode $skipMode -OfficeLicenseMethod $skipMethod -OfficeLicenseDetail $skipDetailTxt -LocalSetupDir $LocalSetupDir
+        } catch {}
+    }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        $licDetail = if ($stepActivation.State -eq "SKIPPED_DONE") { "Već licencirano" } elseif ($stepActivation.State -eq "OK") { "Verifikovano" } else { "Best-Effort nastavak" }
+        $licDetail = if ($stepActivation.Reason) {
+            Protect-WisLicenseLogText -Text ([string]$stepActivation.Reason)
+        } elseif ($stepActivation.State -eq "SKIPPED_DONE") {
+            "Već licencirano"
+        } elseif ($stepActivation.State -eq "OK") {
+            "Verifikovano"
+        } else {
+            "Best-Effort nastavak"
+        }
         Send-IpcAppUpdate -AppId "License" -Status $appsStatusMap["License"] -Detail $licDetail
     }
     }
@@ -4572,7 +5617,8 @@ function Invoke-Phase4Apps {
         $retryOk = ([bool]$presenceCheck.Installed) -or $stepOk
 
         if ($retryOk) {
-            $okDetail = if ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Instalacija uspešno verifikovana" }
+            $okDetailRaw = if ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Instalacija uspešno verifikovana" }
+            $okDetail = Protect-WisLicenseLogText -Text $okDetailRaw
             if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
                 Send-IpcAppUpdate -AppId $retryCanonicalAppId -Status "OK" -Detail $okDetail
             }
@@ -4582,7 +5628,8 @@ function Invoke-Phase4Apps {
             $global:LASTEXITCODE = 0
             return
         } else {
-            $failDetail = if ($presenceCheck.Reason) { [string]$presenceCheck.Reason } elseif ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Verifikacija nakon instalacije nije uspela" }
+            $failDetailRaw = if ($presenceCheck.Reason) { [string]$presenceCheck.Reason } elseif ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Verifikacija nakon instalacije nije uspela" }
+            $failDetail = Protect-WisLicenseLogText -Text $failDetailRaw
             if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
                 Send-IpcAppUpdate -AppId $retryCanonicalAppId -Status "ERROR" -Detail $failDetail
             }
@@ -4674,6 +5721,10 @@ Export-ModuleMember -Function `
     Create-ServisShortcuts, `
     Set-AcrobatDefaultPDF, `
     Test-WindowsActivated, `
+    Test-OfficeInstalled, `
+    Protect-WisLicenseLogText, `
+    Invoke-CscriptWithTimeout, `
+    Get-OfficeLicenseStatus, `
     Test-OfficeActivated, `
     Test-AllServisProgramsInstalled, `
     Get-WisAppPresence, `
@@ -4681,6 +5732,7 @@ Export-ModuleMember -Function `
     Install-AllServisPrograms, `
     Set-BatteryBarConfiguration, `
     Wait-OfficeInstallationReady, `
+    Invoke-ServisExternalLicensingHook, `
     Invoke-WindowsOfficeActivation, `
     Invoke-AppsPhase, `
     Invoke-Phase4Apps, `

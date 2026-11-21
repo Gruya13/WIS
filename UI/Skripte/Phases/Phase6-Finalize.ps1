@@ -385,6 +385,41 @@ try {
 
     $isSensorUnavailable = ($stressStatus -eq "UNKNOWN") -or (-not $sensorAvailable) -or ($maxCpuTemp -le 0.0)
 
+    # Učitavanje strukturiranog statusa licenciranja iz C:\setup\license-status.json (ako postoji, bez ključeva)
+    $licSummary = $null
+    foreach ($licCand in @(
+        (Join-Path $LocalSetupDir "license-status.json"),
+        "C:\setup\license-status.json",
+        (Join-Path $SystemLogDir "license-status.json")
+    )) {
+        if ($licCand -and (Test-Path -LiteralPath $licCand -ErrorAction SilentlyContinue)) {
+            try {
+                $rawLic = Get-Content -LiteralPath $licCand -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($rawLic) {
+                    $parsedLic = ConvertFrom-Json -InputObject $rawLic -ErrorAction SilentlyContinue
+                    if ($parsedLic) {
+                        $rawDet = if ($parsedLic.office_license_detail) { "$($parsedLic.office_license_detail)".Trim() } else { "" }
+                        $safeDet = $rawDet -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+                        $licWin = [bool]$parsedLic.windows_activated
+                        $licOffInst = [bool]$parsedLic.office_installed
+                        $licOffAct = [bool]$parsedLic.office_activated
+                        $licMode = if ($parsedLic.office_activation_mode) { "$($parsedLic.office_activation_mode)".Trim() } else { "" }
+                        $licMethod = if ($parsedLic.office_license_method) { "$($parsedLic.office_license_method)".Trim() } else { "" }
+                        $licSummary = [ordered]@{
+                            windows_activated      = $licWin
+                            office_installed       = $licOffInst
+                            office_activated       = $licOffAct
+                            office_activation_mode = $licMode
+                            office_license_method  = $licMethod
+                            office_license_detail  = $safeDet
+                        }
+                        break
+                    }
+                }
+            } catch {}
+        }
+    }
+
     $diagnosticsContract = Get-WisDiagnosticsContract -Status $stressStatus -SensorAvailable $sensorAvailable -MaxCpuTemp $maxCpuTemp -EmergencyAbort $emergencyAbort
     $finalTelemetryData = @{
         diagnostics_status = $diagnosticsContract.diagnostics_status
@@ -395,6 +430,24 @@ try {
         sensor_available = [bool]$sensorAvailable
         anti_leak_verified = [bool]$antiLeakVerified
         handover_ready = (-not $blockHandover)
+    }
+    if ($null -ne $licSummary) {
+        $finalTelemetryData["windows_activated"] = $licSummary.windows_activated
+        $finalTelemetryData["office_installed"] = $licSummary.office_installed
+        $finalTelemetryData["office_activated"] = $licSummary.office_activated
+        $finalTelemetryData["office_activation_mode"] = $licSummary.office_activation_mode
+        $finalTelemetryData["office_license_method"] = $licSummary.office_license_method
+        $finalTelemetryData["office_license_detail"] = $licSummary.office_license_detail
+        $finalTelemetryData["licenses"] = [ordered]@{
+            windows                = $licSummary.windows_activated
+            office                 = $licSummary.office_activated
+            windows_activated      = $licSummary.windows_activated
+            office_installed       = $licSummary.office_installed
+            office_activated       = $licSummary.office_activated
+            office_activation_mode = $licSummary.office_activation_mode
+            office_license_method  = $licSummary.office_license_method
+            office_license_detail  = $licSummary.office_license_detail
+        }
     }
     if ($thermalNote) {
         $finalTelemetryData["thermal_note"] = $thermalNote
@@ -463,6 +516,24 @@ try {
             $kMap["thermal_note"]        = $thermalNote
             $kMap["notes"]               = $notesList
             $kMap["stress_test"]         = $stressSubMap
+            if ($null -ne $licSummary) {
+                $kMap["windows_activated"] = $licSummary.windows_activated
+                $kMap["office_installed"] = $licSummary.office_installed
+                $kMap["office_activated"] = $licSummary.office_activated
+                $kMap["office_activation_mode"] = $licSummary.office_activation_mode
+                $kMap["office_license_method"] = $licSummary.office_license_method
+                $kMap["office_license_detail"] = $licSummary.office_license_detail
+                $kMap["licenses"] = [ordered]@{
+                    windows                = $licSummary.windows_activated
+                    office                 = $licSummary.office_activated
+                    windows_activated      = $licSummary.windows_activated
+                    office_installed       = $licSummary.office_installed
+                    office_activated       = $licSummary.office_activated
+                    office_activation_mode = $licSummary.office_activation_mode
+                    office_license_method  = $licSummary.office_license_method
+                    office_license_detail  = $licSummary.office_license_detail
+                }
+            }
             if (Get-Command Get-WisBenchmarkSummary -ErrorAction SilentlyContinue) {
                 try {
                     $benchSummary = Get-WisBenchmarkSummary -LocalSetupDir $LocalSetupDir
@@ -479,6 +550,7 @@ try {
 
             try {
                 $mdExtra = [System.Text.StringBuilder]::new()
+                $existingMd = ""
                 if (Test-Path $kMdPath) {
                     $existingMd = Get-Content -Path $kMdPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
                     if ($existingMd) {
@@ -493,6 +565,19 @@ try {
                     }
                 } else {
                     [void]$mdExtra.AppendLine("# [KARTON] WIS SERVICE | SERVISNI KARTON RAČUNARA")
+                }
+                if ($null -ne $licSummary -and ($existingMd -notmatch '### \[LICENCE\] Status Licenci')) {
+                    [void]$mdExtra.AppendLine("")
+                    [void]$mdExtra.AppendLine("### [LICENCE] Status Licenci")
+                    [void]$mdExtra.AppendLine("- **Windows Licenca:** $(if ($licSummary.windows_activated) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })")
+                    $kOffTxt = if (-not $licSummary.office_installed) { 'Nije instaliran' } elseif ($licSummary.office_activated) { '[OK] Trajno aktiviran' } elseif ($licSummary.office_activation_mode -ieq 'Skip') { 'Preskočeno (OfficeActivationMode=Skip)' } else { '[UPOZORENJE] Nije aktiviran' }
+                    [void]$mdExtra.AppendLine("- **Office Licenca:** $kOffTxt")
+                    if ($licSummary.office_license_method) {
+                        [void]$mdExtra.AppendLine("- **Metod licenciranja Office-a:** $($licSummary.office_license_method)")
+                    }
+                    if ($licSummary.office_license_detail) {
+                        [void]$mdExtra.AppendLine("- **Detalj licenciranja:** $($licSummary.office_license_detail)")
+                    }
                 }
                 [void]$mdExtra.AppendLine("")
                 [void]$mdExtra.AppendLine("### [TERMIKA] Termalni Stres Test i Spremnost za Predaju")
@@ -534,8 +619,14 @@ try {
                 $verResults = if (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue) { Test-AllServisProgramsInstalled } else { $null }
                 Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
             }
-            if (Test-Path (Join-Path $LocalSetupDir "Programi")) {
-                Remove-Item -Path (Join-Path $LocalSetupDir "Programi") -Recurse -Force -ErrorAction SilentlyContinue
+            foreach ($cleanupSubDir in @(
+                (Join-Path $LocalSetupDir "Programi"),
+                (Join-Path $LocalSetupDir "Cache\Licensing"),
+                "C:\setup\Cache\Licensing"
+            )) {
+                if ($cleanupSubDir -and (Test-Path -LiteralPath $cleanupSubDir -ErrorAction SilentlyContinue)) {
+                    Remove-Item -LiteralPath $cleanupSubDir -Recurse -Force -ErrorAction SilentlyContinue
+                }
             }
         } catch {}
 

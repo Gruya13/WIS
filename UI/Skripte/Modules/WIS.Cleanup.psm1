@@ -7,6 +7,45 @@
     Windows PowerShell 5.1+
 #>
 
+function Get-WisLicenseStatusFromFile {
+    <#
+    .SYNOPSIS
+        Učitava status licenciranja iz license-status.json uz strogu sanitizaciju eventualnih product ključeva.
+    #>
+    param(
+        [string]$LocalSetupDir = "C:\setup",
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS"
+    )
+    foreach ($licCandPath in @(
+        (Join-Path $LocalSetupDir "license-status.json"),
+        "C:\setup\license-status.json",
+        (Join-Path $SystemLogDir "license-status.json")
+    )) {
+        if ($licCandPath -and (Test-Path -LiteralPath $licCandPath -ErrorAction SilentlyContinue)) {
+            try {
+                $rawLicJson = Get-Content -LiteralPath $licCandPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($rawLicJson) {
+                    $parsedLic = ConvertFrom-Json -InputObject $rawLicJson -ErrorAction SilentlyContinue
+                    if ($parsedLic) {
+                        $rawDet = if ($parsedLic.office_license_detail) { "$($parsedLic.office_license_detail)".Trim() } else { "" }
+                        $safeDet = $rawDet -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+                        return [PSCustomObject]@{
+                            Found                = $true
+                            WindowsActivated     = [bool]$parsedLic.windows_activated
+                            OfficeInstalled      = [bool]$parsedLic.office_installed
+                            OfficeActivated      = [bool]$parsedLic.office_activated
+                            OfficeActivationMode = if ($parsedLic.office_activation_mode) { "$($parsedLic.office_activation_mode)".Trim() } else { "" }
+                            OfficeLicenseMethod  = if ($parsedLic.office_license_method) { "$($parsedLic.office_license_method)".Trim() } else { "" }
+                            OfficeLicenseDetail  = $safeDet
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    return $null
+}
+
 function Export-ServisSummaryReport {
     param(
         $VerificationResults,
@@ -85,6 +124,49 @@ function Export-ServisSummaryReport {
         }
         $notesArr = if ($thermalNoteText) { @($thermalNoteText) } else { @() }
 
+        # Ucitavanje strukturiranog statusa licenci iz C:\setup\license-status.json (bez kljuceva)
+        $licStatusObj = Get-WisLicenseStatusFromFile -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+
+        $winActVal = if ($VerificationResults -and $VerificationResults.WindowsActivation -and ($null -ne $VerificationResults.WindowsActivation.Activated)) {
+            [bool]$VerificationResults.WindowsActivation.Activated
+        } elseif ($licStatusObj) {
+            [bool]$licStatusObj.WindowsActivated
+        } else { $false }
+
+        $offInstVal = if ($VerificationResults -and $VerificationResults.Office -and ($null -ne $VerificationResults.Office.Installed)) {
+            [bool]$VerificationResults.Office.Installed
+        } elseif ($licStatusObj) {
+            [bool]$licStatusObj.OfficeInstalled
+        } elseif (Get-Command Test-OfficeInstalled -ErrorAction SilentlyContinue) {
+            [bool](Test-OfficeInstalled)
+        } else { $false }
+
+        $offActVal = if ($VerificationResults -and $VerificationResults.OfficeActivation -and ($null -ne $VerificationResults.OfficeActivation.Activated)) {
+            [bool]$VerificationResults.OfficeActivation.Activated
+        } elseif ($licStatusObj) {
+            [bool]$licStatusObj.OfficeActivated
+        } else { $false }
+
+        $offModeVal = if ($licStatusObj -and -not [string]::IsNullOrWhiteSpace($licStatusObj.OfficeActivationMode)) {
+            $licStatusObj.OfficeActivationMode
+        } else { "" }
+
+        $offMethodVal = if ($licStatusObj -and -not [string]::IsNullOrWhiteSpace($licStatusObj.OfficeLicenseMethod)) {
+            $licStatusObj.OfficeLicenseMethod
+        } elseif ($VerificationResults -and $VerificationResults.OfficeActivation -and $VerificationResults.OfficeActivation.Method) {
+            "$($VerificationResults.OfficeActivation.Method)".Trim()
+        } else { "" }
+
+        $rawOffDetail = if ($licStatusObj -and -not [string]::IsNullOrWhiteSpace($licStatusObj.OfficeLicenseDetail)) {
+            $licStatusObj.OfficeLicenseDetail
+        } elseif ($VerificationResults -and $VerificationResults.OfficeActivation) {
+            $dTmp = @()
+            if ($VerificationResults.OfficeActivation.LastErrorCode) { $dTmp += "$($VerificationResults.OfficeActivation.LastErrorCode)" }
+            if ($VerificationResults.OfficeActivation.LicenseStatusText) { $dTmp += "$($VerificationResults.OfficeActivation.LicenseStatusText)" }
+            $dTmp -join " — "
+        } else { "" }
+        $offDetailVal = $rawOffDetail -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+
         $sb.AppendLine("Baterija              : $(if ($isLaptop) { 'Detektovana (Laptop)' } else { 'Nema baterije (Desktop / VM)' })") | Out-Null
         if ($thermalNoteText) {
             $sb.AppendLine("NAPOMENA (TERMALNA)   : $thermalNoteText") | Out-Null
@@ -102,10 +184,24 @@ function Export-ServisSummaryReport {
             $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
             $sb.AppendLine("                     STATUS SISTEMSKIH LICENCI                                  ") | Out-Null
             $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
-            $sb.AppendLine("Windows Licenca       : $(if ($VerificationResults.WindowsActivation.Activated) { '[OK] Trajno aktiviran' } else { '[!] NIJE AKTIVIRAN' })") | Out-Null
-            $sb.AppendLine("Office Licenca        : $(if ($VerificationResults.OfficeActivation.Activated) { '[OK] Trajno aktiviran' } else { '[!] NIJE AKTIVIRAN' })") | Out-Null
+            $sb.AppendLine("Windows Licenca       : $(if ($winActVal) { '[OK] Trajno aktiviran' } else { '[!] NIJE AKTIVIRAN' })") | Out-Null
+            $offTxtStatus = if (-not $offInstVal) { 'Nije instaliran' } elseif ($offActVal) { '[OK] Trajno aktiviran' } elseif ($offModeVal -ieq 'Skip') { 'Preskoceno (Skip)' } else { '[!] NIJE AKTIVIRAN' }
+            $sb.AppendLine("Office Licenca        : $offTxtStatus") | Out-Null
+            if ($offMethodVal -or $offDetailVal) {
+                $sb.AppendLine("Office Licenca Detalj : $offMethodVal $(if ($offDetailVal) { '(' + $offDetailVal + ')' } else { '' })") | Out-Null
+            }
             $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
             $sb.AppendLine("UKUPNI STATUS         : $(if ($VerificationResults.AllRequiredInstalled) { 'USPESNO - SVI PROGRAMI SU INSTALIRANI' } else { 'PAZNJA - NEDOSTAJU PROGRAMI: ' + ($VerificationResults.MissingList -join ', ') })") | Out-Null
+        } elseif ($licStatusObj) {
+            $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
+            $sb.AppendLine("                     STATUS SISTEMSKIH LICENCI                                  ") | Out-Null
+            $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
+            $sb.AppendLine("Windows Licenca       : $(if ($winActVal) { '[OK] Trajno aktiviran' } else { '[!] NIJE AKTIVIRAN' })") | Out-Null
+            $offTxtStatus = if (-not $offInstVal) { 'Nije instaliran' } elseif ($offActVal) { '[OK] Trajno aktiviran' } elseif ($offModeVal -ieq 'Skip') { 'Preskoceno (Skip)' } else { '[!] NIJE AKTIVIRAN' }
+            $sb.AppendLine("Office Licenca        : $offTxtStatus") | Out-Null
+            if ($offMethodVal -or $offDetailVal) {
+                $sb.AppendLine("Office Licenca Detalj : $offMethodVal $(if ($offDetailVal) { '(' + $offDetailVal + ')' } else { '' })") | Out-Null
+            }
         }
         $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
         $sb.AppendLine("Detaljni logovi su sacuvani na:") | Out-Null
@@ -165,13 +261,40 @@ function Export-ServisSummaryReport {
             $mdSb.AppendLine("- **BatteryBar:** $(if ($VerificationResults.BatteryBar.Installed) { '[OK] Instaliran' } else { '[NEDOSTAJE] Nedostaje' }) ($($VerificationResults.BatteryBar.Message))") | Out-Null
             $mdSb.AppendLine("") | Out-Null
             $mdSb.AppendLine("### [LICENCE] Status Licenci") | Out-Null
-            $mdSb.AppendLine("- **Windows Licenca:** $(if ($VerificationResults.WindowsActivation.Activated) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })") | Out-Null
-            $mdSb.AppendLine("- **Office Licenca:** $(if ($VerificationResults.OfficeActivation.Activated) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })") | Out-Null
+            $mdSb.AppendLine("- **Windows Licenca:** $(if ($winActVal) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })") | Out-Null
+            $mdOffStatus = if (-not $offInstVal) { 'Nije instaliran' } elseif ($offActVal) { '[OK] Trajno aktiviran' } elseif ($offModeVal -ieq 'Skip') { 'Preskočeno (OfficeActivationMode=Skip)' } else { '[UPOZORENJE] Nije aktiviran' }
+            $mdSb.AppendLine("- **Office Licenca:** $mdOffStatus") | Out-Null
+            if ($offModeVal) {
+                $mdSb.AppendLine("- **Režim Office aktivacije:** $offModeVal") | Out-Null
+            }
+            if ($offMethodVal) {
+                $mdSb.AppendLine("- **Metod licenciranja Office-a:** $offMethodVal") | Out-Null
+            }
+            if ($offDetailVal) {
+                $mdSb.AppendLine("- **Detalj licenciranja:** $offDetailVal") | Out-Null
+            }
             $mdSb.AppendLine("") | Out-Null
             $mdSb.AppendLine("### [REZULTAT] Rezultat Servisa") | Out-Null
             $overallTxt = if ($VerificationResults.AllRequiredInstalled) { 'USPEŠNO - SVI PROGRAMI SU INSTALIRANI' } else { 'PAŽNJA - NEDOSTAJU: ' + ($VerificationResults.MissingList -join ', ') }
             $mdSb.AppendLine("- **Status:** $overallTxt") | Out-Null
         } else {
+            if ($licStatusObj) {
+                $mdSb.AppendLine("") | Out-Null
+                $mdSb.AppendLine("### [LICENCE] Status Licenci") | Out-Null
+                $mdSb.AppendLine("- **Windows Licenca:** $(if ($winActVal) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })") | Out-Null
+                $mdOffStatus = if (-not $offInstVal) { 'Nije instaliran' } elseif ($offActVal) { '[OK] Trajno aktiviran' } elseif ($offModeVal -ieq 'Skip') { 'Preskočeno (OfficeActivationMode=Skip)' } else { '[UPOZORENJE] Nije aktiviran' }
+                $mdSb.AppendLine("- **Office Licenca:** $mdOffStatus") | Out-Null
+                if ($offModeVal) {
+                    $mdSb.AppendLine("- **Režim Office aktivacije:** $offModeVal") | Out-Null
+                }
+                if ($offMethodVal) {
+                    $mdSb.AppendLine("- **Metod licenciranja Office-a:** $offMethodVal") | Out-Null
+                }
+                if ($offDetailVal) {
+                    $mdSb.AppendLine("- **Detalj licenciranja:** $offDetailVal") | Out-Null
+                }
+                $mdSb.AppendLine("") | Out-Null
+            }
             $mdSb.AppendLine("- **Status:** SERVIS ZAVRŠEN! Sistem je verifikovan i spreman za pakovanje.") | Out-Null
         }
         if ($thermalNoteText) {
@@ -214,9 +337,21 @@ function Export-ServisSummaryReport {
                 batterybar = if ($VerificationResults -and $VerificationResults.BatteryBar) { $VerificationResults.BatteryBar.Installed } else { $false }
             }
             licenses      = [ordered]@{
-                windows = if ($VerificationResults -and $VerificationResults.WindowsActivation) { $VerificationResults.WindowsActivation.Activated } else { $false }
-                office  = if ($VerificationResults -and $VerificationResults.OfficeActivation) { $VerificationResults.OfficeActivation.Activated } else { $false }
+                windows                = [bool]$winActVal
+                office                 = [bool]$offActVal
+                windows_activated      = [bool]$winActVal
+                office_installed       = [bool]$offInstVal
+                office_activated       = [bool]$offActVal
+                office_activation_mode = [string]$offModeVal
+                office_license_method  = [string]$offMethodVal
+                office_license_detail  = [string]$offDetailVal
             }
+            windows_activated      = [bool]$winActVal
+            office_installed       = [bool]$offInstVal
+            office_activated       = [bool]$offActVal
+            office_activation_mode = [string]$offModeVal
+            office_license_method  = [string]$offMethodVal
+            office_license_detail  = [string]$offDetailVal
             thermal_note   = $thermalNoteText
             notes          = $notesArr
             status_message = if ($thermalNoteText) { "SERVIS ZAVRŠEN UZ NAPOMENU: $thermalNoteText" } else { "SERVIS ZAVRŠEN! Sistem je verifikovan i spreman za pakovanje." }
@@ -1210,9 +1345,15 @@ function Start-FinalCleanup {
     # 3. Agresivno čišćenje radnih površina (*Launcher*.lnk, *WIS*.*, *Pokreni*.*, setup.lnk) i Refresh Explorer
     Clear-ServisDesktopShortcuts | Out-Null
 
-    # 4. Uklanjanje privremenih instalacionih fajlova unutar C:\setup bez brisanja samog C:\setup direktorijuma
-    if (Test-Path (Join-Path $LocalSetupDir "Programi")) {
-        Remove-Item -Path (Join-Path $LocalSetupDir "Programi") -Recurse -Force -ErrorAction SilentlyContinue
+    # 4. Uklanjanje privremenih instalacionih fajlova i keširanih licensing skripti unutar C:\setup bez brisanja samog C:\setup direktorijuma
+    foreach ($cleanupSubDir in @(
+        (Join-Path $LocalSetupDir "Programi"),
+        (Join-Path $LocalSetupDir "Cache\Licensing"),
+        "C:\setup\Cache\Licensing"
+    )) {
+        if ($cleanupSubDir -and (Test-Path -LiteralPath $cleanupSubDir -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $cleanupSubDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
     if (-not $isFinalPhase -and $DeleteSetupDir) {
         $stateF = Join-Path $LocalSetupDir "deploy-state.json"
@@ -1367,7 +1508,7 @@ function Invoke-Phase6Finalize {
             Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
         }
 
-        $logFilesToArchive = @("servis_deploy.log", "servis_deploy.jsonl", "setupcomplete.log", "firstlogon.log", "WIS_Status_Instalacije.txt", "servisni_karton.json", "servisni_karton.md", "acrobat_install.log", "payload_meta.json", "build-attestation.json", "vm-validation.json", "version.json")
+        $logFilesToArchive = @("servis_deploy.log", "servis_deploy.jsonl", "setupcomplete.log", "firstlogon.log", "WIS_Status_Instalacije.txt", "servisni_karton.json", "servisni_karton.md", "license-status.json", "acrobat_install.log", "payload_meta.json", "build-attestation.json", "vm-validation.json", "version.json")
         foreach ($lf in $logFilesToArchive) {
             $srcP = Join-Path $LocalSetupDir $lf
             if (Test-Path $srcP) {
@@ -1409,6 +1550,25 @@ function Invoke-Phase6Finalize {
             $nTxt = "NAPOMENA: Procesor se pregrevao tokom stres testa (${tVal}°C >= 95°C) — potreban servis hlađenja / zamena termalne paste."
             $diagCustom["thermal_note"] = $nTxt
             $diagCustom["notes"] = @($nTxt)
+        }
+        $licDiagSummary = Get-WisLicenseStatusFromFile -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+        if ($licDiagSummary) {
+            $diagCustom["windows_activated"] = $licDiagSummary.WindowsActivated
+            $diagCustom["office_installed"] = $licDiagSummary.OfficeInstalled
+            $diagCustom["office_activated"] = $licDiagSummary.OfficeActivated
+            $diagCustom["office_activation_mode"] = $licDiagSummary.OfficeActivationMode
+            $diagCustom["office_license_method"] = $licDiagSummary.OfficeLicenseMethod
+            $diagCustom["office_license_detail"] = $licDiagSummary.OfficeLicenseDetail
+            $diagCustom["licenses"] = [ordered]@{
+                windows                = $licDiagSummary.WindowsActivated
+                office                 = $licDiagSummary.OfficeActivated
+                windows_activated      = $licDiagSummary.WindowsActivated
+                office_installed       = $licDiagSummary.OfficeInstalled
+                office_activated       = $licDiagSummary.OfficeActivated
+                office_activation_mode = $licDiagSummary.OfficeActivationMode
+                office_license_method  = $licDiagSummary.OfficeLicenseMethod
+                office_license_detail  = $licDiagSummary.OfficeLicenseDetail
+            }
         }
 
         # 3a. Slanje životnog ciklusa COMPLETED

@@ -468,12 +468,308 @@ namespace WIS.UI
                         payload["serial_number"] = serialSnapshot;
                     }
 
+                    if (string.Equals(eventType, "COMPLETED", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(eventType, "FINAL_REPORT", StringComparison.OrdinalIgnoreCase))
+                    {
+                        EnrichLicenseTelemetryPayload(payload);
+                    }
+
                     string jsonBody = JsonHelper.Serialize(payload);
                     string url = HubUrl + "/api/lifecycle";
                     HttpPost(url, jsonBody, 1500);
                 }
                 catch { }
             });
+        }
+
+        private static readonly Regex LicenseKeyMaskRegex = new Regex(
+            "([A-Za-z0-9]{5}-){4}([A-Za-z0-9]{5})",
+            RegexOptions.Compiled);
+
+        private static string MaskLicenseKeyText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            return LicenseKeyMaskRegex.Replace(text, "*****-*****-*****-*****-$2");
+        }
+
+        private static bool HasNonNullKey(Dictionary<string, object> payload, string key)
+        {
+            object val;
+            return payload != null && payload.TryGetValue(key, out val) && val != null;
+        }
+
+        /// <summary>
+        /// Dopunjava završni telemetrijski payload strukturisanim statusom aktivacije Windows-a i Office-a
+        /// iz C:\setup\license-status.json (uz fallback na C:\setup\servisni_karton.json), uz strogo maskiranje ključeva.
+        /// </summary>
+        private void EnrichLicenseTelemetryPayload(Dictionary<string, object> payload)
+        {
+            if (payload == null) return;
+
+            try
+            {
+                // Odbrana po dubini: maskiraj eventualni product ključ ako je već prosleđen u payload-u
+                if (HasNonNullKey(payload, "office_license_detail") && payload["office_license_detail"] is string)
+                {
+                    payload["office_license_detail"] = MaskLicenseKeyText((string)payload["office_license_detail"]);
+                }
+
+                bool hasWinActivated = false;
+                bool winActivated = false;
+                bool hasOfficeInstalled = false;
+                bool officeInstalled = false;
+                bool hasOfficeActivated = false;
+                bool officeActivated = false;
+                bool hasMethod = false;
+                string licenseMethod = "";
+                bool hasDetail = false;
+                string licenseDetail = "";
+                bool hasMode = false;
+                string activationMode = "";
+
+                string[] candidateFiles = new string[]
+                {
+                    @"C:\setup\license-status.json",
+                    @"C:\setup\servisni_karton.json"
+                };
+
+                for (int i = 0; i < candidateFiles.Length; i++)
+                {
+                    string filePath = candidateFiles[i];
+                    try
+                    {
+                        if (!File.Exists(filePath)) continue;
+                        string json = File.ReadAllText(filePath, Encoding.UTF8);
+                        if (string.IsNullOrWhiteSpace(json)) continue;
+
+                        JsonNode root = JsonHelper.Parse(json);
+                        if (root == null || !root.IsObject) continue;
+
+                        JsonNode licNode = root["licenses"];
+                        bool hasLicObj = licNode != null && licNode.IsObject;
+                        JsonNode appsNode = root["apps"];
+                        bool hasAppsObj = appsNode != null && appsNode.IsObject;
+
+                        if (!hasWinActivated)
+                        {
+                            if (root.ContainsKey("windows_activated") && !root["windows_activated"].IsNull)
+                            {
+                                winActivated = root["windows_activated"].AsBool(false);
+                                hasWinActivated = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("windows_activated") && !licNode["windows_activated"].IsNull)
+                            {
+                                winActivated = licNode["windows_activated"].AsBool(false);
+                                hasWinActivated = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("windows") && !licNode["windows"].IsNull)
+                            {
+                                winActivated = licNode["windows"].AsBool(false);
+                                hasWinActivated = true;
+                            }
+                        }
+
+                        if (!hasOfficeInstalled)
+                        {
+                            if (root.ContainsKey("office_installed") && !root["office_installed"].IsNull)
+                            {
+                                officeInstalled = root["office_installed"].AsBool(false);
+                                hasOfficeInstalled = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office_installed") && !licNode["office_installed"].IsNull)
+                            {
+                                officeInstalled = licNode["office_installed"].AsBool(false);
+                                hasOfficeInstalled = true;
+                            }
+                            else if (hasAppsObj && appsNode.ContainsKey("office") && !appsNode["office"].IsNull)
+                            {
+                                officeInstalled = appsNode["office"].AsBool(false);
+                                hasOfficeInstalled = true;
+                            }
+                        }
+
+                        if (!hasOfficeActivated)
+                        {
+                            if (root.ContainsKey("office_activated") && !root["office_activated"].IsNull)
+                            {
+                                officeActivated = root["office_activated"].AsBool(false);
+                                hasOfficeActivated = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office_activated") && !licNode["office_activated"].IsNull)
+                            {
+                                officeActivated = licNode["office_activated"].AsBool(false);
+                                hasOfficeActivated = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office") && !licNode["office"].IsNull)
+                            {
+                                officeActivated = licNode["office"].AsBool(false);
+                                hasOfficeActivated = true;
+                            }
+                        }
+
+                        if (!hasMethod)
+                        {
+                            if (root.ContainsKey("office_license_method") && !root["office_license_method"].IsNull)
+                            {
+                                licenseMethod = root["office_license_method"].AsString("");
+                                hasMethod = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office_license_method") && !licNode["office_license_method"].IsNull)
+                            {
+                                licenseMethod = licNode["office_license_method"].AsString("");
+                                hasMethod = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("method") && !licNode["method"].IsNull)
+                            {
+                                licenseMethod = licNode["method"].AsString("");
+                                hasMethod = true;
+                            }
+                        }
+
+                        if (!hasDetail)
+                        {
+                            if (root.ContainsKey("office_license_detail") && !root["office_license_detail"].IsNull)
+                            {
+                                licenseDetail = root["office_license_detail"].AsString("");
+                                hasDetail = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office_license_detail") && !licNode["office_license_detail"].IsNull)
+                            {
+                                licenseDetail = licNode["office_license_detail"].AsString("");
+                                hasDetail = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("detail") && !licNode["detail"].IsNull)
+                            {
+                                licenseDetail = licNode["detail"].AsString("");
+                                hasDetail = true;
+                            }
+                        }
+
+                        if (!hasMode)
+                        {
+                            if (root.ContainsKey("office_activation_mode") && !root["office_activation_mode"].IsNull)
+                            {
+                                activationMode = root["office_activation_mode"].AsString("");
+                                hasMode = true;
+                            }
+                            else if (hasLicObj && licNode.ContainsKey("office_activation_mode") && !licNode["office_activation_mode"].IsNull)
+                            {
+                                activationMode = licNode["office_activation_mode"].AsString("");
+                                hasMode = true;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (hasDetail)
+                {
+                    licenseDetail = MaskLicenseKeyText(licenseDetail);
+                }
+                if (hasMethod)
+                {
+                    licenseMethod = MaskLicenseKeyText(licenseMethod);
+                }
+
+                bool hasFileLicenseData = hasWinActivated || hasOfficeInstalled || hasOfficeActivated || hasMethod || hasDetail;
+                bool hasPayloadLicenseData = HasNonNullKey(payload, "windows_activated") ||
+                                             HasNonNullKey(payload, "office_installed") ||
+                                             HasNonNullKey(payload, "office_activated") ||
+                                             HasNonNullKey(payload, "office_license_method") ||
+                                             HasNonNullKey(payload, "office_license_detail");
+
+                if (!hasFileLicenseData && !hasPayloadLicenseData)
+                {
+                    return;
+                }
+
+                if (hasWinActivated && !HasNonNullKey(payload, "windows_activated"))
+                {
+                    payload["windows_activated"] = winActivated;
+                }
+
+                if (!HasNonNullKey(payload, "office_installed") && (hasOfficeInstalled || hasOfficeActivated))
+                {
+                    payload["office_installed"] = hasOfficeInstalled ? officeInstalled : officeActivated;
+                }
+
+                if (hasOfficeActivated && !HasNonNullKey(payload, "office_activated"))
+                {
+                    payload["office_activated"] = officeActivated;
+                }
+
+                if (!HasNonNullKey(payload, "office_license_method"))
+                {
+                    payload["office_license_method"] = hasMethod ? (licenseMethod ?? "") : "";
+                }
+
+                if (!HasNonNullKey(payload, "office_license_detail"))
+                {
+                    payload["office_license_detail"] = hasDetail ? (licenseDetail ?? "") : "";
+                }
+
+                if (hasMode && !string.IsNullOrEmpty(activationMode) && !HasNonNullKey(payload, "office_activation_mode"))
+                {
+                    payload["office_activation_mode"] = activationMode;
+                }
+
+                if (!HasNonNullKey(payload, "licenses"))
+                {
+                    var licensesDict = new Dictionary<string, object>();
+
+                    if (HasNonNullKey(payload, "windows_activated"))
+                    {
+                        bool winVal = payload["windows_activated"] is bool ? (bool)payload["windows_activated"] : winActivated;
+                        licensesDict["windows"] = winVal;
+                        licensesDict["windows_activated"] = winVal;
+                    }
+
+                    if (HasNonNullKey(payload, "office_installed"))
+                    {
+                        bool offInstVal = payload["office_installed"] is bool ? (bool)payload["office_installed"] : officeInstalled;
+                        licensesDict["office_installed"] = offInstVal;
+                    }
+
+                    if (HasNonNullKey(payload, "office_activated"))
+                    {
+                        bool offActVal = payload["office_activated"] is bool ? (bool)payload["office_activated"] : officeActivated;
+                        licensesDict["office"] = offActVal;
+                        licensesDict["office_activated"] = offActVal;
+                    }
+
+                    string finalMethod = HasNonNullKey(payload, "office_license_method")
+                        ? MaskLicenseKeyText(payload["office_license_method"].ToString())
+                        : "";
+                    string finalDetail = HasNonNullKey(payload, "office_license_detail")
+                        ? MaskLicenseKeyText(payload["office_license_detail"].ToString())
+                        : "";
+                    licensesDict["office_license_method"] = finalMethod;
+                    licensesDict["office_license_detail"] = finalDetail;
+
+                    if (HasNonNullKey(payload, "office_activation_mode"))
+                    {
+                        licensesDict["office_activation_mode"] = payload["office_activation_mode"].ToString();
+                    }
+
+                    payload["licenses"] = licensesDict;
+                }
+                else
+                {
+                    var existingLicenses = payload["licenses"] as System.Collections.IDictionary;
+                    if (existingLicenses != null && !existingLicenses.IsReadOnly)
+                    {
+                        if (existingLicenses.Contains("office_license_detail") && existingLicenses["office_license_detail"] is string)
+                        {
+                            existingLicenses["office_license_detail"] = MaskLicenseKeyText((string)existingLicenses["office_license_detail"]);
+                        }
+                        if (existingLicenses.Contains("detail") && existingLicenses["detail"] is string)
+                        {
+                            existingLicenses["detail"] = MaskLicenseKeyText((string)existingLicenses["detail"]);
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         #endregion

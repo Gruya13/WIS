@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.4.0 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.4.0 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.4.0 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.4.1 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.4.1 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.4.1 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -607,6 +607,239 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         p4_ch = apps_src.split("# 3. GOOGLE CHROME - P4.Chrome", 1)[1].split("# 4. ADOBE ACROBAT PRO - P4.Acrobat", 1)[0]
         self.assertIn("Sync-ProgramiFromNas", p4_wr)
         self.assertIn("Sync-ProgramiFromNas", p4_ch)
+
+    def test_19_v341_office_activation_diagnostics_and_licensing_hooks(self):
+        """Proverava WIS-TASK-264 (LIC-01..LIC-06) i Backlog B1/B3 ugovore za WIS v3.4.1."""
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8")
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        tel_cs = (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8")
+        ini_root = (ROOT / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+        ini_iso = (ROOT / "ISO" / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+
+        # 1. WIS.Core.psm1: Get-ServisLicensingSettings, Sync-ServisLicensingFromNas i bezbednosni helperi
+        for sym in (
+            "function Get-ServisLicensingSettings",
+            "function Invoke-WisCoreNetUse",
+            "function Test-WisSafeLicensingItem",
+            "function Test-WisSafeLicensingDirHasFiles",
+            "function Copy-WisSafeLicensingTree",
+            "function Sync-ServisLicensingFromNas",
+        ):
+            self.assertIn(sym, core_src, f"Nedostaje {sym} u WIS.Core.psm1")
+
+        lic_cfg_block = core_src.split("function Get-ServisLicensingSettings", 1)[1].split("function ", 1)[0]
+        for tok in ("OfficeActivationMode", "OfficeKmsHost", "OfficeKmsPort", "OfficeProductKey", '"externalhook"', '"skip"'):
+            self.assertIn(tok, lic_cfg_block)
+
+        net_use_block = core_src.split("function Invoke-WisCoreNetUse", 1)[1].split("function Test-WisSafeLicensingItem", 1)[0]
+        self.assertIn("System.Diagnostics.ProcessStartInfo", net_use_block)
+        self.assertIn("$psi.FileName = $netExe", net_use_block)
+        self.assertNotIn("cmd.exe /c", net_use_block.lower())
+
+        safe_item_block = core_src.split("function Test-WisSafeLicensingItem", 1)[1].split("function Test-WisSafeLicensingDirHasFiles", 1)[0]
+        self.assertIn("FileAttributes]::ReparsePoint", safe_item_block)
+        self.assertIn("FileAttributes]::Hidden", safe_item_block)
+        self.assertIn("FileAttributes]::System", safe_item_block)
+
+        sync_lic_block = core_src.split("function Sync-ServisLicensingFromNas", 1)[1].split("function Test-ProgramiDirComplete", 1)[0]
+        self.assertIn(r'C:\setup\Cache\Licensing', sync_lic_block)
+        self.assertIn('Invoke-WisCoreNetUse -Action "Connect"', sync_lic_block)
+        self.assertIn('Invoke-WisCoreNetUse -Action "DisconnectAll"', sync_lic_block)
+        self.assertIn("Copy-WisSafeLicensingTree", sync_lic_block)
+        self.assertNotIn("cmd.exe /c", sync_lic_block.lower())
+        self.assertNotIn("cmd /c", sync_lic_block.lower())
+
+        copy_core_tree = core_src.split("function Copy-WisSafeLicensingTree", 1)[1].split("function Sync-ServisLicensingFromNas", 1)[0]
+        self.assertIn("[System.IO.Path]::GetFullPath", copy_core_tree)
+        self.assertIn("Unblock-File -LiteralPath", copy_core_tree)
+        self.assertIn(":Zone.Identifier", copy_core_tree)
+
+        core_export = core_src.split("Export-ModuleMember", 1)[1]
+        self.assertIn("Get-ServisLicensingSettings", core_export)
+        self.assertIn("Sync-ServisLicensingFromNas", core_export)
+
+        # 2. WIS.Apps.psm1: LIC-01..LIC-05 helperi, sppsvc, timeouti, uklonjen duplikat WINWORD.EXE i lokalno kesiranje
+        for sym in (
+            "function Test-OfficeInstalled",
+            "function Protect-WisLicenseLogText",
+            "function Format-Win32CommandLineArgument",
+            "function Copy-WisSafeDirectoryTree",
+            "function Invoke-ProcessStartInfoWithTimeout",
+            "function Invoke-CscriptWithTimeout",
+            "function Get-OfficeLicenseStatus",
+            "function Wait-OfficeInstallationReady",
+            "function Invoke-ServisExternalLicensingHook",
+        ):
+            self.assertIn(sym, apps_src, f"Nedostaje {sym} u WIS.Apps.psm1")
+
+        office_inst_block = apps_src.split("function Test-OfficeInstalled", 1)[1].split("function Protect-WisLicenseLogText", 1)[0]
+        for p in (
+            r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+            r"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+            r"C:\Program Files\Microsoft Office\Office16\WINWORD.EXE",
+            r"C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE",
+            r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+            r"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+            r"C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
+            r"C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE",
+        ):
+            self.assertIn(p, office_inst_block)
+
+        office_presence_blk = apps_src.split("'(?i)^(Office|Microsoft Office|MS Office)$'", 1)[1].split("'(?i)^BatteryBar$'", 1)[0]
+        dup_word_path = r'"C:\Program Files\Microsoft Office\Office16\WINWORD.EXE"'
+        self.assertEqual(office_presence_blk.count(dup_word_path), 1, "Duplirana WINWORD.EXE putanja mora ostati uklonjena u Get-WisAppPresence")
+        self.assertIn(r'"C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE"', office_presence_blk)
+
+        protect_blk = apps_src.split("function Protect-WisLicenseLogText", 1)[1].split("function Format-Win32CommandLineArgument", 1)[0]
+        self.assertIn("*****-*****-*****-*****-$2", protect_blk)
+
+        safe_dir_blk = apps_src.split("function Copy-WisSafeDirectoryTree", 1)[1].split("function Invoke-ProcessStartInfoWithTimeout", 1)[0]
+        self.assertIn("FileAttributes]::ReparsePoint", safe_dir_blk)
+        self.assertIn("-LiteralPath", safe_dir_blk)
+
+        psi_blk = apps_src.split("function Invoke-ProcessStartInfoWithTimeout", 1)[1].split("function Invoke-CscriptWithTimeout", 1)[0]
+        self.assertIn("ReadToEndAsync()", psi_blk)
+        self.assertIn("taskkill.exe", psi_blk)
+        self.assertIn("Protect-WisLicenseLogText", psi_blk)
+
+        cscript_blk = apps_src.split("function Invoke-CscriptWithTimeout", 1)[1].split("function Get-OfficeLicenseStatus", 1)[0]
+        self.assertIn("[int]$TimeoutSec = 25", cscript_blk)
+        self.assertIn("Format-Win32CommandLineArgument", cscript_blk)
+        self.assertIn("Invoke-ProcessStartInfoWithTimeout", cscript_blk)
+
+        lic_status_blk = apps_src.split("function Get-OfficeLicenseStatus", 1)[1].split("function Test-OfficeActivated", 1)[0]
+        for tok in ("VFS_SPP", "WMI_SPP", 'Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/dstatus") -TimeoutSec 20', "LastErrorCode", "LicenseStatusText"):
+            self.assertIn(tok, lic_status_blk)
+
+        hook_blk = apps_src.split("function Invoke-ServisExternalLicensingHook", 1)[1].split("function Invoke-WindowsOfficeActivation", 1)[0]
+        for tok in (
+            "[System.IO.Path]::GetFullPath",
+            "FileAttributes]::ReparsePoint",
+            '@(".ps1", ".cmd", ".bat")',
+            r"C:\setup\Cache\Licensing",
+            "Copy-WisSafeDirectoryTree",
+            "Unblock-File -LiteralPath",
+            ":Zone.Identifier",
+            "Format-Win32CommandLineArgument",
+            "/d /c",
+            "[int]$TimeoutSec = 180",
+            'EnvironmentVariables["WIS_PROGRAMI_DIR"]',
+            'EnvironmentVariables["WIS_OFFICE_INSTALLED"]',
+            'EnvironmentVariables["WIS_WIN_ACTIVATED"]',
+            'EnvironmentVariables["WIS_OFF_ACTIVATED"]',
+        ):
+            self.assertIn(tok, hook_blk)
+
+        act_blk = apps_src.split("function Invoke-WindowsOfficeActivation", 1)[1].split("function Invoke-AppsPhase", 1)[0]
+        for tok in (
+            "Test-OfficeInstalled",
+            "Wait-OfficeInstallationReady -TimeoutSec 45",
+            'Get-Service -Name "sppsvc"',
+            'Start-Service -Name "sppsvc"',
+            "Invoke-CscriptWithTimeout",
+            "^[A-Za-z0-9._:-]+$",
+            "^[A-Za-z0-9-]+$",
+            'Sync-ServisLicensingFromNas -DestinationDir "C:\\setup\\Cache\\Licensing"',
+            "Invoke-ServisExternalLicensingHook",
+            "Write-WisLicenseStatusFile",
+            'Write-DiagnosticEvent -Event "LICENSE_CHECK_RESULT"',
+        ):
+            self.assertIn(tok, act_blk)
+        self.assertNotIn("OSPP.VBS`\" /act >$null 2>&1", act_blk)
+
+        apps_export = apps_src.split("Export-ModuleMember", 1)[1]
+        for fn in (
+            "Test-OfficeInstalled",
+            "Protect-WisLicenseLogText",
+            "Invoke-CscriptWithTimeout",
+            "Get-OfficeLicenseStatus",
+            "Invoke-ServisExternalLicensingHook",
+        ):
+            self.assertIn(fn, apps_export)
+
+        p4_act_blk = apps_src.split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[1].split("# Uklanjanje flag datoteke", 1)[0]
+        self.assertIn("Protect-WisLicenseLogText -Text ([string]$stepActivation.Reason)", p4_act_blk)
+        self.assertIn("$okDetail = Protect-WisLicenseLogText", p4_act_blk)
+        self.assertIn("$failDetail = Protect-WisLicenseLogText", p4_act_blk)
+
+        # 3. Zakomentarisani [Licensing] blok u oba Wifi-Servis.example.ini fajla (bez stvarnih kljuceva)
+        self.assertEqual(ini_root, ini_iso, "Root i ISO Wifi-Servis.example.ini moraju biti identicni")
+        for ini_txt in (ini_root, ini_iso):
+            self.assertIn("ShopName=IG-Systems", ini_txt)
+            self.assertIn("; [Licensing]", ini_txt)
+            self.assertIn("; OfficeActivationMode=Auto", ini_txt)
+            self.assertIn("; OfficeKmsHost=", ini_txt)
+            self.assertIn("; OfficeKmsPort=1688", ini_txt)
+            self.assertIn("; OfficeProductKey=", ini_txt)
+            self.assertNotRegex(ini_txt, re.compile(r"(?m)^\[Licensing\]"))
+            self.assertNotRegex(ini_txt, re.compile(r"\b(?:[A-Z0-9]{5}-){4}[A-Z0-9]{5}\b", re.IGNORECASE))
+
+        # 4. LIC-06 & ciscenje Cache\Licensing (WIS.Apps, WIS.Cleanup, Phase6-Finalize, TelemetryService.cs)
+        write_lic_blk = apps_src.split("function Write-WisLicenseStatusFile", 1)[1].split("function Test-BatteryPresent", 1)[0]
+        self.assertIn("license-status.json", write_lic_blk)
+        self.assertIn("System.Text.UTF8Encoding($false)", write_lic_blk)
+
+        self.assertIn("function Get-WisLicenseStatusFromFile", cleanup_src)
+        self.assertIn("license-status.json", cleanup_src)
+        self.assertIn("STATUS SISTEMSKIH LICENCI", cleanup_src)
+        self.assertIn("### [LICENCE] Status Licenci", cleanup_src)
+        for field in ("windows_activated", "office_installed", "office_activated", "office_activation_mode", "office_license_method", "office_license_detail"):
+            self.assertIn(field, cleanup_src)
+        cleanup_cache_blk = cleanup_src.split("function Start-FinalCleanup", 1)[1].split("function Invoke-ServisCleanup", 1)[0]
+        self.assertIn(r'(Join-Path $LocalSetupDir "Cache\Licensing")', cleanup_cache_blk)
+        self.assertIn(r'"C:\setup\Cache\Licensing"', cleanup_cache_blk)
+
+        self.assertIn("license-status.json", phase6_src)
+        self.assertIn('$finalTelemetryData["windows_activated"]', phase6_src)
+        self.assertIn('$finalTelemetryData["licenses"]', phase6_src)
+        self.assertIn(r'(Join-Path $LocalSetupDir "Cache\Licensing")', phase6_src)
+        self.assertIn(r'"C:\setup\Cache\Licensing"', phase6_src)
+
+        for tok in (
+            "EnrichLicenseTelemetryPayload(payload);",
+            "MaskLicenseKeyText(",
+            r'@"C:\setup\license-status.json"',
+            r'@"C:\setup\servisni_karton.json"',
+            '"windows_activated"',
+            '"office_installed"',
+            '"office_activated"',
+            '"office_license_method"',
+            '"office_license_detail"',
+        ):
+            self.assertIn(tok, tel_cs)
+
+        # 5. Backlog B1 (velicina paketa + Send-IpcProgress heartbeat na 20s) i B3 (Get-WUConfigMode -> DriversOnly)
+        inst_pkg_blk = self.update_src.split("function Install-LocalUpdatePackageFile", 1)[1].split("function Receive-UpdateFileFromUrl", 1)[0]
+        self.assertIn("$pkgSizeLabel", inst_pkg_blk)
+        self.assertIn("($elapsedSec - $lastIpcSec) -ge 20", inst_pkg_blk)
+        self.assertIn("Send-IpcProgress -Progress $safeProg", inst_pkg_blk)
+        self.assertIn("[Math]::Max(0, [Math]::Min(99, $parsedProg))", inst_pkg_blk)
+        self.assertIn("($elapsedSec - $lastLogSec) -ge 60", inst_pkg_blk)
+
+        wu_mode_blk = self.update_src.split("function Get-WUConfigMode", 1)[1].split("function Test-IsDriverUpdate", 1)[0]
+        self.assertIn('return "DriversOnly"', wu_mode_blk)
+        self.assertNotIn('return "All"', wu_mode_blk)
+
+        # 6. Ocuvanje zabrana iz test_06 / test_14 u WIS.Apps.psm1 i WIS.Core.psm1
+        forbidden_patterns = (
+            r"\bInvoke-RestMethod\b",
+            r"\bInvoke-WebRequest\b",
+            r"\bInvoke-Expression\b",
+            r"\birm\b",
+            r"\biex\b",
+            r"\b" + "mas_aio" + r"\b",
+            r"\bo" + "hook\b",
+            r"\bhw" + "id\b",
+            r"activated\." + "win",
+            r"\bkms" + "38\b",
+            r"\bts" + "forge\b",
+            r"\b(?:[A-Z0-9]{5}-){4}[A-Z0-9]{5}\b",
+        )
+        for src_name, src_body in (("WIS.Apps.psm1", apps_src), ("WIS.Core.psm1", core_src)):
+            for pat in forbidden_patterns:
+                self.assertNotRegex(src_body, re.compile(pat, re.IGNORECASE), f"Zabranjen obrazac {pat} pronađen u {src_name}")
 
 
 if __name__ == "__main__":

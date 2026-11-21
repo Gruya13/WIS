@@ -5,6 +5,7 @@ Generisanje profesionalnih Markdown servisnih kartona i perzistencija JSON izve�
 """
 
 import os
+import re
 import json
 from datetime import datetime
 from servishub.drivers.cache import sanitize_id
@@ -166,6 +167,145 @@ def diagnostics_contract(data):
             'manual_check_required': manual, 'diagnostics_summary': messages[status]}
 
 
+_PRODUCT_KEY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9-])(?:[A-Za-z0-9]{5}-){4}([A-Za-z0-9]{5})(?![A-Za-z0-9-])"
+)
+
+
+def _mask_license_keys(value):
+    """Maskira 25-karakterne product ključeve (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX) u tekstu i strukturama."""
+    if isinstance(value, str):
+        return _PRODUCT_KEY_PATTERN.sub(r"*****-*****-*****-*****-" + r"\1", value)
+    if isinstance(value, dict):
+        return {k: _mask_license_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_license_keys(item) for item in value]
+    return value
+
+
+def _parse_optional_bool(val):
+    """Bezbedno konvertuje opcioni boolean iz payload-a u True/False/None."""
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        norm = val.strip().lower()
+        if norm in ("true", "1", "yes", "da", "ok", "licensed", "activated"):
+            return True
+        if norm in ("false", "0", "no", "ne", "unlicensed", "not_activated"):
+            return False
+    return None
+
+
+def _extract_license_summary(report_data: dict):
+    """
+    Izdvaja status licenciranja (Windows & Office) iz payload-a izveštaja,
+    uz fallback na `licenses` rečnik i obavezno maskiranje product ključeva.
+    Vraća None kada izveštaj nema nijedno polje o licenciranju (povratna kompatibilnost).
+    """
+    if not isinstance(report_data, dict):
+        return None
+
+    licenses = report_data.get("licenses") if isinstance(report_data.get("licenses"), dict) else {}
+
+    def _pick_bool(top_key: str, *license_keys):
+        if top_key in report_data and report_data[top_key] is not None:
+            parsed = _parse_optional_bool(report_data[top_key])
+            if parsed is not None:
+                return parsed
+        for lk in license_keys:
+            if lk in licenses and licenses[lk] is not None:
+                parsed = _parse_optional_bool(licenses[lk])
+                if parsed is not None:
+                    return parsed
+        return None
+
+    def _pick_text(top_key: str, *license_keys) -> str:
+        if top_key in report_data and report_data[top_key] is not None:
+            txt = str(report_data[top_key]).strip()
+            if txt:
+                return _mask_license_keys(txt)
+        for lk in license_keys:
+            if lk in licenses and licenses[lk] is not None:
+                txt = str(licenses[lk]).strip()
+                if txt:
+                    return _mask_license_keys(txt)
+        return ""
+
+    win_act = _pick_bool("windows_activated", "windows_activated", "windows")
+    off_inst = _pick_bool("office_installed", "office_installed")
+    off_act = _pick_bool("office_activated", "office_activated", "office")
+    method = _pick_text("office_license_method", "office_license_method", "method")
+    detail = _pick_text("office_license_detail", "office_license_detail", "detail")
+    mode = _pick_text("office_activation_mode", "office_activation_mode", "mode")
+
+    has_any = any([
+        win_act is not None,
+        off_inst is not None,
+        off_act is not None,
+        bool(method),
+        bool(detail),
+        bool(mode),
+    ])
+    if not has_any:
+        return None
+
+    if win_act is True:
+        win_label = "✅ Licenciran"
+    elif win_act is False:
+        win_label = "⚠️ Nije aktiviran"
+    else:
+        win_label = "Nepoznato"
+
+    mode_norm = mode.strip().lower()
+    method_norm = method.strip().lower()
+    if off_inst is False:
+        off_label = "Nije instaliran"
+    elif off_act is True:
+        off_label = "✅ Licenciran"
+    elif mode_norm == "skip" or method_norm == "skip":
+        off_label = "Preskočeno (Skip)"
+    elif off_act is False:
+        off_label = "⚠️ Nije aktiviran"
+    else:
+        off_label = "Nepoznato"
+
+    return {
+        "windows_activated": win_act,
+        "office_installed": off_inst,
+        "office_activated": off_act,
+        "office_license_method": method,
+        "office_license_detail": detail,
+        "office_activation_mode": mode,
+        "windows_status_label": win_label,
+        "office_status_label": off_label,
+    }
+
+
+def _sanitize_report_license_fields(payload: dict) -> dict:
+    """Vraća kopiju izveštaja sa maskiranim eventualnim product ključevima u poljima licenciranja."""
+    if not isinstance(payload, dict):
+        return payload
+    sanitized = dict(payload)
+    for key in (
+        "office_license_detail",
+        "office_license_method",
+        "office_activation_mode",
+        "office_product_key",
+        "OfficeProductKey",
+        "product_key",
+        "licenses",
+    ):
+        if key in sanitized and sanitized[key] is not None:
+            sanitized[key] = _mask_license_keys(sanitized[key])
+    if isinstance(sanitized.get("latest_report"), dict):
+        sanitized["latest_report"] = _sanitize_report_license_fields(sanitized["latest_report"])
+    return sanitized
+
+
 def generate_markdown_report(report_data: dict) -> str:
     """Generiše čitak i profesionalan Markdown servisni karton iz JSON izveštaja."""
     dev_id = report_data.get("device_id", "N/A")
@@ -234,6 +374,24 @@ def generate_markdown_report(report_data: dict) -> str:
                 lines.append(f"| {app} | ✅ Instalirano |")
     else:
         lines.append("| Nema podataka o aplikacijama | - |")
+
+    lic_summary = _extract_license_summary(report_data)
+    if lic_summary:
+        lines.extend([
+            "",
+            "---",
+            "",
+            "## 🔑 Status Licenciranja (Windows & Office)",
+            "",
+            f"- **Windows Status:** {lic_summary['windows_status_label']}",
+            f"- **Office Status:** {lic_summary['office_status_label']}",
+        ])
+        if lic_summary["office_activation_mode"]:
+            lines.append(f"- **Režim Aktivacije (Office):** {lic_summary['office_activation_mode']}")
+        if lic_summary["office_license_method"]:
+            lines.append(f"- **Metod Aktivacije (Office):** {lic_summary['office_license_method']}")
+        if lic_summary["office_license_detail"]:
+            lines.append(f"- **Detalji Licenciranja:** {lic_summary['office_license_detail']}")
 
     lines.extend([
         "",
@@ -487,9 +645,10 @@ def save_device_report(
     json_filepath = os.path.join(reports_dir, json_filename)
     md_filepath = os.path.join(reports_dir, md_filename)
 
-    _atomic_write_json(json_filepath, payload)
+    sanitized_payload = _sanitize_report_license_fields(payload)
+    _atomic_write_json(json_filepath, sanitized_payload)
 
-    md_content = generate_markdown_report(payload)
+    md_content = generate_markdown_report(sanitized_payload)
     _atomic_write_text(md_filepath, md_content)
 
     return json_filepath, md_filepath, json_filename, md_filename
