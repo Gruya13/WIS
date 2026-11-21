@@ -160,6 +160,19 @@ namespace WIS.UI
         }
 
         /// <summary>
+        /// Kreira WMI pretragu sa ograničenim timeout-om (2500 ms) kako hladan WMI start
+        /// nakon boota ne bi trajno blokirao sinhronizaciju senzora ni zaključao čitanje.
+        /// </summary>
+        private static ManagementObjectSearcher CreateBoundedWmiSearcher(string scopePath, string query)
+        {
+            EnumerationOptions opts = new EnumerationOptions();
+            opts.Timeout = TimeSpan.FromMilliseconds(2500);
+            opts.ReturnImmediately = true;
+            opts.Rewindable = false;
+            return new ManagementObjectSearcher(scopePath, query, opts);
+        }
+
+        /// <summary>
         /// Anti-BYOVD zaštita (v3.1.0): WinRing0/LibreHardwareMonitorLib je trajno ukinut
         /// zbog bezbednosnog rizika (CVE-2020-14979). Nativna telemetrija koristi ACPI/WMI/OEM WMI/SMART.
         /// </summary>
@@ -193,6 +206,7 @@ namespace WIS.UI
 
         /// <summary>
         /// Osvežava telemetrijske podatke o temperaturama i ventilatorima.
+        /// Nema trajni timeout latch: nakon eventualnog hladnog start-up kašnjenja svaki sledeći poziv ponovo očitava senzore.
         /// </summary>
         public void Update()
         {
@@ -731,7 +745,7 @@ namespace WIS.UI
             if (_baseMaxClockMHz > 500f) return _baseMaxClockMHz;
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT MaxClockSpeed FROM Win32_Processor"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT MaxClockSpeed FROM Win32_Processor"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -864,7 +878,7 @@ namespace WIS.UI
 
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT CurrentClockSpeed, MaxClockSpeed, NumberOfCores FROM Win32_Processor"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT CurrentClockSpeed, MaxClockSpeed, NumberOfCores FROM Win32_Processor"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -908,7 +922,7 @@ namespace WIS.UI
             bool populatedFromPerfCounters = false;
             try
             {
-                using (ManagementObjectSearcher perfSearcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT Name, ProcessorFrequency, PercentProcessorPerformance FROM Win32_PerfFormattedData_Counters_ProcessorInformation"))
+                using (ManagementObjectSearcher perfSearcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT Name, ProcessorFrequency, PercentProcessorPerformance FROM Win32_PerfFormattedData_Counters_ProcessorInformation"))
                 {
                     using (ManagementObjectCollection perfColl = perfSearcher.Get())
                     {
@@ -974,7 +988,7 @@ namespace WIS.UI
 
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\wmi", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\wmi", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1013,7 +1027,7 @@ namespace WIS.UI
 
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT Temperature FROM Win32_PerfFormattedData_Counters_ThermalZoneInformation"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1052,7 +1066,7 @@ namespace WIS.UI
             try
             {
                 float bestAcpi = 0f;
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\wmi", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\wmi", "SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1084,7 +1098,7 @@ namespace WIS.UI
             // 3. Dodatni fallback preko root\cimv2: Win32_TemperatureProbe
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT CurrentReading FROM Win32_TemperatureProbe"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT CurrentReading FROM Win32_TemperatureProbe"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1124,7 +1138,7 @@ namespace WIS.UI
             bestCelsius = 0f;
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\dcim\sysman", "SELECT CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 2"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\dcim\sysman", "SELECT CurrentReading, UnitModifier FROM DCIM_NumericSensor WHERE SensorType = 2"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1179,7 +1193,7 @@ namespace WIS.UI
             try
             {
                 string query = "SELECT Temperature, HighPrecisionTemperature FROM " + className;
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", query))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", query))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1213,7 +1227,7 @@ namespace WIS.UI
             bestCelsius = 0f;
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(scopePath, "SELECT * FROM " + className))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(scopePath, "SELECT * FROM " + className))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1261,7 +1275,7 @@ namespace WIS.UI
             // 1. root\wmi: MSStorageDriver_ATAPISmartData
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\wmi", "SELECT VendorSpecific FROM MSStorageDriver_ATAPISmartData"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\wmi", "SELECT VendorSpecific FROM MSStorageDriver_ATAPISmartData"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1294,7 +1308,7 @@ namespace WIS.UI
             // 2. Fallback za Windows 10/11 NVMe/Storage Spaces: root\Microsoft\Windows\Storage: MSFT_PhysicalDisk
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\Microsoft\Windows\Storage", "SELECT Temperature FROM MSFT_PhysicalDisk"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\Microsoft\Windows\Storage", "SELECT Temperature FROM MSFT_PhysicalDisk"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {
@@ -1328,7 +1342,7 @@ namespace WIS.UI
 
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(@"root\cimv2", "SELECT DesiredSpeed FROM Win32_Fan"))
+                using (ManagementObjectSearcher searcher = CreateBoundedWmiSearcher(@"root\cimv2", "SELECT DesiredSpeed FROM Win32_Fan"))
                 {
                     using (ManagementObjectCollection coll = searcher.Get())
                     {

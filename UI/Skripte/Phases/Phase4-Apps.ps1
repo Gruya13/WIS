@@ -11,7 +11,8 @@
 param(
     [string]$LocalSetupDir = "C:\setup",
     [string]$ProgramiDir = "C:\setup\Programi",
-    [string]$OnlyApp = ""
+    [string]$OnlyApp = "",
+    [switch]$PreserveCurrentPhase
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,7 +71,13 @@ try {
 } catch {
     $adminErrMsg = "KRITICNA GRESKA: Faza 4 zahteva administratorske privilegije (Run as Administrator)!"
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) { Write-ServisLog $adminErrMsg -Level "ERROR" -Component "Security" }
-    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) { Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[ERROR]" -Phase 4 }
+    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+        if ($PreserveCurrentPhase -or (-not [string]::IsNullOrWhiteSpace($OnlyApp))) {
+            Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[ERROR]" -SkipFileLog
+        } else {
+            Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[ERROR]" -Phase 4
+        }
+    }
     exit 1
 }
 
@@ -93,13 +100,15 @@ try {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Pokrećem pojedinačni Retry za program: $OnlyApp" -Level "STEP" -Component "Phase4"
         }
-        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot -OnlyApp $OnlyApp
+        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot -OnlyApp $OnlyApp -PreserveCurrentPhase:$PreserveCurrentPhase
     } else {
         if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
             Start-WisPhaseBenchmark -Phase 4 -PhaseName "Programi" -LocalSetupDir $LocalSetupDir | Out-Null
         }
-        Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
-        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot
+        if (-not $PreserveCurrentPhase) {
+            Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
+        }
+        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot -PreserveCurrentPhase:$PreserveCurrentPhase
         if (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
             Complete-WisPhaseBenchmark -Phase 4 -Status "COMPLETED" -LocalSetupDir $LocalSetupDir | Out-Null
         }
@@ -109,7 +118,13 @@ try {
     $phase4ExitCode = 1
     $errMsg = "Neocekivana sistemska greska u Fazi 4 (Programi): $($err.Exception.Message)"
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) { Write-ServisLog $errMsg -Level "ERROR" -Component "Phase4" }
-    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) { Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[ERROR]" -Phase 4 }
+    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+        if ($isSingleAppRetry -or $PreserveCurrentPhase) {
+            Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[ERROR]" -SkipFileLog
+        } else {
+            Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[ERROR]" -Phase 4
+        }
+    }
 } finally {
     try {
         Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "Phase4Active" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue

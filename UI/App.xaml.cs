@@ -66,7 +66,7 @@ namespace WIS.UI
                         {
                             try
                             {
-                                ShowWindow(p.MainWindowHandle, 9); // SW_RESTORE
+                                ShowWindow(p.MainWindowHandle, 3); // SW_MAXIMIZE
                                 SetForegroundWindow(p.MainWindowHandle);
                             }
                             catch { }

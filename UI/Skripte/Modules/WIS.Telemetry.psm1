@@ -973,6 +973,14 @@ function Send-FleetFinalReport {
     )
 
     try {
+        # 0. Jednokratno slanje po statusu u okviru iste sesije (IMP-23)
+        if (-not [string]::IsNullOrWhiteSpace($Global:WisFinalReportSentStatus) -and ($Global:WisFinalReportSentStatus -eq $Status)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Send-FleetFinalReport: Zavrsni izvestaj za status '$Status' je vec poslat u ovoj sesiji; preskacem dupli POST." -Level "INFO" -Component "Telemetry"
+            }
+            return $true
+        }
+
         # 1. Osiguraj Hub URL
         if (-not $Global:ServisHubUrl) {
             if (Get-Command Find-ServisHub -ErrorAction SilentlyContinue) {
@@ -994,7 +1002,7 @@ function Send-FleetFinalReport {
             }
         }
 
-        # 3. Benchmark sazetak i ukupno trajanje
+        # 3. Benchmark sazetak i ukupno trajanje (IMP-23: prioritet initial_start_time -> benchmark -> ScriptStartTime)
         $benchSummary = $null
         if (Get-Command Get-WisBenchmarkSummary -ErrorAction SilentlyContinue) {
             try {
@@ -1002,9 +1010,9 @@ function Send-FleetFinalReport {
             } catch {}
         }
 
-        $totalSec = if ($Global:ScriptStartTime) { [int]((Get-Date) - $Global:ScriptStartTime).TotalSeconds } else { 0 }
-        if ($totalSec -le 5) {
-            $stateFilePath = Join-Path $LocalSetupDir "deploy-state.json"
+        $totalSec = 0
+        $stateFileCandidates = @((Join-Path $LocalSetupDir "deploy-state.json"), "C:\setup\deploy-state.json") | Where-Object { $_ } | Select-Object -Unique
+        foreach ($stateFilePath in $stateFileCandidates) {
             if (Test-Path -LiteralPath $stateFilePath) {
                 try {
                     $stRaw = Get-Content -Path $stateFilePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
@@ -1013,14 +1021,23 @@ function Send-FleetFinalReport {
                         if ($stObj -and $stObj.initial_start_time) {
                             $initDt = [DateTime]::Parse("$($stObj.initial_start_time)", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
                             $elapsedAll = [int][math]::Round(([DateTime]::UtcNow - $initDt).TotalSeconds)
-                            if ($elapsedAll -gt $totalSec) { $totalSec = $elapsedAll }
+                            if ($elapsedAll -gt 0) {
+                                $totalSec = $elapsedAll
+                                break
+                            }
                         }
                     }
                 } catch {}
             }
         }
-        if ($totalSec -le 5 -and $benchSummary -and $benchSummary.total_phase_duration_sec -gt 0) {
-            $totalSec = [int]$benchSummary.total_phase_duration_sec
+        if ($totalSec -le 0 -and $benchSummary -and $benchSummary.total_phase_duration_sec -gt 0) {
+            $totalSec = [int][math]::Round([double]$benchSummary.total_phase_duration_sec)
+        }
+        if ($totalSec -le 0 -and $Global:ScriptStartTime) {
+            $scriptElapsed = [int][math]::Round(((Get-Date) - $Global:ScriptStartTime).TotalSeconds)
+            if ($scriptElapsed -gt 0) {
+                $totalSec = $scriptElapsed
+            }
         }
         $durFmt = "{0}m {1:D2}s" -f [math]::Floor($totalSec / 60), ($totalSec % 60)
 
@@ -1150,26 +1167,93 @@ function Send-FleetFinalReport {
         $jsonBody = New-WisTelemetryJson -Payload $payload -CustomData $CustomData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -Depth 6
         $url = "$($Global:ServisHubUrl)/api/devices/$devId/report"
 
-        # 8. Slanje sa fail-safe timeoutom od 2 sekunde (2000 ms)
-        $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.Method = "POST"
-        $req.ContentType = "application/json; charset=utf-8"
-        $req.Timeout = 2000
-        $req.ReadWriteTimeout = 2000
+        # 8. Slanje sa timeoutom 10000 ms, X-ServisHub-Client-Token zaglavljem i 3x retry (1s, 2s)
+        $clientTok = $null
+        if (Get-Command Get-ServisHubClientToken -ErrorAction SilentlyContinue) {
+            try { $clientTok = Get-ServisHubClientToken } catch {}
+        }
+        if ([string]::IsNullOrWhiteSpace($clientTok) -and -not [string]::IsNullOrWhiteSpace($env:SERVIS_HUB_CLIENT_TOKEN)) {
+            $clientTok = $env:SERVIS_HUB_CLIENT_TOKEN.Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($clientTok)) {
+            foreach ($iniCand in @((Join-Path $LocalSetupDir "Wifi-Servis.ini"), "C:\setup\Wifi-Servis.ini", "C:\Windows\Setup\Scripts\Wifi-Servis.ini")) {
+                if ($iniCand -and (Test-Path -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+                    $inHubSec = $false
+                    foreach ($ln in (Get-Content -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+                        $tln = ([string]$ln).Trim()
+                        if ($tln -match '^\[(.+)\]$') {
+                            $inHubSec = ($matches[1].Trim().ToLower() -eq 'servishub')
+                        } elseif ($inHubSec -and $tln -match '^(?i)ClientToken\s*=\s*(.+)$') {
+                            $foundTok = $matches[1].Trim()
+                            if (-not [string]::IsNullOrWhiteSpace($foundTok)) {
+                                $clientTok = $foundTok
+                                break
+                            }
+                        }
+                    }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($clientTok)) { break }
+            }
+        }
 
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonBody)
-        $req.ContentLength = $bytes.Length
-        $reqStream = $req.GetRequestStream()
-        $reqStream.Write($bytes, 0, $bytes.Length)
-        $reqStream.Close()
+        $retryDelaysSec = @(0, 1, 2)
+        $maxAttempts = $retryDelaysSec.Count
+        $sentOk = $false
+        $lastErrMsg = ""
 
-        $resp = $req.GetResponse()
-        $resp.Close()
+        for ($attemptIdx = 0; $attemptIdx -lt $maxAttempts; $attemptIdx++) {
+            $delaySec = $retryDelaysSec[$attemptIdx]
+            if ($delaySec -gt 0) {
+                Start-Sleep -Seconds $delaySec
+            }
+            $reqStream = $null
+            $resp = $null
+            try {
+                $req = [System.Net.HttpWebRequest]::Create($url)
+                $req.Method = "POST"
+                $req.ContentType = "application/json; charset=utf-8"
+                $req.Timeout = 10000
+                $req.ReadWriteTimeout = 10000
+                if (-not [string]::IsNullOrWhiteSpace($clientTok)) {
+                    $req.Headers.Add("X-ServisHub-Client-Token", $clientTok)
+                }
+                $req.ContentLength = $bytes.Length
+
+                $reqStream = $req.GetRequestStream()
+                $reqStream.Write($bytes, 0, $bytes.Length)
+                $reqStream.Close()
+                $reqStream = $null
+
+                $resp = $req.GetResponse()
+                $resp.Close()
+                $resp = $null
+                $sentOk = $true
+                break
+            } catch {
+                $lastErrMsg = $_.Exception.Message
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    $attNum = $attemptIdx + 1
+                    Write-ServisLog "Send-FleetFinalReport pokusaj $attNum/$maxAttempts nije uspeo ($url): $lastErrMsg" -Level "WARN" -Component "Telemetry"
+                }
+            } finally {
+                if ($reqStream) { try { $reqStream.Dispose() } catch {} }
+                if ($resp) { try { $resp.Close() } catch {} }
+            }
+        }
+
+        if ($sentOk) {
+            $Global:WisFinalReportSentStatus = $Status
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Zavrsni flotni izvestaj uspesno poslat na ServisHub: $url ($devId)" -Level "SUCCESS" -Component "Telemetry"
+            }
+            return $true
+        }
 
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Zavrsni flotni izvestaj uspesno poslat na ServisHub: $url ($devId)" -Level "SUCCESS" -Component "Telemetry"
+            Write-ServisLog "Flotni izvestaj nije poslat na ServisHub posle $maxAttempts pokusaja: $lastErrMsg" -Level "WARN" -Component "Telemetry"
         }
-        return $true
+        return $false
     } catch {
         # Fail-safe: tiho nastavljanje bez prekida skripte
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {

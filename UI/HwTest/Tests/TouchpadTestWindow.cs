@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Text;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -77,8 +81,45 @@ namespace WIS.HwTest.Tests
         private bool _hasSeenTouchpadHidPacket;
         private bool _canSeparateTrackPointButtons;
         private int _lastTouchpadHidTicks;
+        private int _lastTouchscreenHidTicks;
         private string _lastMouseRawSource = "";
         private int _lastMouseRawTicks;
+
+        private Border _footerBorder;
+        private TextBlock _antiCheatSubHint;
+        private string _restoreStateFilePath;
+
+        // Sloj 1 Anti-Cheat & Anti-Brick stanje
+        private readonly object _touchpadRestoreLock = new object();
+        private bool _touchpadTemporarilyDisabled;
+        private string _touchpadDisableMethod = "NONE";
+        private bool _spiTouchpadSwitched;
+        private bool _origSpiTouchpadEnabled = true;
+        private bool _elanTouchpadEnableSwitched;
+        private int _origElanTouchpadEnable = -1;
+        private bool _touchpadRestored;
+        private bool _recoveryHandlersHooked;
+        private EventHandler _processExitHandler;
+        private DispatcherUnhandledExceptionEventHandler _appDispatcherExceptionHandler;
+        private DispatcherUnhandledExceptionEventHandler _localDispatcherExceptionHandler;
+
+        // Sloj 2 RawInput Anti-Cheat klasifikacija & brojači
+        private readonly Dictionary<IntPtr, string> _rawDeviceClassCache = new Dictionary<IntPtr, string>();
+        private readonly HashSet<string> _precisionTouchpadBaseIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _precisionTouchpadParentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _touchscreenBaseIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _touchscreenParentIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private int _blockedTouchpadEvents;
+        private int _blockedExternalMouseEvents;
+        private int _blockedTrackPointEvents;
+        private int _blockedTouchscreenEvents;
+        private int _lastAntiCheatLogTicks;
+
+        public string RestoreStateFilePath
+        {
+            get { return _restoreStateFilePath; }
+            set { _restoreStateFilePath = value; }
+        }
 
         private sealed class ElanEventWatch
         {
@@ -197,6 +238,17 @@ namespace WIS.HwTest.Tests
             };
             spH.Children.Add(_biosHintBanner);
 
+            _antiCheatSubHint = new TextBlock
+            {
+                Text = "",
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 4, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            spH.Children.Add(_antiCheatSubHint);
+
             header.Child = spH;
             Grid.SetRow(header, 0);
             root.Children.Add(header);
@@ -217,6 +269,7 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
                 Padding = new Thickness(25, 12, 25, 12)
             };
+            _footerBorder = footer;
             StackPanel spFooter = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -265,8 +318,9 @@ namespace WIS.HwTest.Tests
             Button btnTouchpadFail = new Button
             {
                 Content = _hasTrackPoint
-                    ? "✗ Prijavi kvar TrackPointa (FAIL)"
-                    : "✗ Prijavi kvar touchpada (FAIL)",
+                    ? "✗ Prijavi kvar TrackPointa (FAIL) [F9]"
+                    : "✗ Prijavi kvar touchpada (FAIL) [F9]",
+                ToolTip = "Prijavi kvar hardvera (prečica: F9 ili Ctrl+F)",
                 Background = new SolidColorBrush(Color.FromRgb(185, 38, 48)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -287,13 +341,24 @@ namespace WIS.HwTest.Tests
                 SetupTargets();
                 UpdateBiosRebootHintUi();
                 try { Activate(); Focus(); } catch { }
+                InstallHwndAndRawInputHook();
                 if (_hasTrackPoint)
                 {
-                    InstallHwndAndRawInputHook();
                     StartMiddleButtonMonitoring();
+                    ApplyTemporaryTouchpadDisableForTrackPoint();
                 }
             };
-            Closed += (s, e) => StopMiddleButtonMonitoring();
+            Closed += (s, e) => CleanupAllResourcesAndRestoreTouchpad();
+            PreviewKeyDown += (s, e) =>
+            {
+                if (_isClosingOrDone) return;
+                if (e.Key == Key.F9 ||
+                    (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control))
+                {
+                    e.Handled = true;
+                    FinishFailGeneral();
+                }
+            };
             PreviewMouseDown += OnCanvasMouseDown;
             PreviewMouseUp += OnCanvasMouseDown;
         }
@@ -571,9 +636,42 @@ namespace WIS.HwTest.Tests
 
         private void ShowTrackPointTouchpadWarning()
         {
+            ShowAntiCheatWarning("TOUCHPAD");
+        }
+
+        private void ShowAntiCheatWarning(string blockedSource)
+        {
             _showingTouchpadWarning = true;
-            _instructions.Text = "⚠️ Koristite crveni TrackPoint džojstik, ne touchpad!";
             _instructions.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
+
+            if (_hasTrackPoint)
+            {
+                _instructions.Text = "⛔ Detektovan Touchpad / USB miš — koristite isključivo crveni TrackPoint!";
+                if (_antiCheatSubHint != null)
+                {
+                    if (blockedSource == "TOUCHSCREEN")
+                        _antiCheatSubHint.Text = "⛔ Touchscreen dodir nije dozvoljen — koristite isključivo crveni TrackPoint!";
+                    else if (blockedSource == "EXTERNAL_MOUSE")
+                        _antiCheatSubHint.Text = "⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.";
+                    else
+                        _antiCheatSubHint.Text = "⚠️ Koristite crveni TrackPoint džojstik, ne touchpad!";
+                    _antiCheatSubHint.Visibility = Visibility.Visible;
+                }
+            }
+            else
+            {
+                _instructions.Text = "⛔ Detektovan USB miš / TrackPoint — koristite isključivo Touchpad!";
+                if (_antiCheatSubHint != null)
+                {
+                    if (blockedSource == "TOUCHSCREEN")
+                        _antiCheatSubHint.Text = "⛔ Touchscreen dodir nije dozvoljen — koristite isključivo Touchpad!";
+                    else if (blockedSource == "TRACKPOINT")
+                        _antiCheatSubHint.Text = "⛔ TrackPoint nije dozvoljen u testu touchpada — koristite isključivo Touchpad!";
+                    else
+                        _antiCheatSubHint.Text = "⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.";
+                    _antiCheatSubHint.Visibility = Visibility.Visible;
+                }
+            }
         }
 
         private void ClearTrackPointTouchpadWarning()
@@ -581,12 +679,91 @@ namespace WIS.HwTest.Tests
             if (!_showingTouchpadWarning) return;
             _showingTouchpadWarning = false;
             _instructions.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
+            if (_antiCheatSubHint != null)
+            {
+                _antiCheatSubHint.Text = "";
+                _antiCheatSubHint.Visibility = Visibility.Collapsed;
+            }
             UpdateNextInstruction();
+        }
+
+        private void RecordAntiCheatBlock(string source)
+        {
+            if (source == "TOUCHPAD") _blockedTouchpadEvents++;
+            else if (source == "EXTERNAL_MOUSE") _blockedExternalMouseEvents++;
+            else if (source == "TRACKPOINT") _blockedTrackPointEvents++;
+            else if (source == "TOUCHSCREEN") _blockedTouchscreenEvents++;
+
+            ShowAntiCheatWarning(source);
+
+            int now = Environment.TickCount;
+            if (unchecked((uint)(now - _lastAntiCheatLogTicks)) >= 1500u)
+            {
+                _lastAntiCheatLogTicks = now;
+                HwTestLogger.Warn("TOUCHPAD_ANTICHEAT", string.Format(
+                    "Odbijen nedozvoljen ulaz [{0}] u modu {1} (TP={2}, EXT={3}, TRK={4}, TS={5})",
+                    source, _hasTrackPoint ? "TrackPointOnly" : "TouchpadOnly",
+                    _blockedTouchpadEvents, _blockedExternalMouseEvents, _blockedTrackPointEvents, _blockedTouchscreenEvents));
+            }
+        }
+
+        private bool CheckAndHandleAntiCheatOnCanvas(MouseEventArgs e, out string activeSource)
+        {
+            activeSource = "";
+            int now = Environment.TickCount;
+
+            if (e != null && e.StylusDevice != null)
+            {
+                activeSource = "TOUCHSCREEN";
+            }
+            else if (unchecked((uint)(now - _lastTouchscreenHidTicks)) <= 200u)
+            {
+                activeSource = "TOUCHSCREEN";
+            }
+            else if (unchecked((uint)(now - _lastMouseRawTicks)) <= 160u && !string.IsNullOrEmpty(_lastMouseRawSource))
+            {
+                activeSource = _lastMouseRawSource;
+            }
+
+            if (_hasTrackPoint &&
+                (activeSource == "" || activeSource == "SHARED_PS2") &&
+                _hasPrecisionTouchpadHid &&
+                _hasSeenTouchpadHidPacket &&
+                unchecked((uint)(now - _lastTouchpadHidTicks)) <= 200u)
+            {
+                activeSource = "TOUCHPAD";
+            }
+
+            if (_hasTrackPoint)
+            {
+                if (activeSource == "TOUCHPAD" || activeSource == "EXTERNAL_MOUSE" || activeSource == "TOUCHSCREEN")
+                {
+                    RecordAntiCheatBlock(activeSource);
+                    return false;
+                }
+            }
+            else
+            {
+                if (activeSource == "EXTERNAL_MOUSE" || activeSource == "TRACKPOINT" || activeSource == "TOUCHSCREEN")
+                {
+                    RecordAntiCheatBlock(activeSource);
+                    return false;
+                }
+            }
+
+            ClearTrackPointTouchpadWarning();
+            return true;
         }
 
         private void OnCanvasMouseMove(object sender, MouseEventArgs e)
         {
             if (_isClosingOrDone) return;
+
+            string activeSource;
+            if (!CheckAndHandleAntiCheatOnCanvas(e, out activeSource))
+            {
+                return;
+            }
 
             Point p = e.GetPosition(_testCanvas);
             bool allowTrackPointMove = true;
@@ -611,7 +788,7 @@ namespace WIS.HwTest.Tests
                 {
                     if (_hasTrackPoint && _hasPrecisionTouchpadHid && !allowTrackPointMove)
                     {
-                        ShowTrackPointTouchpadWarning();
+                        RecordAntiCheatBlock("TOUCHPAD");
                         continue;
                     }
                     _visitedTargets.Add(i);
@@ -636,6 +813,13 @@ namespace WIS.HwTest.Tests
 
         private void OnCanvasLeftDown(object sender, MouseButtonEventArgs e)
         {
+            if (_isClosingOrDone) return;
+            string activeSource;
+            if (!CheckAndHandleAntiCheatOnCanvas(e, out activeSource))
+            {
+                return;
+            }
+
             if (_hasTrackPoint)
             {
                 if (_hasPrecisionTouchpadHid)
@@ -647,13 +831,13 @@ namespace WIS.HwTest.Tests
                     }
                     else
                     {
-                        ShowTrackPointTouchpadWarning();
+                        RecordAntiCheatBlock("TOUCHPAD");
                     }
                     return;
                 }
                 if (unchecked((uint)(Environment.TickCount - _lastMouseRawTicks)) <= 120u && _lastMouseRawSource == "TOUCHPAD")
                 {
-                    ShowTrackPointTouchpadWarning();
+                    RecordAntiCheatBlock("TOUCHPAD");
                     return;
                 }
                 ClearTrackPointTouchpadWarning();
@@ -665,6 +849,13 @@ namespace WIS.HwTest.Tests
 
         private void OnCanvasRightDown(object sender, MouseButtonEventArgs e)
         {
+            if (_isClosingOrDone) return;
+            string activeSource;
+            if (!CheckAndHandleAntiCheatOnCanvas(e, out activeSource))
+            {
+                return;
+            }
+
             if (_hasTrackPoint)
             {
                 if (_hasPrecisionTouchpadHid)
@@ -676,13 +867,13 @@ namespace WIS.HwTest.Tests
                     }
                     else
                     {
-                        ShowTrackPointTouchpadWarning();
+                        RecordAntiCheatBlock("TOUCHPAD");
                     }
                     return;
                 }
                 if (unchecked((uint)(Environment.TickCount - _lastMouseRawTicks)) <= 120u && _lastMouseRawSource == "TOUCHPAD")
                 {
-                    ShowTrackPointTouchpadWarning();
+                    RecordAntiCheatBlock("TOUCHPAD");
                     return;
                 }
                 ClearTrackPointTouchpadWarning();
@@ -765,16 +956,32 @@ namespace WIS.HwTest.Tests
             CheckAllPassed();
         }
 
+        private int _lastForbiddenMiddleClickTicks;
+
         private void OnCanvasMouseDown(object sender, MouseButtonEventArgs e)
         {
-            if (!_hasTrackPoint) return;
-            if (e.ChangedButton == MouseButton.Middle && !_middleClickDone)
+            if (!_hasTrackPoint || _isClosingOrDone) return;
+            if (_footerBorder != null && _footerBorder.IsMouseOver) return;
+
+            if (e.ChangedButton == MouseButton.Middle || e.MiddleButton == MouseButtonState.Pressed)
             {
-                MarkMiddleClickDone("hardverski srednji taster");
-            }
-            else if (e.MiddleButton == MouseButtonState.Pressed && !_middleClickDone)
-            {
-                MarkMiddleClickDone("hardverski srednji taster (MiddleButton)");
+                string activeSource;
+                if (!CheckAndHandleAntiCheatOnCanvas(e, out activeSource))
+                {
+                    return;
+                }
+                if (unchecked((uint)(Environment.TickCount - _lastForbiddenMiddleClickTicks)) <= 200u)
+                {
+                    return;
+                }
+                if (e.ChangedButton == MouseButton.Middle && !_middleClickDone)
+                {
+                    MarkMiddleClickDone("hardverski srednji taster");
+                }
+                else if (e.MiddleButton == MouseButtonState.Pressed && !_middleClickDone)
+                {
+                    MarkMiddleClickDone("hardverski srednji taster (MiddleButton)");
+                }
             }
         }
 
@@ -798,6 +1005,12 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
 
+            string activeSource;
+            if (!CheckAndHandleAntiCheatOnCanvas(e, out activeSource))
+            {
+                return;
+            }
+
             if (_hasTrackPoint)
             {
                 if (!_middleClickDone)
@@ -810,7 +1023,7 @@ namespace WIS.HwTest.Tests
                     }
                     else
                     {
-                        ShowTrackPointTouchpadWarning();
+                        RecordAntiCheatBlock("TOUCHPAD");
                     }
                 }
                 return;
@@ -884,7 +1097,7 @@ namespace WIS.HwTest.Tests
             StartElanKernelWaitThread();
             InstallMouseHook();
             InstallHwndAndRawInputHook();
-            _canSeparateTrackPointButtons = (_hasPrecisionTouchpadHid || _elanEventWatches.Count > 0 || _mouseDevicesSeen.Count >= 2);
+            _canSeparateTrackPointButtons = (_hasPrecisionTouchpadHid || _elanEventWatches.Count > 0 || HasDistinctInternalPointingDevices());
             HwTestLogger.Info("TOUCHPAD", string.Format("Razdvajanje Touchpad/TrackPoint: {0} (TouchpadHID={1}, ElanEvents={2}, MouseDevs={3})",
                 _canSeparateTrackPointButtons, _hasPrecisionTouchpadHid, _elanEventWatches.Count, _mouseDevicesSeen.Count));
 
@@ -902,6 +1115,13 @@ namespace WIS.HwTest.Tests
                         short vkState = NativeMethods.GetAsyncKeyState(NativeMethods.VK_MBUTTON);
                         if ((vkState & 0x8001) != 0)
                         {
+                            int now = Environment.TickCount;
+                            if (unchecked((uint)(now - _lastForbiddenMiddleClickTicks)) <= 220u ||
+                                (unchecked((uint)(now - _lastMouseRawTicks)) <= 120u &&
+                                 (_lastMouseRawSource == "EXTERNAL_MOUSE" || _lastMouseRawSource == "TOUCHPAD" || _lastMouseRawSource == "TOUCHSCREEN")))
+                            {
+                                return;
+                            }
                             MarkMiddleClickDone("VK_MBUTTON hardversko stanje");
                             return;
                         }
@@ -924,6 +1144,472 @@ namespace WIS.HwTest.Tests
             UninstallMouseHook();
             CloseElanMiddleButtonEvents();
             RestoreElanMiddleButtonMode();
+        }
+
+        private void CleanupAllResourcesAndRestoreTouchpad()
+        {
+            RestoreTemporaryTouchpadDisableAndCleanupFile();
+            UnhookAppCrashRecoveryHandlers();
+            StopMiddleButtonMonitoring();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            CleanupAllResourcesAndRestoreTouchpad();
+            base.OnClosed(e);
+        }
+
+        private string ResolveRestoreFilePath()
+        {
+            if (!string.IsNullOrEmpty(_restoreStateFilePath)) return _restoreStateFilePath;
+            try
+            {
+                if (Directory.Exists(@"C:\setup"))
+                {
+                    return @"C:\setup\hwtest-touchpad-restore.json";
+                }
+            }
+            catch { }
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                return System.IO.Path.Combine(baseDir, "hwtest-touchpad-restore.json");
+            }
+            return System.IO.Path.Combine(System.IO.Path.GetTempPath(), "hwtest-touchpad-restore.json");
+        }
+
+        private static int ReadElanTouchpadEnableValue()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Elantech\SmartPad", false))
+                {
+                    if (key == null) return -1;
+                    object v = key.GetValue("TouchPad_Enable");
+                    if (v == null) return -1;
+                    int parsed;
+                    if (int.TryParse(v.ToString(), out parsed)) return parsed;
+                }
+            }
+            catch { }
+            return -1;
+        }
+
+        private static bool WriteElanTouchpadEnableValue(int value)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Elantech\SmartPad", true))
+                {
+                    if (key == null) return false;
+                    key.SetValue("TouchPad_Enable", value, RegistryValueKind.DWord);
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static void PulseElanTouchpadEnableEvents(bool enable)
+        {
+            PulseNamedEvents(new string[]
+            {
+                enable ? @"Global\RegTouchPadEnable" : @"Global\RegTouchPadDisable",
+                @"Global\ETD_TP_Enable_Update",
+                @"Global\EPDMessage_HSA_TP_PST_UI_Set",
+                @"Global\EPDCtrlRegNotifyEvent_Start",
+                @"Global\EPDCombo_UpdateRegistry",
+                @"Global\ETDCombo_UpdateRegistry",
+                @"Global\MainPage_Realtime_UpdateUI"
+            });
+        }
+
+        private bool HasDistinctInternalPointingDevices()
+        {
+            try
+            {
+                List<NativeMethods.RawInputDeviceMeta> metas = NativeMethods.EnumRawInputDevicesMeta();
+                bool hasTouchpad = _hasPrecisionTouchpadHid;
+                bool hasTrackPoint = false;
+                for (int i = 0; i < metas.Count; i++)
+                {
+                    string cls = ClassifyMouseRawDevice(metas[i].Handle, metas[i].DeviceName);
+                    if (cls == "TOUCHPAD") hasTouchpad = true;
+                    else if (cls == "TRACKPOINT") hasTrackPoint = true;
+                }
+                return hasTouchpad && hasTrackPoint;
+            }
+            catch { return false; }
+        }
+
+        private bool HasIndependentElanController(int origElanTouchpadEnable)
+        {
+            if (origElanTouchpadEnable < 0) return false;
+
+            bool hasPointStickReg = false;
+            try
+            {
+                using (RegistryKey k1 = Registry.CurrentUser.OpenSubKey(@"Software\Elantech\PointStick", false))
+                {
+                    if (k1 != null) hasPointStickReg = true;
+                }
+                if (!hasPointStickReg)
+                {
+                    using (RegistryKey k2 = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\Elantech\PointStick", false))
+                    {
+                        if (k2 != null) hasPointStickReg = true;
+                    }
+                }
+            }
+            catch { }
+
+            if (!hasPointStickReg && _elanEventWatches.Count == 0 && (_hwInfo == null || !_hwInfo.HasTrackPoint))
+            {
+                return false;
+            }
+
+            try
+            {
+                List<NativeMethods.RawInputDeviceMeta> metas = NativeMethods.EnumRawInputDevicesMeta();
+                int internalCount = 0;
+                bool hasElanHidOrTouchpad = _hasPrecisionTouchpadHid;
+                for (int i = 0; i < metas.Count; i++)
+                {
+                    NativeMethods.RawInputDeviceMeta m = metas[i];
+                    string up = (m.DeviceName ?? "").ToUpperInvariant();
+                    if (m.RawType == NativeMethods.RIM_TYPEHID && m.UsagePage == 0x0D && m.Usage == 0x05)
+                    {
+                        hasElanHidOrTouchpad = true;
+                    }
+                    if (up.IndexOf("ELAN") >= 0 || up.IndexOf("ETD") >= 0 || up.IndexOf("VEN_04F3") >= 0 || up.IndexOf("VID_04F3") >= 0)
+                    {
+                        hasElanHidOrTouchpad = true;
+                    }
+                    if (m.RawType == NativeMethods.RIM_TYPEMOUSE)
+                    {
+                        string cls = ClassifyMouseRawDevice(m.Handle, m.DeviceName);
+                        if (cls != "EXTERNAL_MOUSE" && cls != "TOUCHSCREEN")
+                        {
+                            internalCount++;
+                        }
+                    }
+                }
+                return hasElanHidOrTouchpad && (internalCount >= 2 || _hasPrecisionTouchpadHid || _elanEventWatches.Count > 0);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool WriteRestoreFileAtomic(
+            string restorePath,
+            string disableMethod,
+            bool? origSpiEnabled,
+            bool spiModified,
+            int origElanTouchpadEnable,
+            bool elanModified)
+        {
+            if (string.IsNullOrEmpty(restorePath)) return false;
+            try
+            {
+                string dir = System.IO.Path.GetDirectoryName(restorePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                Dictionary<string, object> payload = new Dictionary<string, object>();
+                payload["schema"] = "wis.hwtest.touchpad_restore.v1";
+                payload["saved_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                payload["disable_method"] = disableMethod;
+                if (origSpiEnabled.HasValue)
+                    payload["original_spi_enabled"] = origSpiEnabled.Value;
+                else
+                    payload["original_spi_enabled"] = null;
+                payload["spi_modified"] = spiModified;
+                if (origElanTouchpadEnable >= 0)
+                    payload["original_elan_touchpad_enable"] = origElanTouchpadEnable;
+                else
+                    payload["original_elan_touchpad_enable"] = null;
+                payload["elan_hkcu_modified"] = elanModified;
+
+                string json = SimpleJson.Serialize(payload);
+                string tmpPath = restorePath + ".tmp";
+                File.WriteAllText(tmpPath, json, new UTF8Encoding(false));
+                if (File.Exists(restorePath))
+                {
+                    try
+                    {
+                        File.Replace(tmpPath, restorePath, null);
+                    }
+                    catch
+                    {
+                        File.Delete(restorePath);
+                        File.Move(tmpPath, restorePath);
+                    }
+                }
+                else
+                {
+                    File.Move(tmpPath, restorePath);
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("TOUCHPAD", "Neuspešan upis hwtest-touchpad-restore.json: " + ex.Message);
+                return false;
+            }
+        }
+
+        private static void TryDeleteFileQuiet(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch { }
+        }
+
+        public static bool TryRecoverTouchpadFromRestoreFile(string restorePath)
+        {
+            if (string.IsNullOrEmpty(restorePath) || !File.Exists(restorePath)) return false;
+            try
+            {
+                string json = File.ReadAllText(restorePath, Encoding.UTF8);
+                if (!string.IsNullOrEmpty(json))
+                {
+                    JavaScriptSerializer ser = new JavaScriptSerializer();
+                    IDictionary<string, object> root = ser.DeserializeObject(json) as IDictionary<string, object>;
+                    if (root != null)
+                    {
+                        string method = "";
+                        object mObj;
+                        if (root.TryGetValue("disable_method", out mObj) && mObj != null)
+                        {
+                            method = Convert.ToString(mObj, CultureInfo.InvariantCulture) ?? "";
+                        }
+
+                        bool spiModified = false;
+                        object smObj;
+                        if (root.TryGetValue("spi_modified", out smObj) && smObj != null)
+                        {
+                            try { spiModified = Convert.ToBoolean(smObj, CultureInfo.InvariantCulture); } catch { }
+                        }
+
+                        object origSpiObj;
+                        if ((spiModified || method == "SPI_TOUCHPADPARAMETERS") &&
+                            root.TryGetValue("original_spi_enabled", out origSpiObj) && origSpiObj != null)
+                        {
+                            bool origSpi = Convert.ToBoolean(origSpiObj, CultureInfo.InvariantCulture);
+                            bool dummyPrev;
+                            bool spiOk = NativeMethods.TrySetPrecisionTouchpadEnabled(origSpi, out dummyPrev);
+                            HwTestLogger.Info("TOUCHPAD_RECOVERY", string.Format(
+                                "Startup/Crash recovery: Precision Touchpad vraćen na {0} (ok={1}).", origSpi, spiOk));
+                        }
+
+                        bool elanModified = false;
+                        object emObj;
+                        if (root.TryGetValue("elan_hkcu_modified", out emObj) && emObj != null)
+                        {
+                            try { elanModified = Convert.ToBoolean(emObj, CultureInfo.InvariantCulture); } catch { }
+                        }
+
+                        object origElanObj;
+                        if ((elanModified || method == "ELAN_REGISTRY") &&
+                            root.TryGetValue("original_elan_touchpad_enable", out origElanObj) && origElanObj != null)
+                        {
+                            int origElan;
+                            if (int.TryParse(Convert.ToString(origElanObj, CultureInfo.InvariantCulture), out origElan) && origElan >= 0)
+                            {
+                                WriteElanTouchpadEnableValue(origElan);
+                                PulseElanTouchpadEnableEvents(origElan != 0);
+                                HwTestLogger.Info("TOUCHPAD_RECOVERY", string.Format(
+                                    "Startup/Crash recovery: ELAN TouchPad_Enable vraćen na {0}.", origElan));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("TOUCHPAD_RECOVERY", "Greška pri oporavku touchpada iz restore fajla: " + ex.Message);
+            }
+            finally
+            {
+                TryDeleteFileQuiet(restorePath);
+                TryDeleteFileQuiet(restorePath + ".tmp");
+            }
+            return true;
+        }
+
+        private void HookAppCrashRecoveryHandlers()
+        {
+            if (_recoveryHandlersHooked) return;
+            _recoveryHandlersHooked = true;
+
+            _processExitHandler = (s, e) =>
+            {
+                try { RestoreTemporaryTouchpadDisableAndCleanupFile(); } catch { }
+            };
+            try { AppDomain.CurrentDomain.ProcessExit += _processExitHandler; } catch { }
+
+            _appDispatcherExceptionHandler = (s, e) =>
+            {
+                try { RestoreTemporaryTouchpadDisableAndCleanupFile(); } catch { }
+            };
+            try
+            {
+                if (Application.Current != null)
+                {
+                    Application.Current.DispatcherUnhandledException += _appDispatcherExceptionHandler;
+                }
+                else
+                {
+                    _localDispatcherExceptionHandler = _appDispatcherExceptionHandler;
+                    Dispatcher.UnhandledException += _localDispatcherExceptionHandler;
+                }
+            }
+            catch { }
+        }
+
+        private void UnhookAppCrashRecoveryHandlers()
+        {
+            if (!_recoveryHandlersHooked) return;
+            _recoveryHandlersHooked = false;
+
+            if (_processExitHandler != null)
+            {
+                try { AppDomain.CurrentDomain.ProcessExit -= _processExitHandler; } catch { }
+                _processExitHandler = null;
+            }
+            if (_appDispatcherExceptionHandler != null)
+            {
+                try
+                {
+                    if (Application.Current != null)
+                    {
+                        Application.Current.DispatcherUnhandledException -= _appDispatcherExceptionHandler;
+                    }
+                }
+                catch { }
+                _appDispatcherExceptionHandler = null;
+            }
+            if (_localDispatcherExceptionHandler != null)
+            {
+                try { Dispatcher.UnhandledException -= _localDispatcherExceptionHandler; } catch { }
+                _localDispatcherExceptionHandler = null;
+            }
+        }
+
+        private void ApplyTemporaryTouchpadDisableForTrackPoint()
+        {
+            if (!_hasTrackPoint) return;
+
+            string restorePath = ResolveRestoreFilePath();
+            bool origSpiEnabled = false;
+            bool spiSupported = NativeMethods.TryGetPrecisionTouchpadEnabled(out origSpiEnabled);
+            int origElanVal = ReadElanTouchpadEnableValue();
+
+            if (spiSupported)
+            {
+                if (WriteRestoreFileAtomic(restorePath, "SPI_TOUCHPADPARAMETERS", origSpiEnabled, true, origElanVal, false))
+                {
+                    HookAppCrashRecoveryHandlers();
+                    bool prevSpi;
+                    if (NativeMethods.TrySetPrecisionTouchpadEnabled(false, out prevSpi))
+                    {
+                        lock (_touchpadRestoreLock)
+                        {
+                            _touchpadRestored = false;
+                            _spiTouchpadSwitched = true;
+                            _origSpiTouchpadEnabled = prevSpi;
+                            _touchpadTemporarilyDisabled = true;
+                            _touchpadDisableMethod = "SPI_TOUCHPADPARAMETERS";
+                        }
+                        HwTestLogger.Info("TOUCHPAD", string.Format(
+                            "Sloj 1 Anti-Cheat: Precision Touchpad privremeno isključen (SPI_SETTOUCHPADPARAMETERS, original={0}, restore={1})",
+                            prevSpi, restorePath));
+                        return;
+                    }
+                    TryDeleteFileQuiet(restorePath);
+                    TryDeleteFileQuiet(restorePath + ".tmp");
+                }
+            }
+
+            if (origElanVal >= 0 && HasIndependentElanController(origElanVal))
+            {
+                if (WriteRestoreFileAtomic(restorePath, "ELAN_REGISTRY", null, false, origElanVal, true))
+                {
+                    HookAppCrashRecoveryHandlers();
+                    bool switched = (origElanVal == 0) || WriteElanTouchpadEnableValue(0);
+                    if (switched)
+                    {
+                        if (origElanVal != 0) PulseElanTouchpadEnableEvents(false);
+                        lock (_touchpadRestoreLock)
+                        {
+                            _touchpadRestored = false;
+                            _elanTouchpadEnableSwitched = true;
+                            _origElanTouchpadEnable = origElanVal;
+                            _touchpadTemporarilyDisabled = true;
+                            _touchpadDisableMethod = "ELAN_REGISTRY";
+                        }
+                        HwTestLogger.Info("TOUCHPAD", string.Format(
+                            "Sloj 1 Anti-Cheat (Win10 fallback): ELAN SmartPad TouchPad_Enable privremeno postavljen {0} -> 0 (restore={1})",
+                            origElanVal, restorePath));
+                        return;
+                    }
+                    TryDeleteFileQuiet(restorePath);
+                    TryDeleteFileQuiet(restorePath + ".tmp");
+                }
+            }
+
+            lock (_touchpadRestoreLock)
+            {
+                _touchpadTemporarilyDisabled = false;
+                _touchpadDisableMethod = "RAWINPUT_ONLY";
+            }
+            HwTestLogger.Info("TOUCHPAD", "Sloj 1 privremeno gašenje touchpada nije primenljivo — aktivan Sloj 2 filter (touchpad_disable_method=RAWINPUT_ONLY).");
+        }
+
+        private void RestoreTemporaryTouchpadDisableAndCleanupFile()
+        {
+            string restorePath = ResolveRestoreFilePath();
+            lock (_touchpadRestoreLock)
+            {
+                if (_touchpadRestored)
+                {
+                    TryDeleteFileQuiet(restorePath);
+                    TryDeleteFileQuiet(restorePath + ".tmp");
+                    return;
+                }
+                _touchpadRestored = true;
+
+                if (_spiTouchpadSwitched)
+                {
+                    _spiTouchpadSwitched = false;
+                    bool dummyPrev;
+                    bool ok = NativeMethods.TrySetPrecisionTouchpadEnabled(_origSpiTouchpadEnabled, out dummyPrev);
+                    HwTestLogger.Info("TOUCHPAD", string.Format(
+                        "Restauriran Precision Touchpad preko SPI_SETTOUCHPADPARAMETERS na {0} (ok={1}).",
+                        _origSpiTouchpadEnabled, ok));
+                }
+
+                if (_elanTouchpadEnableSwitched && _origElanTouchpadEnable >= 0)
+                {
+                    _elanTouchpadEnableSwitched = false;
+                    bool ok = WriteElanTouchpadEnableValue(_origElanTouchpadEnable);
+                    PulseElanTouchpadEnableEvents(_origElanTouchpadEnable != 0);
+                    HwTestLogger.Info("TOUCHPAD", string.Format(
+                        "Restauriran ELAN SmartPad TouchPad_Enable na {0} (ok={1}).",
+                        _origElanTouchpadEnable, ok));
+                }
+            }
+            TryDeleteFileQuiet(restorePath);
+            TryDeleteFileQuiet(restorePath + ".tmp");
         }
 
         private static bool TrySwitchPointStickRegistryKey(RegistryKey root, string subKeyPath, out bool switched, out int origVal)
@@ -1200,6 +1886,197 @@ namespace WIS.HwTest.Tests
             return name;
         }
 
+        private static string ExtractBaseHidId(string pnpId)
+        {
+            if (string.IsNullOrEmpty(pnpId)) return "";
+            int colIdx = pnpId.IndexOf("&Col", StringComparison.OrdinalIgnoreCase);
+            if (colIdx > 0) return pnpId.Substring(0, colIdx);
+            return pnpId;
+        }
+
+        private void IndexKnownHidCollectionHierarchy(NativeMethods.RawInputDeviceMeta meta, HashSet<string> baseSet, HashSet<string> parentSet)
+        {
+            if (meta == null || string.IsNullOrEmpty(meta.DeviceName)) return;
+            string leaf;
+            List<string> ancestry;
+            string desc, svc;
+            if (NativeMethods.TryGetRawInputPnpHierarchy(meta.DeviceName, out leaf, out ancestry, out desc, out svc))
+            {
+                string b = ExtractBaseHidId(leaf);
+                if (!string.IsNullOrEmpty(b)) baseSet.Add(b);
+                for (int i = 1; i < ancestry.Count && i <= 2; i++)
+                {
+                    if (!string.IsNullOrEmpty(ancestry[i])) parentSet.Add(ancestry[i]);
+                }
+            }
+            else
+            {
+                string conv = NativeMethods.ConvertRawDevicePathToPnpInstanceId(meta.DeviceName);
+                string b = ExtractBaseHidId(conv);
+                if (!string.IsNullOrEmpty(b)) baseSet.Add(b);
+            }
+        }
+
+        private string ClassifyMouseRawDevice(IntPtr hDevice, string devName)
+        {
+            if (hDevice == IntPtr.Zero)
+            {
+                if (unchecked((uint)(Environment.TickCount - _lastTouchscreenHidTicks)) <= 200u)
+                {
+                    return "TOUCHSCREEN";
+                }
+                return "";
+            }
+
+            string cached;
+            if (_rawDeviceClassCache.TryGetValue(hDevice, out cached))
+            {
+                return cached;
+            }
+
+            if (string.IsNullOrEmpty(devName))
+            {
+                devName = NativeMethods.GetRawInputDeviceNameString(hDevice);
+            }
+
+            string classification = "SHARED_PS2";
+            uint rawType, vid, pid;
+            ushort uPage, uId;
+            if (NativeMethods.TryGetRawInputDeviceInfoDetails(hDevice, out rawType, out vid, out pid, out uPage, out uId))
+            {
+                if (rawType == NativeMethods.RIM_TYPEHID)
+                {
+                    if (uPage == 0x0D && uId == 0x04)
+                    {
+                        _rawDeviceClassCache[hDevice] = "TOUCHSCREEN";
+                        return "TOUCHSCREEN";
+                    }
+                    if (uPage == 0x0D && uId == 0x05)
+                    {
+                        _rawDeviceClassCache[hDevice] = "TOUCHPAD";
+                        return "TOUCHPAD";
+                    }
+                }
+            }
+
+            string leafPnpId;
+            List<string> ancestryIds;
+            string deviceDesc, serviceName;
+            NativeMethods.TryGetRawInputPnpHierarchy(devName, out leafPnpId, out ancestryIds, out deviceDesc, out serviceName);
+
+            StringBuilder sb = new StringBuilder();
+            sb.Append((devName ?? "").ToUpperInvariant()).Append('|');
+            sb.Append((leafPnpId ?? "").ToUpperInvariant()).Append('|');
+            sb.Append((deviceDesc ?? "").ToUpperInvariant()).Append('|');
+            sb.Append((serviceName ?? "").ToUpperInvariant()).Append('|');
+            bool hasUsbAncestor = false;
+            bool hasBluetoothAncestor = false;
+            bool hasPs2Ancestor = false;
+            bool matchesTouchpadParent = false;
+            bool matchesTouchscreenParent = false;
+
+            string leafBase = ExtractBaseHidId(leafPnpId);
+            if (!string.IsNullOrEmpty(leafBase))
+            {
+                if (_touchscreenBaseIds.Contains(leafBase)) matchesTouchscreenParent = true;
+                if (_precisionTouchpadBaseIds.Contains(leafBase)) matchesTouchpadParent = true;
+            }
+
+            for (int i = 0; i < ancestryIds.Count; i++)
+            {
+                string anc = ancestryIds[i];
+                if (string.IsNullOrEmpty(anc)) continue;
+                string ancUp = anc.ToUpperInvariant();
+                sb.Append(ancUp).Append('|');
+
+                if (i > 0)
+                {
+                    if (_touchscreenParentIds.Contains(anc)) matchesTouchscreenParent = true;
+                    if (_precisionTouchpadParentIds.Contains(anc)) matchesTouchpadParent = true;
+                }
+
+                if (ancUp.StartsWith("BTHENUM\\", StringComparison.Ordinal) ||
+                    ancUp.StartsWith("BTHLE\\", StringComparison.Ordinal) ||
+                    ancUp.StartsWith("BTHLEDEVICE\\", StringComparison.Ordinal) ||
+                    ancUp.IndexOf("00001124-0000-1000-8000-00805F9B34FB", StringComparison.Ordinal) >= 0)
+                {
+                    hasBluetoothAncestor = true;
+                }
+                else if ((ancUp.StartsWith("USB\\", StringComparison.Ordinal) || ancUp.StartsWith("USB4\\", StringComparison.Ordinal)) &&
+                         ancUp.IndexOf("ROOT_HUB", StringComparison.Ordinal) < 0)
+                {
+                    hasUsbAncestor = true;
+                }
+                else if (ancUp.StartsWith("ACPI\\", StringComparison.Ordinal) || ancUp.IndexOf("PNP0F", StringComparison.Ordinal) >= 0)
+                {
+                    hasPs2Ancestor = true;
+                }
+            }
+
+            string combined = sb.ToString();
+            if (combined.IndexOf("BTHENUM", StringComparison.Ordinal) >= 0 ||
+                combined.IndexOf("BTHLE", StringComparison.Ordinal) >= 0 ||
+                combined.IndexOf("00001124-0000-1000-8000-00805F9B34FB", StringComparison.Ordinal) >= 0)
+            {
+                hasBluetoothAncestor = true;
+            }
+            if (combined.IndexOf("I8042PRT", StringComparison.Ordinal) >= 0 ||
+                combined.IndexOf("ACPI#", StringComparison.Ordinal) >= 0 ||
+                combined.IndexOf("ACPI\\", StringComparison.Ordinal) >= 0)
+            {
+                hasPs2Ancestor = true;
+            }
+
+            bool explicitTouchpadToken = (combined.IndexOf("COL03", StringComparison.Ordinal) >= 0 ||
+                                          combined.IndexOf("SYNHID", StringComparison.Ordinal) >= 0 ||
+                                          combined.IndexOf("TOUCHPAD", StringComparison.Ordinal) >= 0 ||
+                                          combined.IndexOf("TRACKPAD", StringComparison.Ordinal) >= 0 ||
+                                          combined.IndexOf("CLICKPAD", StringComparison.Ordinal) >= 0 ||
+                                          combined.IndexOf("MSFT0001", StringComparison.Ordinal) >= 0);
+            bool explicitTrackPointToken = (combined.IndexOf("TRACKPOINT", StringComparison.Ordinal) >= 0 ||
+                                            combined.IndexOf("POINTSTICK", StringComparison.Ordinal) >= 0 ||
+                                            combined.IndexOf("POINTING STICK", StringComparison.Ordinal) >= 0 ||
+                                            combined.IndexOf("ACPI#LEN", StringComparison.Ordinal) >= 0 ||
+                                            combined.IndexOf("ACPI\\LEN", StringComparison.Ordinal) >= 0 ||
+                                            combined.IndexOf("LEN0071", StringComparison.Ordinal) >= 0);
+            bool explicitTouchscreenToken = ((combined.IndexOf("TOUCHSCREEN", StringComparison.Ordinal) >= 0 ||
+                                              combined.IndexOf("TOUCH SCREEN", StringComparison.Ordinal) >= 0 ||
+                                              combined.IndexOf("DIGITIZER", StringComparison.Ordinal) >= 0) &&
+                                             !explicitTouchpadToken);
+
+            if (matchesTouchscreenParent || explicitTouchscreenToken)
+            {
+                classification = "TOUCHSCREEN";
+            }
+            else if ((hasBluetoothAncestor || hasUsbAncestor) && !explicitTouchpadToken && !matchesTouchpadParent)
+            {
+                classification = "EXTERNAL_MOUSE";
+            }
+            else if (matchesTouchpadParent || (explicitTouchpadToken && !explicitTrackPointToken))
+            {
+                classification = "TOUCHPAD";
+            }
+            else if (explicitTrackPointToken)
+            {
+                classification = "TRACKPOINT";
+            }
+            else if (hasPs2Ancestor)
+            {
+                classification = _hasPrecisionTouchpadHid ? "TRACKPOINT" : "SHARED_PS2";
+            }
+            else if (_hasPrecisionTouchpadHid && (combined.IndexOf("ELAN", StringComparison.Ordinal) >= 0 || combined.IndexOf("SYNA", StringComparison.Ordinal) >= 0 || combined.IndexOf("ALPS", StringComparison.Ordinal) >= 0))
+            {
+                classification = "TOUCHPAD";
+            }
+            else
+            {
+                classification = "SHARED_PS2";
+            }
+
+            _rawDeviceClassCache[hDevice] = classification;
+            return classification;
+        }
+
         private void InstallHwndAndRawInputHook()
         {
             try
@@ -1218,6 +2095,7 @@ namespace WIS.HwTest.Tests
                     _registeredRawDevs.Add(new NativeMethods.RAWINPUTDEVICE { usUsagePage = 0x01, usUsage = 0x02, dwFlags = NativeMethods.RIDEV_INPUTSINK, hwndTarget = src.Handle }); // Mouse
                     _registeredRawDevs.Add(new NativeMethods.RAWINPUTDEVICE { usUsagePage = 0x01, usUsage = 0x01, dwFlags = NativeMethods.RIDEV_INPUTSINK, hwndTarget = src.Handle }); // Pointer
 
+                    bool hasTouchscreenPair = false;
                     List<uint> hidPairs = NativeMethods.EnumRawHidUsagePairs();
                     for (int i = 0; i < hidPairs.Count; i++)
                     {
@@ -1228,9 +2106,33 @@ namespace WIS.HwTest.Tests
                             _hasPrecisionTouchpadHid = true;
                             _registeredRawDevs.Add(new NativeMethods.RAWINPUTDEVICE { usUsagePage = uPage, usUsage = uId, dwFlags = NativeMethods.RIDEV_INPUTSINK, hwndTarget = src.Handle });
                         }
+                        else if (uPage == 0x0D && uId == 0x04)
+                        {
+                            hasTouchscreenPair = true;
+                            _registeredRawDevs.Add(new NativeMethods.RAWINPUTDEVICE { usUsagePage = uPage, usUsage = uId, dwFlags = NativeMethods.RIDEV_INPUTSINK, hwndTarget = src.Handle });
+                        }
                         else if (uPage >= 0xFF00)
                         {
                             _registeredRawDevs.Add(new NativeMethods.RAWINPUTDEVICE { usUsagePage = uPage, usUsage = uId, dwFlags = NativeMethods.RIDEV_INPUTSINK, hwndTarget = src.Handle });
+                        }
+                    }
+
+                    // Popišemo bazne i parent PnP ID-jeve za Precision Touchpad (0x0D/0x05) i Touchscreen (0x0D/0x04)
+                    List<NativeMethods.RawInputDeviceMeta> allMetas = NativeMethods.EnumRawInputDevicesMeta();
+                    for (int i = 0; i < allMetas.Count; i++)
+                    {
+                        NativeMethods.RawInputDeviceMeta meta = allMetas[i];
+                        if (meta.RawType == NativeMethods.RIM_TYPEHID)
+                        {
+                            if (meta.UsagePage == 0x0D && meta.Usage == 0x05)
+                            {
+                                _hasPrecisionTouchpadHid = true;
+                                IndexKnownHidCollectionHierarchy(meta, _precisionTouchpadBaseIds, _precisionTouchpadParentIds);
+                            }
+                            else if (meta.UsagePage == 0x0D && meta.Usage == 0x04)
+                            {
+                                IndexKnownHidCollectionHierarchy(meta, _touchscreenBaseIds, _touchscreenParentIds);
+                            }
                         }
                     }
 
@@ -1239,7 +2141,21 @@ namespace WIS.HwTest.Tests
                     if (NativeMethods.RegisterRawInputDevices(devs, (uint)devs.Length, structSize))
                     {
                         _rawInputRegistered = true;
-                        HwTestLogger.Info("TOUCHPAD", string.Format("RawInput RIDEV_INPUTSINK registrovan ({0} uređaja/kolekcija, PrecisionTouchpadHID={1})", devs.Length, _hasPrecisionTouchpadHid));
+                        if (!hasTouchscreenPair)
+                        {
+                            NativeMethods.RAWINPUTDEVICE tsDev = new NativeMethods.RAWINPUTDEVICE
+                            {
+                                usUsagePage = 0x0D,
+                                usUsage = 0x04,
+                                dwFlags = NativeMethods.RIDEV_INPUTSINK,
+                                hwndTarget = src.Handle
+                            };
+                            if (NativeMethods.RegisterRawInputDevices(new NativeMethods.RAWINPUTDEVICE[] { tsDev }, 1u, structSize))
+                            {
+                                _registeredRawDevs.Add(tsDev);
+                            }
+                        }
+                        HwTestLogger.Info("TOUCHPAD", string.Format("RawInput RIDEV_INPUTSINK registrovan ({0} uređaja/kolekcija, PrecisionTouchpadHID={1})", _registeredRawDevs.Count, _hasPrecisionTouchpadHid));
                     }
                 }
             }
@@ -1284,7 +2200,16 @@ namespace WIS.HwTest.Tests
 
             if (msg == NativeMethods.WM_MBUTTONDOWN || msg == NativeMethods.WM_MBUTTONUP)
             {
-                if (!_middleClickDone) MarkMiddleClickDone("WM_MBUTTON poruka prozora");
+                if (_hasTrackPoint && !_middleClickDone)
+                {
+                    int now = Environment.TickCount;
+                    if (unchecked((uint)(now - _lastForbiddenMiddleClickTicks)) > 220u &&
+                        !(unchecked((uint)(now - _lastMouseRawTicks)) <= 120u &&
+                          (_lastMouseRawSource == "EXTERNAL_MOUSE" || _lastMouseRawSource == "TOUCHPAD" || _lastMouseRawSource == "TOUCHSCREEN")))
+                    {
+                        MarkMiddleClickDone("WM_MBUTTON poruka prozora");
+                    }
+                }
                 return IntPtr.Zero;
             }
 
@@ -1302,9 +2227,22 @@ namespace WIS.HwTest.Tests
                     {
                         string devName = GetCachedRawDeviceName(rawDev);
                         string upper = devName.ToUpperInvariant();
+                        uint infoType, vid, pid;
+                        ushort uPage, uId;
+                        bool gotHidInfo = NativeMethods.TryGetRawInputDeviceInfoDetails(rawDev, out infoType, out vid, out pid, out uPage, out uId);
+
+                        if (gotHidInfo && uPage == 0x0D && uId == 0x04)
+                        {
+                            _lastTouchscreenHidTicks = Environment.TickCount;
+                            _lastMouseRawSource = "TOUCHSCREEN";
+                            _lastMouseRawTicks = _lastTouchscreenHidTicks;
+                            return IntPtr.Zero;
+                        }
+
                         // Touchpad HID izveštaj (ELAN COL03 / SYNHIDMINI / opšti Precision HID 0x0D/0x05)
                         bool isVendorCol = (upper.IndexOf("COL02") >= 0 || upper.IndexOf("VENDOR") >= 0);
-                        bool looksLikeTouchpadHid = (upper.IndexOf("COL03") >= 0 || upper.IndexOf("SYNHID") >= 0 || upper.IndexOf("ELAN") >= 0 || upper.IndexOf("SYNA") >= 0 || upper.IndexOf("ALPS") >= 0 || upper.IndexOf("TOUCH") >= 0);
+                        bool looksLikeTouchpadHid = (gotHidInfo && uPage == 0x0D && uId == 0x05) ||
+                                                    (upper.IndexOf("COL03") >= 0 || upper.IndexOf("SYNHID") >= 0 || upper.IndexOf("ELAN") >= 0 || upper.IndexOf("SYNA") >= 0 || upper.IndexOf("ALPS") >= 0 || upper.IndexOf("TOUCH") >= 0);
                         if (looksLikeTouchpadHid)
                         {
                             if (!_hidTouchpadDevices.Contains(rawDev))
@@ -1331,40 +2269,45 @@ namespace WIS.HwTest.Tests
                     {
                         bool firstForDev = _mouseDevicesSeen.Add(rawDev);
                         string devName = GetCachedRawDeviceName(rawDev);
+                        string devClass = ClassifyMouseRawDevice(rawDev, devName);
                         if (firstForDev && !string.IsNullOrEmpty(devName))
                         {
-                            HwTestLogger.Info("TOUCHPAD", "Detektovan RawInput Mouse uređaj: " + devName);
-                            if (_mouseDevicesSeen.Count >= 2 && _hasTrackPoint)
+                            HwTestLogger.Info("TOUCHPAD", string.Format("Detektovan RawInput Mouse uređaj [{0}]: {1}", devClass, devName));
+                            if (_hasTrackPoint && (_hasPrecisionTouchpadHid || _elanEventWatches.Count > 0 || HasDistinctInternalPointingDevices()))
                                 _canSeparateTrackPointButtons = true;
                         }
 
-                        if ((btnFlags & (NativeMethods.RI_MOUSE_MIDDLE_BUTTON_DOWN | NativeMethods.RI_MOUSE_MIDDLE_BUTTON_UP)) != 0 && !_middleClickDone)
-                        {
-                            MarkMiddleClickDone("RawInput RI_MOUSE_MIDDLE_BUTTON (" + devName + ")");
-                        }
-
-                        string upper = devName.ToUpperInvariant();
                         int now = Environment.TickCount;
                         bool recentTouchpadHid = (_hasPrecisionTouchpadHid && unchecked((uint)(now - _lastTouchpadHidTicks)) <= 200u);
-                        bool explicitPs2TrackPoint = (_hasPrecisionTouchpadHid && (upper.IndexOf("ACPI#LEN") >= 0 || upper.IndexOf("ACPI\\LEN") >= 0));
-                        bool explicitTouchpadMouse = (upper.IndexOf("COL03") >= 0 || upper.IndexOf("SYNHID") >= 0 || recentTouchpadHid);
+                        if (devClass == "SHARED_PS2" && recentTouchpadHid)
+                        {
+                            devClass = "TOUCHPAD";
+                        }
+
+                        if ((btnFlags & (NativeMethods.RI_MOUSE_MIDDLE_BUTTON_DOWN | NativeMethods.RI_MOUSE_MIDDLE_BUTTON_UP)) != 0)
+                        {
+                            if (devClass == "EXTERNAL_MOUSE" || devClass == "TOUCHPAD" || devClass == "TOUCHSCREEN")
+                            {
+                                _lastForbiddenMiddleClickTicks = now;
+                            }
+                            else if (_hasTrackPoint && !_middleClickDone)
+                            {
+                                MarkMiddleClickDone("RawInput RI_MOUSE_MIDDLE_BUTTON (" + devName + ")");
+                            }
+                        }
 
                         if ((btnFlags & NativeMethods.RI_MOUSE_LEFT_BUTTON_DOWN) != 0 ||
                             (btnFlags & NativeMethods.RI_MOUSE_RIGHT_BUTTON_DOWN) != 0 ||
+                            (btnFlags & NativeMethods.RI_MOUSE_WHEEL) != 0 ||
                             lastX != 0 || lastY != 0)
                         {
-                            if (explicitTouchpadMouse && !explicitPs2TrackPoint)
-                                _lastMouseRawSource = "TOUCHPAD";
-                            else if (explicitPs2TrackPoint || (_hasPrecisionTouchpadHid && !recentTouchpadHid))
-                                _lastMouseRawSource = "TRACKPOINT";
-                            else
-                                _lastMouseRawSource = "";
+                            _lastMouseRawSource = devClass;
                             _lastMouseRawTicks = now;
                         }
 
                         if ((btnFlags & NativeMethods.RI_MOUSE_WHEEL) != 0 && _hasTrackPoint && !_middleClickDone)
                         {
-                            if (explicitPs2TrackPoint || (_hasPrecisionTouchpadHid && !recentTouchpadHid))
+                            if (devClass == "TRACKPOINT" || (devClass == "SHARED_PS2" && !recentTouchpadHid))
                             {
                                 MarkMiddleClickDone("RawInput TrackPoint Scroll mod (Srednji + džojstik)");
                             }
@@ -1405,15 +2348,23 @@ namespace WIS.HwTest.Tests
 
         private IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
-            if (nCode >= 0 && !_isClosingOrDone && !_middleClickDone)
+            if (nCode >= 0 && !_isClosingOrDone && !_middleClickDone && _hasTrackPoint)
             {
                 int msg = wParam.ToInt32();
                 if (msg == NativeMethods.WM_MBUTTONDOWN || msg == NativeMethods.WM_MBUTTONUP)
                 {
-                    Dispatcher.BeginInvoke(new Action(() =>
+                    int now = Environment.TickCount;
+                    if (unchecked((uint)(now - _lastForbiddenMiddleClickTicks)) > 220u &&
+                        !(unchecked((uint)(now - _lastMouseRawTicks)) <= 120u &&
+                          (_lastMouseRawSource == "EXTERNAL_MOUSE" || _lastMouseRawSource == "TOUCHPAD" || _lastMouseRawSource == "TOUCHSCREEN")))
                     {
-                        MarkMiddleClickDone("WH_MOUSE_LL hardverski srednji klik");
-                    }));
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            int cur = Environment.TickCount;
+                            if (unchecked((uint)(cur - _lastForbiddenMiddleClickTicks)) <= 220u) return;
+                            MarkMiddleClickDone("WH_MOUSE_LL hardverski srednji klik");
+                        }));
+                    }
                 }
             }
             return NativeMethods.CallNextHookEx(_mouseHookId, nCode, wParam, lParam);
@@ -1456,6 +2407,12 @@ namespace WIS.HwTest.Tests
                 Result.Details["right_click"] = _rightClickDone;
                 Result.Details["scroll_2finger"] = (_scrollUpDone && _scrollDownDone);
             }
+            Result.Details["touchpad_temporarily_disabled"] = _touchpadTemporarilyDisabled;
+            Result.Details["touchpad_disable_method"] = _touchpadDisableMethod ?? "NONE";
+            Result.Details["anticheat_blocked_touchpad_events"] = _blockedTouchpadEvents;
+            Result.Details["anticheat_blocked_external_mouse_events"] = _blockedExternalMouseEvents;
+            Result.Details["anticheat_blocked_trackpoint_events"] = _blockedTrackPointEvents;
+            Result.Details["anticheat_blocked_touchscreen_events"] = _blockedTouchscreenEvents;
         }
 
         private List<string> CollectFailedComponents(bool forceIncludeMiddle)
@@ -1513,7 +2470,7 @@ namespace WIS.HwTest.Tests
 
         private void SafeCloseDialog(bool result)
         {
-            StopMiddleButtonMonitoring();
+            CleanupAllResourcesAndRestoreTouchpad();
             try { DialogResult = result; } catch { }
             try { Close(); } catch { }
         }

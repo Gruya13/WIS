@@ -24,9 +24,12 @@ namespace WIS.HwTest.Core
     public class AutoDiagnosticsEngine : IDisposable
     {
         private readonly object _sensorLock = new object();
+        private readonly object _sensorWorkerSync = new object();
         private ThermalSensorEngine _sensorEngine;
         private bool _sensorInitAttempted;
         private bool _sensorTimedOut;
+        private bool _sensorWorkerRunning;
+        private bool _sensorFirstUpdateDone;
         private bool _disposed;
 
         private ThermalSensorEngine GetSensors()
@@ -53,52 +56,84 @@ namespace WIS.HwTest.Core
 
         public ThermalSensorEngine EnsureSensorsAndUpdate()
         {
-            if (_sensorTimedOut || _disposed) return null;
+            if (_disposed) return null;
 
-            ThermalSensorEngine resultEng = null;
-            bool completed = false;
-            object waitSync = new object();
-
-            Thread t = new Thread(() =>
-            {
-                ThermalSensorEngine localEng = null;
-                try
-                {
-                    localEng = GetSensors();
-                    if (localEng != null)
-                    {
-                        localEng.Update();
-                    }
-                }
-                catch { }
-                finally
-                {
-                    lock (waitSync)
-                    {
-                        resultEng = localEng;
-                        completed = true;
-                        Monitor.PulseAll(waitSync);
-                    }
-                }
-            });
-            t.IsBackground = true;
-            t.Start();
+            object waitSync = _sensorWorkerSync;
+            bool isInitialCall;
+            bool workerStillRunning;
 
             lock (waitSync)
             {
-                if (!completed)
+                if (_disposed) return null;
+                isInitialCall = !_sensorFirstUpdateDone;
+
+                if (!_sensorWorkerRunning)
+                {
+                    _sensorWorkerRunning = true;
+                    Thread t = new Thread(() =>
+                    {
+                        ThermalSensorEngine localEng = null;
+                        try
+                        {
+                            localEng = GetSensors();
+                            if (localEng != null)
+                            {
+                                localEng.Update();
+                            }
+                        }
+                        catch { }
+                        finally
+                        {
+                            lock (waitSync)
+                            {
+                                if (localEng != null)
+                                {
+                                    _sensorFirstUpdateDone = true;
+                                }
+                                _sensorWorkerRunning = false;
+                                Monitor.PulseAll(waitSync);
+                            }
+                        }
+                    });
+                    t.IsBackground = true;
+                    t.Start();
+                }
+
+                if (isInitialCall)
+                {
+                    Stopwatch waitSw = Stopwatch.StartNew();
+                    while (_sensorWorkerRunning && !_disposed)
+                    {
+                        int remaining = 10000 - (int)waitSw.ElapsedMilliseconds;
+                        if (remaining <= 0) break;
+                        Monitor.Wait(waitSync, remaining);
+                    }
+                }
+                else if (_sensorWorkerRunning && !_disposed)
                 {
                     Monitor.Wait(waitSync, 4000);
                 }
+
+                workerStillRunning = _sensorWorkerRunning;
             }
 
-            if (!completed)
+            if (workerStillRunning)
             {
-                _sensorTimedOut = true;
-                HwTestLogger.Warn("AUTO_SENSORS", "EnsureSensorsAndUpdate prekoracio 4000ms timeout - nastavljam bez termalnih senzora.");
+                if (!_sensorTimedOut)
+                {
+                    _sensorTimedOut = true;
+                    HwTestLogger.Warn("AUTO_SENSORS", string.Format(
+                        "EnsureSensorsAndUpdate prekoracio {0}ms timeout - pozadinska inicijalizacija nastavlja bez blokade.",
+                        isInitialCall ? 10000 : 4000));
+                }
                 return null;
             }
-            return resultEng;
+
+            lock (_sensorLock)
+            {
+                if (_disposed) return null;
+                return _sensorEngine;
+            }
         }
 
         public void Dispose()
@@ -1001,11 +1036,16 @@ namespace WIS.HwTest.Core
                 int serviceRssiDbm = 0;
                 bool serviceHasRssi = false;
                 string wlanSvcState = "";
+                bool wifiWlanAccessDenied = false;
+                uint wifiWlanLastError = 0u;
+                bool wifiLocationPolicyDisabled = NativeMethods.IsLocationPolicyDisabled();
+                bool wifiNetshLocationBlocked = false;
 
                 if (wifiCount > 0)
                 {
                     ProbeWifiSignalAndNetworks(
                         serviceSsid,
+                        wifiUp,
                         out wifiVisibleNetworks,
                         out wifiMaxSignalPct,
                         out hwRadioOff,
@@ -1023,7 +1063,11 @@ namespace WIS.HwTest.Core
                         out serviceSignalPct,
                         out serviceRssiDbm,
                         out serviceHasRssi,
-                        out wlanSvcState);
+                        out wlanSvcState,
+                        out wifiWlanAccessDenied,
+                        out wifiWlanLastError,
+                        out wifiLocationPolicyDisabled,
+                        out wifiNetshLocationBlocked);
                 }
 
                 bool btPresent;
@@ -1049,6 +1093,9 @@ namespace WIS.HwTest.Core
                 res.Details["wifi_service_ssid_found"] = serviceSsidFound;
                 res.Details["wifi_service_signal_pct"] = serviceSignalPct;
                 res.Details["wifi_service_rssi_dbm"] = serviceHasRssi ? serviceRssiDbm : 0;
+                res.Details["wifi_wlan_access_denied"] = wifiWlanAccessDenied;
+                res.Details["wifi_wlan_last_error"] = wifiWlanLastError;
+                res.Details["wifi_location_policy_disabled"] = wifiLocationPolicyDisabled;
                 if (!string.IsNullOrEmpty(wlanSvcState)) res.Details["wlan_svc_state"] = wlanSvcState;
                 res.Details["bluetooth_present"] = btPresent;
                 res.Details["bluetooth_status"] = btSummary;
@@ -1061,6 +1108,7 @@ namespace WIS.HwTest.Core
                 res.Details["interfaces"] = string.Join(" | ", ifaceSummaries.ToArray());
                 res.Details["pnp_errors"] = string.Join("; ", pnpErrors.ToArray());
 
+                bool locationBlockedWifiScan = (wifiCount > 0 && (wifiWlanAccessDenied || wifiLocationPolicyDisabled || wifiNetshLocationBlocked));
                 string wifiSigTxt = "";
                 if (wifiCount > 0)
                 {
@@ -1083,6 +1131,10 @@ namespace WIS.HwTest.Core
                         wifiSigTxt = string.Format(" ({0}%{1}, {2} BSSID [{3}]{4})",
                             wifiMaxSignalPct, rssiPart, wifiBssidCount > 0 ? wifiBssidCount : wifiVisibleNetworks, bandPart, svcPart);
                     }
+                    else if (locationBlockedWifiScan)
+                    {
+                        wifiSigTxt = " (Location blokira skeniranje)";
+                    }
                 }
                 string btBadge = btPresent ? (btOk ? "OK" : "GREŠKA") : "Nema";
                 res.MetricSummary = string.Format("Wi-Fi: {0}{1} | LAN: {2} | BT: {3} | Hub: {4}",
@@ -1090,15 +1142,17 @@ namespace WIS.HwTest.Core
 
                 bool radioOff = (wifiCount > 0 && (hwRadioOff || swRadioOff));
                 bool noWifiSignalAtAll = (wifiCount > 0 && !wifiUp && wifiVisibleNetworks == 0 && wifiBssidCount == 0 && wifiMaxSignalPct == 0);
+                bool noWifiSignalFail = (noWifiSignalAtAll && !locationBlockedWifiScan);
+                bool wifiScanBlockedWarn = (locationBlockedWifiScan && (noWifiSignalAtAll || (wifiVisibleNetworks == 0 && wifiBssidCount == 0 && wifiMaxSignalPct == 0)));
                 bool weakServiceSignal = (wifiCount > 0 && !string.IsNullOrEmpty(serviceSsid) && serviceSsidFound &&
                                           ((serviceSignalPct > 0 && serviceSignalPct < 55) || (serviceHasRssi && serviceRssiDbm < -75)));
                 bool weakSurroundingSignal = (wifiCount > 0 && (string.IsNullOrEmpty(serviceSsid) || !serviceSsidFound) &&
                                               ((wifiMaxSignalPct > 0 && wifiMaxSignalPct < 55) || (wifiHasRssi && wifiMaxRssiDbm < -75)));
                 bool weakWifiAntenna = weakServiceSignal || weakSurroundingSignal;
-                bool missing5GhzBand = (wifiCount > 0 && wifiSupports5Ghz && wifi24GhzCount > 0 && wifi5GhzCount == 0 && wifi6GhzCount == 0);
-                bool missingServiceSsid = (wifiCount > 0 && !string.IsNullOrEmpty(serviceSsid) && !serviceSsidFound && (wifiBssidCount > 0 || wifiVisibleNetworks > 0));
+                bool missing5GhzBand = (wifiCount > 0 && !locationBlockedWifiScan && wifiSupports5Ghz && wifi24GhzCount > 0 && wifi5GhzCount == 0 && wifi6GhzCount == 0);
+                bool missingServiceSsid = (wifiCount > 0 && !locationBlockedWifiScan && !string.IsNullOrEmpty(serviceSsid) && !serviceSsidFound && (wifiBssidCount > 0 || wifiVisibleNetworks > 0));
 
-                if (pnpErrors.Count > 0 || (btPresent && !btOk) || radioOff || noWifiSignalAtAll)
+                if (pnpErrors.Count > 0 || (btPresent && !btOk) || radioOff || noWifiSignalFail)
                 {
                     res.Status = TestStatus.Fail;
                     List<string> failParts = new List<string>();
@@ -1106,7 +1160,7 @@ namespace WIS.HwTest.Core
                     if (btPresent && !btOk) failParts.Add("Bluetooth greška: " + btSummary);
                     if (hwRadioOff) failParts.Add("Wi-Fi hardverski radio prekidač (RF Kill) je isključen");
                     if (swRadioOff) failParts.Add("Wi-Fi softverski radio je isključen (Airplane mode / Wi-Fi OFF)");
-                    if (noWifiSignalAtAll && !radioOff)
+                    if (noWifiSignalFail && !radioOff)
                         failParts.Add("Wi-Fi adapter je prisutan, ali vidi 0 Wi-Fi mreža nakon aktivnog skeniranja (otkačene antene ili neispravan RF modul)");
                     res.Reason = string.Join("; ", failParts.ToArray());
                 }
@@ -1115,11 +1169,13 @@ namespace WIS.HwTest.Core
                     res.Status = TestStatus.Fail;
                     res.Reason = "Nije pronađen nijedan fizički Wi-Fi ili LAN adapter (fali drajver ili kvar kartice)";
                 }
-                else if (weakWifiAntenna || missing5GhzBand || missingServiceSsid || !anyUp || !hubOk)
+                else if (weakWifiAntenna || missing5GhzBand || missingServiceSsid || wifiScanBlockedWarn || !anyUp || !hubOk)
                 {
                     res.Status = TestStatus.Pass;
                     res.HasWarning = true;
                     List<string> warns = new List<string>();
+                    if (wifiScanBlockedWarn)
+                        warns.Add("Windows Location politika blokira Wi-Fi skeniranje (DisableLocation / ERROR_ACCESS_DENIED) — provera okolnih Wi-Fi mreža nije moguća bez Location pristupa");
                     if (weakServiceSignal)
                         warns.Add(string.Format("Slab signal servisnog AP-a '{0}' ({1}%{2}) — proverite Main/Aux kablove antene",
                             serviceSsid, serviceSignalPct, serviceHasRssi ? string.Format(" / {0} dBm", serviceRssiDbm) : ""));
@@ -1473,13 +1529,27 @@ namespace WIS.HwTest.Core
             }
         }
 
+        private static bool IsNetshLocationBlockedMessage(string output)
+        {
+            if (string.IsNullOrEmpty(output)) return false;
+            string low = output.ToLowerInvariant();
+            if (low.Contains("ms-settings:privacy-location")) return true;
+            if (low.Contains("privacy & security") && low.Contains("location")) return true;
+            if (low.Contains("location") && (low.Contains("permission") || low.Contains("access") || low.Contains("disabled") || low.Contains("turned off") || low.Contains("required") || low.Contains("denied"))) return true;
+            if (low.Contains("lokacij") && (low.Contains("dozvol") || low.Contains("pristup") || low.Contains("isklju"))) return true;
+            return false;
+        }
+
         private static void ProbeWifiSignalAndNetworks(out int visibleNetworks, out int maxSignalPct)
         {
             bool hwRadioOff, swRadioOff, wifiHasRssi, wifiSupports5Ghz, serviceSsidFound, serviceHasRssi;
+            bool wlanAccessDenied, locationPolicyDisabled, netshLocationBlocked;
+            uint wlanLastError;
             int bssidCount, band24Count, band5Count, band6Count, maxRssiDbm, max24Pct, max5Pct, serviceSignalPct, serviceRssiDbm;
             string wlanSvcState;
             ProbeWifiSignalAndNetworks(
                 "",
+                false,
                 out visibleNetworks,
                 out maxSignalPct,
                 out hwRadioOff,
@@ -1497,11 +1567,16 @@ namespace WIS.HwTest.Core
                 out serviceSignalPct,
                 out serviceRssiDbm,
                 out serviceHasRssi,
-                out wlanSvcState);
+                out wlanSvcState,
+                out wlanAccessDenied,
+                out wlanLastError,
+                out locationPolicyDisabled,
+                out netshLocationBlocked);
         }
 
         private static void ProbeWifiSignalAndNetworks(
             string serviceSsid,
+            bool wifiUp,
             out int visibleNetworks,
             out int maxSignalPct,
             out bool hwRadioOff,
@@ -1519,7 +1594,11 @@ namespace WIS.HwTest.Core
             out int serviceSignalPct,
             out int serviceRssiDbm,
             out bool serviceHasRssi,
-            out string wlanSvcState)
+            out string wlanSvcState,
+            out bool wlanAccessDenied,
+            out uint wlanLastError,
+            out bool locationPolicyDisabled,
+            out bool netshLocationBlocked)
         {
             visibleNetworks = 0;
             maxSignalPct = 0;
@@ -1539,6 +1618,10 @@ namespace WIS.HwTest.Core
             serviceRssiDbm = 0;
             serviceHasRssi = false;
             wlanSvcState = "";
+            wlanAccessDenied = false;
+            wlanLastError = 0u;
+            locationPolicyDisabled = NativeMethods.IsLocationPolicyDisabled();
+            netshLocationBlocked = false;
 
             try
             {
@@ -1557,10 +1640,22 @@ namespace WIS.HwTest.Core
                     Thread.Sleep(1600);
                     bss = NativeMethods.GetWlanBssScanSummary(serviceSsid);
 
-                    if (bss.BssidCount == 0 && NativeMethods.TriggerActiveWlanScan())
+                    if (bss != null && bss.BssidCount == 0 && !bss.AccessDenied && NativeMethods.TriggerActiveWlanScan())
                     {
                         Thread.Sleep(1600);
                         bss = NativeMethods.GetWlanBssScanSummary(serviceSsid);
+                    }
+
+                    if (bss != null)
+                    {
+                        wlanAccessDenied = bss.AccessDenied;
+                        wlanLastError = bss.LastError;
+                        if (bss.AccessDenied || bss.LastError != 0u)
+                        {
+                            HwTestLogger.Warn("WIFI_SCAN", string.Format(
+                                "WlanGetNetworkBssList upozorenje: AccessDenied={0}, LastError={1}, LocationPolicyDisabled={2}, BssidCount={3}",
+                                bss.AccessDenied, bss.LastError, locationPolicyDisabled, bss.BssidCount));
+                        }
                     }
 
                     if (bss != null && bss.BssidCount > 0)
@@ -1583,10 +1678,53 @@ namespace WIS.HwTest.Core
                     }
                 }
 
+                // Kada je Wi-Fi interfejs povezan (wifiUp == true) ili kad je BSSID lista prazna/odbijena,
+                // pročitaj signal/SSID direktno iz WlanQueryInterface(wlan_intf_opcode_current_connection = 7u) nezavisno od jezika OS-a
+                if (!hwRadioOff && !swRadioOff && (wifiUp || maxSignalPct == 0 || visibleNetworks == 0))
+                {
+                    NativeMethods.WlanCurrentConnectionInfo curConn = NativeMethods.QueryCurrentWifiConnection();
+                    if (curConn != null && curConn.Connected)
+                    {
+                        if (curConn.SignalPct > maxSignalPct) maxSignalPct = curConn.SignalPct;
+                        if (visibleNetworks == 0) visibleNetworks = 1;
+                        if (bssidCount == 0) bssidCount = 1;
+
+                        if (curConn.ChannelNumber >= 1u && curConn.ChannelNumber <= 14u)
+                        {
+                            if (band24Count == 0) band24Count = 1;
+                            if (curConn.SignalPct > max24Pct) max24Pct = curConn.SignalPct;
+                        }
+                        else if (curConn.ChannelNumber >= 32u && curConn.ChannelNumber <= 177u)
+                        {
+                            if (band5Count == 0) band5Count = 1;
+                            if (curConn.SignalPct > max5Pct) max5Pct = curConn.SignalPct;
+                            wifiSupports5Ghz = true;
+                        }
+                        if (curConn.PhyType == 4u || curConn.PhyType == 8u || curConn.PhyType == 10u || curConn.PhyType == 11u)
+                        {
+                            wifiSupports5Ghz = true;
+                        }
+
+                        if (!string.IsNullOrEmpty(serviceSsid) &&
+                            !serviceSsidFound &&
+                            !string.IsNullOrEmpty(curConn.Ssid) &&
+                            string.Equals(curConn.Ssid, serviceSsid, StringComparison.Ordinal))
+                        {
+                            serviceSsidFound = true;
+                            if (curConn.SignalPct > serviceSignalPct) serviceSignalPct = curConn.SignalPct;
+                        }
+                    }
+                }
+
                 // Fallback na netsh ako je WlanGetNetworkBssList odbijen (npr. ERROR_ACCESS_DENIED) ili nije vratio mreže
                 if (!hwRadioOff && !swRadioOff && (bssidCount == 0 || bss == null || !bss.ApiSucceeded || bss.AccessDenied))
                 {
                     string output = RunNetshStdout("wlan show networks mode=bssid", 1800);
+                    if (IsNetshLocationBlockedMessage(output))
+                    {
+                        netshLocationBlocked = true;
+                        HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show networks blokiran od strane Windows Location politike.");
+                    }
                     int netshVisible = 0;
                     int netshMaxPct = 0;
                     ParseNetshNetworksOutput(output, ref netshVisible, ref netshMaxPct);
@@ -1616,6 +1754,11 @@ namespace WIS.HwTest.Core
                     string ifaceOut = RunNetshStdout("wlan show interfaces", 1500);
                     if (!string.IsNullOrEmpty(ifaceOut))
                     {
+                        if (IsNetshLocationBlockedMessage(ifaceOut))
+                        {
+                            netshLocationBlocked = true;
+                            HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show interfaces blokiran od strane Windows Location politike.");
+                        }
                         string[] ifaceLines = ifaceOut.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
                         string connectedSsid = "";
                         int connectedBand = 0;

@@ -555,7 +555,7 @@ function Invoke-DriverPoolBundleInstall {
         $req = [System.Net.HttpWebRequest]::Create($bundleUrl)
         $req.Method = "POST"
         $req.ContentType = "application/json; charset=utf-8"
-        $req.Timeout = 180000
+        $req.Timeout = 15000
         $req.ReadWriteTimeout = 300000
         $req.UserAgent = "WIS-DriverPool/3.2"
 
@@ -594,7 +594,13 @@ function Invoke-DriverPoolBundleInstall {
         if (-not $fi -or $fi.Length -lt 512) { return $false }
 
         if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
-            Add-WisBenchmarkTransfer -Source "lan_hit" -Category "driver_pool" -Bytes ([long]$fi.Length) -DurationMs $swPool.Elapsed.TotalMilliseconds -ItemName "$safeLbl.tar" | Out-Null
+            try {
+                Add-WisBenchmarkTransfer -Source "lan_hit" -Category "driver_pool" -Bytes ([long]$fi.Length) -DurationMs $swPool.Elapsed.TotalMilliseconds -ItemName "$safeLbl.tar" | Out-Null
+            } catch {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Upozorenje pri upisu Driver Pool benchmark metrike za ${safeLbl}: $($_.Exception.Message)" -Level "WARN" -Component "NAS"
+                }
+            }
         }
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             $mbPool = [math]::Round(($fi.Length / 1MB), 2)
@@ -764,11 +770,62 @@ function Invoke-ModelDriversPreInstall {
                             }
                             $localTar = Join-Path $localTemp "$cleanModel.tar"
                             $swTar = [System.Diagnostics.Stopwatch]::StartNew()
-                            Copy-Item -Path $tarArchive -Destination $localTar -Force -ErrorAction Stop
+                            $srcTarInfo = Get-Item -LiteralPath $tarArchive -ErrorAction Stop
+                            $totalTarBytes = [long]$srcTarInfo.Length
+                            $totalTarMb = [Math]::Round($totalTarBytes / 1MB, 1)
+                            $tarBuf = New-Object byte[] 4194304
+                            $inTarFs = $null
+                            $outTarFs = $null
+                            $tarCopyOk = $false
+                            $copiedTarBytes = [long]0
+                            $lastTarIpcSec = -15
+                            $lastTarLogSec = 0
+                            try {
+                                $inTarFs = [System.IO.File]::OpenRead($tarArchive)
+                                $outTarFs = [System.IO.File]::Create($localTar)
+                                while (($tarRead = $inTarFs.Read($tarBuf, 0, $tarBuf.Length)) -gt 0) {
+                                    $outTarFs.Write($tarBuf, 0, $tarRead)
+                                    $copiedTarBytes += [long]$tarRead
+
+                                    $elapsedTarSec = [int]$swTar.Elapsed.TotalSeconds
+                                    if (($elapsedTarSec - $lastTarIpcSec) -ge 15) {
+                                        $lastTarIpcSec = $elapsedTarSec
+                                        $pctTar = if ($totalTarBytes -gt 0) { [int][Math]::Min(100, [Math]::Round(([double]$copiedTarBytes / [double]$totalTarBytes) * 100.0)) } else { 100 }
+                                        $copiedTarMb = [Math]::Round($copiedTarBytes / 1MB, 1)
+                                        $mbPerSecTar = if ($swTar.Elapsed.TotalSeconds -gt 0.2) { ([double]$copiedTarBytes / 1MB) / $swTar.Elapsed.TotalSeconds } else { 0.0 }
+                                        $mbpsTar = [Math]::Round($mbPerSecTar * 8.0, 1)
+                                        $progTar = [int][Math]::Min(30, 22 + [Math]::Round(([double]$pctTar / 100.0) * 8.0))
+                                        $tarMsg = "Preuzimam paket drajvera ${cleanModel}.tar sa NAS-a ($copiedTarMb / $totalTarMb MB, ${mbpsTar} Mbps)..."
+                                        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                                            Send-IpcProgress -Progress $progTar -Phase 2 -PhaseName "Drajveri" -SubPhase "Preuzimanje $cleanModel.tar ($pctTar%)" -StatusMessage $tarMsg
+                                        }
+                                        if (($elapsedTarSec - $lastTarLogSec) -ge 60) {
+                                            $lastTarLogSec = $elapsedTarSec
+                                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                                Write-ServisLog "Preuzimanje ${cleanModel}.tar sa NAS-a: $pctTar% ($copiedTarMb / $totalTarMb MB, ${mbpsTar} Mbps, ${elapsedTarSec}s)." -Level "INFO" -Component "NAS"
+                                            }
+                                        }
+                                    }
+                                }
+                                $outTarFs.Flush()
+                                $tarCopyOk = $true
+                            } finally {
+                                if ($outTarFs) { try { $outTarFs.Dispose() } catch {} }
+                                if ($inTarFs) { try { $inTarFs.Dispose() } catch {} }
+                                if ((-not $tarCopyOk) -and $localTar -and (Test-Path -LiteralPath $localTar -ErrorAction SilentlyContinue)) {
+                                    Remove-Item -LiteralPath $localTar -Force -ErrorAction SilentlyContinue
+                                }
+                            }
                             $swTar.Stop()
                             $tarSizeBytes = if (Test-Path $localTar) { [long](Get-Item $localTar).Length } else { [long]0 }
                             if (Get-Command Add-WisBenchmarkTransfer -ErrorAction SilentlyContinue) {
-                                Add-WisBenchmarkTransfer -Source "lan_hit" -Category "model_pack" -Bytes $tarSizeBytes -DurationMs $swTar.Elapsed.TotalMilliseconds -ItemName "$cleanModel.tar" | Out-Null
+                                try {
+                                    Add-WisBenchmarkTransfer -Source "lan_hit" -Category "model_pack" -Bytes $tarSizeBytes -DurationMs $swTar.Elapsed.TotalMilliseconds -ItemName "$cleanModel.tar" | Out-Null
+                                } catch {
+                                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                        Write-ServisLog "Upozorenje pri upisu model_pack benchmark metrike za ${cleanModel}: $($_.Exception.Message)" -Level "WARN" -Component "NAS"
+                                    }
+                                }
                             }
                             if (Install-DriverTarArchive -TarPath $localTar -CleanModel $cleanModel -ExtractRoot $localTemp -SourceLabel "NAS SMB") {
                                 $installedAny = $true
@@ -1151,6 +1208,17 @@ function Install-LocalUpdatePackageFile {
             ExitCode       = $exitCode
             RebootRequired = ($exitCode -eq 3010)
         }
+    }
+
+    if ($exitCode -eq -2145116147) {
+        $needAnotherMsg = "Paket $label nije mogao biti instaliran (Exit kod: -2145116147 / 0x8024200d WU_E_UH_NEEDANOTHERDOWNLOAD) — nedostaje prateći SSU ili checkpoint paket na NAS-u."
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog $needAnotherMsg -Level "WARN" -Component "NAS"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message $needAnotherMsg -Level "WARN" -Tag "[NAS]" -SkipFileLog
+        }
+        return @{ Success = $false; ExitCode = $exitCode; RebootRequired = $false; ErrorHex = "0x8024200d" }
     }
 
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -5422,7 +5490,7 @@ function Wait-WindowsUpdateCompletionBarrier {
         Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Pokrenuta barijera za pracenje zavrsetka Windows Update-a (Timeout: ${TimeoutSeconds}s)..." -Level "STEP" -Component "Update"
     }
     if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 10 -Phase 5 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Provera pozadinskih procesa Windows Update-a..."
+        Send-IpcProgress -Progress 10 -Phase 6 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Provera pozadinskih procesa Windows Update-a..."
     }
 
     $startTime = [datetime]::UtcNow
@@ -5528,7 +5596,7 @@ function Wait-WindowsUpdateCompletionBarrier {
                     Write-ServisLog "Wait-WindowsUpdateCompletionBarrier: Windows Update aktivan u pozadini ($statusDetail). Cekam... (Preostalo do timeout-a: ${remainSec}s)" -Level "INFO" -Component "Update"
                 }
                 if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                    Send-IpcProgress -Progress 12 -Phase 5 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Windows Update skida/instalira zakrpe u pozadini (${remainSec}s)..."
+                    Send-IpcProgress -Progress 12 -Phase 6 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Windows Update skida/instalira zakrpe u pozadini (${remainSec}s)..."
                 }
             }
         } else {

@@ -1433,21 +1433,23 @@ function Invoke-Phase6Finalize {
         Wait-ServisUICooperativePause -CheckpointName "Faza 6 - Pocetak"
     }
 
-    # 0. Windows Update barijera - pokreće se samo kratko (max 15s) i isključivo ako Phase6 nije već završila Invoke-WindowsUpdateSecondPass
+    # 0. Windows Update barijera - pokreće se samo kratko (max 15s) i isključivo ako Phase6 nije već završila Invoke-WindowsUpdateSecondPass ili Wait-WindowsUpdateCompletionBarrier
     $spDoneCandidate1 = Join-Path $LocalSetupDir "wu-secondpass-done.flag"
     $spDoneCandidate2 = "C:\setup\wu-secondpass-done.flag"
     $spAlreadyDone = (Test-Path $spDoneCandidate1) -or (Test-Path $spDoneCandidate2)
-    if ((-not $spAlreadyDone) -and (Get-Command Wait-WindowsUpdateCompletionBarrier -ErrorAction SilentlyContinue)) {
+    $barrierAlreadyDone = ($Global:WisWuBarrierCompletedInPhase6 -eq $true)
+    if ((-not $spAlreadyDone) -and (-not $barrierAlreadyDone) -and (Get-Command Wait-WindowsUpdateCompletionBarrier -ErrorAction SilentlyContinue)) {
         try {
             Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 15
+            $Global:WisWuBarrierCompletedInPhase6 = $true
         } catch {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Upozorenje u WU barijeri unutar Invoke-Phase6Finalize: $($_.Exception.Message)" -Level "WARN" -Component "Phase6"
             }
         }
-    } elseif ($spAlreadyDone) {
+    } elseif ($spAlreadyDone -or $barrierAlreadyDone) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-Phase6Finalize: Zavrsni Windows Update drugi prolaz (wu-secondpass-done.flag) je vec kompletiran; preskacem duplu WU barijeru." -Level "INFO" -Component "Phase6"
+            Write-ServisLog "Invoke-Phase6Finalize: Zavrsni Windows Update drugi prolaz ili WU barijera su vec kompletirani; preskacem duplu WU barijeru." -Level "INFO" -Component "Phase6"
         }
     }
 
@@ -1594,60 +1596,126 @@ function Invoke-Phase6Finalize {
         if (-not $repOk) {
             $targetHub = if ($HubUrl) { $HubUrl } elseif ($Global:ServisHubUrl) { $Global:ServisHubUrl } else { "" }
             if ($targetHub) {
-                try {
-                    $repPayload = [ordered]@{
-                        device_id     = $deviceId
-                        serial_number = $serial
-                        status        = "COMPLETED"
-                        timestamp     = (Get-Date).ToString("o")
-                        hostname      = $env:COMPUTERNAME
+                $clientTokClean = $null
+                if (Get-Command Get-ServisHubClientToken -ErrorAction SilentlyContinue) {
+                    try { $clientTokClean = Get-ServisHubClientToken } catch {}
+                }
+                if ([string]::IsNullOrWhiteSpace($clientTokClean) -and -not [string]::IsNullOrWhiteSpace($env:SERVIS_HUB_CLIENT_TOKEN)) {
+                    $clientTokClean = $env:SERVIS_HUB_CLIENT_TOKEN.Trim()
+                }
+                if ([string]::IsNullOrWhiteSpace($clientTokClean)) {
+                    foreach ($iniCand in @((Join-Path $LocalSetupDir "Wifi-Servis.ini"), "C:\setup\Wifi-Servis.ini", "C:\Windows\Setup\Scripts\Wifi-Servis.ini")) {
+                        if ($iniCand -and (Test-Path -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+                            $inHubSec = $false
+                            foreach ($ln in (Get-Content -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+                                $tln = ([string]$ln).Trim()
+                                if ($tln -match '^\[(.+)\]$') {
+                                    $inHubSec = ($matches[1].Trim().ToLower() -eq 'servishub')
+                                } elseif ($inHubSec -and $tln -match '^(?i)ClientToken\s*=\s*(.+)$') {
+                                    $foundTok = $matches[1].Trim()
+                                    if (-not [string]::IsNullOrWhiteSpace($foundTok)) {
+                                        $clientTokClean = $foundTok
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if (-not [string]::IsNullOrWhiteSpace($clientTokClean)) { break }
                     }
-                    foreach ($dk in $diagCustom.Keys) {
-                        $repPayload[$dk] = $diagCustom[$dk]
-                    }
-                    $jsonRep = ConvertTo-Json -InputObject $repPayload -Compress
-                    $postUrl = "$targetHub/api/devices/$deviceId/report"
-                    $req = [System.Net.WebRequest]::Create($postUrl)
-                    $req.Method = "POST"
-                    $req.ContentType = "application/json; charset=utf-8"
-                    $req.Timeout = 2000
-                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonRep)
-                    $req.ContentLength = $bytes.Length
-                    $st = $req.GetRequestStream()
-                    $st.Write($bytes, 0, $bytes.Length)
-                    $st.Close()
-                    $resp = $req.GetResponse()
-                    $resp.Close()
-                    $repOk = $true
-                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Flotni izvestaj poslat preko fallback HTTP poziva ka $postUrl" -Level "SUCCESS" -Component "Telemetry"
-                    }
-                } catch {}
+                }
 
-                try {
-                    $lcPayload = [ordered]@{
-                        event         = "COMPLETED"
-                        device_id     = $deviceId
-                        computer_name = $env:COMPUTERNAME
-                        timestamp     = (Get-Date).ToString("o")
+                $retryDelaysClean = @(0, 1, 2)
+                $repPayload = [ordered]@{
+                    device_id     = $deviceId
+                    serial_number = $serial
+                    status        = "COMPLETED"
+                    timestamp     = (Get-Date).ToString("o")
+                    hostname      = $env:COMPUTERNAME
+                }
+                foreach ($dk in $diagCustom.Keys) {
+                    $repPayload[$dk] = $diagCustom[$dk]
+                }
+                $jsonRep = ConvertTo-Json -InputObject $repPayload -Compress
+                $postUrl = "$targetHub/api/devices/$deviceId/report"
+                $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonRep)
+
+                for ($attIdx = 0; $attIdx -lt $retryDelaysClean.Count; $attIdx++) {
+                    if ($retryDelaysClean[$attIdx] -gt 0) { Start-Sleep -Seconds $retryDelaysClean[$attIdx] }
+                    $st = $null
+                    $resp = $null
+                    try {
+                        $req = [System.Net.HttpWebRequest]::Create($postUrl)
+                        $req.Method = "POST"
+                        $req.ContentType = "application/json; charset=utf-8"
+                        $req.Timeout = 10000
+                        $req.ReadWriteTimeout = 10000
+                        if (-not [string]::IsNullOrWhiteSpace($clientTokClean)) {
+                            $req.Headers.Add("X-ServisHub-Client-Token", $clientTokClean)
+                        }
+                        $req.ContentLength = $bytes.Length
+                        $st = $req.GetRequestStream()
+                        $st.Write($bytes, 0, $bytes.Length)
+                        $st.Close()
+                        $st = $null
+                        $resp = $req.GetResponse()
+                        $resp.Close()
+                        $resp = $null
+                        $repOk = $true
+                        $Global:WisFinalReportSentStatus = "COMPLETED"
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Flotni izvestaj poslat preko fallback HTTP poziva ka $postUrl" -Level "SUCCESS" -Component "Telemetry"
+                        }
+                        break
+                    } catch {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Fallback HTTP /report pokusaj $($attIdx + 1)/$($retryDelaysClean.Count) nije uspeo: $($_.Exception.Message)" -Level "WARN" -Component "Telemetry"
+                        }
+                    } finally {
+                        if ($st) { try { $st.Dispose() } catch {} }
+                        if ($resp) { try { $resp.Close() } catch {} }
                     }
-                    foreach ($dk in $diagCustom.Keys) {
-                        $lcPayload[$dk] = $diagCustom[$dk]
+                }
+
+                $lcPayload = [ordered]@{
+                    event         = "COMPLETED"
+                    device_id     = $deviceId
+                    computer_name = $env:COMPUTERNAME
+                    timestamp     = (Get-Date).ToString("o")
+                }
+                foreach ($dk in $diagCustom.Keys) {
+                    $lcPayload[$dk] = $diagCustom[$dk]
+                }
+                $jsonLc = ConvertTo-Json -InputObject $lcPayload -Compress
+                $lcUrl = "$targetHub/api/lifecycle"
+                $bytesLc = [System.Text.Encoding]::UTF8.GetBytes($jsonLc)
+
+                for ($attLc = 0; $attLc -lt $retryDelaysClean.Count; $attLc++) {
+                    if ($retryDelaysClean[$attLc] -gt 0) { Start-Sleep -Seconds $retryDelaysClean[$attLc] }
+                    $stLc = $null
+                    $respLc = $null
+                    try {
+                        $reqLc = [System.Net.HttpWebRequest]::Create($lcUrl)
+                        $reqLc.Method = "POST"
+                        $reqLc.ContentType = "application/json; charset=utf-8"
+                        $reqLc.Timeout = 10000
+                        $reqLc.ReadWriteTimeout = 10000
+                        if (-not [string]::IsNullOrWhiteSpace($clientTokClean)) {
+                            $reqLc.Headers.Add("X-ServisHub-Client-Token", $clientTokClean)
+                        }
+                        $reqLc.ContentLength = $bytesLc.Length
+                        $stLc = $reqLc.GetRequestStream()
+                        $stLc.Write($bytesLc, 0, $bytesLc.Length)
+                        $stLc.Close()
+                        $stLc = $null
+                        $respLc = $reqLc.GetResponse()
+                        $respLc.Close()
+                        $respLc = $null
+                        break
+                    } catch {} finally {
+                        if ($stLc) { try { $stLc.Dispose() } catch {} }
+                        if ($respLc) { try { $respLc.Close() } catch {} }
                     }
-                    $jsonLc = ConvertTo-Json -InputObject $lcPayload -Compress
-                    $lcUrl = "$targetHub/api/lifecycle"
-                    $reqLc = [System.Net.WebRequest]::Create($lcUrl)
-                    $reqLc.Method = "POST"
-                    $reqLc.ContentType = "application/json; charset=utf-8"
-                    $reqLc.Timeout = 2000
-                    $bytesLc = [System.Text.Encoding]::UTF8.GetBytes($jsonLc)
-                    $reqLc.ContentLength = $bytesLc.Length
-                    $stLc = $reqLc.GetRequestStream()
-                    $stLc.Write($bytesLc, 0, $bytesLc.Length)
-                    $stLc.Close()
-                    $respLc = $reqLc.GetResponse()
-                    $respLc.Close()
-                } catch {}
+                }
             }
         }
 

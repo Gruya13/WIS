@@ -3902,7 +3902,11 @@ function Invoke-WindowsOfficeActivation {
             Write-ServisLog "OfficeActivationMode=Skip je aktivan — preskačem aktivaciju Microsoft Office-a po konfiguraciji." -Level "INFO" -Component "License"
         }
         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-            Send-IpcLog -Message "Office aktivacija preskočena (OfficeActivationMode=Skip)." -Level "INFO" -Tag "[License]" -Phase 4
+            if ($Global:WisPreserveCurrentPhase -eq $true) {
+                Send-IpcLog -Message "Office aktivacija preskočena (OfficeActivationMode=Skip)." -Level "INFO" -Tag "[License]"
+            } else {
+                Send-IpcLog -Message "Office aktivacija preskočena (OfficeActivationMode=Skip)." -Level "INFO" -Tag "[License]" -Phase 4
+            }
         }
     } elseif ($hasOffice -and -not $offActive -and ($officeActivationMode -in @("Auto", "Kms", "Mak"))) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -4180,7 +4184,11 @@ function Invoke-WindowsOfficeActivation {
             Write-ServisLog $actionMsg -Level "WARN" -Component "License"
         }
         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-            Send-IpcLog -Message $actionMsg -Level "WARN" -Tag "[License]" -Phase 4
+            if ($Global:WisPreserveCurrentPhase -eq $true) {
+                Send-IpcLog -Message $actionMsg -Level "WARN" -Tag "[License]"
+            } else {
+                Send-IpcLog -Message $actionMsg -Level "WARN" -Tag "[License]" -Phase 4
+            }
         }
     }
 
@@ -4499,7 +4507,8 @@ function Invoke-Phase4Apps {
     param(
         [string]$LocalSetupDir = "C:\setup",
         [string]$ProgramiDir = "C:\setup\Programi",
-        [string]$OnlyApp = ""
+        [string]$OnlyApp = "",
+        [switch]$PreserveCurrentPhase
     )
 
     $env:SEE_MASK_NOZONECHECKS = '1'
@@ -4587,19 +4596,30 @@ function Invoke-Phase4Apps {
         }
     }
 
-    $Global:CurrentPhase = 4
-    if (-not $Global:State) { $Global:State = @{} }
-    $Global:State.Phase = 4
+    $preservePhase = [bool]($PreserveCurrentPhase -or $isSingleAppRetry)
+    $prevPreserveFlag = $Global:WisPreserveCurrentPhase
+    $Global:WisPreserveCurrentPhase = $preservePhase
+    $ipcLogPhase = if ($preservePhase) { 0 } else { 4 }
+
+    try {
+    if (-not $preservePhase) {
+        $Global:CurrentPhase = 4
+        if (-not $Global:State) { $Global:State = @{} }
+        $Global:State.Phase = 4
+    }
 
     if ($isSingleAppRetry) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "=== POJEDINAČNI RETRY PROGRAMA: $retryCanonicalAppId ===" -Level "STEP" -Component "Phase4"
         }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "Pokrećem pojedinačni Retry za: $retryCanonicalAppId..." -Level "STEP" -Tag "[Phase4]" -SkipFileLog
+        }
     } else {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "=== POKRETANJE FAZE 4: Korisnicki Programi i Aktivacija ===" -Level "STEP" -Component "Phase4"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
         }
 
@@ -4648,9 +4668,11 @@ function Invoke-Phase4Apps {
         @{ Id = "P4.Activation"; Title = "Aktivacija Windows i Office paketa" }
     )
     if ($isSingleAppRetry) {
-        foreach ($sc in $phase4StepCatalog) {
-            if ($sc.Id -eq $retryStepId -and (Get-Command Send-IpcStep -ErrorAction SilentlyContinue)) {
-                Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+        if (-not $PreserveCurrentPhase) {
+            foreach ($sc in $phase4StepCatalog) {
+                if ($sc.Id -eq $retryStepId -and (Get-Command Send-IpcStep -ErrorAction SilentlyContinue)) {
+                    Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+                }
             }
         }
     } else {
@@ -4736,7 +4758,7 @@ function Invoke-Phase4Apps {
         $stepRuntimes = Invoke-WisStep -Phase 4 -StepId "P4.Runtimes" -Title "Sistemski runtime paketi (VC++ / .NET)" -NoSkip:$isSingleAppRetry -Test {
             Get-WisAppPresence -AppId "DotNet"
         } -Action {
-            if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+            if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
                 Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
             }
             if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -4763,7 +4785,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - WinRAR"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 20 -Phase 4 -PhaseName "Programi" -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -4810,7 +4832,7 @@ function Invoke-Phase4Apps {
                     Write-ServisLog $warnMsg1 -Level "WARN" -Component "WinRAR"
                 }
                 if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                    Send-IpcLog -Message $warnMsg1 -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                    Send-IpcLog -Message $warnMsg1 -Level "WARN" -Tag "[WinRAR]" -Phase $ipcLogPhase
                 }
                 Start-Sleep -Seconds 2
                 $retryExit = -1
@@ -4823,7 +4845,7 @@ function Invoke-Phase4Apps {
                         Write-ServisLog $retryErrMsg -Level "WARN" -Component "WinRAR"
                     }
                     if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                        Send-IpcLog -Message $retryErrMsg -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                        Send-IpcLog -Message $retryErrMsg -Level "WARN" -Tag "[WinRAR]" -Phase $ipcLogPhase
                     }
                 }
                 Start-Sleep -Milliseconds 500
@@ -4835,7 +4857,7 @@ function Invoke-Phase4Apps {
                         Write-ServisLog $warnMsg2 -Level "WARN" -Component "WinRAR"
                     }
                     if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                        Send-IpcLog -Message $warnMsg2 -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                        Send-IpcLog -Message $warnMsg2 -Level "WARN" -Tag "[WinRAR]" -Phase $ipcLogPhase
                     }
                 }
             }
@@ -4845,7 +4867,7 @@ function Invoke-Phase4Apps {
                 Write-ServisLog $missMsg -Level "WARN" -Component "WinRAR"
             }
             if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                Send-IpcLog -Message $missMsg -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                Send-IpcLog -Message $missMsg -Level "WARN" -Tag "[WinRAR]" -Phase $ipcLogPhase
             }
         }
 
@@ -4869,7 +4891,7 @@ function Invoke-Phase4Apps {
                     Write-ServisLog $wgWarn -Level "WARN" -Component "WinRAR"
                 }
                 if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
-                    Send-IpcLog -Message $wgWarn -Level "WARN" -Tag "[WinRAR]" -Phase 4
+                    Send-IpcLog -Message $wgWarn -Level "WARN" -Tag "[WinRAR]" -Phase $ipcLogPhase
                 }
             }
         }
@@ -4893,7 +4915,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Google Chrome"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 35 -Phase 4 -PhaseName "Programi" -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5009,7 +5031,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Adobe Acrobat Pro"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 50 -Phase 4 -PhaseName "Programi" -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5142,7 +5164,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Office 2024"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 65 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5358,7 +5380,7 @@ function Invoke-Phase4Apps {
                 while ((-not $p.HasExited) -and ($odtWait -lt 420)) {
                     Start-Sleep -Seconds 5
                     $odtWait += 5
-                    if (-not $isSingleAppRetry -and ($odtWait % 30 -eq 0) -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+                    if (-not $preservePhase -and ($odtWait % 30 -eq 0) -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
                         $offPct = [math]::Min(78, 65 + [int](($odtWait / 420) * 13))
                         Send-IpcProgress -Progress $offPct -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024 (${odtWait}s)..."
                     }
@@ -5458,7 +5480,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - BatteryBar"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 80 -Phase 4 -PhaseName "Programi" -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5516,7 +5538,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Prečice"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 88 -Phase 4 -PhaseName "Programi" -SubPhase "Prečice" -StatusMessage "Kreiranje prečica na radnoj površini..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5553,7 +5575,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Provera licenci"
         }
-        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+        if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 93 -Phase 4 -PhaseName "Programi" -SubPhase "Provera licenci" -StatusMessage "Verifikacija OEM i sistemskih licenci..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5616,6 +5638,20 @@ function Invoke-Phase4Apps {
         $stepOk = ($null -ne $targetStepObj) -and ($targetStepObj.State -in @("OK", "SKIPPED_DONE"))
         $retryOk = ([bool]$presenceCheck.Installed) -or $stepOk
 
+        $isLicenseBestEffortWarn = $false
+        if ((-not $retryOk) -and ($retryCanonicalAppId -eq "License") -and $presenceCheck -and [bool]$presenceCheck.WindowsActivated) {
+            $licCfgRetry = $null
+            try { $licCfgRetry = Get-WisLicensingSettingsLocal } catch {}
+            $licModeRetry = if ($licCfgRetry -and $licCfgRetry.OfficeActivationMode) { [string]$licCfgRetry.OfficeActivationMode } else { "Auto" }
+            $hasKmsOrKeyRetry = ($licCfgRetry -and (
+                (-not [string]::IsNullOrWhiteSpace($licCfgRetry.OfficeKmsHost)) -or
+                ((-not [string]::IsNullOrWhiteSpace($licCfgRetry.OfficeProductKey)) -and $licCfgRetry.OfficeProductKey.Trim().Length -ge 25)
+            ))
+            if (($licModeRetry -in @("Auto", "Skip")) -and (-not $hasKmsOrKeyRetry)) {
+                $isLicenseBestEffortWarn = $true
+            }
+        }
+
         if ($retryOk) {
             $okDetailRaw = if ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Instalacija uspešno verifikovana" }
             $okDetail = Protect-WisLicenseLogText -Text $okDetailRaw
@@ -5624,6 +5660,23 @@ function Invoke-Phase4Apps {
             }
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Pojedinačni Retry za $retryCanonicalAppId uspešan: $okDetail" -Level "SUCCESS" -Component "Phase4"
+            }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Pojedinačni Retry za $retryCanonicalAppId uspešan: $okDetail" -Level "SUCCESS" -Tag "[Phase4]" -SkipFileLog
+            }
+            $global:LASTEXITCODE = 0
+            return
+        } elseif ($isLicenseBestEffortWarn) {
+            $warnDetailRaw = if ($presenceCheck.Reason) { [string]$presenceCheck.Reason } elseif ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Windows aktiviran; Office čeka licenciranje (nema podešenog KMS hosta/ključa u [Licensing])" }
+            $warnDetail = Protect-WisLicenseLogText -Text $warnDetailRaw
+            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+                Send-IpcAppUpdate -AppId "License" -Status "WARN" -Detail $warnDetail
+            }
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Pojedinačni Retry za License završen sa WARN (Windows aktiviran, Office bez konfigurisanog KMS/MAK ključa u [Licensing]): $warnDetail" -Level "WARN" -Component "Phase4"
+            }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Provera licenci (Retry): $warnDetail" -Level "WARN" -Tag "[License]" -SkipFileLog
             }
             $global:LASTEXITCODE = 0
             return
@@ -5636,6 +5689,9 @@ function Invoke-Phase4Apps {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Pojedinačni Retry za $retryCanonicalAppId nije uspeo: $failDetail" -Level "ERROR" -Component "Phase4"
             }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Pojedinačni Retry za $retryCanonicalAppId nije uspeo: $failDetail" -Level "ERROR" -Tag "[Phase4]" -SkipFileLog
+            }
             throw "Pojedinačni Retry za $retryCanonicalAppId nije uspeo: $failDetail"
         }
     }
@@ -5646,7 +5702,7 @@ function Invoke-Phase4Apps {
     }
 
     # 10. Reality Check: Fizička verifikacija stvarnog postojanja aplikacija na disku
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+    if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
         Send-IpcProgress -Progress 96 -Phase 4 -PhaseName "Programi" -SubPhase "Reality Check" -StatusMessage "Verifikacija fizičkog prisustva aplikacija na disku..."
     }
 
@@ -5676,7 +5732,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
             Send-IpcLog -Message "FATALNA GREŠKA FAZE: Fizički nedostaju instalirane aplikacije ($missingStr)" -Level "FATAL" -Tag "[FATAL]"
         }
-        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+        if (-not $preservePhase -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
             Send-IpcStatus -Phase 4 -Progress 98 -SubPhase "Reality Check Neuspeh" -StatusMessage "Greška: Fizički nedostaju aplikacije ($missingStr)" -Apps $appsStatusMap
         }
         throw "REALITY CHECK GREŠKA: Instalacija aplikacija nije kompletna! Fizički nedostaju na disku: $missingStr"
@@ -5684,18 +5740,18 @@ function Invoke-Phase4Apps {
 
     # 11. Zavrsni status i perzistencija stanja u deploy-state.json
     try {
-        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+        if (-not $preservePhase -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
             Send-IpcStatus -Phase 4 -Progress 98 -SubPhase "Završna verifikacija" -StatusMessage "Svi korisnički programi su obrađeni i verifikovani na disku." -Apps $appsStatusMap
         }
     } catch {}
 
     try {
-        if (Get-Command Save-DeployStatePhase -ErrorAction SilentlyContinue) {
+        if (-not $preservePhase -and (Get-Command Save-DeployStatePhase -ErrorAction SilentlyContinue)) {
             Save-DeployStatePhase -Phase 5
         }
     } catch {}
 
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+    if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
         Send-IpcProgress -Progress 100 -Phase 4 -PhaseName "Programi" -SubPhase "Završeno" -StatusMessage "Faza 4 uspešno završena. Programi verifikovani."
     }
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -5703,6 +5759,9 @@ function Invoke-Phase4Apps {
     }
 
     $global:LASTEXITCODE = 0
+    } finally {
+        $Global:WisPreserveCurrentPhase = $prevPreserveFlag
+    }
 }
 
 Export-ModuleMember -Function `

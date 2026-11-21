@@ -6,6 +6,7 @@ Integracioni testovi za ADR-0003: Antigravity CLI Serviser Sync API
 """
 
 import os
+import sys
 import shutil
 import tempfile
 import threading
@@ -13,6 +14,10 @@ import json
 import urllib.request
 import unittest
 from http.server import ThreadingHTTPServer
+
+_SERVICEHUB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _SERVICEHUB_DIR not in sys.path:
+    sys.path.insert(0, _SERVICEHUB_DIR)
 
 from servishub.config import HubConfig
 from servishub.telemetry import FleetStore

@@ -890,10 +890,48 @@ function Sync-ProgramiFromNas {
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $rc = Start-Process "robocopy.exe" -ArgumentList @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll") -Wait -PassThru -WindowStyle Hidden
+        $rcArgs = @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll")
+        $proc = Start-Process -FilePath "robocopy.exe" -ArgumentList $rcArgs -PassThru -WindowStyle Hidden
+        if ($proc) {
+            while (-not $proc.WaitForExit(15000)) {
+                $elapsedSec = [int]$sw.Elapsed.TotalSeconds
+                $copiedMb = 0.0
+                try {
+                    if (Test-Path -LiteralPath $DestinationDir -ErrorAction SilentlyContinue) {
+                        $sumMeasure = Get-ChildItem -LiteralPath $DestinationDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                        if ($sumMeasure -and $null -ne $sumMeasure.Sum) {
+                            $copiedMb = [Math]::Round(([double]$sumMeasure.Sum / 1MB), 1)
+                        }
+                    }
+                } catch {}
+
+                $syncMsg = "Preuzimam instalacione pakete sa NAS-a ($copiedMb MB preuzeto, ${elapsedSec}s)..."
+                Write-ServisLog "Robocopy prenos sa NAS-a u toku: $copiedMb MB preuzeto (${elapsedSec}s)..." -Level "INFO" -Component "NasProgrami"
+
+                if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                    $syncProg = 10
+                    if ($null -ne $Global:CurrentProgress) {
+                        $parsedSyncP = 0
+                        if ([int]::TryParse([string]$Global:CurrentProgress, [ref]$parsedSyncP) -and $parsedSyncP -ge 0 -and $parsedSyncP -le 99) {
+                            $syncProg = $parsedSyncP
+                        }
+                    }
+                    $syncPhase = 0
+                    if (-not ($Global:WisPreserveCurrentPhase -eq $true) -and ($null -ne $Global:CurrentPhase)) {
+                        $parsedSyncPhase = 0
+                        if ([int]::TryParse([string]$Global:CurrentPhase, [ref]$parsedSyncPhase) -and $parsedSyncPhase -gt 0) {
+                            $syncPhase = $parsedSyncPhase
+                        }
+                    }
+                    Send-IpcProgress -Progress $syncProg -Phase $syncPhase -SubPhase "Sinhronizacija NAS paketa (${elapsedSec}s)" -StatusMessage $syncMsg
+                }
+            }
+            $proc.WaitForExit()
+        }
         $sw.Stop()
         $dur = $sw.Elapsed.TotalSeconds.ToString("F1")
-        Write-ServisLog "Robocopy prenos sa NAS-a zavrsen za ${dur}s. ExitCode: $($rc.ExitCode)" -Level "INFO" -Component "NasProgrami"
+        $rcExitCode = if ($proc) { [int]$proc.ExitCode } else { -1 }
+        Write-ServisLog "Robocopy prenos sa NAS-a zavrsen za ${dur}s. ExitCode: $rcExitCode" -Level "INFO" -Component "NasProgrami"
 
         Repair-ProgramiNesting $DestinationDir
         Grant-SetupAclPermissions -Path $DestinationDir

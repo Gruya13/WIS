@@ -38,8 +38,8 @@ def main():
         "[assembly: AssemblyCompany(\"IG-Systems\")]\n"
         "[assembly: AssemblyProduct(\"WIS Hardware Test Suite\")]\n"
         "[assembly: AssemblyCopyright(\"Copyright © IG-Systems 2026\")]\n"
-        "[assembly: AssemblyVersion(\"3.4.1.0\")]\n"
-        "[assembly: AssemblyFileVersion(\"3.4.1.0\")]\n",
+        "[assembly: AssemblyVersion(\"3.4.2.0\")]\n"
+        "[assembly: AssemblyFileVersion(\"3.4.2.0\")]\n",
         encoding="utf-8"
     )
 
@@ -120,6 +120,11 @@ def main():
         wav = HWTEST_DIR / "Assets" / "digits_en" / f"{d}.wav"
         if wav.exists():
             cmd.append(f"/resource:{wav},Assets.digits_en.{d}.wav")
+
+    # Ugradi Easter Egg sliku za USB test kao resurs
+    easter_egg_jpg = HWTEST_DIR / "Assets" / "usb_skip_easter_egg.jpg"
+    if easter_egg_jpg.exists():
+        cmd.append(f"/resource:{easter_egg_jpg},Assets.usb_skip_easter_egg.jpg")
 
     cmd.extend(sources)
 

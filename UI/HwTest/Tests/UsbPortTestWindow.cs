@@ -1,11 +1,16 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Management;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using WIS.HwTest.Core;
 using WIS.HwTest.Interop;
@@ -53,6 +58,22 @@ namespace WIS.HwTest.Tests
         private int _chargerPlugCount = 0;
         private bool? _cachedHasTypeCController = null;
         private bool _isClosingOrDone = false;
+
+        private Button _btnUsbEasterEgg;
+        private bool _easterEggTriggered = false;
+        private Grid _easterEggOverlay;
+        private Image _easterEggImageControl;
+        private BitmapImage _easterEggBitmap;
+        private int _easterEggAnimGen = 0;
+
+        private readonly object _sirenWaveLock = new object();
+        private readonly ManualResetEventSlim _sirenDoneEvent = new ManualResetEventSlim(true);
+        private IntPtr _activeSirenWaveOut = IntPtr.Zero;
+        private volatile bool _stopSiren = false;
+        private NativeMethods.IAudioEndpointVolume _sirenAudioVolume;
+        private float _savedSirenVolume = 0.5f;
+        private bool _savedSirenMute = false;
+        private bool _sirenVolumeModified = false;
 
         public TestItemResult Result { get; private set; }
 
@@ -299,6 +320,24 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
                 Padding = new Thickness(25, 12, 25, 12)
             };
+            Grid fgFooter = new Grid();
+            fgFooter.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            fgFooter.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            _btnUsbEasterEgg = new Button
+            {
+                Content = "Preskoči test",
+                Background = new SolidColorBrush(Color.FromRgb(75, 80, 92)),
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(16, 8, 16, 8),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            _btnUsbEasterEgg.Click += (s, e) => TriggerSkipEasterEgg();
+            Grid.SetColumn(_btnUsbEasterEgg, 0);
+            fgFooter.Children.Add(_btnUsbEasterEgg);
+
             StackPanel spF = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
 
             _btnPass = new Button
@@ -325,9 +364,33 @@ namespace WIS.HwTest.Tests
             btnUsbFail.Click += (s, e) => FinishFail();
             spF.Children.Add(btnUsbFail);
 
-            footer.Child = spF;
+            Grid.SetColumn(spF, 1);
+            fgFooter.Children.Add(spF);
+
+            footer.Child = fgFooter;
             Grid.SetRow(footer, 2);
             root.Children.Add(footer);
+
+            // Fullscreen Easter Egg overlay (skriven dok se ne klikne mamac dugme)
+            _easterEggImageControl = new Image
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Stretch,
+                Stretch = Stretch.Uniform
+            };
+            RenderOptions.SetBitmapScalingMode(_easterEggImageControl, BitmapScalingMode.HighQuality);
+
+            _easterEggOverlay = new Grid
+            {
+                Background = Brushes.Black,
+                Visibility = Visibility.Collapsed,
+                Opacity = 0.0,
+                IsHitTestVisible = false
+            };
+            Grid.SetRowSpan(_easterEggOverlay, 3);
+            Panel.SetZIndex(_easterEggOverlay, 999);
+            _easterEggOverlay.Children.Add(_easterEggImageControl);
+            root.Children.Add(_easterEggOverlay);
 
             Content = root;
 
@@ -371,6 +434,28 @@ namespace WIS.HwTest.Tests
         private void OnWindowClosed(object sender, EventArgs e)
         {
             _isClosingOrDone = true;
+            _easterEggAnimGen++;
+            if (_easterEggOverlay != null)
+            {
+                try
+                {
+                    _easterEggOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+                    _easterEggOverlay.Visibility = Visibility.Collapsed;
+                }
+                catch { }
+            }
+
+            _stopSiren = true;
+            lock (_sirenWaveLock)
+            {
+                if (_activeSirenWaveOut != IntPtr.Zero)
+                {
+                    try { NativeMethods.waveOutReset(_activeSirenWaveOut); } catch { }
+                }
+            }
+            try { _sirenDoneEvent.Wait(500); } catch { }
+            RestoreSirenAudioVolume();
+
             if (_debounceTimer != null)
             {
                 try { _debounceTimer.Stop(); } catch { }
@@ -385,6 +470,306 @@ namespace WIS.HwTest.Tests
             {
                 _hwndSource.RemoveHook(HwndHook);
                 _hwndSource = null;
+            }
+        }
+
+        private void TriggerSkipEasterEgg()
+        {
+            if (_isClosingOrDone || _easterEggTriggered) return;
+            _easterEggTriggered = true;
+
+            if (_btnUsbEasterEgg != null)
+            {
+                _btnUsbEasterEgg.IsEnabled = false;
+                _btnUsbEasterEgg.Visibility = Visibility.Collapsed;
+            }
+
+            _stopSiren = false;
+            BoostAudioToMaxForSiren();
+            ThreadPool.QueueUserWorkItem((state) =>
+            {
+                PlaySirenAsync();
+            });
+
+            BitmapImage bmp = LoadEasterEggBitmap();
+            if (bmp != null && _easterEggOverlay != null && _easterEggImageControl != null)
+            {
+                if (_easterEggImageControl.Source == null)
+                {
+                    _easterEggImageControl.Source = bmp;
+                }
+
+                int myGen = ++_easterEggAnimGen;
+                _easterEggOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+                _easterEggOverlay.Opacity = 1.0;
+                _easterEggOverlay.Visibility = Visibility.Visible;
+
+                DoubleAnimation anim = new DoubleAnimation
+                {
+                    From = 1.0,
+                    To = 0.0,
+                    Duration = new Duration(TimeSpan.FromSeconds(2.0)),
+                    FillBehavior = FillBehavior.Stop
+                };
+                anim.Completed += (s, e) =>
+                {
+                    if (myGen != _easterEggAnimGen || _isClosingOrDone) return;
+                    _easterEggOverlay.Opacity = 0.0;
+                    _easterEggOverlay.Visibility = Visibility.Collapsed;
+                };
+                _easterEggOverlay.BeginAnimation(UIElement.OpacityProperty, anim);
+            }
+
+            HwTestLogger.Info("USB_EASTER_EGG", "Serviser je kliknuo mamac dugme 'Preskoči test' — prikazan fullscreen Easter Egg i sirena (2s, 100%).");
+        }
+
+        private BitmapImage LoadEasterEggBitmap()
+        {
+            if (_easterEggBitmap != null) return _easterEggBitmap;
+
+            try
+            {
+                Assembly asm = Assembly.GetExecutingAssembly();
+                using (Stream resStream = asm.GetManifestResourceStream("Assets.usb_skip_easter_egg.jpg"))
+                {
+                    if (resStream == null)
+                    {
+                        HwTestLogger.Warn("USB_EASTER_EGG", "Ugrađeni resurs 'Assets.usb_skip_easter_egg.jpg' nije pronađen.");
+                        return null;
+                    }
+
+                    using (MemoryStream ms = new MemoryStream())
+                    {
+                        resStream.CopyTo(ms);
+                        ms.Position = 0;
+
+                        BitmapImage bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.StreamSource = ms;
+                        bmp.EndInit();
+                        bmp.Freeze();
+
+                        _easterEggBitmap = bmp;
+                        return _easterEggBitmap;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("USB_EASTER_EGG", "Greška pri učitavanju Easter Egg slike: " + ex.Message);
+                return null;
+            }
+        }
+
+        private void BoostAudioToMaxForSiren()
+        {
+            try
+            {
+                NativeMethods.IMMDeviceEnumerator enumerator = (NativeMethods.IMMDeviceEnumerator)new NativeMethods.MMDeviceEnumeratorComObject();
+                NativeMethods.IMMDevice dev;
+                if (enumerator.GetDefaultAudioEndpoint(0, 1, out dev) == 0 && dev != null)
+                {
+                    Guid iid = typeof(NativeMethods.IAudioEndpointVolume).GUID;
+                    object obj;
+                    if (dev.Activate(ref iid, 1, IntPtr.Zero, out obj) == 0 && obj != null)
+                    {
+                        _sirenAudioVolume = (NativeMethods.IAudioEndpointVolume)obj;
+                        _sirenAudioVolume.GetMasterVolumeLevelScalar(out _savedSirenVolume);
+                        _sirenAudioVolume.GetMute(out _savedSirenMute);
+
+                        Guid empty = Guid.Empty;
+                        _sirenAudioVolume.SetMute(false, ref empty);
+                        _sirenAudioVolume.SetMasterVolumeLevelScalar(1.0f, ref empty);
+                        _sirenVolumeModified = true;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("USB_EASTER_EGG", "BoostAudioToMaxForSiren fallback: " + ex.Message);
+            }
+        }
+
+        private void RestoreSirenAudioVolume()
+        {
+            try
+            {
+                if (_sirenVolumeModified && _sirenAudioVolume != null)
+                {
+                    _sirenVolumeModified = false;
+                    Guid empty = Guid.Empty;
+                    _sirenAudioVolume.SetMute(_savedSirenMute, ref empty);
+                    _sirenAudioVolume.SetMasterVolumeLevelScalar(_savedSirenVolume, ref empty);
+                    _sirenAudioVolume = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("USB_EASTER_EGG", "RestoreSirenAudioVolume fallback: " + ex.Message);
+            }
+        }
+
+        private static byte[] GenerateSirenPcm2Seconds()
+        {
+            const int sampleRate = 22050;
+            const int totalSamples = sampleRate * 2; // 44,100 uzoraka = tačno 2.0 s
+            byte[] pcm = new byte[totalSamples * 2]; // 16-bit PCM mono = 88,200 bajtova
+            int fadeSamples = (int)(sampleRate * 0.015); // 15 ms fade-in / fade-out
+            double phase = 0.0;
+
+            for (int i = 0; i < totalSamples; i++)
+            {
+                double t = (double)i / sampleRate;
+                double freq = 1000.0 + 350.0 * Math.Sin(2.0 * Math.PI * 1.8 * t);
+                phase += 2.0 * Math.PI * freq / sampleRate;
+                if (phase > 2.0 * Math.PI * 1000.0)
+                {
+                    phase -= 2.0 * Math.PI * 1000.0;
+                }
+
+                double wave = 0.78 * Math.Sin(phase) + 0.22 * Math.Sin(3.0 * phase);
+
+                double env = 1.0;
+                if (i < fadeSamples)
+                {
+                    env = (double)i / fadeSamples;
+                }
+                else if (i >= totalSamples - fadeSamples)
+                {
+                    env = (double)(totalSamples - 1 - i) / fadeSamples;
+                }
+
+                double scaled = wave * env * (0.94 * short.MaxValue);
+                if (scaled > short.MaxValue) scaled = short.MaxValue;
+                if (scaled < short.MinValue) scaled = short.MinValue;
+                short sample = (short)scaled;
+
+                int idx = i * 2;
+                pcm[idx] = (byte)(sample & 0xFF);
+                pcm[idx + 1] = (byte)((sample >> 8) & 0xFF);
+            }
+
+            return pcm;
+        }
+
+        private void PlaySirenAsync()
+        {
+            if (_stopSiren || _isClosingOrDone || NativeMethods.waveOutGetNumDevs() == 0)
+            {
+                try
+                {
+                    if (Dispatcher != null && !Dispatcher.HasShutdownStarted)
+                    {
+                        Dispatcher.BeginInvoke(new Action(RestoreSirenAudioVolume));
+                    }
+                }
+                catch { }
+                return;
+            }
+
+            byte[] pcm = GenerateSirenPcm2Seconds();
+            NativeMethods.WAVEFORMATEX wfx = new NativeMethods.WAVEFORMATEX
+            {
+                wFormatTag = NativeMethods.WAVE_FORMAT_PCM,
+                nChannels = 1,
+                nSamplesPerSec = 22050,
+                wBitsPerSample = 16,
+                nBlockAlign = 2,
+                nAvgBytesPerSec = 44100,
+                cbSize = 0
+            };
+
+            lock (_sirenWaveLock)
+            {
+                _sirenDoneEvent.Reset();
+            }
+
+            IntPtr hwo = IntPtr.Zero;
+            IntPtr pData = IntPtr.Zero;
+            NativeMethods.WAVEHDR wh = new NativeMethods.WAVEHDR();
+            bool hdrPrepared = false;
+
+            try
+            {
+                if (_stopSiren || _isClosingOrDone)
+                {
+                    return;
+                }
+
+                if (NativeMethods.waveOutOpen(out hwo, NativeMethods.WAVE_MAPPER, ref wfx, IntPtr.Zero, IntPtr.Zero, 0) == 0 && hwo != IntPtr.Zero)
+                {
+                    lock (_sirenWaveLock)
+                    {
+                        if (!_stopSiren && !_isClosingOrDone)
+                        {
+                            _activeSirenWaveOut = hwo;
+                        }
+                    }
+
+                    if (!_stopSiren && !_isClosingOrDone)
+                    {
+                        pData = Marshal.AllocHGlobal(pcm.Length);
+                        Marshal.Copy(pcm, 0, pData, pcm.Length);
+
+                        wh.lpData = pData;
+                        wh.dwBufferLength = (uint)pcm.Length;
+
+                        if (NativeMethods.waveOutPrepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh)) == 0)
+                        {
+                            hdrPrepared = true;
+                            if (NativeMethods.waveOutWrite(hwo, ref wh, (uint)Marshal.SizeOf(wh)) == 0)
+                            {
+                                const int sirenDurationMs = 2000;
+                                int maxWaitMs = sirenDurationMs + 40;
+                                int waited = 0;
+                                while (waited < maxWaitMs && !_stopSiren && !_isClosingOrDone)
+                                {
+                                    Thread.Sleep(40);
+                                    waited += 40;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("USB_EASTER_EGG", "PlaySirenAsync error: " + ex.Message);
+            }
+            finally
+            {
+                lock (_sirenWaveLock)
+                {
+                    if (hwo != IntPtr.Zero && _activeSirenWaveOut == hwo)
+                    {
+                        _activeSirenWaveOut = IntPtr.Zero;
+                    }
+                }
+                if (hwo != IntPtr.Zero)
+                {
+                    try { NativeMethods.waveOutReset(hwo); } catch { }
+                    if (hdrPrepared)
+                    {
+                        try { NativeMethods.waveOutUnprepareHeader(hwo, ref wh, (uint)Marshal.SizeOf(wh)); } catch { }
+                    }
+                    try { NativeMethods.waveOutClose(hwo); } catch { }
+                }
+                if (pData != IntPtr.Zero)
+                {
+                    try { Marshal.FreeHGlobal(pData); } catch { }
+                }
+
+                _sirenDoneEvent.Set();
+
+                try
+                {
+                    if (Dispatcher != null && !Dispatcher.HasShutdownStarted)
+                    {
+                        Dispatcher.BeginInvoke(new Action(RestoreSirenAudioVolume));
+                    }
+                }
+                catch { }
             }
         }
 

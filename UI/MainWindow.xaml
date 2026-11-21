@@ -13,7 +13,7 @@
         WindowState="Maximized"
         Topmost="False"
         ShowInTaskbar="True"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="CanMinimize"
         Background="#1E1E1E"
         Foreground="#FFFFFF"
         FontFamily="Segoe UI, Microsoft YaHei, Arial, sans-serif"
@@ -2572,6 +2572,29 @@
 
                 <!-- Action Buttons -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <!-- 0. Kontekstualna traka za oporavak kad je neka faza pala (_failedPhase > 0) -->
+                    <StackPanel Tag="FailedPhaseRecoveryPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,0,8,0">
+                        <Button Tag="BtnFailedPhaseRecheck"
+                                Content="Proveri ponovo i nastavi"
+                                Background="#1F6FEB" Foreground="#FFFFFF" FontWeight="Bold" FontSize="11"
+                                BorderBrush="#388BFD" BorderThickness="1"
+                                Padding="12,6"
+                                Margin="0,0,6,0"
+                                Cursor="Hand" />
+                        <Button Tag="BtnFailedPhaseRetry"
+                                Content="Ponovi Fazu"
+                                Background="#D29922" Foreground="#111111" FontWeight="Bold" FontSize="11"
+                                BorderBrush="#E3B341" BorderThickness="1"
+                                Padding="12,6"
+                                Margin="0,0,6,0"
+                                Cursor="Hand" />
+                        <Button Tag="BtnFailedPhaseSkip"
+                                Content="Preskoči na sledeću fazu"
+                                Background="#21262D" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="11"
+                                BorderBrush="#DA3633" BorderThickness="1"
+                                Padding="12,6"
+                                Cursor="Hand" />
+                    </StackPanel>
                     <!-- 1. Završna dugmad - trajno aktivna kada je servis gotov -->
                     <StackPanel Orientation="Horizontal" Visibility="{Binding IsServiceFinished, Converter={StaticResource BoolToVis}}">
                         <Button Content="{Binding Loc[BtnCleanAndShutdown]}"

@@ -48,6 +48,16 @@ namespace WIS.HwTest.Interop
         public const uint SYNCHRONIZE = 0x00100000;
         public const uint WAIT_OBJECT_0 = 0x00000000;
         public const uint INFINITE = 0xFFFFFFFFu;
+
+        public const uint SPI_GETTOUCHPADPARAMETERS = 0x00AEu;
+        public const uint SPI_SETTOUCHPADPARAMETERS = 0x00AFu;
+        public const uint SPIF_SENDCHANGE = 0x0002u;
+        public const uint TOUCHPAD_PARAMETERS_VERSION_1 = 1u;
+        public const uint TOUCHPAD_FLAG1_PRESENT = 0x00000001u;
+        public const uint TOUCHPAD_FLAG1_LEGACY_PRESENT = 0x00000002u;
+        public const uint TOUCHPAD_FLAG1_EXTERNAL_MOUSE_PRESENT = 0x00000004u;
+        public const uint TOUCHPAD_FLAG1_ENABLED = 0x00000008u;
+        public const uint TOUCHPAD_FLAG1_ACTIVE = 0x00000010u;
         #endregion
 
         #region Delegates
@@ -138,6 +148,22 @@ namespace WIS.HwTest.Interop
             public uint dwFormats;
             public ushort wChannels;
             public ushort wReserved1;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct TOUCHPAD_PARAMETERS_V1
+        {
+            public uint versionNumber;
+            public uint maxSupportedContacts;
+            public uint legacyTouchpadFeatures;
+            public uint flags1;
+            public uint flags2;
+            public uint sensitivityLevel;
+            public uint cursorSpeed;
+            public uint feedbackIntensity;
+            public uint clickForceSensitivity;
+            public uint rightClickZoneWidth;
+            public uint rightClickZoneHeight;
         }
         #endregion
 
@@ -261,6 +287,176 @@ namespace WIS.HwTest.Interop
             uint uiCommand,
             IntPtr pData,
             ref uint pcbSize);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool SystemParametersInfo(
+            uint uiAction,
+            uint uiParam,
+            ref TOUCHPAD_PARAMETERS_V1 pvParam,
+            uint fWinIni);
+
+        public static bool TryGetPrecisionTouchpadEnabled(out bool isEnabled)
+        {
+            isEnabled = false;
+            try
+            {
+                TOUCHPAD_PARAMETERS_V1 tp = new TOUCHPAD_PARAMETERS_V1();
+                tp.versionNumber = TOUCHPAD_PARAMETERS_VERSION_1;
+                uint cbSize = (uint)Marshal.SizeOf(typeof(TOUCHPAD_PARAMETERS_V1));
+                if (!SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS, cbSize, ref tp, 0u))
+                {
+                    return false;
+                }
+                if ((tp.flags1 & TOUCHPAD_FLAG1_PRESENT) == 0u)
+                {
+                    return false;
+                }
+                isEnabled = (tp.flags1 & TOUCHPAD_FLAG1_ENABLED) != 0u;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool TrySetPrecisionTouchpadEnabled(bool enabled, out bool previousEnabled)
+        {
+            previousEnabled = false;
+            try
+            {
+                TOUCHPAD_PARAMETERS_V1 tp = new TOUCHPAD_PARAMETERS_V1();
+                tp.versionNumber = TOUCHPAD_PARAMETERS_VERSION_1;
+                uint cbSize = (uint)Marshal.SizeOf(typeof(TOUCHPAD_PARAMETERS_V1));
+                if (!SystemParametersInfo(SPI_GETTOUCHPADPARAMETERS, cbSize, ref tp, 0u))
+                {
+                    return false;
+                }
+                if ((tp.flags1 & TOUCHPAD_FLAG1_PRESENT) == 0u)
+                {
+                    return false;
+                }
+
+                previousEnabled = (tp.flags1 & TOUCHPAD_FLAG1_ENABLED) != 0u;
+                if (enabled == previousEnabled)
+                {
+                    return true;
+                }
+
+                if (enabled)
+                    tp.flags1 |= TOUCHPAD_FLAG1_ENABLED;
+                else
+                    tp.flags1 &= ~TOUCHPAD_FLAG1_ENABLED;
+
+                return SystemParametersInfo(SPI_SETTOUCHPADPARAMETERS, cbSize, ref tp, SPIF_SENDCHANGE);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public sealed class RawInputDeviceMeta
+        {
+            public IntPtr Handle;
+            public uint RawType;
+            public string DeviceName;
+            public uint VendorId;
+            public uint ProductId;
+            public ushort UsagePage;
+            public ushort Usage;
+        }
+
+        public static bool TryGetRawInputDeviceInfoDetails(
+            IntPtr hDevice,
+            out uint rawType,
+            out uint vendorId,
+            out uint productId,
+            out ushort usagePage,
+            out ushort usage)
+        {
+            rawType = 0u;
+            vendorId = 0u;
+            productId = 0u;
+            usagePage = 0;
+            usage = 0;
+            if (hDevice == IntPtr.Zero) return false;
+            IntPtr infoPtr = IntPtr.Zero;
+            try
+            {
+                uint cbSize = 32u;
+                infoPtr = Marshal.AllocHGlobal(32);
+                Marshal.WriteInt32(infoPtr, 0, 32);
+                if (GetRawInputDeviceInfo(hDevice, RIDI_DEVICEINFO, infoPtr, ref cbSize) == unchecked((uint)-1) || cbSize < 8u)
+                {
+                    return false;
+                }
+                rawType = unchecked((uint)Marshal.ReadInt32(infoPtr, 4));
+                if (rawType == RIM_TYPEHID && cbSize >= 24u)
+                {
+                    vendorId = unchecked((uint)Marshal.ReadInt32(infoPtr, 8));
+                    productId = unchecked((uint)Marshal.ReadInt32(infoPtr, 12));
+                    usagePage = unchecked((ushort)Marshal.ReadInt16(infoPtr, 20));
+                    usage = unchecked((ushort)Marshal.ReadInt16(infoPtr, 22));
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (infoPtr != IntPtr.Zero)
+                {
+                    try { Marshal.FreeHGlobal(infoPtr); } catch { }
+                }
+            }
+        }
+
+        public static System.Collections.Generic.List<RawInputDeviceMeta> EnumRawInputDevicesMeta()
+        {
+            var result = new System.Collections.Generic.List<RawInputDeviceMeta>();
+            IntPtr listPtr = IntPtr.Zero;
+            try
+            {
+                uint numDevices = 0;
+                uint itemSize = (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICELIST));
+                if (GetRawInputDeviceList(IntPtr.Zero, ref numDevices, itemSize) != 0 || numDevices == 0 || numDevices > 512)
+                {
+                    return result;
+                }
+                listPtr = Marshal.AllocHGlobal((int)(numDevices * itemSize));
+                uint got = GetRawInputDeviceList(listPtr, ref numDevices, itemSize);
+                if (got == unchecked((uint)-1)) return result;
+
+                for (uint i = 0; i < got; i++)
+                {
+                    IntPtr entryPtr = new IntPtr(listPtr.ToInt64() + (long)i * itemSize);
+                    RAWINPUTDEVICELIST entry = (RAWINPUTDEVICELIST)Marshal.PtrToStructure(entryPtr, typeof(RAWINPUTDEVICELIST));
+                    uint rawType, vid, pid;
+                    ushort uPage, uId;
+                    TryGetRawInputDeviceInfoDetails(entry.hDevice, out rawType, out vid, out pid, out uPage, out uId);
+                    result.Add(new RawInputDeviceMeta
+                    {
+                        Handle = entry.hDevice,
+                        RawType = entry.dwType,
+                        DeviceName = GetRawInputDeviceNameString(entry.hDevice),
+                        VendorId = vid,
+                        ProductId = pid,
+                        UsagePage = uPage,
+                        Usage = uId
+                    });
+                }
+            }
+            catch { }
+            finally
+            {
+                if (listPtr != IntPtr.Zero) { try { Marshal.FreeHGlobal(listPtr); } catch { } }
+            }
+            return result;
+        }
 
         public static string GetRawInputDeviceNameString(IntPtr hDevice)
         {
@@ -850,6 +1046,10 @@ namespace WIS.HwTest.Interop
 
         #region USB Device Location (cfgmgr32.dll)
         public const int DBT_DEVNODES_CHANGED = 0x0007;
+        private const uint CM_DRP_DEVICEDESC = 0x00000001;
+        private const uint CM_DRP_SERVICE = 0x00000005;
+        private const uint CM_DRP_CLASS = 0x00000008;
+        private const uint CM_DRP_FRIENDLYNAME = 0x0000000C;
         private const uint CM_DRP_LOCATION_INFORMATION = 0x0000000E;
         private const uint CM_DRP_ADDRESS = 0x0000001D;
         private const uint CM_DRP_LOCATION_PATHS = 0x00000024;
@@ -928,6 +1128,80 @@ namespace WIS.HwTest.Interop
             }
             catch { }
             return null;
+        }
+
+        public static string ConvertRawDevicePathToPnpInstanceId(string rawDeviceName)
+        {
+            if (string.IsNullOrEmpty(rawDeviceName)) return "";
+            string s = rawDeviceName.Trim();
+            if (s.StartsWith(@"\\?\", StringComparison.Ordinal)) s = s.Substring(4);
+            else if (s.StartsWith(@"\??\", StringComparison.Ordinal)) s = s.Substring(4);
+
+            int guidIdx = s.LastIndexOf("#{", StringComparison.Ordinal);
+            if (guidIdx > 0)
+            {
+                s = s.Substring(0, guidIdx);
+            }
+            return s.Replace('#', '\\');
+        }
+
+        public static bool TryGetRawInputPnpHierarchy(
+            string rawDeviceName,
+            out string leafPnpId,
+            out System.Collections.Generic.List<string> ancestryIds,
+            out string deviceDesc,
+            out string serviceName)
+        {
+            leafPnpId = ConvertRawDevicePathToPnpInstanceId(rawDeviceName);
+            ancestryIds = new System.Collections.Generic.List<string>();
+            deviceDesc = "";
+            serviceName = "";
+            if (string.IsNullOrEmpty(leafPnpId)) return false;
+
+            try
+            {
+                uint devInst = 0;
+                if (CM_Locate_DevNodeW(out devInst, leafPnpId, 0) != 0 || devInst == 0)
+                {
+                    return false;
+                }
+
+                ancestryIds.Add(leafPnpId);
+                string desc = ReadDevNodePropertyString(devInst, CM_DRP_FRIENDLYNAME);
+                if (string.IsNullOrEmpty(desc)) desc = ReadDevNodePropertyString(devInst, CM_DRP_DEVICEDESC);
+                if (!string.IsNullOrEmpty(desc)) deviceDesc = desc;
+                string svc = ReadDevNodePropertyString(devInst, CM_DRP_SERVICE);
+                if (!string.IsNullOrEmpty(svc)) serviceName = svc;
+
+                uint curr = devInst;
+                for (int depth = 0; depth < 10; depth++)
+                {
+                    uint parent = 0;
+                    if (CM_Get_Parent(out parent, curr, 0) != 0 || parent == 0) break;
+                    string pid = GetDevNodeDeviceId(parent);
+                    if (!string.IsNullOrEmpty(pid))
+                    {
+                        ancestryIds.Add(pid);
+                        if (string.IsNullOrEmpty(deviceDesc))
+                        {
+                            string pDesc = ReadDevNodePropertyString(parent, CM_DRP_FRIENDLYNAME);
+                            if (string.IsNullOrEmpty(pDesc)) pDesc = ReadDevNodePropertyString(parent, CM_DRP_DEVICEDESC);
+                            if (!string.IsNullOrEmpty(pDesc)) deviceDesc = pDesc;
+                        }
+                        if (string.IsNullOrEmpty(serviceName))
+                        {
+                            string pSvc = ReadDevNodePropertyString(parent, CM_DRP_SERVICE);
+                            if (!string.IsNullOrEmpty(pSvc)) serviceName = pSvc;
+                        }
+                    }
+                    curr = parent;
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -1262,6 +1536,9 @@ namespace WIS.HwTest.Interop
 
         #region WlanApi
         public const uint wlan_intf_opcode_radio_state = 4u; // Windows SDK wlanapi.h: WLAN_INTF_OPCODE.wlan_intf_opcode_radio_state
+        public const uint wlan_intf_opcode_current_connection = 7u;
+        public const uint wlan_intf_opcode_channel_number = 8u;
+        public const uint WLAN_INTERFACE_STATE_CONNECTED = 1u;
         public const uint ERROR_ACCESS_DENIED = 5u;
 
         public enum DOT11_RADIO_STATE : uint
@@ -1337,6 +1614,54 @@ namespace WIS.HwTest.Interop
         {
             public uint dwTotalSize;
             public uint dwNumberOfItems;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_ASSOCIATION_ATTRIBUTES
+        {
+            public DOT11_SSID dot11Ssid;
+            public uint dot11BssType;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
+            public byte[] dot11Bssid;
+            public uint dot11PhyType;
+            public uint uDot11PhyIndex;
+            public uint wlanSignalQuality;
+            public uint ulRxRate;
+            public uint ulTxRate;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_SECURITY_ATTRIBUTES
+        {
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bSecurityEnabled;
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bOneXEnabled;
+            public uint dot11AuthAlgorithm;
+            public uint dot11CipherAlgorithm;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        public struct WLAN_CONNECTION_ATTRIBUTES
+        {
+            public uint isState;
+            public uint wlanConnectionMode;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+            public string strProfileName;
+            public WLAN_ASSOCIATION_ATTRIBUTES wlanAssociationAttributes;
+            public WLAN_SECURITY_ATTRIBUTES wlanSecurityAttributes;
+        }
+
+        public class WlanCurrentConnectionInfo
+        {
+            public bool Connected { get; set; }
+            public string Ssid { get; set; }
+            public int SignalPct { get; set; }
+            public uint PhyType { get; set; }
+            public uint ChannelNumber { get; set; }
+            public uint RxRateKbps { get; set; }
+            public uint TxRateKbps { get; set; }
+            public uint LastError { get; set; }
         }
 
         public class WlanBssScanSummary
@@ -1772,6 +2097,186 @@ namespace WIS.HwTest.Interop
                     }
                 }
                 catch { }
+            }
+        }
+
+        public static bool IsLocationPolicyDisabled()
+        {
+            try
+            {
+                using (Microsoft.Win32.RegistryKey hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                    Microsoft.Win32.RegistryHive.LocalMachine,
+                    Environment.Is64BitOperatingSystem ? Microsoft.Win32.RegistryView.Registry64 : Microsoft.Win32.RegistryView.Default))
+                {
+                    using (Microsoft.Win32.RegistryKey locPol = hklm.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", false))
+                    {
+                        if (locPol != null)
+                        {
+                            object v = locPol.GetValue("DisableLocation");
+                            if (v != null)
+                            {
+                                try { if (Convert.ToInt32(v) == 1) return true; }
+                                catch { }
+                            }
+                            object vp = locPol.GetValue("DisableWindowsLocationProvider");
+                            if (vp != null)
+                            {
+                                try { if (Convert.ToInt32(vp) == 1) return true; }
+                                catch { }
+                            }
+                        }
+                    }
+
+                    using (Microsoft.Win32.RegistryKey appPrivacy = hklm.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy", false))
+                    {
+                        if (appPrivacy != null)
+                        {
+                            object v = appPrivacy.GetValue("LetAppsAccessLocation");
+                            if (v != null)
+                            {
+                                try { if (Convert.ToInt32(v) == 2) return true; }
+                                catch { }
+                            }
+                        }
+                    }
+
+                    using (Microsoft.Win32.RegistryKey consent = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", false))
+                    {
+                        if (consent != null)
+                        {
+                            object v = consent.GetValue("Value");
+                            if (v != null && string.Equals(v.ToString().Trim(), "Deny", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static WlanCurrentConnectionInfo QueryCurrentWifiConnection()
+        {
+            WlanCurrentConnectionInfo best = new WlanCurrentConnectionInfo();
+            IntPtr clientHandle = IntPtr.Zero;
+            IntPtr pIfList = IntPtr.Zero;
+            try
+            {
+                uint negotiatedVersion;
+                uint openErr = WlanOpenHandle(2u, IntPtr.Zero, out negotiatedVersion, out clientHandle);
+                if (openErr != 0u || clientHandle == IntPtr.Zero)
+                {
+                    best.LastError = openErr;
+                    return best;
+                }
+
+                uint enumErr = WlanEnumInterfaces(clientHandle, IntPtr.Zero, out pIfList);
+                if (enumErr != 0u || pIfList == IntPtr.Zero)
+                {
+                    best.LastError = enumErr;
+                    return best;
+                }
+
+                System.Collections.Generic.List<Guid> ifaces = CollectWlanInterfaceGuids(pIfList);
+                uint minStructSize = (uint)Marshal.SizeOf(typeof(WLAN_CONNECTION_ATTRIBUTES));
+
+                for (int i = 0; i < ifaces.Count; i++)
+                {
+                    Guid ifaceGuid = ifaces[i];
+                    IntPtr pConnData = IntPtr.Zero;
+                    IntPtr pChanData = IntPtr.Zero;
+                    try
+                    {
+                        uint dataSize;
+                        uint valType;
+                        uint err = WlanQueryInterface(
+                            clientHandle,
+                            ref ifaceGuid,
+                            wlan_intf_opcode_current_connection,
+                            IntPtr.Zero,
+                            out dataSize,
+                            out pConnData,
+                            out valType);
+
+                        if (err != 0u || pConnData == IntPtr.Zero || dataSize < minStructSize)
+                        {
+                            if (err != 0u) best.LastError = err;
+                            continue;
+                        }
+
+                        WLAN_CONNECTION_ATTRIBUTES attr = (WLAN_CONNECTION_ATTRIBUTES)Marshal.PtrToStructure(pConnData, typeof(WLAN_CONNECTION_ATTRIBUTES));
+                        if (attr.isState != WLAN_INTERFACE_STATE_CONNECTED) continue;
+
+                        string ssid = "";
+                        int ssidLen = (int)Math.Min(attr.wlanAssociationAttributes.dot11Ssid.uSSIDLength, 32u);
+                        if (ssidLen > 0 && attr.wlanAssociationAttributes.dot11Ssid.ucSSID != null)
+                        {
+                            int safeLen = Math.Min(ssidLen, attr.wlanAssociationAttributes.dot11Ssid.ucSSID.Length);
+                            ssid = System.Text.Encoding.UTF8.GetString(attr.wlanAssociationAttributes.dot11Ssid.ucSSID, 0, safeLen).TrimEnd('\0');
+                        }
+
+                        int sigPct = (int)Math.Min(100u, attr.wlanAssociationAttributes.wlanSignalQuality);
+                        uint chNum = 0u;
+                        try
+                        {
+                            uint chSize;
+                            uint chType;
+                            if (WlanQueryInterface(
+                                clientHandle,
+                                ref ifaceGuid,
+                                wlan_intf_opcode_channel_number,
+                                IntPtr.Zero,
+                                out chSize,
+                                out pChanData,
+                                out chType) == 0u && pChanData != IntPtr.Zero && chSize >= 4u)
+                            {
+                                chNum = unchecked((uint)Marshal.ReadInt32(pChanData, 0));
+                            }
+                        }
+                        catch { }
+
+                        if (!best.Connected || sigPct > best.SignalPct)
+                        {
+                            best.Connected = true;
+                            best.Ssid = ssid;
+                            best.SignalPct = sigPct;
+                            best.PhyType = attr.wlanAssociationAttributes.dot11PhyType;
+                            best.ChannelNumber = chNum;
+                            best.RxRateKbps = attr.wlanAssociationAttributes.ulRxRate;
+                            best.TxRateKbps = attr.wlanAssociationAttributes.ulTxRate;
+                            best.LastError = 0u;
+                        }
+                    }
+                    finally
+                    {
+                        if (pChanData != IntPtr.Zero)
+                        {
+                            try { WlanFreeMemory(pChanData); } catch { }
+                        }
+                        if (pConnData != IntPtr.Zero)
+                        {
+                            try { WlanFreeMemory(pConnData); } catch { }
+                        }
+                    }
+                }
+                return best;
+            }
+            catch
+            {
+                return best;
+            }
+            finally
+            {
+                if (pIfList != IntPtr.Zero)
+                {
+                    try { WlanFreeMemory(pIfList); } catch { }
+                }
+                if (clientHandle != IntPtr.Zero)
+                {
+                    try { WlanCloseHandle(clientHandle, IntPtr.Zero); } catch { }
+                }
             }
         }
         #endregion

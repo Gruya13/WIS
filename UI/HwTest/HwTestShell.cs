@@ -116,6 +116,7 @@ namespace WIS.HwTest
         public HwTestShell(string outJsonPath, string modelName, string serialNumber, string manufacturer, string sku, ModelProfileClient existingClient)
         {
             _outJsonPath = outJsonPath ?? @"C:\setup\hwtest-result.json";
+            TryStartupRecoverTouchpadIfNeeded();
             try { NativeMethods.SuppressLocationPromptPopups(); } catch { }
             _profileClient = existingClient ?? new ModelProfileClient();
             _hwInfo = HardwareProbe.DetectHardware();
@@ -1670,11 +1671,14 @@ namespace WIS.HwTest
                     TouchpadTestWindow tpDlg = new TouchpadTestWindow(_hwInfo);
                     tpDlg.OnRequestUefiBiosReboot = RequestUefiBiosReboot;
                     tpDlg.ShowBiosRebootHint = (_hwInfo.TouchpadDisabledInBios || (!_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true));
+                    tpDlg.RestoreStateFilePath = GetTouchpadRestoreFilePath();
                     dlg = tpDlg;
                     break;
                 case "trackpoint":
                     bool trkHint = (_hwInfo.TrackPointDisabledInBios || (!_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true));
-                    dlg = new TouchpadTestWindow(_hwInfo, PointingTestMode.TrackPointOnly, RequestUefiBiosReboot, trkHint);
+                    TouchpadTestWindow trkDlg = new TouchpadTestWindow(_hwInfo, PointingTestMode.TrackPointOnly, RequestUefiBiosReboot, trkHint);
+                    trkDlg.RestoreStateFilePath = GetTouchpadRestoreFilePath();
+                    dlg = trkDlg;
                     break;
                 case "touchscreen": dlg = new TouchscreenMazeWindow(_hwInfo, RequestUefiBiosReboot); break;
                 case "audio": dlg = new AudioTestWindow(); break;
@@ -2990,6 +2994,45 @@ namespace WIS.HwTest
 
             Environment.ExitCode = (fail > 0) ? 1 : 0;
             Close();
+        }
+
+        private string GetTouchpadRestoreFilePath()
+        {
+            if (_isEmbedded || string.IsNullOrEmpty(_outJsonPath))
+            {
+                return @"C:\setup\hwtest-touchpad-restore.json";
+            }
+            try
+            {
+                string dir = Path.GetDirectoryName(_outJsonPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    return Path.Combine(dir, "hwtest-touchpad-restore.json");
+                }
+            }
+            catch { }
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                return Path.Combine(baseDir, "hwtest-touchpad-restore.json");
+            }
+            return Path.Combine(Path.GetTempPath(), "hwtest-touchpad-restore.json");
+        }
+
+        private void TryStartupRecoverTouchpadIfNeeded()
+        {
+            try
+            {
+                string primaryPath = GetTouchpadRestoreFilePath();
+                TouchpadTestWindow.TryRecoverTouchpadFromRestoreFile(primaryPath);
+
+                const string canonicalSetupPath = @"C:\setup\hwtest-touchpad-restore.json";
+                if (!string.Equals(primaryPath, canonicalSetupPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    TouchpadTestWindow.TryRecoverTouchpadFromRestoreFile(canonicalSetupPath);
+                }
+            }
+            catch { }
         }
 
         private string GetCheckpointFilePath()

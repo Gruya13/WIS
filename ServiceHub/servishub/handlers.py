@@ -1219,34 +1219,82 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 with self.fleet_store.fleet_lock:
                     for tag, dev in self.fleet_store.fleet_devices.items():
                         dev_serial = str(dev.get("serial_number") or (dev.get("hw") or {}).get("serial") or dev.get("serial") or "")
-                        if sanitize_id(dev_serial).lower() == clean_serial:
+                        if clean_serial and sanitize_id(dev_serial).lower() == clean_serial:
                             found_tag = tag
                             break
 
                 reports_dir = self.config.reports_dir
-                if not found_tag and os.path.isdir(reports_dir):
-                    for dname in os.listdir(reports_dir):
-                        dir_path = os.path.join(reports_dir, dname)
-                        if not os.path.isdir(dir_path):
+                if not found_tag and reports_dir and os.path.isdir(reports_dir) and clean_serial not in ("", "unknown"):
+                    real_reports_dir = os.path.realpath(reports_dir)
+                    # 1. Provera AGY poddirektorijuma (bez praćenja simlinkova)
+                    try:
+                        with os.scandir(reports_dir) as it:
+                            entries = sorted(it, key=lambda e: e.name)
+                    except OSError:
+                        entries = []
+
+                    for entry in entries:
+                        if entry.is_symlink():
                             continue
-                        info_file = os.path.join(dir_path, "DEVICE_INFO.json")
-                        if os.path.isfile(info_file):
-                            try:
-                                with open(info_file, "r", encoding="utf-8") as f:
-                                    inf = json.load(f)
+                        epath = entry.path
+                        try:
+                            if os.path.commonpath([real_reports_dir, os.path.realpath(epath)]) != real_reports_dir:
+                                continue
+                        except (ValueError, OSError):
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            info_file = os.path.join(epath, "DEVICE_INFO.json")
+                            if os.path.isfile(info_file) and not os.path.islink(info_file):
+                                try:
+                                    with open(info_file, "r", encoding="utf-8") as f:
+                                        inf = json.load(f)
                                     s_val = str(inf.get("serial_number") or (inf.get("hardware") or {}).get("serial") or "")
                                     if sanitize_id(s_val).lower() == clean_serial:
-                                        found_tag = dname
+                                        found_tag = entry.name
                                         break
+                                except Exception:
+                                    pass
+                            if clean_serial and clean_serial in sanitize_id(entry.name).lower():
+                                found_tag = entry.name
+                                break
+
+                    # 2. Provera kanonskih WIS JSON kartona u korenu reports_dir
+                    if not found_tag:
+                        for entry in entries:
+                            fname = entry.name
+                            if not fname.lower().endswith(".json") or fname.lower().endswith(".tmp"):
+                                continue
+                            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                                continue
+                            epath = entry.path
+                            try:
+                                if os.path.commonpath([real_reports_dir, os.path.realpath(epath)]) != real_reports_dir:
+                                    continue
+                                with open(epath, "r", encoding="utf-8") as f:
+                                    rep_data = json.load(f)
+                                if not isinstance(rep_data, dict):
+                                    continue
+                                hw_b = rep_data.get("hw") if isinstance(rep_data.get("hw"), dict) else (rep_data.get("hardware") if isinstance(rep_data.get("hardware"), dict) else {})
+                                cands = (
+                                    rep_data.get("serial_number"),
+                                    rep_data.get("serial"),
+                                    hw_b.get("serial"),
+                                    hw_b.get("serial_number"),
+                                    rep_data.get("device_id"),
+                                    rep_data.get("computer_name"),
+                                )
+                                for cand in cands:
+                                    if cand and sanitize_id(str(cand).strip()).lower() == clean_serial:
+                                        found_tag = str(rep_data.get("device_id") or rep_data.get("computer_name") or serial).strip()
+                                        break
+                                if found_tag:
+                                    break
                             except Exception:
-                                pass
-                        if clean_serial and clean_serial in sanitize_id(dname).lower():
-                            found_tag = dname
-                            break
+                                continue
 
                 target_tag = found_tag if found_tag else serial
-                history = get_device_history(target_tag, self.config.reports_dir)
-                if not history.get("serial_number") and found_tag:
+                history = get_device_history(target_tag, self.config.reports_dir, serial_hint=serial)
+                if not history.get("serial_number") and (found_tag or history.get("is_registered")):
                     history["serial_number"] = serial
                 self._send_json(history, 200)
                 return
@@ -1744,6 +1792,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     res = pool_mgr.catalog_mgr.sync_all_catalogs(force=force_val)
                 else:
                     res = pool_mgr.catalog_mgr.sync_catalog(vendor_val, force=force_val)
+                if hasattr(pool_mgr, "invalidate_stats_cache"):
+                    pool_mgr.invalidate_stats_cache()
                 self._send_json(res, 200)
             except ValueError as ve:
                 self._send_json({"error": str(ve)}, 400)
@@ -2304,14 +2354,22 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     return
 
                 with self.fleet_store.fleet_lock:
-                    if clean_id not in self.fleet_store.fleet_devices:
-                        self.fleet_store.fleet_devices[clean_id] = {"computer_name": comp_name}
-                    existing_hw = self.fleet_store.fleet_devices[clean_id].get("hw")
+                    target_key = clean_id
+                    if hasattr(self.fleet_store, "_resolve_device_key_locked"):
+                        canon_sn_val = serial_num if not is_placeholder_hw_value(serial_num) else ""
+                        resolved_k = self.fleet_store._resolve_device_key_locked(dev_id, canonical_sn=canon_sn_val.upper() if canon_sn_val else "")
+                        if resolved_k:
+                            target_key = resolved_k
+                        if comp_name and hasattr(self.fleet_store, "_alias_index"):
+                            self.fleet_store._alias_index[sanitize_id(comp_name).upper()] = target_key
+                    if target_key not in self.fleet_store.fleet_devices:
+                        self.fleet_store.fleet_devices[target_key] = {"computer_name": comp_name}
+                    existing_hw = self.fleet_store.fleet_devices[target_key].get("hw")
                     merged_hw = merge_hw_dicts(
                         existing_hw if isinstance(existing_hw, dict) else {},
                         payload.get("hw") if isinstance(payload.get("hw"), dict) else {},
                     )
-                    self.fleet_store.fleet_devices[clean_id].update({
+                    self.fleet_store.fleet_devices[target_key].update({
                         "computer_name": comp_name,
                         "status_label": "Zavrseno" if status.upper() in ("COMPLETED", "SUCCESS", "OK") else ("Upozorenje" if errors else status),
                         "phase": 6,
@@ -2325,13 +2383,20 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                         "latest_report": payload,
                         "latest_report_file": json_fp,
                         "latest_report_md_file": md_fp,
+                        "completed_at": payload.get("timestamp"),
+                        "_last_report_saved_ts": time.time(),
                         "last_seen": time.time(),
                     })
                     if merged_hw:
-                        self.fleet_store.fleet_devices[clean_id]["hw"] = merged_hw
-                    self.fleet_store.fleet_devices[clean_id].update(diagnostics_contract(payload))
+                        self.fleet_store.fleet_devices[target_key]["hw"] = merged_hw
+                    self.fleet_store.fleet_devices[target_key].update(diagnostics_contract(payload))
                     if hasattr(self.fleet_store, "cleanup_duplicate_devices_locked"):
-                        self.fleet_store.cleanup_duplicate_devices_locked(clean_id, comp_name=comp_name, serial_num=serial_num)
+                        self.fleet_store.cleanup_duplicate_devices_locked(
+                            target_key,
+                            comp_name=comp_name,
+                            serial_num=serial_num,
+                            client_ip=self.client_address[0],
+                        )
 
                 print(f"[*] [REPORT] Zaprimljen završni izveštaj za {comp_name} ({clean_id}) -> {json_fn}, {md_fn}")
                 self._send_json({

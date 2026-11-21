@@ -108,6 +108,27 @@ namespace WIS.UI
         private bool _autopilotRetriedAfterNetwork = false;
         private readonly object _appRetryLock = new object();
         private bool _isSingleAppRetryRunning = false;
+        private bool _pendingPostRetryShortcutsRefresh = false;
+        private bool _pendingPostRetryLicenseRefresh = false;
+        private volatile bool _phase6ScriptCompletedSuccessfully = false;
+
+        // BUG-02: Čuvar maksimizovanog stanja glavnog prozora uz dozvoljen Minimize
+        private bool _isEnforcingMaximize = false;
+        private bool _pendingForceRelayout = false;
+        private DispatcherTimer _maximizeDebounceTimer = null;
+        private System.Windows.Interop.HwndSource _windowHwndSource = null;
+        private System.Windows.Interop.HwndSourceHook _windowHwndHook = null;
+        private const int WM_DISPLAYCHANGE = 0x007E;
+        private const int WM_DPICHANGED = 0x02E0;
+        private const int WM_SETTINGCHANGE = 0x001A;
+        private const int SPI_SETWORKAREA = 0x002F;
+
+        // BUG-03: Kontekstualna traka za oporavak kada je neka faza pala (_failedPhase > 0)
+        private System.Windows.Controls.StackPanel _failedPhaseRecoveryPanel = null;
+        private System.Windows.Controls.Button _btnFailedPhaseRecheck = null;
+        private System.Windows.Controls.Button _btnFailedPhaseRetry = null;
+        private System.Windows.Controls.Button _btnFailedPhaseSkip = null;
+        private bool _recoveryBarEventsWired = false;
 
         public MainWindow()
         {
@@ -153,9 +174,22 @@ namespace WIS.UI
             ViewModel.RunHwTestCommand = new RelayCommand(ExecuteRunHwTest);
 
             DataContext = ViewModel;
+            // BUG-02: Osiguraj CanMinimize i kod starog BAML-a (dozvoljen Minimize u taskbar, zabranjeno ručno smanjivanje na 880x640)
+            this.ResizeMode = ResizeMode.CanMinimize;
+
             EnsureBackgroundWuVisualElements();
+            EnsureFailedPhaseRecoveryBar();
+            UpdateFailedPhaseRecoveryBar();
             Loaded += (s, e) => ApplyCompactViewportLayoutIfNeeded();
             SizeChanged += (s, e) => ApplyCompactViewportLayoutIfNeeded();
+
+            // BUG-02: Čuvar maksimizovanog stanja pri promeni rezolucije, DPI-ja ili povratku iz Normal stanja
+            _maximizeDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+            _maximizeDebounceTimer.Tick += OnMaximizeDebounceTimerTick;
+            Loaded += (s, e) => EnsureWindowMaximized(false);
+            StateChanged += MainWindow_StateChanged;
+            Activated += MainWindow_Activated;
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnSystemDisplaySettingsChanged;
 
             // WIS-TASK-188: [Printer] konfiguracija se čita odmah (pre brisanja Wifi-Servis.ini u Fazi 6)
             try { LabelPrinterConfig.Preload(); } catch { }
@@ -192,6 +226,20 @@ namespace WIS.UI
             Closed += (s, e) =>
             {
                 LocalizationService.LanguageChanged -= OnLanguageChanged;
+                try { Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnSystemDisplaySettingsChanged; } catch { }
+
+                if (_maximizeDebounceTimer != null)
+                {
+                    _maximizeDebounceTimer.Stop();
+                    _maximizeDebounceTimer.Tick -= OnMaximizeDebounceTimerTick;
+                    _maximizeDebounceTimer = null;
+                }
+                if (_windowHwndSource != null && _windowHwndHook != null)
+                {
+                    try { _windowHwndSource.RemoveHook(_windowHwndHook); } catch { }
+                    _windowHwndHook = null;
+                    _windowHwndSource = null;
+                }
 
                 StopScreenCaptureWorker();
 
@@ -390,6 +438,20 @@ namespace WIS.UI
         {
             base.OnSourceInitialized(e);
             EnableDarkTitleBar();
+            try
+            {
+                var helper = new System.Windows.Interop.WindowInteropHelper(this);
+                if (helper.Handle != IntPtr.Zero)
+                {
+                    _windowHwndSource = System.Windows.Interop.HwndSource.FromHwnd(helper.Handle);
+                    if (_windowHwndSource != null)
+                    {
+                        _windowHwndHook = new System.Windows.Interop.HwndSourceHook(WindowMaximizedGuardHook);
+                        _windowHwndSource.AddHook(_windowHwndHook);
+                    }
+                }
+            }
+            catch { }
             try
             {
                 SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
@@ -2170,6 +2232,509 @@ namespace WIS.UI
                 }
             }
             catch { }
+        }
+
+        // =====================================================================
+        // BUG-02: Čuvar maksimizovanog stanja prozora (uz dozvoljen Minimize)
+        // =====================================================================
+
+        private void MainWindow_StateChanged(object sender, EventArgs e)
+        {
+            if (_isEnforcingMaximize) return;
+            if (this.WindowState == WindowState.Minimized) return;
+            if (this.WindowState == WindowState.Normal)
+            {
+                Dispatcher.BeginInvoke((Action)(() => EnsureWindowMaximized(false)));
+            }
+        }
+
+        private void MainWindow_Activated(object sender, EventArgs e)
+        {
+            if (this.WindowState == WindowState.Minimized) return;
+            EnsureWindowMaximized(false);
+        }
+
+        private void OnSystemDisplaySettingsChanged(object sender, EventArgs e)
+        {
+            if (Dispatcher == null || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+            if (Dispatcher.CheckAccess())
+            {
+                ScheduleEnsureWindowMaximized(true);
+            }
+            else
+            {
+                Dispatcher.BeginInvoke((Action)(() => ScheduleEnsureWindowMaximized(true)));
+            }
+        }
+
+        private IntPtr WindowMaximizedGuardHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+        {
+            try
+            {
+                if (msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED)
+                {
+                    ScheduleEnsureWindowMaximized(true);
+                }
+                else if (msg == WM_SETTINGCHANGE)
+                {
+                    int spiCode = wParam.ToInt32();
+                    string areaName = lParam != IntPtr.Zero ? Marshal.PtrToStringAuto(lParam) : null;
+                    bool isWorkAreaOrDpiChange = (spiCode == SPI_SETWORKAREA) ||
+                        (!string.IsNullOrEmpty(areaName) &&
+                         (areaName.IndexOf("Desktop", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                          areaName.IndexOf("WindowMetrics", StringComparison.OrdinalIgnoreCase) >= 0)) ||
+                        (spiCode == 0 && string.IsNullOrEmpty(areaName));
+                    if (isWorkAreaOrDpiChange)
+                    {
+                        ScheduleEnsureWindowMaximized(true);
+                    }
+                }
+            }
+            catch { }
+            return IntPtr.Zero;
+        }
+
+        private void ScheduleEnsureWindowMaximized(bool forceRelayout)
+        {
+            if (Dispatcher == null || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke((Action)(() => ScheduleEnsureWindowMaximized(forceRelayout)));
+                return;
+            }
+
+            if (forceRelayout)
+            {
+                _pendingForceRelayout = true;
+            }
+            if (_maximizeDebounceTimer != null)
+            {
+                _maximizeDebounceTimer.Stop();
+                _maximizeDebounceTimer.Start();
+            }
+            else
+            {
+                bool force = _pendingForceRelayout;
+                _pendingForceRelayout = false;
+                EnsureWindowMaximized(force);
+            }
+        }
+
+        private void OnMaximizeDebounceTimerTick(object sender, EventArgs e)
+        {
+            if (_maximizeDebounceTimer != null)
+            {
+                _maximizeDebounceTimer.Stop();
+            }
+            bool force = _pendingForceRelayout;
+            _pendingForceRelayout = false;
+            EnsureWindowMaximized(force);
+        }
+
+        private void EnsureWindowMaximized(bool forceRelayout)
+        {
+            if (Dispatcher == null || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke((Action)(() => EnsureWindowMaximized(forceRelayout)));
+                return;
+            }
+
+            if (_isEnforcingMaximize) return;
+            if (!this.IsLoaded && !this.IsVisible) return;
+            // Izričita odluka korisnika: korisnik sme da minimizuje prozor u taskbar
+            if (this.WindowState == WindowState.Minimized) return;
+
+            _isEnforcingMaximize = true;
+            bool deferRelease = false;
+            try
+            {
+                double workW = SystemParameters.WorkArea.Width;
+                double workH = SystemParameters.WorkArea.Height;
+                bool sizeMismatch = (workW > 100.0 && this.ActualWidth > 0 && this.ActualWidth < workW - 20.0) ||
+                                    (workH > 100.0 && this.ActualHeight > 0 && this.ActualHeight < workH - 20.0);
+
+                if (this.WindowState == WindowState.Normal)
+                {
+                    this.WindowState = WindowState.Maximized;
+                    ApplyCompactViewportLayoutIfNeeded();
+                }
+                else if (this.WindowState == WindowState.Maximized && (forceRelayout || sizeMismatch))
+                {
+                    deferRelease = true;
+                    this.WindowState = WindowState.Normal;
+                    Dispatcher.BeginInvoke(DispatcherPriority.Render, (Action)(() =>
+                    {
+                        try
+                        {
+                            if (this.WindowState != WindowState.Minimized)
+                            {
+                                this.WindowState = WindowState.Maximized;
+                                ApplyCompactViewportLayoutIfNeeded();
+                            }
+                        }
+                        catch { }
+                        finally
+                        {
+                            _isEnforcingMaximize = false;
+                        }
+                    }));
+                }
+                else
+                {
+                    ApplyCompactViewportLayoutIfNeeded();
+                }
+            }
+            catch { }
+            finally
+            {
+                if (!deferRelease)
+                {
+                    _isEnforcingMaximize = false;
+                }
+            }
+        }
+
+        // =====================================================================
+        // BUG-03 / IMP-35: Kontekstualna traka za oporavak kada faza padne
+        // =====================================================================
+
+        private void SetFailedPhase(int phase)
+        {
+            _failedPhase = phase > 0 ? phase : 0;
+            if (_failedPhase == 0)
+            {
+                _pendingPostRetryShortcutsRefresh = false;
+                _pendingPostRetryLicenseRefresh = false;
+            }
+
+            Action syncAction = delegate
+            {
+                UpdateFailedPhaseRecoveryBar();
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess())
+                {
+                    syncAction();
+                }
+                else
+                {
+                    Dispatcher.BeginInvoke(syncAction);
+                }
+            }
+        }
+
+        private static System.Windows.Controls.Button CreateRecoveryFooterButton(string tag, string content, Color bg, Color fg, Color border)
+        {
+            var btn = new System.Windows.Controls.Button
+            {
+                Tag = tag,
+                Content = content,
+                Background = MainViewModel.CreateFrozenBrush(bg.R, bg.G, bg.B),
+                Foreground = MainViewModel.CreateFrozenBrush(fg.R, fg.G, fg.B),
+                BorderBrush = MainViewModel.CreateFrozenBrush(border.R, border.G, border.B),
+                BorderThickness = new Thickness(1),
+                FontWeight = FontWeights.Bold,
+                FontSize = 11,
+                Padding = new Thickness(12, 6, 12, 6),
+                Cursor = Cursors.Hand
+            };
+            return btn;
+        }
+
+        private void EnsureFailedPhaseRecoveryBar()
+        {
+            try
+            {
+                if (_failedPhaseRecoveryPanel == null)
+                {
+                    _failedPhaseRecoveryPanel = FindTaggedElement<System.Windows.Controls.StackPanel>(this, "FailedPhaseRecoveryPanel");
+                }
+
+                if (_failedPhaseRecoveryPanel != null)
+                {
+                    if (_btnFailedPhaseRecheck == null)
+                        _btnFailedPhaseRecheck = FindTaggedElement<System.Windows.Controls.Button>(_failedPhaseRecoveryPanel, "BtnFailedPhaseRecheck");
+                    if (_btnFailedPhaseRetry == null)
+                        _btnFailedPhaseRetry = FindTaggedElement<System.Windows.Controls.Button>(_failedPhaseRecoveryPanel, "BtnFailedPhaseRetry");
+                    if (_btnFailedPhaseSkip == null)
+                        _btnFailedPhaseSkip = FindTaggedElement<System.Windows.Controls.Button>(_failedPhaseRecoveryPanel, "BtnFailedPhaseSkip");
+                }
+                else
+                {
+                    System.Windows.Controls.Grid rootGrid = this.Content as System.Windows.Controls.Grid;
+                    if (rootGrid == null) return;
+
+                    System.Windows.Controls.Grid footerGrid = null;
+                    for (int i = 0; i < rootGrid.Children.Count; i++)
+                    {
+                        FrameworkElement fe = rootGrid.Children[i] as FrameworkElement;
+                        if (fe != null && System.Windows.Controls.Grid.GetRow(fe) == 2)
+                        {
+                            System.Windows.Controls.Border borderRoot = fe as System.Windows.Controls.Border;
+                            footerGrid = borderRoot != null ? (borderRoot.Child as System.Windows.Controls.Grid) : (fe as System.Windows.Controls.Grid);
+                            if (footerGrid != null) break;
+                        }
+                    }
+                    if (footerGrid == null) return;
+
+                    System.Windows.Controls.StackPanel rightPanel = null;
+                    for (int i = 0; i < footerGrid.Children.Count; i++)
+                    {
+                        UIElement child = footerGrid.Children[i];
+                        if (System.Windows.Controls.Grid.GetColumn(child) == 1 && child is System.Windows.Controls.StackPanel)
+                        {
+                            rightPanel = (System.Windows.Controls.StackPanel)child;
+                            break;
+                        }
+                    }
+                    if (rightPanel == null) return;
+
+                    _failedPhaseRecoveryPanel = new System.Windows.Controls.StackPanel
+                    {
+                        Tag = "FailedPhaseRecoveryPanel",
+                        Orientation = System.Windows.Controls.Orientation.Horizontal,
+                        Visibility = Visibility.Collapsed,
+                        Margin = new Thickness(0, 0, 8, 0)
+                    };
+
+                    _btnFailedPhaseRecheck = CreateRecoveryFooterButton(
+                        "BtnFailedPhaseRecheck",
+                        "Proveri ponovo i nastavi",
+                        Color.FromRgb(31, 111, 235),
+                        Colors.White,
+                        Color.FromRgb(56, 139, 253));
+                    _btnFailedPhaseRecheck.Margin = new Thickness(0, 0, 6, 0);
+
+                    _btnFailedPhaseRetry = CreateRecoveryFooterButton(
+                        "BtnFailedPhaseRetry",
+                        "Ponovi Fazu",
+                        Color.FromRgb(210, 153, 34),
+                        Color.FromRgb(17, 17, 17),
+                        Color.FromRgb(227, 179, 65));
+                    _btnFailedPhaseRetry.Margin = new Thickness(0, 0, 6, 0);
+
+                    _btnFailedPhaseSkip = CreateRecoveryFooterButton(
+                        "BtnFailedPhaseSkip",
+                        "Preskoči na sledeću fazu",
+                        Color.FromRgb(33, 38, 45),
+                        Colors.White,
+                        Color.FromRgb(218, 54, 51));
+                    _btnFailedPhaseSkip.FontWeight = FontWeights.SemiBold;
+
+                    _failedPhaseRecoveryPanel.Children.Add(_btnFailedPhaseRecheck);
+                    _failedPhaseRecoveryPanel.Children.Add(_btnFailedPhaseRetry);
+                    _failedPhaseRecoveryPanel.Children.Add(_btnFailedPhaseSkip);
+                    rightPanel.Children.Insert(0, _failedPhaseRecoveryPanel);
+                }
+
+                if (!_recoveryBarEventsWired && _failedPhaseRecoveryPanel != null)
+                {
+                    if (_btnFailedPhaseRecheck != null)
+                    {
+                        _btnFailedPhaseRecheck.Click += (s, e) => ExecuteFailedPhaseRecheck();
+                    }
+                    if (_btnFailedPhaseRetry != null)
+                    {
+                        _btnFailedPhaseRetry.Click += (s, e) => ExecutePause(null);
+                    }
+                    if (_btnFailedPhaseSkip != null)
+                    {
+                        _btnFailedPhaseSkip.Click += (s, e) => ExecuteSkipWithConfirmation();
+                    }
+                    _recoveryBarEventsWired = true;
+                }
+            }
+            catch { }
+        }
+
+        private void UpdateFailedPhaseRecoveryBar()
+        {
+            try
+            {
+                if (_failedPhaseRecoveryPanel == null)
+                {
+                    EnsureFailedPhaseRecoveryBar();
+                }
+                if (_failedPhaseRecoveryPanel == null) return;
+
+                bool show = _failedPhase > 0;
+                _failedPhaseRecoveryPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+
+                if (_btnFailedPhaseRecheck != null)
+                {
+                    _btnFailedPhaseRecheck.Visibility = (_failedPhase == 4) ? Visibility.Visible : Visibility.Collapsed;
+                }
+                if (_btnFailedPhaseRetry != null)
+                {
+                    _btnFailedPhaseRetry.Content = show
+                        ? string.Format("↻ Ponovi Fazu {0}", _failedPhase)
+                        : "Ponovi Fazu";
+                }
+                if (_btnFailedPhaseSkip != null)
+                {
+                    _btnFailedPhaseSkip.Content = "Preskoči na sledeću fazu";
+                    _btnFailedPhaseSkip.ToolTip = show
+                        ? string.Format("Preskoči Fazu {0} i nastavi na Fazu {1}", _failedPhase, _failedPhase + 1)
+                        : null;
+                }
+
+                System.Windows.Controls.TextBlock copyrightTb = FindTaggedElement<System.Windows.Controls.TextBlock>(this, "FooterCopyrightText");
+                if (copyrightTb != null)
+                {
+                    if (show)
+                    {
+                        copyrightTb.Visibility = Visibility.Collapsed;
+                    }
+                    else
+                    {
+                        copyrightTb.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("IsNotServiceFinished")
+                        {
+                            Converter = new System.Windows.Controls.BooleanToVisibilityConverter()
+                        });
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void ExecuteFailedPhaseRecheck()
+        {
+            if (_failedPhase != 4)
+            {
+                UpdateFailedPhaseRecoveryBar();
+                return;
+            }
+
+            Process activePhaseProc = _currentPhaseProcess;
+            if (activePhaseProc != null && !activePhaseProc.HasExited && ViewModel != null && ViewModel.CurrentPhase == 4)
+            {
+                ViewModel.AddLog("WARN", "RealityCheck", "Faza 4 je još uvek aktivna. Sačekajte završetak pre ponovne provere.");
+                return;
+            }
+
+            lock (_appRetryLock)
+            {
+                if (_isSingleAppRetryRunning)
+                {
+                    ViewModel.AddLog("WARN", "RealityCheck", "Pojedinačni Retry programa je u toku. Sačekajte završetak pre ponovne provere.");
+                    return;
+                }
+                _isSingleAppRetryRunning = true;
+            }
+
+            if (ViewModel != null)
+            {
+                ViewModel.AddLog("INFO", "RealityCheck", "Ponovna provera ključnih aplikacija na disku (Faza 4)...");
+                ViewModel.LiveStatus = "Proveravam prisustvo ključnih aplikacija na disku...";
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool shouldStartPhase5 = false;
+                try
+                {
+                    List<string> missing = GetMissingKeyApplications();
+                    if (missing.Count == 0)
+                    {
+                        string p4Script = FindPhaseScriptPath(AppDomain.CurrentDomain.BaseDirectory, "Phase4-Apps.ps1");
+                        bool needShortcuts = _pendingPostRetryShortcutsRefresh || NeedsPhase4StepRefresh("Shortcuts");
+                        bool needLicense = _pendingPostRetryLicenseRefresh || NeedsPhase4StepRefresh("License");
+                        if (!string.IsNullOrEmpty(p4Script) && File.Exists(p4Script))
+                        {
+                            if (needShortcuts)
+                            {
+                                RunPhase4DependentStepSync("Shortcuts", p4Script, false);
+                            }
+                            if (needLicense)
+                            {
+                                RunPhase4DependentStepSync("License", p4Script, false);
+                            }
+                        }
+
+                        if (PerformPhase4RealityCheck())
+                        {
+                            SetFailedPhase(0);
+                            if (_telemetryService != null)
+                            {
+                                _telemetryService.PushLog("[SUCCESS] [RealityCheck] Post-Execution Reality Check (Faza 4) USPEŠAN: Sve ključne aplikacije su verifikovane na disku.");
+                            }
+                            SaveDeployStatePhase(5);
+                            shouldStartPhase5 = true;
+                        }
+                    }
+                    else
+                    {
+                        string missingListStr = string.Join(", ", missing.ToArray());
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("WARN", "RealityCheck", "Reality Check i dalje detektuje nedostajuće programe: " + missingListStr);
+                                ViewModel.LiveStatus = "Još uvek nedostaju: " + missingListStr + ". Pokrenite pojedinačni Retry na kartici Programi.";
+                            }
+                            MessageBox.Show(
+                                string.Format("Sledeći ključni programi još uvek nisu pronađeni na disku:\n\n{0}\n\nPokrenite pojedinačni ↻ Retry na kartici 'Programi' ili 'Ponovi Fazu 4'.", missingListStr),
+                                "WIS Reality Check — Nedostaju programi",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                        }));
+                    }
+                }
+                finally
+                {
+                    lock (_appRetryLock)
+                    {
+                        _isSingleAppRetryRunning = false;
+                    }
+                }
+
+                if (shouldStartPhase5)
+                {
+                    Dispatcher.BeginInvoke((Action)(() =>
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("SUCCESS", "TaskRunner", "Oporavak Faze 4 uspešan! Nastavljam automatski na Fazu 5 (Hardverski testovi)...");
+                        }
+                        StartPhaseExecution(5);
+                    }));
+                }
+            });
+        }
+
+        private void ExecuteSkipWithConfirmation()
+        {
+            if (_failedPhase <= 0) return;
+
+            int failed = _failedPhase;
+            int nextP = failed + 1;
+            string extraWarn = "";
+            if (failed == 4)
+            {
+                List<string> missing = GetMissingKeyApplications();
+                if (missing.Count > 0)
+                {
+                    extraWarn = "\n\nNedostaju sledeći programi na disku:\n- " + string.Join("\n- ", missing.ToArray());
+                }
+            }
+
+            string targetLabel = (nextP <= 6)
+                ? string.Format("Fazu {0}", nextP)
+                : "završetak servisa";
+            MessageBoxResult res = MessageBox.Show(
+                string.Format("Da li ste sigurni da želite da preskočite neuspelu Fazu {0} i pređete na {1}?{2}", failed, targetLabel, extraWarn),
+                "WIS Servis — Potvrda preskakanja faze",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (res == MessageBoxResult.Yes)
+            {
+                ExecuteSkip(null);
+            }
         }
 
         private void EnsureBottomDualProgressCard(
@@ -4233,7 +4798,7 @@ namespace WIS.UI
 
             ViewModel.IsServiceReadyVisible = false;
             _taskRunnerStarted = true;
-            _failedPhase = 0;
+            SetFailedPhase(0);
             if (phaseNumber <= 2)
             {
                 _phase3AutoRetryCount = 0;
@@ -4269,6 +4834,10 @@ namespace WIS.UI
 
         public void ExecutePhase(int phaseNumber)
         {
+            if (phaseNumber >= 6)
+            {
+                _phase6ScriptCompletedSuccessfully = false;
+            }
             if (phaseNumber == 5 && _deviceMonitor != null)
             {
                 _deviceMonitor.PausePolling(true);
@@ -4438,7 +5007,7 @@ namespace WIS.UI
                 {
                     ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Skripta faze nije pronađena: {0}", fileName));
                     ViewModel.LiveStatus = string.Format("Greška: {0} nedostaje na sistemu!", fileName);
-                    _failedPhase = phaseNumber;
+                    SetFailedPhase(phaseNumber);
                 }));
                 return;
             }
@@ -4551,8 +5120,8 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Faza {0} je prekinuta zbog isteka timeout-a od {1} minuta!", phaseNumber, timeoutMinutes));
-                        ViewModel.LiveStatus = string.Format("Faza {0} prekoračila timeout. Kliknite 'Preskoči' ili 'Nastavi'.", phaseNumber);
-                        _failedPhase = phaseNumber;
+                        ViewModel.LiveStatus = string.Format("Faza {0} prekoračila timeout. Koristite traku za oporavak dole ('Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu').", phaseNumber);
+                        SetFailedPhase(phaseNumber);
                     }));
                     return;
                 }
@@ -4714,6 +5283,7 @@ namespace WIS.UI
                     // Završetak celokupnog servisa (po završetku Faze 6)
                     if (phaseNumber >= 6)
                     {
+                        _phase6ScriptCompletedSuccessfully = true;
                         HandleFinalCompletion();
                         return;
                     }
@@ -4749,8 +5319,8 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         ViewModel.AddLog("ERROR", "TaskRunner", phaseErrLine);
-                        ViewModel.LiveStatus = string.Format("Greška u Fazi {0} (Kod {1}). Kliknite 'Preskoči' za sledeću ili 'Nastavi' za ponovni pokušaj.", phaseNumber, exitCode);
-                        _failedPhase = phaseNumber;
+                        ViewModel.LiveStatus = string.Format("Greška u Fazi {0} (Kod {1}). Koristite traku za oporavak dole ('Proveri ponovo i nastavi', 'Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu').", phaseNumber, exitCode);
+                        SetFailedPhase(phaseNumber);
                     }));
                 }
             }
@@ -4759,7 +5329,7 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Izuzetak pri pokretanju Faze {0}: {1}", phaseNumber, ex.Message));
-                    _failedPhase = phaseNumber;
+                    SetFailedPhase(phaseNumber);
                 }));
             }
         }
@@ -5250,54 +5820,147 @@ namespace WIS.UI
             }
         }
 
+        private static bool ExistsAnyFileOrAppPath(string[] candidatePaths, string[] appPathExeNames)
+        {
+            if (candidatePaths != null)
+            {
+                for (int i = 0; i < candidatePaths.Length; i++)
+                {
+                    string p = candidatePaths[i];
+                    if (!string.IsNullOrEmpty(p) && File.Exists(p))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            if (appPathExeNames != null)
+            {
+                string[] regBases = new string[]
+                {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\"
+                };
+
+                for (int e = 0; e < appPathExeNames.Length; e++)
+                {
+                    string exeName = appPathExeNames[e];
+                    if (string.IsNullOrEmpty(exeName)) continue;
+
+                    for (int r = 0; r < regBases.Length; r++)
+                    {
+                        try
+                        {
+                            using (RegistryKey rk = Registry.LocalMachine.OpenSubKey(regBases[r] + exeName, false))
+                            {
+                                if (rk != null)
+                                {
+                                    object defVal = rk.GetValue("");
+                                    string exePath = defVal != null ? defVal.ToString().Trim().Trim('"') : "";
+                                    if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                                    {
+                                        return true;
+                                    }
+                                    object dirVal = rk.GetValue("Path");
+                                    string dirPath = dirVal != null ? dirVal.ToString().Trim().Trim('"').TrimEnd(';') : "";
+                                    if (!string.IsNullOrEmpty(dirPath) && File.Exists(Path.Combine(dirPath, exeName)))
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    try
+                    {
+                        using (RegistryKey rkUser = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\" + exeName, false))
+                        {
+                            if (rkUser != null)
+                            {
+                                object defVal = rkUser.GetValue("");
+                                string exePath = defVal != null ? defVal.ToString().Trim().Trim('"') : "";
+                                if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            return false;
+        }
+
         private List<string> GetMissingKeyApplications()
         {
             List<string> missing = new List<string>();
 
             // 1. Google Chrome
-            bool hasChrome = File.Exists(@"C:\Program Files\Google\Chrome\Application\chrome.exe") ||
-                             File.Exists(@"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe");
-            if (!hasChrome)
+            string[] chromePaths = new string[]
+            {
+                @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                @"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+            };
+            if (!ExistsAnyFileOrAppPath(chromePaths, new string[] { "chrome.exe" }))
             {
                 missing.Add("Google Chrome");
             }
 
-            // 2. Adobe Acrobat
-            bool hasAcrobat = File.Exists(@"C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files\Adobe\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe") ||
-                              File.Exists(@"C:\Program Files\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe") ||
-                              File.Exists(@"C:\Program Files (x86)\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe");
-            if (!hasAcrobat)
+            // 2. Adobe Acrobat (uskladjeno sa PS Assert-InstalledApplicationsReality)
+            string[] acrobatPaths = new string[]
+            {
+                @"C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat 2020\Acrobat\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat 2020\Acrobat\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat Pro DC\Acrobat\Acrobat.exe",
+                @"C:\Program Files\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe",
+                @"C:\Program Files (x86)\Adobe\Acrobat Reader DC\Reader\AcroRd32.exe"
+            };
+            if (!ExistsAnyFileOrAppPath(acrobatPaths, new string[] { "Acrobat.exe", "AcroRd32.exe" }))
             {
                 missing.Add("Adobe Acrobat");
             }
 
-            // 3. Microsoft Office (WINWORD / EXCEL)
-            bool hasOffice = File.Exists(@"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") ||
-                             File.Exists(@"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") ||
-                             File.Exists(@"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE") ||
-                             File.Exists(@"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE") ||
-                             File.Exists(@"C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") ||
-                             File.Exists(@"C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE") ||
-                             File.Exists(@"C:\Program Files\Microsoft Office\Office15\WINWORD.EXE") ||
-                             File.Exists(@"C:\Program Files (x86)\Microsoft Office\Office15\WINWORD.EXE");
-            if (!hasOffice)
+            // 3. Microsoft Office (WINWORD / EXCEL, x64 & x86 C2R + MSI)
+            string[] officePaths = new string[]
+            {
+                @"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE",
+                @"C:\Program Files\Microsoft Office\Office16\WINWORD.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE",
+                @"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\root\Office16\EXCEL.EXE",
+                @"C:\Program Files\Microsoft Office\Office16\EXCEL.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\Office16\EXCEL.EXE",
+                @"C:\Program Files\Microsoft Office\Office15\WINWORD.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\Office15\WINWORD.EXE",
+                @"C:\Program Files\Microsoft Office\Office15\EXCEL.EXE",
+                @"C:\Program Files (x86)\Microsoft Office\Office15\EXCEL.EXE"
+            };
+            if (!ExistsAnyFileOrAppPath(officePaths, new string[] { "WINWORD.EXE", "EXCEL.EXE" }))
             {
                 missing.Add("Microsoft Office (Word/Excel)");
             }
 
             // 4. WinRAR
-            bool hasWinrar = File.Exists(@"C:\Program Files\WinRAR\WinRAR.exe") ||
-                             File.Exists(@"C:\Program Files (x86)\WinRAR\WinRAR.exe");
-            if (!hasWinrar)
+            string[] winrarPaths = new string[]
+            {
+                @"C:\Program Files\WinRAR\WinRAR.exe",
+                @"C:\Program Files (x86)\WinRAR\WinRAR.exe"
+            };
+            if (!ExistsAnyFileOrAppPath(winrarPaths, new string[] { "WinRAR.exe" }))
             {
                 missing.Add("WinRAR");
             }
@@ -5314,8 +5977,8 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "RealityCheck", "Post-Execution Reality Check (Faza 4) NEUSPEŠAN! Nedostaju ključni programi na disku: " + missingStr);
-                    ViewModel.LiveStatus = "Greška u Fazi 4: Nisu instalirani ključni programi (" + missingStr + "). Faza označena kao FAILED.";
-                    _failedPhase = 4;
+                    ViewModel.LiveStatus = "Greška u Fazi 4: Nedostaju ključni programi (" + missingStr + "). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole.";
+                    SetFailedPhase(4);
 
                     foreach (string item in missing)
                     {
@@ -5396,6 +6059,76 @@ namespace WIS.UI
             }
         }
 
+        private int ComputeDeploymentDurationSeconds()
+        {
+            try
+            {
+                string startIso = null;
+                string statePath = @"C:\setup\deploy-state.json";
+                if (File.Exists(statePath))
+                {
+                    try
+                    {
+                        string json = File.ReadAllText(statePath, Encoding.UTF8);
+                        JsonNode root = JsonHelper.Parse(json);
+                        if (root != null && !root.IsNull)
+                        {
+                            if (root.ContainsKey("initial_start_time")) startIso = root["initial_start_time"].AsString(null);
+                            else if (root.ContainsKey("InitialStartTime")) startIso = root["InitialStartTime"].AsString(null);
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(startIso))
+                {
+                    startIso = _initialStartTimeIso;
+                }
+
+                if (string.IsNullOrEmpty(startIso))
+                {
+                    try
+                    {
+                        using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WIS", false))
+                        {
+                            if (key != null)
+                            {
+                                object regVal = key.GetValue("InitialStartTime");
+                                if (regVal != null) startIso = regVal.ToString();
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                DateTime parsedStart;
+                if (!string.IsNullOrEmpty(startIso) &&
+                    DateTime.TryParse(startIso, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out parsedStart))
+                {
+                    double totalSec = (DateTime.UtcNow - parsedStart.ToUniversalTime()).TotalSeconds;
+                    if (totalSec > 0 && totalSec < (30.0 * 86400.0))
+                    {
+                        return (int)Math.Round(totalSec);
+                    }
+                }
+
+                if (ViewModel != null && !string.IsNullOrEmpty(ViewModel.DurationString))
+                {
+                    string[] parts = ViewModel.DurationString.Trim().Split(':');
+                    int hh, mm, ss;
+                    if (parts.Length == 3 &&
+                        int.TryParse(parts[0], out hh) &&
+                        int.TryParse(parts[1], out mm) &&
+                        int.TryParse(parts[2], out ss))
+                    {
+                        return Math.Max(0, (hh * 3600) + (mm * 60) + ss);
+                    }
+                }
+            }
+            catch { }
+            return 0;
+        }
+
         private void HandleFinalCompletion()
         {
             StopScreenCaptureWorker();
@@ -5429,13 +6162,13 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "RealityCheck", "Post-Execution Reality Check: Servis NE MOŽE biti označen kao završen jer nedostaju ključne aplikacije: " + missingStr);
-                    ViewModel.LiveStatus = "Greška: Nedostaju ključni programi (" + missingStr + "). TaskRunner ne može postaviti 100% završeno.";
+                    ViewModel.LiveStatus = "Greška: Nedostaju ključni programi (" + missingStr + "). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole.";
                     ViewModel.CurrentPhase = 4;
-                    _failedPhase = 4;
+                    SetFailedPhase(4);
                 }));
                 return;
             }
-            if (_telemetryService != null)
+            if (_telemetryService != null && !_phase6ScriptCompletedSuccessfully)
             {
                 string diagStatus;
                 if (isActuallyThermalCritical)
@@ -5468,6 +6201,11 @@ namespace WIS.UI
                 }
 
                 bool coolingVerified = string.Equals(diagStatus, "OK", StringComparison.OrdinalIgnoreCase);
+                int durationSeconds = ComputeDeploymentDurationSeconds();
+                string durationFormatted = string.Format("{0}m {1:D2}s", durationSeconds / 60, durationSeconds % 60);
+                string durationClock = durationSeconds > 0
+                    ? string.Format("{0:00}:{1:00}:{2:00}", durationSeconds / 3600, (durationSeconds % 3600) / 60, durationSeconds % 60)
+                    : ViewModel.DurationString;
 
                 var compData = new Dictionary<string, object>
                 {
@@ -5480,7 +6218,9 @@ namespace WIS.UI
                     { "manual_check_required", !coolingVerified },
                     { "max_cpu_temp_c", _lastStressMaxTemp },
                     { "sensor_available", !isSensorUnavailable },
-                    { "duration", ViewModel.DurationString },
+                    { "duration", durationClock },
+                    { "duration_seconds", durationSeconds },
+                    { "duration_formatted", durationFormatted },
                     { "apps_summary", ViewModel.AppsSummaryText }
                 };
                 if (!string.IsNullOrEmpty(_thermalOverheatNote))
@@ -6723,7 +7463,7 @@ namespace WIS.UI
             if (_failedPhase > 0)
             {
                 int p = _failedPhase;
-                _failedPhase = 0;
+                SetFailedPhase(0);
                 if (p == 3)
                 {
                     _phase3AutoRetryCount = 0;
@@ -6788,7 +7528,7 @@ namespace WIS.UI
             if (_failedPhase > 0)
             {
                 int nextP = _failedPhase + 1;
-                _failedPhase = 0;
+                SetFailedPhase(0);
                 ViewModel.AddLog("WARN", "Korisnik", string.Format("Korisnik zahtevao PRESKAKANJE pale faze. Prelazim na Fazu {0}...", nextP));
                 if (nextP <= 6)
                 {
@@ -6914,6 +7654,21 @@ namespace WIS.UI
 
         public void RerunPhase4()
         {
+            Process activePhaseProc = _currentPhaseProcess;
+            if (activePhaseProc != null)
+            {
+                bool running = false;
+                try { running = !activePhaseProc.HasExited; } catch { }
+                if (running)
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        ViewModel.AddLog("WARN", "TaskRunner", "Druga faza je već aktivna. Sačekajte završetak pre ponovnog pokretanja Faze 4.");
+                    });
+                    return;
+                }
+            }
+
             lock (_appRetryLock)
             {
                 if (_isSingleAppRetryRunning)
@@ -6941,33 +7696,33 @@ namespace WIS.UI
                 ViewModel.AddLog("WARN", "TaskRunner", "Nije moguće kreirati force-rerun-phase4.flag: " + ex.Message);
             }
 
-            Dispatcher.BeginInvoke((Action)delegate
+            Action startRerun = delegate
             {
-                if (ViewModel.Apps != null)
+                SetFailedPhase(0);
+                if (ViewModel != null && ViewModel.Apps != null)
                 {
                     foreach (var app in ViewModel.Apps)
                     {
                         app.Status = "WAIT";
                         app.Detail = "U redu čekanja";
                     }
+                    ViewModel.UpdateAppsSummary();
                 }
-                ViewModel.AddLog("INFO", "TaskRunner", "[TaskRunner] Pokrećem ponovnu instalaciju programa...");
-            });
+                if (ViewModel != null)
+                {
+                    ViewModel.AddLog("INFO", "TaskRunner", "[TaskRunner] Pokrećem ponovnu instalaciju programa...");
+                }
+                StartPhaseExecution(4);
+            };
 
-            ThreadPool.QueueUserWorkItem(delegate
+            if (Dispatcher != null && !Dispatcher.CheckAccess())
             {
-                try
-                {
-                    ExecutePhase(4);
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.BeginInvoke((Action)delegate
-                    {
-                        ViewModel.AddLog("ERROR", "TaskRunner", "Greška pri ponovnoj instalaciji programa: " + ex.Message);
-                    });
-                }
-            });
+                Dispatcher.BeginInvoke(startRerun);
+            }
+            else
+            {
+                startRerun();
+            }
         }
 
         private void ExecuteRetryApp(object param)
@@ -7026,6 +7781,182 @@ namespace WIS.UI
             }
         }
 
+        private static bool ScriptSupportsParameter(string scriptPath, string parameterName)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(scriptPath) || string.IsNullOrEmpty(parameterName) || !File.Exists(scriptPath))
+                {
+                    return false;
+                }
+                string content = File.ReadAllText(scriptPath, Encoding.UTF8);
+                return content.IndexOf(parameterName, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool ShouldIgnoreRetryJsonLine(string jsonLine)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(jsonLine)) return false;
+                JsonNode root = JsonHelper.Parse(jsonLine);
+                if (root == null || root.IsNull) return false;
+
+                string ev = root["event"].AsString(root["type"].AsString("")).Trim().ToUpperInvariant();
+                if (ev == "APP_UPDATE" || ev == "LOG" || ev == "STEP")
+                {
+                    return false;
+                }
+
+                if (root.ContainsKey("phase"))
+                {
+                    int msgPhase = root["phase"].AsInt(0);
+                    int curPhase = ViewModel != null ? ViewModel.CurrentPhase : 0;
+                    if (msgPhase > 0 && curPhase > 0 && msgPhase < curPhase)
+                    {
+                        if (ev == "PROGRESS" || string.IsNullOrEmpty(ev))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private bool NeedsPhase4StepRefresh(string appId)
+        {
+            if (ViewModel == null || ViewModel.Apps == null || string.IsNullOrEmpty(appId))
+            {
+                return false;
+            }
+            for (int i = 0; i < ViewModel.Apps.Count; i++)
+            {
+                AppItem item = ViewModel.Apps[i];
+                if (item != null && string.Equals(item.Id, appId, StringComparison.OrdinalIgnoreCase))
+                {
+                    string st = (item.Status ?? "").Trim().ToUpperInvariant();
+                    return st != "OK" && st != "COMPLETED" && st != "SKIPPED";
+                }
+            }
+            return false;
+        }
+
+        private bool HasOtherRunningApps(AppItem excludedApp)
+        {
+            if (ViewModel == null || ViewModel.Apps == null) return false;
+            for (int i = 0; i < ViewModel.Apps.Count; i++)
+            {
+                AppItem item = ViewModel.Apps[i];
+                if (item != null && !object.ReferenceEquals(item, excludedApp) && item.IsRunning)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool RunPhase4DependentStepSync(string stepAppId, string scriptPath, bool preserveCurrentPhase)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(stepAppId) || string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath))
+                {
+                    return false;
+                }
+
+                string args = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -OnlyApp \"{1}\"", scriptPath, stepAppId);
+                if (preserveCurrentPhase && ScriptSupportsParameter(scriptPath, "PreserveCurrentPhase"))
+                {
+                    args += " -PreserveCurrentPhase";
+                }
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = args,
+                    WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                Dispatcher.BeginInvoke((Action)delegate
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog("INFO", "AppsRetry", string.Format("Osvežavam zavisni korak Faze 4: {0}...", stepAppId));
+                    }
+                });
+
+                using (Process proc = Process.Start(psi))
+                {
+                    if (proc == null) return false;
+
+                    proc.OutputDataReceived += (s, e) =>
+                    {
+                        if (string.IsNullOrEmpty(e.Data)) return;
+                        string line = e.Data.Trim();
+                        Dispatcher.BeginInvoke((Action)delegate
+                        {
+                            if (line.StartsWith("{") && line.EndsWith("}"))
+                            {
+                                if (ShouldIgnoreRetryJsonLine(line)) return;
+                                ProcessIncomingJson(line);
+                            }
+                            else
+                            {
+                                ParseAndAddRawLogLine(line);
+                            }
+                        });
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog(line);
+                        }
+                    };
+
+                    proc.ErrorDataReceived += (s, e) =>
+                    {
+                        if (string.IsNullOrEmpty(e.Data)) return;
+                        string errLine = e.Data.Trim();
+                        Dispatcher.BeginInvoke((Action)delegate
+                        {
+                            ViewModel.AddLog("WARN", "AppsRetry", errLine);
+                        });
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog(errLine);
+                        }
+                    };
+
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
+
+                    bool exited = proc.WaitForExit(180000);
+                    if (!exited)
+                    {
+                        try { proc.Kill(); } catch { }
+                        return false;
+                    }
+                    try { proc.WaitForExit(); } catch { }
+                    return proc.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public void RetrySingleApp(AppItem targetApp)
         {
             if (targetApp == null || string.IsNullOrWhiteSpace(targetApp.Id) || targetApp.IsRunning) return;
@@ -7055,6 +7986,8 @@ namespace WIS.UI
                 _isSingleAppRetryRunning = true;
             }
 
+            bool preserveCurrentPhase = (ViewModel != null && ViewModel.CurrentPhase > 4);
+
             Dispatcher.BeginInvoke((Action)delegate
             {
                 targetApp.Status = "RUNNING";
@@ -7067,9 +8000,11 @@ namespace WIS.UI
             {
                 bool exited = false;
                 int exitCode = -1;
+                string scriptPath = null;
+                bool shouldContinuePhase5 = false;
                 try
                 {
-                    string scriptPath = FindPhaseScriptPath(AppDomain.CurrentDomain.BaseDirectory, "Phase4-Apps.ps1");
+                    scriptPath = FindPhaseScriptPath(AppDomain.CurrentDomain.BaseDirectory, "Phase4-Apps.ps1");
                     if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath))
                     {
                         Dispatcher.BeginInvoke((Action)delegate
@@ -7082,10 +8017,16 @@ namespace WIS.UI
                         return;
                     }
 
+                    string retryArgs = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -OnlyApp \"{1}\"", scriptPath, safeAppId);
+                    if (preserveCurrentPhase && ScriptSupportsParameter(scriptPath, "PreserveCurrentPhase"))
+                    {
+                        retryArgs += " -PreserveCurrentPhase";
+                    }
+
                     var psi = new ProcessStartInfo
                     {
                         FileName = "powershell.exe",
-                        Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -OnlyApp \"{1}\"", scriptPath, safeAppId),
+                        Arguments = retryArgs,
                         WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
@@ -7117,6 +8058,10 @@ namespace WIS.UI
                             {
                                 if (line.StartsWith("{") && line.EndsWith("}"))
                                 {
+                                    if (ShouldIgnoreRetryJsonLine(line))
+                                    {
+                                        return;
+                                    }
                                     ProcessIncomingJson(line);
                                 }
                                 else
@@ -7185,11 +8130,8 @@ namespace WIS.UI
                 }
                 finally
                 {
-                    lock (_appRetryLock)
-                    {
-                        _isSingleAppRetryRunning = false;
-                    }
-                    Dispatcher.BeginInvoke((Action)delegate
+                    bool otherRunning = false;
+                    Action updateRetryResultUi = delegate
                     {
                         if (targetApp.Status == "RUNNING")
                         {
@@ -7209,7 +8151,92 @@ namespace WIS.UI
                             }
                         }
                         ViewModel.UpdateAppsSummary();
-                    });
+                        otherRunning = HasOtherRunningApps(targetApp);
+                    };
+
+                    if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        try
+                        {
+                            Dispatcher.Invoke(updateRetryResultUi);
+                        }
+                        catch { }
+                    }
+
+                    if (exited && exitCode == 0 && _failedPhase == 4 && !otherRunning)
+                    {
+                        if (string.Equals(safeAppId, "Acrobat", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _pendingPostRetryShortcutsRefresh = true;
+                        }
+                        else if (string.Equals(safeAppId, "Office", StringComparison.OrdinalIgnoreCase))
+                        {
+                            _pendingPostRetryShortcutsRefresh = true;
+                            _pendingPostRetryLicenseRefresh = true;
+                        }
+
+                        List<string> missing = GetMissingKeyApplications();
+                        if (missing.Count == 0)
+                        {
+                            if (!string.IsNullOrEmpty(scriptPath) && File.Exists(scriptPath))
+                            {
+                                if (_pendingPostRetryShortcutsRefresh ||
+                                    string.Equals(safeAppId, "Office", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(safeAppId, "Acrobat", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    RunPhase4DependentStepSync("Shortcuts", scriptPath, preserveCurrentPhase);
+                                }
+                                if (_pendingPostRetryLicenseRefresh ||
+                                    string.Equals(safeAppId, "Office", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    RunPhase4DependentStepSync("License", scriptPath, preserveCurrentPhase);
+                                }
+                            }
+
+                            if (PerformPhase4RealityCheck())
+                            {
+                                SetFailedPhase(0);
+                                if (_telemetryService != null)
+                                {
+                                    _telemetryService.PushLog("[SUCCESS] [RealityCheck] Post-Execution Reality Check (Faza 4) USPEŠAN nakon pojedinačnog Retry-a.");
+                                }
+                                SaveDeployStatePhase(5);
+                                shouldContinuePhase5 = true;
+                            }
+                        }
+                        else
+                        {
+                            string remainingStr = string.Join(", ", missing.ToArray());
+                            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                            {
+                                Dispatcher.BeginInvoke((Action)delegate
+                                {
+                                    if (ViewModel != null)
+                                    {
+                                        ViewModel.LiveStatus = string.Format("Program {0} uspešno instaliran. Još nedostaju za Retry: {1}.", targetApp.Name, remainingStr);
+                                        ViewModel.AddLog("INFO", "RealityCheck", "Preostale ključne aplikacije koje čekaju Retry: " + remainingStr);
+                                    }
+                                });
+                            }
+                        }
+                    }
+
+                    lock (_appRetryLock)
+                    {
+                        _isSingleAppRetryRunning = false;
+                    }
+
+                    if (shouldContinuePhase5 && Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        Dispatcher.BeginInvoke((Action)delegate
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("SUCCESS", "TaskRunner", "Sve ključne aplikacije Faze 4 su sada prisutne na disku. Automatski nastavljam na Fazu 5...");
+                            }
+                            StartPhaseExecution(5);
+                        });
+                    }
                 }
             });
         }

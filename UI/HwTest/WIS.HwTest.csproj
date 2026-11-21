@@ -127,6 +127,9 @@
     <EmbeddedResource Include="Assets\digits_en\9.wav">
       <LogicalName>Assets.digits_en.9.wav</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Assets\usb_skip_easter_egg.jpg">
+      <LogicalName>Assets.usb_skip_easter_egg.jpg</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <ItemGroup>

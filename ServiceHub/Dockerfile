@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     libarchive-tools \
     p7zip-full \
@@ -11,7 +11,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dosfstools \
     ntfs-3g \
     udev \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Europe/Belgrade
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 WORKDIR /app
 

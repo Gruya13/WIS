@@ -270,9 +270,64 @@ class FleetStore:
             dst["hwtest"] = src["hwtest"]
         if not dst.get("benchmark") and isinstance(src.get("benchmark"), dict) and src["benchmark"]:
             dst["benchmark"] = src["benchmark"]
+        if source_key in self.fleet_logs:
+            old_logs = self.fleet_logs.pop(source_key, [])
+            if old_logs:
+                cur_logs = self.fleet_logs.setdefault(target_key, [])
+                self.fleet_logs[target_key] = (old_logs + cur_logs)[-5000:]
         self._alias_index[source_key.upper()] = target_key
         if src.get("computer_name"):
             self._alias_index[sanitize_id(str(src["computer_name"])).upper()] = target_key
+
+    _TERMINAL_SESSION_FIELDS = (
+        "status",
+        "deployment_status",
+        "handover_status",
+        "handover_ready",
+        "duration_seconds",
+        "duration_formatted",
+        "duration",
+        "latest_report",
+        "latest_report_file",
+        "latest_report_md_file",
+        "hwtest",
+        "apps",
+        "apps_summary",
+        "errors",
+        "has_errors",
+        "completed_at",
+        "diagnostics_status",
+        "diagnostics_summary",
+        "cooling_verified",
+        "manual_check_required",
+        "max_cpu_temp_c",
+        "max_cpu_temp",
+        "emergency_abort",
+        "notes",
+        "thermal_note",
+        "benchmark",
+        "_last_report_saved_ts",
+        "worker_progress",
+    )
+
+    @staticmethod
+    def _is_terminal_device_record(rec: dict) -> bool:
+        if not isinstance(rec, dict):
+            return False
+        if rec.get("phase") in (6, "6"):
+            return True
+        if rec.get("status_label") in ("Zavrseno", "Završeno", "NEEDS_ATTENTION", "Servisiran (AGY)", "Kvar (AGY)"):
+            return True
+        if bool(rec.get("latest_report")):
+            return True
+        return False
+
+    def _reset_terminal_session_fields_locked(self, rec: dict) -> None:
+        """Briše završna polja prethodne sesije iz in-memory zapisa pri novom startu (ne dira Logs/reports na disku)."""
+        if not isinstance(rec, dict):
+            return
+        for field in self._TERMINAL_SESSION_FIELDS:
+            rec.pop(field, None)
 
     def _resolve_device_key_locked(self, comp_name: str, canonical_sn: str = "") -> str:
         """
@@ -802,6 +857,26 @@ class FleetStore:
                 }
                 print(f"[*] [NOVI RAČUNAR] Detektovan u servisu: {comp_name} ({client_ip})")
             existing_rec = self.fleet_devices[dev_id]
+
+            incoming_phase_raw = payload.get("phase")
+            try:
+                incoming_phase = (
+                    int(incoming_phase_raw)
+                    if incoming_phase_raw is not None and not isinstance(incoming_phase_raw, bool)
+                    else None
+                )
+            except (ValueError, TypeError):
+                incoming_phase = None
+            incoming_lbl = str(payload.get("status_label") or "").strip()
+            if (
+                self._is_terminal_device_record(existing_rec)
+                and incoming_phase in (1, 2)
+                and incoming_lbl != "Zavrseno"
+            ):
+                self._reset_terminal_session_fields_locked(existing_rec)
+                if "status_label" not in clean_update:
+                    clean_update["status_label"] = "Aktivno"
+
             if not str(dev_id).upper().startswith("TK-") and str(existing_rec.get("computer_name", "")).upper().startswith("TK-"):
                 clean_update["computer_name"] = existing_rec["computer_name"]
             elif str(dev_id).upper().startswith("TK-") and not str(comp_name).upper().startswith("TK-"):
@@ -814,6 +889,20 @@ class FleetStore:
                 existing_rec["hw"] = merged_hw
                 if is_placeholder_hw_value(existing_rec.get("serial_number")) and not is_placeholder_hw_value(merged_hw.get("serial")):
                     existing_rec["serial_number"] = merged_hw["serial"]
+
+            eff_sn = canonical_sn or self._extract_canonical_serial(existing_rec, existing_rec.get("hw"))
+            if (
+                str(dev_id).upper().startswith("TK-")
+                or str(comp_name).upper().startswith("TK-")
+                or bool(eff_sn)
+                or bool(client_ip)
+            ):
+                self.cleanup_duplicate_devices_locked(
+                    dev_id,
+                    comp_name=comp_name,
+                    serial_num=eff_sn,
+                    client_ip=client_ip,
+                )
 
         return dev_id
 
@@ -920,56 +1009,95 @@ class FleetStore:
 
         return enriched
 
-    def cleanup_duplicate_devices_locked(self, canonical_id: str, comp_name: str = "", serial_num: str = "") -> None:
+    def cleanup_duplicate_devices_locked(
+        self,
+        canonical_id: str,
+        comp_name: str = "",
+        serial_num: str = "",
+        client_ip: str = "",
+    ) -> None:
         """
-        Uklanja privremeni pred-OEM zapis (npr. DESKTOP-* ili APCL-*) kada stigne
-        završni zapis za isti računar/serijski broj pod TK-* ID-jem (pozvati pod fleet_lock).
+        Uklanja privremeni pred-OEM / siroče zapis (npr. DESKTOP-* ili ne-TK-* u Fazi 1/2)
+        kada stigne zapis za isti računar / serijski broj / client_ip (pozvati pod fleet_lock).
         """
-        if not canonical_id or not str(canonical_id).upper().startswith("TK-"):
+        if not canonical_id:
             return
         canon_rec = self.fleet_devices.get(canonical_id)
         if not isinstance(canon_rec, dict):
             return
         target_cn = str(comp_name or canon_rec.get("computer_name") or "").strip().upper()
-        target_sn = str(serial_num or canon_rec.get("serial_number") or "").strip().upper()
+        target_sn = str(
+            serial_num
+            or canon_rec.get("serial_number")
+            or self._extract_canonical_serial(canon_rec, canon_rec.get("hw"))
+            or ""
+        ).strip().upper()
         if is_placeholder_hw_value(target_sn):
             target_sn = ""
+        target_ip = str(client_ip or canon_rec.get("client_ip") or "").strip()
+        is_canon_tk = str(canonical_id).upper().startswith("TK-") or target_cn.startswith("TK-")
 
         to_remove = []
         for k, rec in list(self.fleet_devices.items()):
             if k == canonical_id or str(k).upper().startswith("TK-") or not isinstance(rec, dict):
                 continue
             rcn = str(rec.get("computer_name") or "").strip().upper()
-            rsn = str(rec.get("serial_number") or "").strip().upper()
-            if (target_cn and rcn == target_cn) or (target_sn and rsn == target_sn):
-                if not canon_rec.get("started_at") and rec.get("started_at"):
-                    canon_rec["started_at"] = rec["started_at"]
-                if not canon_rec.get("autopilot") and isinstance(rec.get("autopilot"), dict) and rec["autopilot"]:
-                    canon_rec["autopilot"] = dict(rec["autopilot"])
+            rsn = self._extract_canonical_serial(rec, rec.get("hw"))
+            rip = str(rec.get("client_ip") or "").strip()
+            rec_phase = rec.get("phase")
+            is_phase_1_2 = rec_phase in (1, 2, "1", "2")
+
+            sn_match = bool(target_sn and rsn and rsn == target_sn)
+            cn_match = bool(is_canon_tk and target_cn and rcn == target_cn)
+            ip_match = False
+            if (
+                target_ip
+                and rip
+                and rip == target_ip
+                and is_phase_1_2
+                and not self._is_terminal_device_record(rec)
+                and not (target_sn and rsn and rsn != target_sn)
+            ):
+                if (
+                    target_ip not in ("127.0.0.1", "::1", "localhost")
+                    or is_canon_tk
+                    or str(k).upper().startswith(("DESKTOP-", "WIN-", "APCL-", "UNKNOWN"))
+                ):
+                    ip_match = True
+
+            if sn_match or cn_match or ip_match:
                 to_remove.append(k)
+
         for k in to_remove:
-            self.fleet_devices.pop(k, None)
+            self._merge_device_records_into_locked(canonical_id, k)
 
     def record_logs(self, comp_name: str, lines: list) -> int:
         """Prihvata novu grupu linija loga, baferuje u memoriji i obaveštava pretplatnike."""
-        dev_id = sanitize_id(comp_name)
         if not lines:
             return 0
+        raw_id = sanitize_id(comp_name)
 
         with self.fleet_lock:
+            dev_id = self._resolve_device_key_locked(comp_name)
             if dev_id not in self.fleet_logs:
                 self.fleet_logs[dev_id] = []
             self.fleet_logs[dev_id].extend(lines)
             if len(self.fleet_logs[dev_id]) > 5000:
                 self.fleet_logs[dev_id] = self.fleet_logs[dev_id][-5000:]
 
-            if dev_id in self.fleet_subscribers:
-                for sub_q, sub_lock in self.fleet_subscribers[dev_id]:
-                    with sub_lock:
-                        sub_q.extend(lines)
-                        sub_lock.notify_all()
+            notified_subs = set()
+            for sub_key in (dev_id, raw_id):
+                if sub_key and sub_key in self.fleet_subscribers:
+                    for sub_q, sub_lock in self.fleet_subscribers[sub_key]:
+                        sub_ident = id(sub_q)
+                        if sub_ident in notified_subs:
+                            continue
+                        notified_subs.add(sub_ident)
+                        with sub_lock:
+                            sub_q.extend(lines)
+                            sub_lock.notify_all()
 
-        self.append_to_disk_log(comp_name, lines)
+        self.append_to_disk_log(dev_id or comp_name, lines)
         return len(lines)
 
     def record_lifecycle_start(self, payload: dict, client_ip: str) -> str:
@@ -985,10 +1113,21 @@ class FleetStore:
             dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {}
-            existing_hw = self.fleet_devices[dev_id].get("hw") if isinstance(self.fleet_devices[dev_id].get("hw"), dict) else {}
+            rec = self.fleet_devices[dev_id]
+            if self._is_terminal_device_record(rec):
+                self._reset_terminal_session_fields_locked(rec)
+
+            effective_comp_name = (
+                rec.get("computer_name") or dev_id
+                if str(dev_id).upper().startswith("TK-")
+                and not str(comp_name).upper().startswith("TK-")
+                and str(rec.get("computer_name", "")).upper().startswith("TK-")
+                else comp_name
+            )
+            existing_hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else {}
             merged_hw = merge_hw_dicts(existing_hw, incoming_hw)
-            self.fleet_devices[dev_id].update({
-                "computer_name": comp_name,
+            rec.update({
+                "computer_name": effective_comp_name,
                 "status_label": "Aktivno",
                 "phase": 1,
                 "autopilot": payload.get("autopilot", {}),
@@ -997,13 +1136,93 @@ class FleetStore:
                 "last_seen": now,
                 "client_ip": client_ip,
             })
-            if is_placeholder_hw_value(self.fleet_devices[dev_id].get("serial_number")) and not is_placeholder_hw_value(merged_hw.get("serial")):
-                self.fleet_devices[dev_id]["serial_number"] = merged_hw["serial"]
+            if is_placeholder_hw_value(rec.get("serial_number")) and not is_placeholder_hw_value(merged_hw.get("serial")):
+                rec["serial_number"] = merged_hw["serial"]
             sensors = self._extract_telemetry_sensors(payload)
             if sensors:
-                self.fleet_devices[dev_id].update(sensors)
+                rec.update(sensors)
+
+            eff_sn = canonical_sn or self._extract_canonical_serial(rec, rec.get("hw"))
+            if (
+                str(dev_id).upper().startswith("TK-")
+                or str(comp_name).upper().startswith("TK-")
+                or bool(eff_sn)
+                or bool(client_ip)
+            ):
+                self.cleanup_duplicate_devices_locked(
+                    dev_id,
+                    comp_name=effective_comp_name,
+                    serial_num=eff_sn,
+                    client_ip=client_ip,
+                )
 
         return dev_id
+
+    @staticmethod
+    def _report_completeness(rep: dict) -> tuple:
+        if not isinstance(rep, dict):
+            return (0, 0, 0, 0)
+        has_hwtest = 1 if isinstance(rep.get("hwtest"), dict) and rep.get("hwtest") else 0
+        has_bm = 1 if isinstance(rep.get("benchmark"), dict) and rep.get("benchmark") else 0
+        apps_val = rep.get("apps")
+        has_apps = 1 if (isinstance(apps_val, dict) and len(apps_val) > 0) or (isinstance(apps_val, list) and len(apps_val) > 0) else 0
+        dur = _parse_duration_seconds(rep.get("duration_seconds") or rep.get("duration"))
+        return (has_hwtest + has_bm + has_apps, has_hwtest, has_bm, dur)
+
+    @staticmethod
+    def _merge_reports_in_memory(existing_rep: dict, incoming_rep: dict) -> dict:
+        merged = dict(existing_rep) if isinstance(existing_rep, dict) else {}
+        inc = incoming_rep if isinstance(incoming_rep, dict) else {}
+        old_dur = _parse_duration_seconds(merged.get("duration_seconds") or merged.get("duration"))
+        new_dur = _parse_duration_seconds(inc.get("duration_seconds") or inc.get("duration"))
+
+        for k, v in inc.items():
+            if k in ("duration_seconds", "duration_formatted", "duration"):
+                continue
+            if isinstance(v, dict):
+                old_v = merged.get(k)
+                if isinstance(old_v, dict) and old_v:
+                    if v:
+                        sub = dict(old_v)
+                        for sk, sv in v.items():
+                            if sv not in (None, "", []):
+                                sub[sk] = sv
+                        merged[k] = sub
+                elif v:
+                    merged[k] = dict(v)
+            elif k in ("errors", "notes"):
+                old_list = merged.get(k)
+                if isinstance(v, list) and v:
+                    if isinstance(old_list, list) and old_list:
+                        comb = list(old_list)
+                        for item in v:
+                            if item not in comb:
+                                comb.append(item)
+                        merged[k] = comb
+                    else:
+                        merged[k] = list(v)
+            elif v not in (None, ""):
+                if k == "diagnostics_status" and merged.get(k) == "THERMAL_CRITICAL":
+                    continue
+                if k == "diagnostics_status" and v == "NOT_VERIFIED" and merged.get(k) not in (None, "", "NOT_VERIFIED"):
+                    continue
+                if k == "cooling_verified" and merged.get(k) is True and v is False and merged.get("diagnostics_status") == "OK":
+                    continue
+                merged[k] = v
+
+        if new_dur > old_dur:
+            merged["duration_seconds"] = new_dur
+            if inc.get("duration_formatted") and inc.get("duration_formatted") != "N/A":
+                merged["duration_formatted"] = inc["duration_formatted"]
+            else:
+                merged["duration_formatted"] = f"{new_dur // 60}m {new_dur % 60:02d}s"
+        elif old_dur > 0:
+            merged["duration_seconds"] = old_dur
+            if not merged.get("duration_formatted") or merged.get("duration_formatted") == "N/A":
+                merged["duration_formatted"] = f"{old_dur // 60}m {old_dur % 60:02d}s"
+
+        merged.update(diagnostics_contract(merged))
+        return merged
 
     def record_lifecycle_complete(self, payload: dict, client_ip: str) -> str:
         """Obrada COMPLETED događaja životnog ciklusa i atomično arhiviranje kartona."""
@@ -1029,15 +1248,51 @@ class FleetStore:
                     duration_formatted = f"{duration_seconds // 60}m {duration_seconds % 60:02d}s"
                     enriched_payload["duration_formatted"] = duration_formatted
 
-        apps = enriched_payload.get("apps", {})
-        system_summary = enriched_payload.get("system_summary", {})
-        merged_hw = enriched_payload.get("hw", {}) if isinstance(enriched_payload.get("hw"), dict) else {}
+        now_ts = time.time()
+        skip_disk_write = False
 
         with self.fleet_lock:
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {"computer_name": comp_name, "client_ip": client_ip}
-            self.fleet_devices[dev_id].update({
-                "computer_name": comp_name,
+            rec = self.fleet_devices[dev_id]
+
+            existing_rep = rec.get("latest_report")
+            last_saved_ts = float(rec.get("_last_report_saved_ts") or 0.0)
+            if last_saved_ts <= 0.0 and isinstance(existing_rep, dict) and existing_rep:
+                rep_file = rec.get("latest_report_file")
+                if rep_file and os.path.isfile(rep_file):
+                    try:
+                        last_saved_ts = os.path.getmtime(rep_file)
+                    except OSError:
+                        last_saved_ts = 0.0
+
+            if (
+                isinstance(existing_rep, dict)
+                and existing_rep
+                and last_saved_ts > 0.0
+                and (now_ts - last_saved_ts) <= 45.0
+            ):
+                ex_comp = self._report_completeness(existing_rep)
+                in_comp = self._report_completeness(enriched_payload)
+                if ex_comp[0] > 0 and ex_comp[1] >= in_comp[1] and ex_comp[2] >= in_comp[2] and ex_comp[0] >= in_comp[0]:
+                    skip_disk_write = True
+                    enriched_payload = self._merge_reports_in_memory(existing_rep, enriched_payload)
+
+            effective_comp_name = (
+                rec.get("computer_name") or dev_id
+                if str(dev_id).upper().startswith("TK-")
+                and not str(comp_name).upper().startswith("TK-")
+                and str(rec.get("computer_name", "")).upper().startswith("TK-")
+                else comp_name
+            )
+            apps = enriched_payload.get("apps", {})
+            system_summary = enriched_payload.get("system_summary", {})
+            merged_hw = enriched_payload.get("hw", {}) if isinstance(enriched_payload.get("hw"), dict) else {}
+            duration_seconds = enriched_payload.get("duration_seconds", duration_seconds)
+            duration_formatted = enriched_payload.get("duration_formatted", duration_formatted)
+
+            rec.update({
+                "computer_name": effective_comp_name,
                 "status_label": "Zavrseno",
                 "phase": 6,
                 "worker_progress": 100,
@@ -1045,25 +1300,37 @@ class FleetStore:
                 "duration_seconds": duration_seconds,
                 "apps": apps,
                 "system_summary": system_summary,
-                "last_seen": time.time(),
+                "completed_at": enriched_payload.get("timestamp") or rec.get("completed_at") or datetime.now().isoformat(),
+                "last_seen": now_ts,
             })
-            self.fleet_devices[dev_id].update(diagnostics_contract(enriched_payload))
-            if self.fleet_devices[dev_id]["diagnostics_status"] == "THERMAL_CRITICAL":
-                self.fleet_devices[dev_id]["status_label"] = "NEEDS_ATTENTION"
+            rec.update(diagnostics_contract(enriched_payload))
+            if rec["diagnostics_status"] == "THERMAL_CRITICAL":
+                rec["status_label"] = "NEEDS_ATTENTION"
             if "autopilot" in enriched_payload:
-                self.fleet_devices[dev_id]["autopilot"] = enriched_payload["autopilot"]
+                rec["autopilot"] = enriched_payload["autopilot"]
+            if "benchmark" in enriched_payload and isinstance(enriched_payload["benchmark"], dict):
+                rec["benchmark"] = enriched_payload["benchmark"]
+            if "hwtest" in enriched_payload and isinstance(enriched_payload["hwtest"], dict):
+                rec["hwtest"] = enriched_payload["hwtest"]
             if merged_hw:
-                self.fleet_devices[dev_id]["hw"] = merged_hw
+                rec["hw"] = merged_hw
             if not is_placeholder_hw_value(enriched_payload.get("serial_number")):
-                self.fleet_devices[dev_id]["serial_number"] = enriched_payload["serial_number"]
+                rec["serial_number"] = enriched_payload["serial_number"]
             if not is_placeholder_hw_value(enriched_payload.get("chassis")):
-                self.fleet_devices[dev_id]["chassis"] = enriched_payload["chassis"]
+                rec["chassis"] = enriched_payload["chassis"]
             sensors = self._extract_telemetry_sensors(enriched_payload)
             if sensors:
-                self.fleet_devices[dev_id].update(sensors)
-            self.cleanup_duplicate_devices_locked(dev_id, comp_name=comp_name, serial_num=enriched_payload.get("serial_number", ""))
+                rec.update(sensors)
+            if skip_disk_write:
+                rec["latest_report"] = enriched_payload
+            self.cleanup_duplicate_devices_locked(
+                dev_id,
+                comp_name=effective_comp_name,
+                serial_num=enriched_payload.get("serial_number", ""),
+                client_ip=client_ip,
+            )
 
-        if self.reports_dir:
+        if self.reports_dir and not skip_disk_write:
             target_id = enriched_payload.get("serial_number") or comp_name
             date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
             report_filename = f"report_{sanitize_id(target_id)}_{date_str}.json"
@@ -1074,6 +1341,7 @@ class FleetStore:
                 with self.fleet_lock:
                     self.fleet_devices[dev_id]["latest_report_file"] = report_filepath
                     self.fleet_devices[dev_id]["latest_report"] = enriched_payload
+                    self.fleet_devices[dev_id]["_last_report_saved_ts"] = time.time()
             except Exception as e:
                 print(f"[ERROR] Neuspeh čuvanja servisnog kartona na disk: {e}", file=sys.stderr)
 

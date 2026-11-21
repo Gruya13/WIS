@@ -125,6 +125,10 @@ def main():
         if wav.exists():
             cmd.append(f"/resource:{wav},Assets.digits_en.{d}.wav")
 
+    easter_egg_jpg = hwtest_dir / "Assets" / "usb_skip_easter_egg.jpg"
+    if easter_egg_jpg.exists():
+        cmd.append(f"/resource:{easter_egg_jpg},Assets.usb_skip_easter_egg.jpg")
+
     cmd.extend([
         "/target:winexe",
         f"/win32icon:{UI_DIR}/Assets/WIS.ico",

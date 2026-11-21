@@ -7,6 +7,7 @@ services:
     network_mode: host
     environment:
       - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Europe/Belgrade}
       - SERVIS_HUB_PORT=${SERVIS_HUB_PORT:-8080}
       - SERVIS_HUB_UDP_PORT=${SERVIS_HUB_UDP_PORT:-8888}
       - SERVIS_UPDATES_DIR=/app/storage/updates/Win11

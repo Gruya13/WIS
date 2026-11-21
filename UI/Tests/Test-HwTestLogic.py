@@ -5,6 +5,7 @@ Test-HwTestLogic.py
 Automatska verifikacija logike i šablona za WIS.HwTest.
 """
 
+import hashlib
 import json
 import pathlib
 import unittest
@@ -571,15 +572,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.4.1 / ServiceHub v3.6.1 u root version.json i komponentama
+        # 1. Verzije v3.4.2 / ServiceHub v3.6.2 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.4.1")
-        self.assertEqual(root_ver["release_package"]["version"], "3.4.1")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.1")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.1")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.1")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.1")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.1")
+        self.assertEqual(root_ver["version"], "3.4.2")
+        self.assertEqual(root_ver["release_package"]["version"], "3.4.2")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.2")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.2")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.2")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.2")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.2")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -841,7 +842,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.4.1";', result_src)
+        self.assertIn('AppVersion = "3.4.2";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -985,8 +986,12 @@ class TestHwTestComponents(unittest.TestCase):
         for fname in interactive_windows:
             wsrc = (HWTEST_DIR / "Tests" / fname).read_text(encoding="utf-8")
             self.assertNotIn("FinishSkip(", wsrc, f"{fname} ne sme imati FinishSkip(")
-            self.assertNotIn("Preskoči test", wsrc, f"{fname} ne sme nuditi 'Preskoči test'")
             self.assertNotIn("btnSkip", wsrc, f"{fname} ne sme imati btnSkip")
+            if fname == "UsbPortTestWindow.cs":
+                # FEAT-01 dodaje jednokratno mamac dugme 'Preskoči test' koje NIKADA ne preskace test
+                self.assertNotIn("TestStatus.Skip", wsrc, "UsbPortTestWindow.cs ne sme koristiti TestStatus.Skip")
+            else:
+                self.assertNotIn("Preskoči test", wsrc, f"{fname} ne sme nuditi 'Preskoči test'")
 
         self.assertNotIn("ESC = preskoči", disp_src)
         self.assertIn("ESC = pregled rezultata", disp_src)
@@ -1162,6 +1167,173 @@ class TestHwTestComponents(unittest.TestCase):
             'Tag = "ActiveStepBarsScroll",',
         ):
             self.assertIn(tok, main_cs)
+
+    def test_feat_01_usb_skip_easter_egg_contract(self):
+        """Proverava FEAT-01 ugovor: resurs na sva 4 build mesta, jednokratno mamac dugme i bezbedna 2s sirena."""
+        asset_path = HWTEST_DIR / "Assets" / "usb_skip_easter_egg.jpg"
+        self.assertTrue(asset_path.is_file(), f"Nedostaje resurs {asset_path}")
+        sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+        self.assertEqual(
+            sha256,
+            "aadfc4ab28914949d25adda2e2e8c5cd023ef053dcbb26fdedbbc9f301a9960c",
+        )
+
+        hw_csproj = (HWTEST_DIR / "WIS.HwTest.csproj").read_text(encoding="utf-8")
+        hw_build = (HWTEST_DIR / "Build-HwTest.py").read_text(encoding="utf-8")
+        ui_csproj = (ROOT / "UI" / "WIS.UI.csproj").read_text(encoding="utf-8")
+        ui_build = (ROOT / "UI" / "Build-UI.py").read_text(encoding="utf-8")
+
+        for bsrc, bname in (
+            (hw_csproj, "WIS.HwTest.csproj"),
+            (hw_build, "Build-HwTest.py"),
+            (ui_csproj, "WIS.UI.csproj"),
+            (ui_build, "Build-UI.py"),
+        ):
+            self.assertIn("Assets.usb_skip_easter_egg.jpg", bsrc, f"{bname} mora ugraditi Assets.usb_skip_easter_egg.jpg")
+
+        usb_src = (HWTEST_DIR / "Tests" / "UsbPortTestWindow.cs").read_text(encoding="utf-8")
+        self.assertNotIn("btnSkip", usb_src)
+        self.assertNotIn("FinishSkip(", usb_src)
+        self.assertNotIn("TestStatus.Skip", usb_src)
+
+        for tok in (
+            "_btnUsbEasterEgg",
+            '"Preskoči test"',
+            "TriggerSkipEasterEgg",
+            "_easterEggTriggered",
+            "_btnUsbEasterEgg.Visibility = Visibility.Collapsed;",
+            "Stretch.Uniform",
+            'GetManifestResourceStream("Assets.usb_skip_easter_egg.jpg")',
+            "TimeSpan.FromSeconds(2.0)",
+            "IsHitTestVisible = false",
+            "BoostAudioToMaxForSiren",
+            "SetMasterVolumeLevelScalar(1.0f",
+            "RestoreSirenAudioVolume",
+            "GenerateSirenPcm2Seconds",
+            "NativeMethods.waveOutOpen",
+            "ManualResetEventSlim",
+            "Dispatcher.BeginInvoke",
+        ):
+            self.assertIn(tok, usb_src)
+
+        trig_block = usb_src.split("private void TriggerSkipEasterEgg()", 1)[1].split("private BitmapImage LoadEasterEggBitmap()", 1)[0]
+        for forbidden in ("SafeCloseDialog", "Close(", "TestStatus.Skip", "FinishPass", "FinishFail", "FinishSkip"):
+            self.assertNotIn(forbidden, trig_block)
+
+        siren_block = usb_src.split("private void PlaySirenAsync()", 1)[1].split("private static void SetColumn(", 1)[0]
+        self.assertIn("Dispatcher.BeginInvoke(new Action(RestoreSirenAudioVolume))", siren_block)
+        self.assertNotIn("Dispatcher.Invoke(", siren_block)
+
+    def test_wis_task_265_266_v342_hwtest_anticheat_and_bugfixes(self):
+        """Proverava HWT-05 Anti-Cheat dopunu, IMP-34/BUG-01, IMP-31, BUG-02, BUG-03/IMP-35, IMP-30 i IMP-23."""
+        native_src = (HWTEST_DIR / "Interop" / "NativeMethods.cs").read_text(encoding="utf-8")
+        diag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        tp_src = (HWTEST_DIR / "Tests" / "TouchpadTestWindow.cs").read_text(encoding="utf-8")
+        app_cs = (ROOT / "UI" / "App.xaml.cs").read_text(encoding="utf-8")
+        xaml_src = (ROOT / "UI" / "MainWindow.xaml").read_text(encoding="utf-8")
+        main_cs = read_all_mainwindow_cs()
+        therm_cs = (ROOT / "UI" / "ThermalSensorEngine.cs").read_text(encoding="utf-8")
+
+        # 1. HWT-05 Anti-Cheat (Sloj 1 SPI + Anti-Brick + Sloj 2 RawInput + F9/Ctrl+F)
+        for tok in (
+            "SPI_GETTOUCHPADPARAMETERS = 0x00AEu",
+            "SPI_SETTOUCHPADPARAMETERS = 0x00AFu",
+            "SPIF_SENDCHANGE = 0x0002u",
+            "TOUCHPAD_PARAMETERS_V1",
+            "TrySetPrecisionTouchpadEnabled",
+        ):
+            self.assertIn(tok, native_src)
+        self.assertNotIn("SPIF_UPDATEINIFILE", native_src)
+        self.assertNotIn("CM_Disable_DevNode", native_src)
+        self.assertNotIn("Disable-PnpDevice", native_src)
+
+        self.assertIn("TryStartupRecoverTouchpadIfNeeded();", shell_src.split("public HwTestShell(", 1)[1].split("BuildUI();", 1)[0])
+        self.assertIn("hwtest-touchpad-restore.json", shell_src)
+
+        for tok in (
+            "hwtest-touchpad-restore.json",
+            "InstallHwndAndRawInputHook",
+            "ClassifyMouseRawDevice",
+            "EXTERNAL_MOUSE",
+            "TOUCHSCREEN",
+            "touchpad_temporarily_disabled",
+            "touchpad_disable_method",
+            "anticheat_blocked_touchpad_events",
+            "anticheat_blocked_external_mouse_events",
+            "anticheat_blocked_trackpoint_events",
+            "anticheat_blocked_touchscreen_events",
+            "Key.F9",
+            "FinishFailGeneral()",
+            "ProcessExit",
+            "DispatcherUnhandledException",
+        ):
+            self.assertIn(tok, tp_src)
+        self.assertNotIn("CM_Disable_DevNode", tp_src)
+        self.assertNotIn("FinishSkip", tp_src)
+
+        loaded_block = tp_src.split("Loaded += (s, e) =>", 1)[1].split("Closed += (s, e) =>", 1)[0]
+        self.assertIn("InstallHwndAndRawInputHook();", loaded_block)
+
+        # 2. IMP-34 / BUG-01: WlanQueryInterface current_connection, IsLocationPolicyDisabled i zabrana laznog FAIL
+        for tok in (
+            "wlan_intf_opcode_current_connection = 7u",
+            "IsLocationPolicyDisabled",
+            "QueryCurrentWifiConnection",
+        ):
+            self.assertIn(tok, native_src)
+
+        for tok in (
+            "wifi_wlan_access_denied",
+            "wifi_wlan_last_error",
+            "wifi_location_policy_disabled",
+            "QueryCurrentWifiConnection()",
+            "locationBlockedWifiScan",
+        ):
+            self.assertIn(tok, diag_src)
+
+        # 3. IMP-31: Uklonjen trajni _sensorTimedOut short-circuit i povecan inicijalni timeout
+        ensure_block = diag_src.split("public ThermalSensorEngine EnsureSensorsAndUpdate()", 1)[1].split("private static void ProbePhysicalDisksAndMemory", 1)[0]
+        self.assertNotIn("if (_sensorTimedOut) return null;", ensure_block)
+        self.assertIn("10000", ensure_block)
+        self.assertIn("CreateBoundedWmiSearcher", therm_cs)
+
+        # 4. BUG-02: SW_MAXIMIZE u App.xaml.cs, ResizeMode CanMinimize + WindowMaximizedGuard uz dozvoljen Minimize
+        self.assertIn("ShowWindow(p.MainWindowHandle, 3); // SW_MAXIMIZE", app_cs)
+        self.assertNotIn("ShowWindow(p.MainWindowHandle, 9);", app_cs)
+        self.assertIn('ResizeMode="CanMinimize"', xaml_src)
+        for tok in (
+            "EnsureWindowMaximized",
+            "WindowMaximizedGuardHook",
+            "WM_DISPLAYCHANGE",
+            "WM_DPICHANGED",
+            "SystemEvents.DisplaySettingsChanged +=",
+            "SystemEvents.DisplaySettingsChanged -=",
+            "WindowState.Minimized",
+        ):
+            self.assertIn(tok, main_cs)
+
+        # 5. BUG-03 / IMP-35 + IMP-30 + IMP-23
+        self.assertIn('Tag="FailedPhaseRecoveryPanel"', xaml_src)
+        for tok in (
+            "EnsureFailedPhaseRecoveryBar",
+            "BtnFailedPhaseRecheck",
+            "BtnFailedPhaseRetry",
+            "BtnFailedPhaseSkip",
+            "GetMissingKeyApplications",
+            "Acrobat 2020",
+            "EXCEL.EXE",
+            "PerformPhase4RealityCheck",
+            "ShouldIgnoreRetryJsonLine",
+            "-PreserveCurrentPhase",
+            "_phase6ScriptCompletedSuccessfully",
+        ):
+            self.assertIn(tok, main_cs)
+
+        retry_block = main_cs.split("public void RetrySingleApp(", 1)[1].split("private void ExecuteAutopilotRescan(", 1)[0]
+        self.assertIn("_failedPhase == 4", retry_block)
+        self.assertIn("PerformPhase4RealityCheck()", retry_block)
+        self.assertIn("StartPhaseExecution(5)", retry_block)
 
 
 if __name__ == "__main__":

@@ -654,158 +654,458 @@ def save_device_report(
     return json_filepath, md_filepath, json_filename, md_filename
 
 
-def get_device_history(clean_id: str, reports_dir: str = None) -> dict:
+_HISTORY_PLACEHOLDERS = frozenset({
+    "", "n/a", "na", "unknown", "unknown-pc", "none", "null",
+    "to be filled by o.e.m.", "default string", "system product name",
+    "genericpc", "nepoznato", "nepoznat model", "nepoznat serijski",
+})
+
+
+def _is_valid_history_id(val) -> bool:
+    if val is None or isinstance(val, bool):
+        return False
+    return str(val).strip().lower() not in _HISTORY_PLACEHOLDERS
+
+
+def _parse_history_ts_and_iso(raw_ts, fname: str = "", fpath: str = "") -> tuple[float, str]:
+    if raw_ts is not None and not isinstance(raw_ts, bool):
+        if isinstance(raw_ts, (int, float)):
+            ts = float(raw_ts)
+            try:
+                return ts, datetime.fromtimestamp(ts).isoformat()
+            except Exception:
+                return ts, str(raw_ts)
+        if isinstance(raw_ts, str):
+            txt = raw_ts.strip()
+            if txt:
+                try:
+                    dt = datetime.fromisoformat(txt.replace("Z", "+00:00"))
+                    return dt.timestamp(), txt
+                except Exception:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d_%H%M%S", "%Y-%m-%dT%H:%M:%S"):
+                        try:
+                            dt = datetime.strptime(txt, fmt)
+                            return dt.timestamp(), txt
+                        except ValueError:
+                            pass
+    if fname:
+        m = re.search(r"(\d{8}_\d{6})", fname)
+        if m:
+            try:
+                dt = datetime.strptime(m.group(1), "%Y%m%d_%H%M%S")
+                return dt.timestamp(), dt.isoformat()
+            except ValueError:
+                pass
+    if fpath and os.path.isfile(fpath):
+        try:
+            mt = os.path.getmtime(fpath)
+            return mt, datetime.fromtimestamp(mt).isoformat()
+        except OSError:
+            pass
+    return 0.0, ""
+
+
+def _safe_wis_intervention_summary(report_data: dict) -> str:
+    """Generiše čitak sažetak WIS kartona bez izlaganja servisnih tajni ili ključeva."""
+    handover = compute_handover_status(report_data)
+    parts = [f"WIS instalacija ({handover})"]
+
+    dur_sec = report_data.get("duration_seconds", 0)
+    try:
+        dur_sec_int = int(float(dur_sec or 0))
+    except (ValueError, TypeError):
+        dur_sec_int = 0
+    dur_fmt = str(report_data.get("duration_formatted") or "").strip()
+    if dur_fmt and dur_fmt != "N/A":
+        parts.append(f"Trajanje: {dur_fmt}")
+    elif dur_sec_int > 0:
+        parts.append(f"Trajanje: {dur_sec_int // 60}m {dur_sec_int % 60:02d}s")
+
+    apps = report_data.get("apps")
+    if isinstance(apps, dict) and apps:
+        ok_cnt = sum(1 for v in apps.values() if str(v).strip().upper() in ("OK", "COMPLETED", "SUCCESS", "TRUE"))
+        parts.append(f"Aplikacije: {ok_cnt}/{len(apps)}")
+
+    hwtest = report_data.get("hwtest")
+    if isinstance(hwtest, dict):
+        overall = str((hwtest.get("summary") or {}).get("overall") or "").strip()
+        if overall:
+            parts.append(f"HwTest: {overall}")
+
+    diag = diagnostics_contract(report_data)
+    if diag.get("diagnostics_status") and diag["diagnostics_status"] != "NOT_VERIFIED":
+        parts.append(f"Hlađenje: {diag['diagnostics_status']}")
+
+    lic = _extract_license_summary(report_data)
+    if lic:
+        parts.append(f"Win: {'OK' if lic.get('windows_activated') else 'N/A'} / Office: {lic.get('office_status_label')}")
+
+    return _mask_license_keys(" • ".join(parts))
+
+
+def get_device_history(clean_id: str, reports_dir: str = None, serial_hint: str = None) -> dict:
     """
     Očitava istoriju intervencija i servisni dnevnik za dati uređaj.
-    Proverava postojanje foldera storage/reports/<clean_id>/ (ili prosleđenog reports_dir).
-    Parsira SERVISNI_DNEVNIK.md i sesije u sessions/.
-    Ako uređaj ne postoji, vraća {"status": "ok", "is_registered": False, "interventions": [], "dnevnik_markdown": ""}.
+    Proverava postojanje AGY foldera storage/reports/<clean_id>/ (ili DEVICE_INFO.json)
+    kao i kanonskih WIS JSON kartona u korenu reports_dir (*.json).
+    Vraća sortirano najnovije prvo.
     """
     from servishub.config import active_config
     base_dir = reports_dir or active_config.reports_dir
-    sanitized = sanitize_id(clean_id)
+    raw_clean = str(clean_id or "").strip()
+    sanitized = sanitize_id(raw_clean)
 
+    empty_resp = {
+        "status": "ok",
+        "is_registered": False,
+        "device_tag": sanitized,
+        "serial_number": "",
+        "manufacturer": "",
+        "model": "",
+        "first_seen": None,
+        "last_seen": None,
+        "total_interventions": 0,
+        "interventions": [],
+        "dnevnik_markdown": "",
+        "warranty": None,
+        "oem": None,
+    }
+
+    if not base_dir or not os.path.isdir(base_dir) or not raw_clean or sanitized in ("", "UNKNOWN"):
+        return empty_resp
+
+    real_base = os.path.realpath(base_dir)
+    hint_clean = str(serial_hint or "").strip()
+    hint_san = sanitize_id(hint_clean) if hint_clean else ""
+
+    def _is_safe_subpath(target_path: str) -> bool:
+        try:
+            if os.path.islink(target_path):
+                return False
+            return os.path.commonpath([real_base, os.path.realpath(target_path)]) == real_base
+        except (ValueError, OSError):
+            return False
+
+    # 1. Pronađi AGY poddirektorijum (tačan tag, DEVICE_INFO.json SN ili substring taga)
     dev_dir = os.path.join(base_dir, sanitized)
-    if not os.path.isdir(dev_dir):
-        found_dir = None
-        if os.path.isdir(base_dir):
-            for d in os.listdir(base_dir):
-                candidate = os.path.join(base_dir, d)
-                if not os.path.isdir(candidate):
-                    continue
-                dinfo_file = os.path.join(candidate, "DEVICE_INFO.json")
-                if os.path.isfile(dinfo_file):
-                    try:
-                        with open(dinfo_file, "r", encoding="utf-8") as f:
-                            dinfo_data = json.load(f)
-                            if str(dinfo_data.get("serial_number", "")).strip().lower() == sanitized.lower():
-                                found_dir = candidate
-                                sanitized = d
+    if not (_is_safe_subpath(dev_dir) and os.path.isdir(dev_dir)):
+        dev_dir = ""
+        sn_match_dir = None
+        sub_match_dir = None
+        lookup_norms = {sanitized.lower(), raw_clean.lower()}
+        if hint_clean:
+            lookup_norms.add(hint_clean.lower())
+            lookup_norms.add(hint_san.lower())
+        try:
+            with os.scandir(base_dir) as it:
+                for entry in sorted(it, key=lambda e: e.name):
+                    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    candidate = entry.path
+                    if not _is_safe_subpath(candidate):
+                        continue
+                    dinfo_file = os.path.join(candidate, "DEVICE_INFO.json")
+                    if os.path.isfile(dinfo_file) and _is_safe_subpath(dinfo_file):
+                        try:
+                            with open(dinfo_file, "r", encoding="utf-8") as f:
+                                dinfo_data = json.load(f)
+                            d_sn = str(dinfo_data.get("serial_number", "")).strip()
+                            if _is_valid_history_id(d_sn) and (
+                                d_sn.lower() in lookup_norms or sanitize_id(d_sn).lower() in lookup_norms
+                            ):
+                                sn_match_dir = candidate
+                                sanitized = entry.name
                                 break
-                    except Exception:
-                        pass
-                if sanitized.lower() in d.lower():
-                    found_dir = candidate
-                    sanitized = d
-                    break
-        if found_dir:
-            dev_dir = found_dir
-
-    if not os.path.isdir(dev_dir):
-        return {
-            "status": "ok",
-            "is_registered": False,
-            "device_tag": sanitized,
-            "serial_number": "",
-            "manufacturer": "",
-            "model": "",
-            "first_seen": None,
-            "last_seen": None,
-            "total_interventions": 0,
-            "interventions": [],
-            "dnevnik_markdown": "",
-            "warranty": None,
-            "oem": None,
-        }
+                        except Exception:
+                            pass
+                    if sub_match_dir is None and sanitized.lower() in entry.name.lower():
+                        sub_match_dir = (candidate, entry.name)
+        except OSError:
+            pass
+        if sn_match_dir:
+            dev_dir = sn_match_dir
+        elif sub_match_dir:
+            dev_dir, sanitized = sub_match_dir
 
     device_info = {}
-    dinfo_path = os.path.join(dev_dir, "DEVICE_INFO.json")
-    if os.path.isfile(dinfo_path):
-        try:
-            with open(dinfo_path, "r", encoding="utf-8") as f:
-                device_info = json.load(f)
-        except Exception:
-            device_info = {}
-
     dnevnik_markdown = ""
-    dnevnik_path = os.path.join(dev_dir, "SERVISNI_DNEVNIK.md")
-    if os.path.isfile(dnevnik_path):
-        try:
-            with open(dnevnik_path, "r", encoding="utf-8") as f:
-                dnevnik_markdown = f.read()
-        except Exception:
-            dnevnik_markdown = ""
-
     interventions = []
-    sessions_dir = os.path.join(dev_dir, "sessions")
-    if os.path.isdir(sessions_dir):
-        session_files = [f for f in os.listdir(sessions_dir) if f.endswith(".json")]
-        session_files.sort()
-        for sf in session_files:
-            sf_path = os.path.join(sessions_dir, sf)
+
+    if dev_dir and os.path.isdir(dev_dir) and _is_safe_subpath(dev_dir):
+        dinfo_path = os.path.join(dev_dir, "DEVICE_INFO.json")
+        if os.path.isfile(dinfo_path) and _is_safe_subpath(dinfo_path):
             try:
-                with open(sf_path, "r", encoding="utf-8") as f:
-                    sess_data = json.load(f)
-                interventions.append({
-                    "date": sess_data.get("timestamp") or sess_data.get("date", ""),
-                    "session_id": sess_data.get("session_id", ""),
-                    "summary": sess_data.get("summary", ""),
-                    "status": sess_data.get("status", "COMPLETED"),
-                    "tools_used": sess_data.get("tools_executed") or sess_data.get("tools_used") or [],
-                    "serviser_id": sess_data.get("serviser_id", ""),
-                })
+                with open(dinfo_path, "r", encoding="utf-8") as f:
+                    device_info = json.load(f)
             except Exception:
+                device_info = {}
+
+        dnevnik_path = os.path.join(dev_dir, "SERVISNI_DNEVNIK.md")
+        if os.path.isfile(dnevnik_path) and _is_safe_subpath(dnevnik_path):
+            try:
+                with open(dnevnik_path, "r", encoding="utf-8") as f:
+                    dnevnik_markdown = f.read()
+            except Exception:
+                dnevnik_markdown = ""
+
+        sessions_dir = os.path.join(dev_dir, "sessions")
+        if os.path.isdir(sessions_dir) and _is_safe_subpath(sessions_dir):
+            session_files = sorted(f for f in os.listdir(sessions_dir) if f.endswith(".json"))
+            for sf in session_files:
+                sf_path = os.path.join(sessions_dir, sf)
+                if not _is_safe_subpath(sf_path) or not os.path.isfile(sf_path):
+                    continue
+                try:
+                    with open(sf_path, "r", encoding="utf-8") as f:
+                        sess_data = json.load(f)
+                    raw_dt = sess_data.get("timestamp") or sess_data.get("date", "")
+                    ts_score, iso_dt = _parse_history_ts_and_iso(raw_dt, sf, sf_path)
+                    interventions.append({
+                        "date": raw_dt or iso_dt,
+                        "session_id": sess_data.get("session_id", ""),
+                        "summary": _mask_license_keys(sess_data.get("summary", "")),
+                        "status": sess_data.get("status", "COMPLETED"),
+                        "tools_used": sess_data.get("tools_executed") or sess_data.get("tools_used") or [],
+                        "serviser_id": sess_data.get("serviser_id", ""),
+                        "_sort_ts": ts_score,
+                    })
+                except Exception:
+                    continue
+
+        if not interventions and dnevnik_markdown:
+            pattern = r"###\s+\[Datum:\s*([^\]]+)\]\s*(?:-\s*(.*))?"
+            matches = list(re.finditer(pattern, dnevnik_markdown))
+            for i, match in enumerate(matches):
+                dt_str = match.group(1).strip()
+                title_str = (match.group(2) or "").strip()
+                start_pos = match.end()
+                end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(dnevnik_markdown)
+                section_text = dnevnik_markdown[start_pos:end_pos].strip()
+
+                summary_line = title_str
+                if section_text:
+                    first_line = section_text.splitlines()[0].strip().lstrip("-* ")
+                    summary_line = f"{summary_line}: {first_line}" if summary_line else first_line
+
+                ts_score, _ = _parse_history_ts_and_iso(dt_str)
+                interventions.append({
+                    "date": dt_str,
+                    "session_id": "",
+                    "summary": summary_line or "Intervencija zabeležena u dnevniku",
+                    "status": "COMPLETED",
+                    "tools_used": [],
+                    "_sort_ts": ts_score,
+                })
+
+    # 2. Proširi pretragu na kanonske WIS JSON kartone u korenu reports_dir
+    target_norms = set()
+    for seed in (
+        raw_clean,
+        sanitized,
+        hint_clean,
+        hint_san,
+        device_info.get("serial_number") if isinstance(device_info, dict) else "",
+        device_info.get("device_tag") if isinstance(device_info, dict) else "",
+        (device_info.get("hardware") or {}).get("serial_number") if isinstance(device_info, dict) and isinstance(device_info.get("hardware"), dict) else "",
+    ):
+        if _is_valid_history_id(seed):
+            s_val = str(seed).strip()
+            target_norms.add(s_val.lower())
+            target_norms.add(sanitize_id(s_val).lower())
+
+    wis_records: list[tuple[float, dict, str, dict]] = []
+    seen_wis_sids: dict[str, int] = {}
+
+    try:
+        with os.scandir(base_dir) as it:
+            root_entries = sorted(it, key=lambda e: e.name)
+    except OSError:
+        root_entries = []
+
+    for entry in root_entries:
+        fname = entry.name
+        if not fname.lower().endswith(".json") or fname.lower().endswith(".tmp"):
+            continue
+        if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+            continue
+        fpath = entry.path
+        if not _is_safe_subpath(fpath):
+            continue
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        hw = data.get("hw") if isinstance(data.get("hw"), dict) else (data.get("hardware") if isinstance(data.get("hardware"), dict) else {})
+        candidates = (
+            data.get("serial_number"),
+            data.get("serial"),
+            hw.get("serial"),
+            hw.get("serial_number"),
+            data.get("device_id"),
+            data.get("computer_name"),
+            data.get("device_tag"),
+        )
+        matched = False
+        for cand in candidates:
+            if not _is_valid_history_id(cand):
                 continue
-        interventions.sort(key=lambda x: x.get("date") or "")
+            c_str = str(cand).strip()
+            if c_str.lower() in target_norms or sanitize_id(c_str).lower() in target_norms:
+                matched = True
+                break
+        if not matched:
+            low_fn = fname.lower()
+            for tn in target_norms:
+                if tn and (low_fn.startswith(f"report_{tn}_") or low_fn.endswith(f"_{tn}.json")):
+                    matched = True
+                    break
+        if not matched:
+            continue
 
-    if not interventions and dnevnik_markdown:
-        import re
-        pattern = r"###\s+\[Datum:\s*([^\]]+)\]\s*(?:-\s*(.*))?"
-        matches = list(re.finditer(pattern, dnevnik_markdown))
-        for i, match in enumerate(matches):
-            dt_str = match.group(1).strip()
-            title_str = (match.group(2) or "").strip()
-            start_pos = match.end()
-            end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(dnevnik_markdown)
-            section_text = dnevnik_markdown[start_pos:end_pos].strip()
+        safe_data = _sanitize_report_license_fields(data)
+        raw_ts = safe_data.get("timestamp") or safe_data.get("completed_at") or safe_data.get("last_seen")
+        ts_score, iso_dt = _parse_history_ts_and_iso(raw_ts, fname, fpath)
 
-            summary_line = title_str
-            if section_text:
-                first_line = section_text.splitlines()[0].strip().lstrip("-* ")
-                if summary_line:
-                    summary_line = f"{summary_line}: {first_line}"
-                else:
-                    summary_line = first_line
+        dur_sec = safe_data.get("duration_seconds", 0)
+        try:
+            dur_sec_int = int(float(dur_sec or 0))
+        except (ValueError, TypeError):
+            dur_sec_int = 0
+        dur_fmt = str(safe_data.get("duration_formatted") or "").strip()
+        if (not dur_fmt or dur_fmt == "N/A") and dur_sec_int > 0:
+            dur_fmt = f"{dur_sec_int // 60}m {dur_sec_int % 60:02d}s"
 
-            interventions.append({
-                "date": dt_str,
-                "session_id": "",
-                "summary": summary_line or "Intervencija zabeležena u dnevniku",
-                "status": "COMPLETED",
-                "tools_used": [],
-            })
+        handover_st = compute_handover_status(safe_data)
+        tools_used = ["WIS Deploy"]
+        if isinstance(safe_data.get("hwtest"), dict) and safe_data["hwtest"]:
+            tools_used.append("WIS-HwTest")
 
-    if not interventions and not dnevnik_markdown and not device_info:
-        return {
-            "status": "ok",
-            "is_registered": False,
-            "device_tag": sanitized,
-            "serial_number": "",
-            "manufacturer": "",
-            "model": "",
-            "first_seen": None,
-            "last_seen": None,
-            "total_interventions": 0,
-            "interventions": [],
-            "dnevnik_markdown": "",
-            "warranty": None,
-            "oem": None,
+        sid = str(safe_data.get("session_id") or safe_data.get("run_id") or "").strip()
+        wis_item = {
+            "date": iso_dt,
+            "session_id": sid,
+            "summary": _safe_wis_intervention_summary(safe_data),
+            "status": str(safe_data.get("status") or "COMPLETED"),
+            "handover_status": handover_st,
+            "duration_seconds": dur_sec_int,
+            "duration_formatted": dur_fmt or "N/A",
+            "report_file": fname,
+            "tools_used": tools_used,
+            "serviser_id": str(safe_data.get("serviser_id") or "WIS"),
+            "_sort_ts": ts_score,
         }
 
-    hw = device_info.get("hardware") if isinstance(device_info.get("hardware"), dict) else {}
-    serial = device_info.get("serial_number") or hw.get("serial_number") or ""
-    manufacturer = device_info.get("manufacturer") or hw.get("manufacturer") or ""
-    model = device_info.get("model") or hw.get("model") or ""
+        if sid and sid in seen_wis_sids:
+            prev_idx = seen_wis_sids[sid]
+            if ts_score >= wis_records[prev_idx][0]:
+                wis_records[prev_idx] = (ts_score, safe_data, fname, wis_item)
+        else:
+            if sid:
+                seen_wis_sids[sid] = len(wis_records)
+            wis_records.append((ts_score, safe_data, fname, wis_item))
 
-    dates = [item["date"] for item in interventions if item.get("date")]
-    dates.sort()
-    first_seen = device_info.get("first_seen") or (dates[0] if dates else None)
-    last_seen = device_info.get("last_seen") or (dates[-1] if dates else None)
+    for _, _, _, w_item in wis_records:
+        interventions.append(w_item)
+
+    if not interventions and not dnevnik_markdown and not device_info and not wis_records:
+        return empty_resp
+
+    # Sortiraj sve intervencije najnovije prvo
+    interventions.sort(key=lambda x: (float(x.get("_sort_ts") or 0.0), str(x.get("date") or "")), reverse=True)
+
+    date_pairs = [
+        (float(item.get("_sort_ts") or 0.0), item["date"])
+        for item in interventions
+        if item.get("date")
+    ]
+    for item in interventions:
+        item.pop("_sort_ts", None)
+
+    wis_sorted = sorted(wis_records, key=lambda x: x[0], reverse=True)
+    latest_wis = wis_sorted[0][1] if wis_sorted else {}
+    latest_wis_hw = (
+        latest_wis.get("hw")
+        if isinstance(latest_wis.get("hw"), dict)
+        else (latest_wis.get("hardware") if isinstance(latest_wis.get("hardware"), dict) else {})
+    )
+
+    hw = device_info.get("hardware") if isinstance(device_info.get("hardware"), dict) else {}
+
+    def _pick_first_valid(*vals) -> str:
+        for v in vals:
+            if _is_valid_history_id(v):
+                return str(v).strip()
+        return ""
+
+    serial = _pick_first_valid(
+        device_info.get("serial_number"),
+        hw.get("serial_number"),
+        hw.get("serial"),
+        latest_wis.get("serial_number"),
+        latest_wis.get("serial"),
+        latest_wis_hw.get("serial"),
+        latest_wis_hw.get("serial_number"),
+        hint_clean,
+    )
+    manufacturer = _pick_first_valid(
+        device_info.get("manufacturer"),
+        hw.get("manufacturer"),
+        latest_wis_hw.get("manufacturer"),
+        latest_wis.get("manufacturer"),
+    )
+    model = _pick_first_valid(
+        device_info.get("model"),
+        hw.get("model"),
+        latest_wis_hw.get("model"),
+        latest_wis.get("device_model"),
+        latest_wis.get("model"),
+    )
+
+    if dev_dir:
+        resolved_tag = os.path.basename(dev_dir)
+    else:
+        resolved_tag = _pick_first_valid(
+            latest_wis.get("device_tag"),
+            latest_wis.get("device_id"),
+            latest_wis.get("computer_name"),
+            sanitized,
+        ) or sanitized
+        resolved_tag = sanitize_id(resolved_tag)
+
+    all_date_candidates: list[tuple[float, str]] = list(date_pairs)
+    for d_key in ("first_seen", "last_seen"):
+        d_val = device_info.get(d_key)
+        if d_val:
+            d_ts, d_iso = _parse_history_ts_and_iso(d_val)
+            all_date_candidates.append((d_ts, str(d_val)))
+
+    if all_date_candidates:
+        all_date_candidates.sort(key=lambda x: (x[0], x[1]))
+        first_seen = device_info.get("first_seen") or all_date_candidates[0][1]
+        if all_date_candidates[0][0] > 0 and device_info.get("first_seen"):
+            fs_ts, _ = _parse_history_ts_and_iso(device_info["first_seen"])
+            if fs_ts > 0 and all_date_candidates[0][0] < fs_ts:
+                first_seen = all_date_candidates[0][1]
+        last_seen = device_info.get("last_seen") or all_date_candidates[-1][1]
+        if all_date_candidates[-1][0] > 0 and device_info.get("last_seen"):
+            ls_ts, _ = _parse_history_ts_and_iso(device_info["last_seen"])
+            if ls_ts > 0 and all_date_candidates[-1][0] > ls_ts:
+                last_seen = all_date_candidates[-1][1]
+    else:
+        first_seen = device_info.get("first_seen")
+        last_seen = device_info.get("last_seen")
+
+    warranty = device_info.get("warranty") if isinstance(device_info.get("warranty"), dict) else latest_wis.get("warranty")
+    oem = device_info.get("oem") if isinstance(device_info.get("oem"), dict) else latest_wis.get("oem")
 
     return {
         "status": "ok",
         "is_registered": True,
-        "device_tag": sanitized,
+        "device_tag": resolved_tag,
         "serial_number": serial,
         "manufacturer": manufacturer,
         "model": model,
@@ -814,8 +1114,8 @@ def get_device_history(clean_id: str, reports_dir: str = None) -> dict:
         "total_interventions": len(interventions),
         "interventions": interventions,
         "dnevnik_markdown": dnevnik_markdown,
-        "warranty": device_info.get("warranty"),
-        "oem": device_info.get("oem"),
+        "warranty": warranty,
+        "oem": oem,
     }
 
 

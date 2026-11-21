@@ -52,6 +52,9 @@ def run_hub_server(
     # Inicijalizacija servisa
     fleet_store = FleetStore(live_logs_dir=cfg.live_logs_dir, reports_dir=cfg.reports_dir)
     print(f" [*] Učitano {len(fleet_store.fleet_devices)} uređaja iz istorijske arhive.")
+    cleaned_tmp_dirs = DriverPoolManager.cleanup_stale_temp_dirs()
+    if cleaned_tmp_dirs:
+        print(f" [*] Očišćeno {cleaned_tmp_dirs} zaostalih privremenih wis-pool-extract-* foldera.")
     driver_pool_mgr = DriverPoolManager(pool_dir=cfg.driver_pool_dir)
 
     def _on_driver_cab_cached(cab_path: str, saved_meta: dict):

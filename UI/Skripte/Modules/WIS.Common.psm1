@@ -1273,7 +1273,7 @@ function Add-WisBenchmarkTransfer {
         [ValidateSet("lan_hit", "wan_miss")]
         [string]$Source,
 
-        [ValidateSet("driver", "update", "model_pack", "oem_pack")]
+        [ValidateSet("driver", "update", "model_pack", "oem_pack", "driver_pool")]
         [string]$Category = "driver",
 
         [long]$Bytes = 0,

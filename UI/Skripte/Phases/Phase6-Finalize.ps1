@@ -163,6 +163,7 @@ try {
         Send-IpcProgress -Progress 12 -Phase 6 -PhaseName "Završetak" -SubPhase "WU Barijera" -StatusMessage "Čekanje završetka pozadinskih procesa Windows Update-a..."
         try {
             $null = Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 45
+            $Global:WisWuBarrierCompletedInPhase6 = $true
         } catch {
             $wuBarrierErr = $_.Exception.Message
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -200,6 +201,11 @@ try {
             Write-ServisLog "Faza 6: Upozorenje pri zavrsnoj proveri/berbi drajvera: $($_.Exception.Message)" -Level "WARN" -Component "Phase6"
         }
     }
+
+    # Raskidanje SMB sesija nakon berbe drajvera; Wi-Fi profili OSTAJU aktivni dok HTTP izvestaj ka ServiceHub-u ne zavrsi (IMP-32)
+    try {
+        & net.exe use * /delete /y >$null 2>&1
+    } catch {}
 
     # ------------------------------------------------------------------------------
     # UVEK ZAUSTAVI 1 Hz LIVE SCREEN MIRROR RADNIKA (ČAK I U NEEDS_ATTENTION STANJU)
@@ -244,86 +250,15 @@ try {
     }
 
     # ------------------------------------------------------------------------------
-    # UVEK IZVRŠI ZAŠTITNO ČIŠĆENJE TAJNI (Clear-ServisWifiSecrets) I UAC RESTORE
+    # INICIJALNA PROVERA ANTI-LEAK ZASTAVICA (SAMO CISCENJE IDE NAKON SLANJA IZVESTAJA U FINALLY BLOKU - IMP-32)
     # ------------------------------------------------------------------------------
     $antiLeakVerified = $true
+    $forceAntiLeakFail = ($env:WIS_FORCE_ANTILEAK_FAIL -eq "1")
     if ($initialStateMap.Contains("anti_leak_verified") -and $initialStateMap["anti_leak_verified"] -eq $false) {
         $antiLeakVerified = $false
     }
-    if ($env:WIS_FORCE_ANTILEAK_FAIL -eq "1") {
+    if ($forceAntiLeakFail) {
         $antiLeakVerified = $false
-    }
-
-    try {
-        & net.exe use * /delete /y >$null 2>&1
-    } catch {}
-
-    try {
-        if (Get-Command Clear-ServisWifiSecrets -ErrorAction SilentlyContinue) {
-            $cleanSecretRes = Clear-ServisWifiSecrets -LocalSetupDir $LocalSetupDir
-            if ($cleanSecretRes -is [bool] -and $cleanSecretRes -eq $false) {
-                $antiLeakVerified = $false
-            } elseif ($null -ne $cleanSecretRes) {
-                if (($null -ne $cleanSecretRes.Success -and $cleanSecretRes.Success -eq $false) -or
-                    ($null -ne $cleanSecretRes.Verified -and $cleanSecretRes.Verified -eq $false) -or
-                    ($null -ne $cleanSecretRes.anti_leak_verified -and $cleanSecretRes.anti_leak_verified -eq $false)) {
-                    $antiLeakVerified = $false
-                }
-            }
-        } else {
-            & netsh.exe wlan delete profile name="Wifi-Servis" >$null 2>&1
-            foreach ($secFile in @(
-                (Join-Path $LocalSetupDir "Wifi-Servis.ini"),
-                "C:\setup\Wifi-Servis.ini",
-                (Join-Path $LocalSetupDir "wifi_profile.xml"),
-                "C:\setup\wifi_profile.xml",
-                (Join-Path $LocalSetupDir "Wifi-Servis.xml"),
-                "C:\setup\Wifi-Servis.xml"
-            )) {
-                if (Test-Path $secFile) {
-                    Remove-Item -Path $secFile -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
-    } catch {
-        $antiLeakVerified = $false
-        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Greška pri izvršavanju Clear-ServisWifiSecrets: $($_.Exception.Message)" -Level "ERROR" -Component "Security"
-        }
-    }
-
-    # Provera da li je Clear-ServisWifiSecrets upisao anti_leak_verified = false u deploy-state.json
-    if (Test-Path $stateFile) {
-        try {
-            $postCleanRaw = Get-Content -Path $stateFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-            if ($postCleanRaw) {
-                $postCleanState = ConvertFrom-Json -InputObject $postCleanRaw -ErrorAction SilentlyContinue
-                if ($postCleanState -and $null -ne $postCleanState.anti_leak_verified -and $postCleanState.anti_leak_verified -eq $false) {
-                    $antiLeakVerified = $false
-                }
-            }
-        } catch {}
-    }
-
-    # Fizička provera odsustva servisnih credential fajlova na klijentskom sistemu
-    $clientSecretFiles = @(
-        (Join-Path $LocalSetupDir "Wifi-Servis.ini"),
-        "C:\setup\Wifi-Servis.ini",
-        (Join-Path $LocalSetupDir "wifi_profile.xml"),
-        "C:\setup\wifi_profile.xml",
-        (Join-Path $LocalSetupDir "Wifi-Servis.xml"),
-        "C:\setup\Wifi-Servis.xml",
-        "C:\Windows\Temp\Wifi-Servis.ini",
-        "C:\Windows\Temp\wifi_profile.xml",
-        "C:\Windows\Temp\Wifi-Servis.xml"
-    )
-    foreach ($sfPath in $clientSecretFiles) {
-        if (Test-Path $sfPath) {
-            try { Remove-Item -Path $sfPath -Force -ErrorAction SilentlyContinue } catch {}
-            if (Test-Path $sfPath) {
-                $antiLeakVerified = $false
-            }
-        }
     }
 
     # Evaluacija autoritativnog ugovora stres testa
@@ -600,105 +535,282 @@ try {
         }
     }
 
-    if ($blockHandover) {
-        # ------------------------------------------------------------------------------
-        # GRANA NEEDS_ATTENTION: ZABRANJEN STATUS DONE / READY / SUCCESS I AUTOMATSKO GAŠENJE!
-        # ------------------------------------------------------------------------------
-        try {
-            Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "WIS_Resume" -ErrorAction SilentlyContinue
-            Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "ServisDeployResume" -ErrorAction SilentlyContinue
-            Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "WIS_AutoStart" -ErrorAction SilentlyContinue
+    $clientSecretFiles = @(
+        (Join-Path $LocalSetupDir "Wifi-Servis.ini"),
+        "C:\setup\Wifi-Servis.ini",
+        (Join-Path $LocalSetupDir "wifi_profile.xml"),
+        "C:\setup\wifi_profile.xml",
+        (Join-Path $LocalSetupDir "Wifi-Servis.xml"),
+        "C:\setup\Wifi-Servis.xml",
+        "C:\Windows\Temp\Wifi-Servis.ini",
+        "C:\Windows\Temp\wifi_profile.xml",
+        "C:\Windows\Temp\Wifi-Servis.xml"
+    )
+    $hardeningOk = $false
+    $reportAndCleanupError = $null
+    $attnMsg = ""
+    $readyMsg = if ($hasThermalOverheat) {
+        "INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU ${maxCpuTemp}°C >= 95°C) | $thermalNote"
+    } elseif ($diagnosticsContract.diagnostics_status -eq "SENSOR_UNAVAILABLE") {
+        "INSTALACIJA ZAVRŠENA | Hlađenje nije automatski provereno; obavezna ručna provera."
+    } else {
+        "INSTALACIJA ZAVRŠENA | Dijagnostika hlađenja: $($diagnosticsContract.diagnostics_status). $($diagnosticsContract.diagnostics_warning)"
+    }
 
-            if (Get-Command Clear-ServisDesktopShortcuts -ErrorAction SilentlyContinue) {
-                Clear-ServisDesktopShortcuts | Out-Null
+    # Kritičan redosled (IMP-32): Prvo slanje mrežnog izveštaja ka Hub-u dok je Wi-Fi aktivan,
+    # a Clear-ServisWifiSecrets + net use * /delete /y + fizička provera tajni UVEK u finally bloku!
+    try {
+        if ($blockHandover) {
+            # ------------------------------------------------------------------------------
+            # GRANA NEEDS_ATTENTION: ZABRANJEN STATUS DONE / READY / SUCCESS I AUTOMATSKO GAŠENJE!
+            # ------------------------------------------------------------------------------
+            try {
+                Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "WIS_Resume" -ErrorAction SilentlyContinue
+                Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "ServisDeployResume" -ErrorAction SilentlyContinue
+                Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "WIS_AutoStart" -ErrorAction SilentlyContinue
+
+                if (Get-Command Clear-ServisDesktopShortcuts -ErrorAction SilentlyContinue) {
+                    Clear-ServisDesktopShortcuts | Out-Null
+                }
+                if (Get-Command Export-ServisSummaryReport -ErrorAction SilentlyContinue) {
+                    $verResults = if (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue) { Test-AllServisProgramsInstalled } else { $null }
+                    Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+                }
+                foreach ($cleanupSubDir in @(
+                    (Join-Path $LocalSetupDir "Programi"),
+                    (Join-Path $LocalSetupDir "Cache\Licensing"),
+                    "C:\setup\Cache\Licensing"
+                )) {
+                    if ($cleanupSubDir -and (Test-Path -LiteralPath $cleanupSubDir -ErrorAction SilentlyContinue)) {
+                        Remove-Item -LiteralPath $cleanupSubDir -Recurse -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            } catch {}
+
+            $reasonJoined = ($blockReasons -join " | ")
+            $attnMsg = "NEEDS_ATTENTION: Računar NIJE spreman za predaju kupcu! Razlog: $reasonJoined"
+
+            Update-ServisKartonContract -FinalStatus "NEEDS_ATTENTION" -HandoverReadyFlag $false -AntiLeakFlag $antiLeakVerified -StatusMsg $attnMsg
+
+            # Očuvaj stress-test-result.json ukoliko je postojao
+            if (-not $stressResultMissingOrCorrupt -and $null -ne $stressResultObj) {
+                try {
+                    $contractPreserved = [ordered]@{
+                        run_id              = $stressRunId
+                        status              = $stressStatus
+                        reason              = $stressReason
+                        emergency_abort     = [bool]$emergencyAbort
+                        sensor_available    = [bool]$sensorAvailable
+                        sensor_source       = $sensorSource
+                        duration_sec        = [int]$stressDurationSec
+                        duration_seconds    = [int]$stressDurationSec
+                        max_cpu_temp_c      = [double]$maxCpuTemp
+                        max_gpu_temp_c      = [double]$maxGpuTemp
+                        max_cpu_temp        = [double]$maxCpuTemp
+                        max_gpu_temp        = [double]$maxGpuTemp
+                        throttling_detected = [bool]$throttlingDet
+                        timestamp           = $stressTimestamp
+                        stress_report       = $stressReport
+                        stress_history      = $stressHistory
+                    }
+                    [System.IO.File]::WriteAllText($stressResultFile, (ConvertTo-Json -InputObject $contractPreserved -Depth 6), $utf8NoBom)
+                    [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "stress-test-result.json"), (ConvertTo-Json -InputObject $contractPreserved -Depth 6), $utf8NoBom)
+                } catch {}
             }
-            if (Get-Command Restore-ServisUacDefaults -ErrorAction SilentlyContinue) {
-                Restore-ServisUacDefaults | Out-Null
-            }
-            if (Get-Command Export-ServisSummaryReport -ErrorAction SilentlyContinue) {
-                $verResults = if (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue) { Test-AllServisProgramsInstalled } else { $null }
-                Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
-            }
-            foreach ($cleanupSubDir in @(
-                (Join-Path $LocalSetupDir "Programi"),
-                (Join-Path $LocalSetupDir "Cache\Licensing"),
-                "C:\setup\Cache\Licensing"
-            )) {
-                if ($cleanupSubDir -and (Test-Path -LiteralPath $cleanupSubDir -ErrorAction SilentlyContinue)) {
-                    Remove-Item -LiteralPath $cleanupSubDir -Recurse -Force -ErrorAction SilentlyContinue
+
+            # Upis autoritativnog NEEDS_ATTENTION stanja u C:\setup\deploy-state.json
+            $initialStateMap["phase"]               = 6
+            $initialStateMap["deployment_status"]   = "NEEDS_ATTENTION"
+            $initialStateMap["handover_ready"]      = $false
+            $initialStateMap["anti_leak_verified"]  = [bool]$antiLeakVerified
+            $initialStateMap["diagnostics_status"] = $diagnosticsContract.diagnostics_status
+            $initialStateMap["diagnostics_warning"] = $diagnosticsContract.diagnostics_warning
+            $initialStateMap["cooling_verified"] = $diagnosticsContract.cooling_verified
+            $initialStateMap["manual_check_required"] = $diagnosticsContract.manual_check_required
+            $initialStateMap["stress_status"]       = $stressStatus
+            $initialStateMap["stress_reason"]       = $stressReason
+            $initialStateMap["emergency_abort"]     = [bool]$emergencyAbort
+            $initialStateMap["sensor_available"]    = [bool]$sensorAvailable
+            $initialStateMap["sensor_source"]       = $sensorSource
+            $initialStateMap["stress_duration_sec"] = [int]$stressDurationSec
+            $initialStateMap["max_cpu_temp"]        = [double]$maxCpuTemp
+            $initialStateMap["max_gpu_temp"]        = [double]$maxGpuTemp
+            $initialStateMap["max_cpu_temp_c"]      = [double]$maxCpuTemp
+            $initialStateMap["max_gpu_temp_c"]      = [double]$maxGpuTemp
+            $initialStateMap["throttling_detected"] = [bool]$throttlingDet
+            $initialStateMap["stress_report"]       = $stressReport
+            $initialStateMap["stress_timestamp"]    = $stressTimestamp
+            $initialStateMap["stress_history"]      = $stressHistory
+            $initialStateMap["status_message"]      = $attnMsg
+            $initialStateMap["updated_at"]          = (Get-Date -Format "o")
+
+            $finalStateJson = ConvertTo-Json -InputObject $initialStateMap -Depth 6
+            [System.IO.File]::WriteAllText($stateFile, $finalStateJson, $utf8NoBom)
+            try {
+                [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "deploy-state.json"), $finalStateJson, $utf8NoBom)
+            } catch {}
+
+            # Slanje NEEDS_ATTENTION statusa na ServisHub (pre Clear-ServisWifiSecrets u finally!)
+            try {
+                if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
+                    Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+                }
+            } catch {}
+        } else {
+            # ------------------------------------------------------------------------------
+            # GRANA READY: Slanje izvestaja dok Wi-Fi radi (u Invoke-Phase6Finalize), pa ciscenje
+            # ------------------------------------------------------------------------------
+            Update-ServisKartonContract -FinalStatus "DONE" -HandoverReadyFlag $true -AntiLeakFlag $true -StatusMsg $readyMsg
+
+            $global:LASTEXITCODE = 0
+            if (Get-Command Invoke-Phase6Finalize -ErrorAction SilentlyContinue) {
+                $phase6Res = Invoke-Phase6Finalize -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -HubUrl $HubUrl -NoReboot:$true
+                if ($phase6Res -eq $false) {
+                    $antiLeakVerified = $false
+                }
+            } elseif (Get-Command Invoke-Phase5Finalize -ErrorAction SilentlyContinue) {
+                $phase5Res = Invoke-Phase5Finalize -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -HubUrl $HubUrl -NoReboot:$true
+                if ($phase5Res -eq $false) {
+                    $antiLeakVerified = $false
+                }
+            } else {
+                if (Get-Command Export-ServisSummaryReport -ErrorAction SilentlyContinue) {
+                    Export-ServisSummaryReport -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+                }
+                if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
+                    Send-FleetFinalReport -Status "COMPLETED" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+                }
+                if (Get-Command Start-FinalCleanup -ErrorAction SilentlyContinue) {
+                    $sfcRes = Start-FinalCleanup -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -InPhase5 -NoReboot
+                    if ($sfcRes -eq $false) {
+                        $antiLeakVerified = $false
+                    }
                 }
             }
+
+            if ($global:LASTEXITCODE -ne 0) {
+                $antiLeakVerified = $false
+            }
+            $hardeningOk = ($null -ne $Global:WisSecurityHardeningVerified -and [bool]$Global:WisSecurityHardeningVerified)
+        }
+    } catch {
+        $reportAndCleanupError = $_
+    } finally {
+        # UVEK NAKON SLANJA IZVEŠTAJA: raskidanje SMB sesija, brisanje Wi-Fi tajni i profila (Clear-ServisWifiSecrets), provera fajlova i security restore
+        try {
+            & net.exe use * /delete /y >$null 2>&1
         } catch {}
 
-        $reasonJoined = ($blockReasons -join " | ")
-        $attnMsg = "NEEDS_ATTENTION: Računar NIJE spreman za predaju kupcu! Razlog: $reasonJoined"
-
-        Update-ServisKartonContract -FinalStatus "NEEDS_ATTENTION" -HandoverReadyFlag $false -AntiLeakFlag $antiLeakVerified -StatusMsg $attnMsg
-
-        # Očuvaj stress-test-result.json ukoliko je postojao
-        if (-not $stressResultMissingOrCorrupt -and $null -ne $stressResultObj) {
-            try {
-                $contractPreserved = [ordered]@{
-                    run_id              = $stressRunId
-                    status              = $stressStatus
-                    reason              = $stressReason
-                    emergency_abort     = [bool]$emergencyAbort
-                    sensor_available    = [bool]$sensorAvailable
-                    sensor_source       = $sensorSource
-                    duration_sec        = [int]$stressDurationSec
-                    duration_seconds    = [int]$stressDurationSec
-                    max_cpu_temp_c      = [double]$maxCpuTemp
-                    max_gpu_temp_c      = [double]$maxGpuTemp
-                    max_cpu_temp        = [double]$maxCpuTemp
-                    max_gpu_temp        = [double]$maxGpuTemp
-                    throttling_detected = [bool]$throttlingDet
-                    timestamp           = $stressTimestamp
-                    stress_report       = $stressReport
-                    stress_history      = $stressHistory
+        try {
+            if (Get-Command Clear-ServisWifiSecrets -ErrorAction SilentlyContinue) {
+                $cleanSecretRes = Clear-ServisWifiSecrets -LocalSetupDir $LocalSetupDir
+                if ($cleanSecretRes -is [bool] -and $cleanSecretRes -eq $false) {
+                    $antiLeakVerified = $false
+                } elseif ($null -ne $cleanSecretRes) {
+                    if (($null -ne $cleanSecretRes.Success -and $cleanSecretRes.Success -eq $false) -or
+                        ($null -ne $cleanSecretRes.Verified -and $cleanSecretRes.Verified -eq $false) -or
+                        ($null -ne $cleanSecretRes.anti_leak_verified -and $cleanSecretRes.anti_leak_verified -eq $false)) {
+                        $antiLeakVerified = $false
+                    }
                 }
-                [System.IO.File]::WriteAllText($stressResultFile, (ConvertTo-Json -InputObject $contractPreserved -Depth 6), $utf8NoBom)
-                [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "stress-test-result.json"), (ConvertTo-Json -InputObject $contractPreserved -Depth 6), $utf8NoBom)
+            } else {
+                & netsh.exe wlan delete profile name="Wifi-Servis" >$null 2>&1
+                foreach ($secFile in $clientSecretFiles) {
+                    if (Test-Path $secFile) {
+                        Remove-Item -Path $secFile -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            }
+        } catch {
+            $antiLeakVerified = $false
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Greška pri izvršavanju Clear-ServisWifiSecrets: $($_.Exception.Message)" -Level "ERROR" -Component "Security"
+            }
+        }
+
+        # Provera da li je Clear-ServisWifiSecrets upisao anti_leak_verified = false u deploy-state.json
+        if (Test-Path $stateFile) {
+            try {
+                $postCleanRaw = Get-Content -Path $stateFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($postCleanRaw) {
+                    $postCleanState = ConvertFrom-Json -InputObject $postCleanRaw -ErrorAction SilentlyContinue
+                    if ($postCleanState -and $null -ne $postCleanState.anti_leak_verified -and $postCleanState.anti_leak_verified -eq $false) {
+                        $antiLeakVerified = $false
+                    }
+                }
             } catch {}
         }
 
-        # Upis autoritativnog NEEDS_ATTENTION stanja u C:\setup\deploy-state.json
-        $initialStateMap["phase"]               = 6
-        $initialStateMap["deployment_status"]   = "NEEDS_ATTENTION"
-        $initialStateMap["handover_ready"]      = $false
-        $initialStateMap["anti_leak_verified"]  = [bool]$antiLeakVerified
-        $initialStateMap["diagnostics_status"] = $diagnosticsContract.diagnostics_status
-        $initialStateMap["diagnostics_warning"] = $diagnosticsContract.diagnostics_warning
-        $initialStateMap["cooling_verified"] = $diagnosticsContract.cooling_verified
-        $initialStateMap["manual_check_required"] = $diagnosticsContract.manual_check_required
-        $initialStateMap["stress_status"]       = $stressStatus
-        $initialStateMap["stress_reason"]       = $stressReason
-        $initialStateMap["emergency_abort"]     = [bool]$emergencyAbort
-        $initialStateMap["sensor_available"]    = [bool]$sensorAvailable
-        $initialStateMap["sensor_source"]       = $sensorSource
-        $initialStateMap["stress_duration_sec"] = [int]$stressDurationSec
-        $initialStateMap["max_cpu_temp"]        = [double]$maxCpuTemp
-        $initialStateMap["max_gpu_temp"]        = [double]$maxGpuTemp
-        $initialStateMap["max_cpu_temp_c"]      = [double]$maxCpuTemp
-        $initialStateMap["max_gpu_temp_c"]      = [double]$maxGpuTemp
-        $initialStateMap["throttling_detected"] = [bool]$throttlingDet
-        $initialStateMap["stress_report"]       = $stressReport
-        $initialStateMap["stress_timestamp"]    = $stressTimestamp
-        $initialStateMap["stress_history"]      = $stressHistory
-        $initialStateMap["status_message"]      = $attnMsg
-        $initialStateMap["updated_at"]          = (Get-Date -Format "o")
-
-        $finalStateJson = ConvertTo-Json -InputObject $initialStateMap -Depth 6
-        [System.IO.File]::WriteAllText($stateFile, $finalStateJson, $utf8NoBom)
-        try {
-            [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "deploy-state.json"), $finalStateJson, $utf8NoBom)
-        } catch {}
-
-        # Slanje NEEDS_ATTENTION statusa na ServisHub (nikada COMPLETED!)
-        try {
-            if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
-                Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+        # Fizička provera odsustva servisnih credential fajlova na klijentskom sistemu
+        foreach ($sfPath in $clientSecretFiles) {
+            if (Test-Path $sfPath) {
+                try { Remove-Item -Path $sfPath -Force -ErrorAction SilentlyContinue } catch {}
+                if (Test-Path $sfPath) {
+                    $antiLeakVerified = $false
+                }
             }
-        } catch {}
+        }
+
+        if ($forceAntiLeakFail) {
+            $antiLeakVerified = $false
+        }
+
+        if (-not $hardeningOk) {
+            try {
+                if (Get-Command Restore-WisSecurityHardening -ErrorAction SilentlyContinue) {
+                    $hardeningOk = [bool](Restore-WisSecurityHardening)
+                } elseif (Get-Command Restore-ServisUacDefaults -ErrorAction SilentlyContinue) {
+                    $hardeningOk = [bool](Restore-ServisUacDefaults)
+                }
+            } catch {
+                $hardeningOk = $false
+            }
+        }
+    }
+
+    if ($null -ne $reportAndCleanupError) {
+        throw $reportAndCleanupError
+    }
+
+    $finalTelemetryData['security_hardening_verified'] = [bool]$hardeningOk
+    $finalTelemetryData['anti_leak_verified'] = [bool]$antiLeakVerified
+
+    if ($blockHandover -or (-not $antiLeakVerified) -or (-not $hardeningOk)) {
+        if (-not $blockHandover) {
+            if (-not $antiLeakVerified) {
+                $blockReasons.Add("Anti-Leak verifikacija čišćenja tajni nije uspela (anti_leak_verified=false)")
+            }
+            if (-not $hardeningOk) {
+                $blockReasons.Add("Post-verifikacija vraćanja Windows bezbednosnih polisa (UAC/SMB/Defender) nije uspela")
+            }
+            $failSecReason = if (-not $antiLeakVerified) {
+                "Zavrsna Anti-Leak provera nije uspela ($($blockReasons -join ' | '))."
+            } else {
+                "Post-verifikacija vracanja Windows bezbednosnih polisa (UAC/SMB/Defender) nije uspela."
+            }
+            $attnMsg = $failSecReason
+            $finalTelemetryData['handover_ready'] = $false
+            $finalTelemetryData['anti_leak_verified'] = [bool]$antiLeakVerified
+            $finalTelemetryData['security_hardening_verified'] = [bool]$hardeningOk
+            Update-ServisKartonContract -FinalStatus "NEEDS_ATTENTION" -HandoverReadyFlag $false -AntiLeakFlag ([bool]$antiLeakVerified) -StatusMsg $failSecReason
+            try {
+                $initialStateMap["phase"] = 6
+                $initialStateMap["deployment_status"] = "NEEDS_ATTENTION"
+                $initialStateMap["handover_ready"] = $false
+                $initialStateMap["anti_leak_verified"] = [bool]$antiLeakVerified
+                $initialStateMap["security_hardening_verified"] = [bool]$hardeningOk
+                $initialStateMap["status_message"] = $failSecReason
+                $initialStateMap["updated_at"] = (Get-Date -Format "o")
+                $secErrJson = ConvertTo-Json -InputObject $initialStateMap -Depth 6
+                [System.IO.File]::WriteAllText($stateFile, $secErrJson, $utf8NoBom)
+                [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "deploy-state.json"), $secErrJson, $utf8NoBom)
+            } catch {}
+            try {
+                if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
+                    Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+                }
+            } catch {}
+        }
 
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog $attnMsg -Level "ERROR" -Component "Phase6"
@@ -720,71 +832,8 @@ try {
         exit 2
     }
 
-    # ------------------------------------------------------------------------------
-    # GRANA READY: Stres test je završen (sa eventualnom napomenom ako se CPU pregrevao) i Anti-Leak je verifikovan
-    # ------------------------------------------------------------------------------
-    $readyMsg = if ($hasThermalOverheat) {
-        "INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU ${maxCpuTemp}°C >= 95°C) | $thermalNote"
-    } elseif ($diagnosticsContract.diagnostics_status -eq "SENSOR_UNAVAILABLE") {
-        "INSTALACIJA ZAVRŠENA | Hlađenje nije automatski provereno; obavezna ručna provera."
-    } else {
-        "INSTALACIJA ZAVRŠENA | Dijagnostika hlađenja: $($diagnosticsContract.diagnostics_status). $($diagnosticsContract.diagnostics_warning)"
-    }
     Update-ServisKartonContract -FinalStatus "DONE" -HandoverReadyFlag $true -AntiLeakFlag $true -StatusMsg $readyMsg
-
-    $global:LASTEXITCODE = 0
-    if (Get-Command Invoke-Phase6Finalize -ErrorAction SilentlyContinue) {
-        Invoke-Phase6Finalize -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -HubUrl $HubUrl -NoReboot:$true
-    } elseif (Get-Command Invoke-Phase5Finalize -ErrorAction SilentlyContinue) {
-        Invoke-Phase5Finalize -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -HubUrl $HubUrl -NoReboot:$true
-    } else {
-        if (Get-Command Export-ServisSummaryReport -ErrorAction SilentlyContinue) {
-            Export-ServisSummaryReport -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
-        }
-        if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
-            Send-FleetFinalReport -Status "COMPLETED" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
-        }
-        if (Get-Command Start-FinalCleanup -ErrorAction SilentlyContinue) {
-            Start-FinalCleanup -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -InPhase5 -NoReboot
-        }
-    }
-
-    $hardeningOk = ($null -ne $Global:WisSecurityHardeningVerified -and [bool]$Global:WisSecurityHardeningVerified)
-    $finalTelemetryData['security_hardening_verified'] = [bool]$hardeningOk
-
-    if ($global:LASTEXITCODE -ne 0 -or -not $hardeningOk) {
-        $failSecReason = if ($global:LASTEXITCODE -ne 0) {
-            "Zavrsna Anti-Leak ili bezbednosna provera nije uspela."
-        } else {
-            "Post-verifikacija vracanja Windows bezbednosnih polisa (UAC/SMB/Defender) nije uspela."
-        }
-        $finalTelemetryData['handover_ready'] = $false
-        $finalTelemetryData['anti_leak_verified'] = ($global:LASTEXITCODE -eq 0 -and $antiLeakVerified)
-        $finalTelemetryData['security_hardening_verified'] = $false
-        Update-ServisKartonContract -FinalStatus "NEEDS_ATTENTION" -HandoverReadyFlag $false -AntiLeakFlag ($finalTelemetryData['anti_leak_verified']) -StatusMsg $failSecReason
-        try {
-            $initialStateMap["phase"] = 6
-            $initialStateMap["deployment_status"] = "NEEDS_ATTENTION"
-            $initialStateMap["handover_ready"] = $false
-            $initialStateMap["anti_leak_verified"] = [bool]$finalTelemetryData['anti_leak_verified']
-            $initialStateMap["security_hardening_verified"] = $false
-            $initialStateMap["status_message"] = $failSecReason
-            $initialStateMap["updated_at"] = (Get-Date -Format "o")
-            $secErrJson = ConvertTo-Json -InputObject $initialStateMap -Depth 6
-            [System.IO.File]::WriteAllText($stateFile, $secErrJson, $utf8NoBom)
-            [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "deploy-state.json"), $secErrJson, $utf8NoBom)
-        } catch {}
-        if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
-            Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
-        }
-        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
-            Send-IpcStatus -Phase 6 -Progress 100 -SubPhase "NEEDS_ATTENTION" -StatusMessage $failSecReason -DeploymentStatus "NEEDS_ATTENTION" -HandoverReady $false -StressResult $stressResultObj
-        }
-        exit 2
-    }
-
-    Update-ServisKartonContract -FinalStatus "DONE" -HandoverReadyFlag $true -AntiLeakFlag $true -StatusMsg $readyMsg
-    if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
+    if (($Global:WisFinalReportSentStatus -ne "COMPLETED") -and (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue)) {
         Send-FleetFinalReport -Status "COMPLETED" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
     }
 

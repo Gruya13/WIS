@@ -10,6 +10,8 @@ Model Manifest datotekama i automatskim spajanjem sva 3 izvora drajvera:
 
 from __future__ import annotations
 
+import copy
+import gc
 import hashlib
 import json
 import os
@@ -394,6 +396,11 @@ class DriverPoolManager:
         self.index_path = os.path.join(self.pool_dir, "pool_index.json")
 
         self.lock = threading.RLock()
+        self._stats_cache_lock = threading.Lock()
+        self._stats_cache: Optional[Dict[str, Any]] = None
+        self._stats_version = 0
+        self._index_cache: Optional[Dict[str, Any]] = None
+        self._index_cache_sig: Optional[Tuple[int, int]] = None
         self.catalog_mgr = catalog_mgr or OemCatalogManager(catalogs_dir=self.catalogs_dir)
         self.jobs: Dict[str, Dict[str, Any]] = {}
 
@@ -402,7 +409,44 @@ class DriverPoolManager:
         os.makedirs(self.bundles_dir, exist_ok=True)
         os.makedirs(self.catalogs_dir, exist_ok=True)
 
+        self.cleanup_stale_temp_dirs()
         self._ensure_index_loaded()
+
+    @staticmethod
+    def cleanup_stale_temp_dirs(temp_root: Optional[str] = None) -> int:
+        """
+        Briše zaostale `wis-pool-extract-*` privremene direktorijume iz temp foldera
+        strogo bez praćenja simboličkih linkova.
+        """
+        root = temp_root or tempfile.gettempdir()
+        if not root or not os.path.isdir(root):
+            return 0
+        cleaned = 0
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    if not entry.name.startswith("wis-pool-extract-"):
+                        continue
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            shutil.rmtree(entry.path, ignore_errors=True)
+                            cleaned += 1
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return cleaned
+
+    def _invalidate_stats_cache(self) -> None:
+        with self._stats_cache_lock:
+            self._stats_version += 1
+            self._stats_cache = None
+
+    def invalidate_stats_cache(self) -> None:
+        """Javna invalidacija keširane statistike Driver Pool-a."""
+        self._invalidate_stats_cache()
 
     @staticmethod
     def _empty_index() -> Dict[str, Any]:
@@ -425,30 +469,45 @@ class DriverPoolManager:
         with self.lock:
             if os.path.isfile(self.index_path):
                 try:
+                    st = os.stat(self.index_path)
+                    sig = (int(st.st_mtime_ns), int(st.st_size))
+                    if self._index_cache is not None and self._index_cache_sig == sig:
+                        return self._index_cache
                     with open(self.index_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
                     if isinstance(data, dict) and isinstance(data.get("packages"), dict):
                         data.setdefault("hwid_winners", {})
                         data.setdefault("rejected_packages", [])
                         data.setdefault("ingested_archives", {})
-                        st = data.setdefault("stats", {})
-                        st.setdefault("dedup_hits", 0)
-                        st.setdefault("dedup_saved_bytes", 0)
-                        st.setdefault("older_skipped_count", 0)
-                        st.setdefault("ingests_count", 0)
+                        st_map = data.setdefault("stats", {})
+                        st_map.setdefault("dedup_hits", 0)
+                        st_map.setdefault("dedup_saved_bytes", 0)
+                        st_map.setdefault("older_skipped_count", 0)
+                        st_map.setdefault("ingests_count", 0)
+                        self._index_cache = data
+                        self._index_cache_sig = sig
                         return data
                 except Exception:
-                    pass
+                    self._index_cache = None
+                    self._index_cache_sig = None
             fresh = self._empty_index()
             self._save_index_locked(fresh)
             return fresh
 
     def _save_index_locked(self, index_data: Dict[str, Any]) -> None:
         index_data["updated_at"] = datetime.now().isoformat()
-        tmp_path = f"{self.index_path}.tmp"
+        tmp_path = f"{self.index_path}.{uuid.uuid4().hex[:6]}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(index_data, f, indent=2, ensure_ascii=False)
         os.replace(tmp_path, self.index_path)
+        try:
+            st = os.stat(self.index_path)
+            self._index_cache = index_data
+            self._index_cache_sig = (int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            self._index_cache = None
+            self._index_cache_sig = None
+        self._invalidate_stats_cache()
 
     @staticmethod
     def _manifest_key(model: str) -> str:
@@ -474,10 +533,11 @@ class DriverPoolManager:
 
     def _save_manifest_locked(self, clean_model: str, manifest: Dict[str, Any]) -> None:
         path = self._manifest_path(clean_model)
-        tmp_path = f"{path}.tmp"
+        tmp_path = f"{path}.{uuid.uuid4().hex[:6]}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
         os.replace(tmp_path, path)
+        self._invalidate_stats_cache()
 
     @staticmethod
     def _is_package_better(cand: Dict[str, Any], existing: Dict[str, Any]) -> bool:
@@ -709,169 +769,216 @@ class DriverPoolManager:
         upgraded_hwids = 0
         manifest_pkg_candidates: List[Tuple[str, Dict[str, Any]]] = []
 
-        with self.lock:
-            idx = self._ensure_index_loaded()
-            if rejected_events:
-                idx["rejected_packages"].extend(rejected_events)
-                idx["rejected_packages"] = idx["rejected_packages"][-200:]
+        def _is_older_than_winners_locked(idx_map: Dict[str, Any], cand_meta_obj: Dict[str, Any]) -> bool:
+            hw_list = cand_meta_obj.get("hwids") or []
+            if not hw_list:
+                return False
+            for hw_item in hw_list:
+                win_pid = idx_map["hwid_winners"].get(hw_item.lower())
+                if not win_pid or win_pid not in idx_map["packages"]:
+                    return False
+                if self._is_package_better(cand_meta_obj, idx_map["packages"][win_pid]):
+                    return False
+            return True
 
+        def _stage_package_files(pkg_id: str, files_spec: List[Tuple[str, str, str, int]]) -> str:
+            tmp_dir = os.path.join(self.packages_dir, f".tmp-{pkg_id}-{uuid.uuid4().hex[:8]}")
+            try:
+                os.makedirs(tmp_dir, exist_ok=True)
+                real_tmp = os.path.realpath(tmp_dir)
+                for rel_p, src_fp, _, _ in files_spec:
+                    dst_fp = os.path.realpath(os.path.join(tmp_dir, rel_p))
+                    if os.path.commonpath([real_tmp, dst_fp]) != real_tmp:
+                        raise ValueError(f"Nevalidna relativna putanja u paketu: {rel_p}")
+                    os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
+                    shutil.copy2(src_fp, dst_fp)
+                return tmp_dir
+            except Exception:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                raise
+
+        # Faza A (kratki lock): odredi koje nove pakete uopšte treba kopirati na disk
+        to_copy: List[Tuple[str, List[Tuple[str, str, str, int]]]] = []
+        queued_pids = set()
+        with self.lock:
+            idx_ro = self._ensure_index_loaded()
             for cand_meta, accepted_files in prepared_units:
                 pkg_sha256 = cand_meta["pkg_id"]
-                total_size = cand_meta["size_bytes"]
-                existing_pkg = idx["packages"].get(pkg_sha256)
-                pkg_target_dir = os.path.join(self.packages_dir, pkg_sha256)
-
-                if existing_pkg and os.path.isdir(pkg_target_dir):
-                    # Potpuni CAS pogodak -> 0 B kopiranja!
-                    dedup_hits += 1
-                    dedup_saved_bytes += total_size
-                    if src_norm not in existing_pkg.get("sources", []):
-                        existing_pkg.setdefault("sources", []).append(src_norm)
-                    existing_pkg["last_seen"] = datetime.now().isoformat()
-                    manifest_pkg_candidates.append((pkg_sha256, existing_pkg))
+                if pkg_sha256 in queued_pids:
                     continue
+                existing_pkg = idx_ro["packages"].get(pkg_sha256)
+                pkg_target_dir = os.path.join(self.packages_dir, pkg_sha256)
+                if existing_pkg and os.path.isdir(pkg_target_dir):
+                    continue
+                if _is_older_than_winners_locked(idx_ro, cand_meta):
+                    continue
+                queued_pids.add(pkg_sha256)
+                to_copy.append((pkg_sha256, accepted_files))
 
-                # Proveri da li je paket strogo stariji od već postojećih pobednika za SVE svoje HWID-ove
-                hwids_list = cand_meta["hwids"]
-                if hwids_list:
-                    any_win_or_new = False
-                    for hw in hwids_list:
-                        hw_l = hw.lower()
-                        win_id = idx["hwid_winners"].get(hw_l)
-                        if not win_id or win_id not in idx["packages"]:
-                            any_win_or_new = True
-                            break
-                        if self._is_package_better(cand_meta, idx["packages"][win_id]):
-                            any_win_or_new = True
-                            break
-                    if not any_win_or_new:
-                        older_skipped += 1
-                        idx["stats"]["older_skipped_count"] = int(idx["stats"].get("older_skipped_count", 0)) + 1
-                        # U manifest modela i dalje možemo uvezati pobednike iz pool-a za iste HWID-ove
-                        for hw in hwids_list:
-                            win_id = idx["hwid_winners"].get(hw.lower())
-                            if win_id and win_id in idx["packages"]:
-                                manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
-                        continue
+        # Faza B (VAN self.lock): teško kopiranje fajlova u .tmp-* direktorijume
+        staged_dirs: Dict[str, str] = {}
+        try:
+            for pkg_sha256, accepted_files in to_copy:
+                staged_dirs[pkg_sha256] = _stage_package_files(pkg_sha256, accepted_files)
 
-                # Novi paket za disk: atomično kopiranje u packages/<pkg_sha256>
-                tmp_pkg_dir = os.path.join(self.packages_dir, f".tmp-{pkg_sha256}-{uuid.uuid4().hex[:8]}")
+            # Faza C (kratki lock): atomični os.replace + upis metapodataka/manifesta/indeksa
+            with self.lock:
                 try:
-                    os.makedirs(tmp_pkg_dir, exist_ok=True)
-                    for rel_p, src_fp, _, _ in accepted_files:
-                        dst_fp = os.path.realpath(os.path.join(tmp_pkg_dir, rel_p))
-                        if os.path.commonpath([os.path.realpath(tmp_pkg_dir), dst_fp]) != os.path.realpath(tmp_pkg_dir):
-                            raise ValueError(f"Nevalidna relativna putanja u paketu: {rel_p}")
-                        os.makedirs(os.path.dirname(dst_fp), exist_ok=True)
-                        shutil.copy2(src_fp, dst_fp)
-                    if os.path.isdir(pkg_target_dir):
-                        shutil.rmtree(tmp_pkg_dir, ignore_errors=True)
-                    else:
-                        os.replace(tmp_pkg_dir, pkg_target_dir)
+                    idx = self._ensure_index_loaded()
+                    if rejected_events:
+                        idx["rejected_packages"].extend(rejected_events)
+                        idx["rejected_packages"] = idx["rejected_packages"][-200:]
+
+                    for cand_meta, accepted_files in prepared_units:
+                        pkg_sha256 = cand_meta["pkg_id"]
+                        total_size = cand_meta["size_bytes"]
+                        existing_pkg = idx["packages"].get(pkg_sha256)
+                        pkg_target_dir = os.path.join(self.packages_dir, pkg_sha256)
+
+                        if existing_pkg and os.path.isdir(pkg_target_dir):
+                            leftover = staged_dirs.pop(pkg_sha256, None)
+                            if leftover:
+                                shutil.rmtree(leftover, ignore_errors=True)
+                            # Potpuni CAS pogodak -> 0 B kopiranja!
+                            dedup_hits += 1
+                            dedup_saved_bytes += total_size
+                            if src_norm not in existing_pkg.get("sources", []):
+                                existing_pkg.setdefault("sources", []).append(src_norm)
+                            existing_pkg["last_seen"] = datetime.now().isoformat()
+                            manifest_pkg_candidates.append((pkg_sha256, existing_pkg))
+                            continue
+
+                        # Proveri da li je paket strogo stariji od već postojećih pobednika za SVE svoje HWID-ove
+                        hwids_list = cand_meta["hwids"]
+                        if _is_older_than_winners_locked(idx, cand_meta):
+                            leftover = staged_dirs.pop(pkg_sha256, None)
+                            if leftover:
+                                shutil.rmtree(leftover, ignore_errors=True)
+                            older_skipped += 1
+                            idx["stats"]["older_skipped_count"] = int(idx["stats"].get("older_skipped_count", 0)) + 1
+                            # U manifest modela i dalje možemo uvezati pobednike iz pool-a za iste HWID-ove
+                            for hw in hwids_list:
+                                win_id = idx["hwid_winners"].get(hw.lower())
+                                if win_id and win_id in idx["packages"]:
+                                    manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
+                            continue
+
+                        tmp_pkg_dir = staged_dirs.pop(pkg_sha256, None)
+                        if tmp_pkg_dir is None:
+                            tmp_pkg_dir = _stage_package_files(pkg_sha256, accepted_files)
+
+                        if os.path.isdir(pkg_target_dir):
+                            shutil.rmtree(tmp_pkg_dir, ignore_errors=True)
+                        else:
+                            os.replace(tmp_pkg_dir, pkg_target_dir)
+
+                        now_iso = datetime.now().isoformat()
+                        stored_meta = dict(cand_meta)
+                        stored_meta["first_seen"] = now_iso
+                        stored_meta["last_seen"] = now_iso
+                        idx["packages"][pkg_sha256] = stored_meta
+                        added_count += 1
+
+                        for hw in hwids_list:
+                            hw_l = hw.lower()
+                            cur_win_id = idx["hwid_winners"].get(hw_l)
+                            if not cur_win_id or cur_win_id not in idx["packages"]:
+                                idx["hwid_winners"][hw_l] = pkg_sha256
+                                upgraded_hwids += 1
+                            elif cur_win_id != pkg_sha256:
+                                if self._is_package_better(stored_meta, idx["packages"][cur_win_id]):
+                                    idx["hwid_winners"][hw_l] = pkg_sha256
+                                    upgraded_hwids += 1
+
+                        manifest_pkg_candidates.append((pkg_sha256, stored_meta))
+
+                    idx["stats"]["dedup_hits"] = int(idx["stats"].get("dedup_hits", 0)) + dedup_hits
+                    idx["stats"]["dedup_saved_bytes"] = int(idx["stats"].get("dedup_saved_bytes", 0)) + dedup_saved_bytes
+                    idx["stats"]["ingests_count"] = int(idx["stats"].get("ingests_count", 0)) + 1
+
+                    # Ažuriranje Model Manifesta (bez duplikata i bez degradacije verzije!)
+                    if clean_model:
+                        manifest = self._load_manifest_locked(clean_model) or {
+                            "model": clean_model,
+                            "raw_model": str(model or clean_model),
+                            "manufacturer": manufacturer or detect_oem_vendor(manufacturer, str(model or "")),
+                            "updated_at": datetime.now().isoformat(),
+                            "sources": [],
+                            "oem_pack": None,
+                            "hwid_map": {},
+                            "packages": [],
+                            "total_bytes": 0,
+                        }
+                        if manufacturer and not manifest.get("manufacturer"):
+                            manifest["manufacturer"] = manufacturer
+                        if oem_meta:
+                            manifest["oem_pack"] = {
+                                "package_id": oem_meta.get("package_id"),
+                                "package_name": oem_meta.get("package_name"),
+                                "version": oem_meta.get("version"),
+                                "release_date": oem_meta.get("release_date"),
+                                "os": oem_meta.get("os"),
+                                "download_url": oem_meta.get("download_url"),
+                                "ingested_at": datetime.now().isoformat(),
+                            }
+                        m_sources = set(manifest.get("sources") or [])
+                        m_sources.add(src_norm)
+                        manifest["sources"] = sorted(m_sources)
+
+                        hwid_map: Dict[str, str] = dict(manifest.get("hwid_map") or {})
+                        no_hwid_pkgs: List[str] = []
+
+                        # Uključi postojeće pakete bez HWID-ova ako i dalje postoje u pool-u
+                        for old_pid in (manifest.get("packages") or []):
+                            pmeta = idx["packages"].get(old_pid)
+                            if pmeta and not pmeta.get("hwids"):
+                                no_hwid_pkgs.append(old_pid)
+
+                        for cand_pid, cand_pmeta in manifest_pkg_candidates:
+                            p_hwids = cand_pmeta.get("hwids") or []
+                            if not p_hwids:
+                                if cand_pid not in no_hwid_pkgs:
+                                    no_hwid_pkgs.append(cand_pid)
+                                continue
+                            for hw in p_hwids:
+                                hw_l = hw.lower()
+                                # Uvek biraj pobednika između postojećeg u manifestu, kandidata i globalnog hwid_winner-a
+                                best_id = cand_pid
+                                best_meta = cand_pmeta
+                                cur_m_id = hwid_map.get(hw_l)
+                                if cur_m_id and cur_m_id in idx["packages"]:
+                                    if not self._is_package_better(best_meta, idx["packages"][cur_m_id]):
+                                        best_id = cur_m_id
+                                        best_meta = idx["packages"][cur_m_id]
+                                glob_w_id = idx["hwid_winners"].get(hw_l)
+                                if glob_w_id and glob_w_id in idx["packages"]:
+                                    if self._is_package_better(idx["packages"][glob_w_id], best_meta):
+                                        best_id = glob_w_id
+                                        best_meta = idx["packages"][glob_w_id]
+                                hwid_map[hw_l] = best_id
+
+                        unique_pids: List[str] = []
+                        seen_pids = set()
+                        for pid in list(hwid_map.values()) + no_hwid_pkgs:
+                            if pid in idx["packages"] and pid not in seen_pids:
+                                seen_pids.add(pid)
+                                unique_pids.append(pid)
+
+                        manifest["hwid_map"] = hwid_map
+                        manifest["packages"] = unique_pids
+                        manifest["package_count"] = len(unique_pids)
+                        manifest["total_bytes"] = sum(int(idx["packages"][pid].get("size_bytes") or 0) for pid in unique_pids)
+                        manifest["updated_at"] = datetime.now().isoformat()
+                        self._save_manifest_locked(clean_model, manifest)
+
+                    self._save_index_locked(idx)
                 except Exception:
-                    shutil.rmtree(tmp_pkg_dir, ignore_errors=True)
+                    self._index_cache = None
+                    self._index_cache_sig = None
                     raise
-
-                now_iso = datetime.now().isoformat()
-                stored_meta = dict(cand_meta)
-                stored_meta["first_seen"] = now_iso
-                stored_meta["last_seen"] = now_iso
-                idx["packages"][pkg_sha256] = stored_meta
-                added_count += 1
-
-                for hw in hwids_list:
-                    hw_l = hw.lower()
-                    cur_win_id = idx["hwid_winners"].get(hw_l)
-                    if not cur_win_id or cur_win_id not in idx["packages"]:
-                        idx["hwid_winners"][hw_l] = pkg_sha256
-                        upgraded_hwids += 1
-                    elif cur_win_id != pkg_sha256:
-                        if self._is_package_better(stored_meta, idx["packages"][cur_win_id]):
-                            idx["hwid_winners"][hw_l] = pkg_sha256
-                            upgraded_hwids += 1
-
-                manifest_pkg_candidates.append((pkg_sha256, stored_meta))
-
-            idx["stats"]["dedup_hits"] = int(idx["stats"].get("dedup_hits", 0)) + dedup_hits
-            idx["stats"]["dedup_saved_bytes"] = int(idx["stats"].get("dedup_saved_bytes", 0)) + dedup_saved_bytes
-            idx["stats"]["ingests_count"] = int(idx["stats"].get("ingests_count", 0)) + 1
-
-            # Ažuriranje Model Manifesta (bez duplikata i bez degradacije verzije!)
-            if clean_model:
-                manifest = self._load_manifest_locked(clean_model) or {
-                    "model": clean_model,
-                    "raw_model": str(model or clean_model),
-                    "manufacturer": manufacturer or detect_oem_vendor(manufacturer, str(model or "")),
-                    "updated_at": datetime.now().isoformat(),
-                    "sources": [],
-                    "oem_pack": None,
-                    "hwid_map": {},
-                    "packages": [],
-                    "total_bytes": 0,
-                }
-                if manufacturer and not manifest.get("manufacturer"):
-                    manifest["manufacturer"] = manufacturer
-                if oem_meta:
-                    manifest["oem_pack"] = {
-                        "package_id": oem_meta.get("package_id"),
-                        "package_name": oem_meta.get("package_name"),
-                        "version": oem_meta.get("version"),
-                        "release_date": oem_meta.get("release_date"),
-                        "os": oem_meta.get("os"),
-                        "download_url": oem_meta.get("download_url"),
-                        "ingested_at": datetime.now().isoformat(),
-                    }
-                m_sources = set(manifest.get("sources") or [])
-                m_sources.add(src_norm)
-                manifest["sources"] = sorted(m_sources)
-
-                hwid_map: Dict[str, str] = dict(manifest.get("hwid_map") or {})
-                no_hwid_pkgs: List[str] = []
-
-                # Uključi postojeće pakete bez HWID-ova ako i dalje postoje u pool-u
-                for old_pid in (manifest.get("packages") or []):
-                    pmeta = idx["packages"].get(old_pid)
-                    if pmeta and not pmeta.get("hwids"):
-                        no_hwid_pkgs.append(old_pid)
-
-                for cand_pid, cand_pmeta in manifest_pkg_candidates:
-                    p_hwids = cand_pmeta.get("hwids") or []
-                    if not p_hwids:
-                        if cand_pid not in no_hwid_pkgs:
-                            no_hwid_pkgs.append(cand_pid)
-                        continue
-                    for hw in p_hwids:
-                        hw_l = hw.lower()
-                        # Uvek biraj pobednika između postojećeg u manifestu, kandidata i globalnog hwid_winner-a
-                        best_id = cand_pid
-                        best_meta = cand_pmeta
-                        cur_m_id = hwid_map.get(hw_l)
-                        if cur_m_id and cur_m_id in idx["packages"]:
-                            if not self._is_package_better(best_meta, idx["packages"][cur_m_id]):
-                                best_id = cur_m_id
-                                best_meta = idx["packages"][cur_m_id]
-                        glob_w_id = idx["hwid_winners"].get(hw_l)
-                        if glob_w_id and glob_w_id in idx["packages"]:
-                            if self._is_package_better(idx["packages"][glob_w_id], best_meta):
-                                best_id = glob_w_id
-                                best_meta = idx["packages"][glob_w_id]
-                        hwid_map[hw_l] = best_id
-
-                unique_pids: List[str] = []
-                seen_pids = set()
-                for pid in list(hwid_map.values()) + no_hwid_pkgs:
-                    if pid in idx["packages"] and pid not in seen_pids:
-                        seen_pids.add(pid)
-                        unique_pids.append(pid)
-
-                manifest["hwid_map"] = hwid_map
-                manifest["packages"] = unique_pids
-                manifest["package_count"] = len(unique_pids)
-                manifest["total_bytes"] = sum(int(idx["packages"][pid].get("size_bytes") or 0) for pid in unique_pids)
-                manifest["updated_at"] = datetime.now().isoformat()
-                self._save_manifest_locked(clean_model, manifest)
-
-            self._save_index_locked(idx)
+        finally:
+            for leftover_dir in list(staged_dirs.values()):
+                shutil.rmtree(leftover_dir, ignore_errors=True)
 
         return {
             "status": "ok",
@@ -897,7 +1004,8 @@ class DriverPoolManager:
         """Bezbedno raspakuje arhivu u temp direktorijum, ingestuje je u CAS Pool i briše temp."""
         if not os.path.isfile(archive_path):
             raise FileNotFoundError(f"Arhiva ne postoji: {archive_path}")
-        with tempfile.TemporaryDirectory(prefix="wis-pool-extract-") as tmp_dir:
+        tmp_dir = tempfile.mkdtemp(prefix="wis-pool-extract-")
+        try:
             _extract_archive_safely(archive_path, tmp_dir)
             return self.ingest_directory(
                 tmp_dir,
@@ -906,6 +1014,8 @@ class DriverPoolManager:
                 manufacturer=manufacturer,
                 oem_meta=oem_meta,
             )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def ingest_oem_pack(
         self,
@@ -940,7 +1050,8 @@ class DriverPoolManager:
         if not entry:
             return {"status": "not_found", "vendor": vendor, "model": model}
 
-        with tempfile.TemporaryDirectory(prefix="wis-oem-dl-") as tmp_dl:
+        tmp_dl = tempfile.mkdtemp(prefix="wis-oem-dl-")
+        try:
             pkg_file = self.catalog_mgr.download_driver_pack(entry, tmp_dl)
             res = self.ingest_archive(
                 pkg_file,
@@ -957,6 +1068,8 @@ class DriverPoolManager:
                 "os": entry.get("os"),
             }
             return res
+        finally:
+            shutil.rmtree(tmp_dl, ignore_errors=True)
 
     def _find_manifest_for_model(self, model: Optional[str]) -> Optional[Dict[str, Any]]:
         if not model or not str(model).strip():
@@ -998,67 +1111,75 @@ class DriverPoolManager:
         Dinamički sastavlja (ili vraća iz bundles/ keša) minimalni, 100% deduplikovani `.tar` paket
         za traženi model i/ili konkretne HWID-ove uređaja.
         """
-        idx = self._ensure_index_loaded()
-        manifest = self._find_manifest_for_model(model)
-        manifest_hmap = (manifest or {}).get("hwid_map") or {}
+        clean_missing = [str(h).strip() for h in (missing_hwids or []) if str(h).strip()]
+        clean_all = [str(h).strip() for h in (all_hwids or []) if str(h).strip()]
 
         selected_pids: List[str] = []
         seen_pids = set()
         matched_hwids: List[str] = []
         unmatched_hwids: List[str] = []
+        pkg_snapshots: Dict[str, Tuple[Dict[str, Any], str]] = {}
+        manifest_model: Optional[str] = None
 
-        def _pick_for_hwid(raw_h: str) -> Optional[str]:
-            cands = generate_hwid_candidates(raw_h)
-            for cand in cands:
-                cand_l = cand.lower()
-                m_pid = manifest_hmap.get(cand_l)
-                g_pid = idx["hwid_winners"].get(cand_l)
-                chosen = None
-                if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
-                    chosen = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
-                elif g_pid and g_pid in idx["packages"]:
-                    chosen = g_pid
-                elif m_pid and m_pid in idx["packages"]:
-                    chosen = m_pid
-                if chosen and os.path.isdir(os.path.join(self.packages_dir, chosen)):
-                    return chosen
-            return None
+        with self.lock:
+            idx = self._ensure_index_loaded()
+            manifest = self._find_manifest_for_model(model)
+            manifest_model = (manifest or {}).get("model")
+            manifest_hmap = (manifest or {}).get("hwid_map") or {}
 
-        clean_missing = [str(h).strip() for h in (missing_hwids or []) if str(h).strip()]
-        clean_all = [str(h).strip() for h in (all_hwids or []) if str(h).strip()]
+            def _pick_for_hwid(raw_h: str) -> Optional[str]:
+                cands = generate_hwid_candidates(raw_h)
+                for cand in cands:
+                    cand_l = cand.lower()
+                    m_pid = manifest_hmap.get(cand_l)
+                    g_pid = idx["hwid_winners"].get(cand_l)
+                    chosen = None
+                    if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
+                        chosen = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
+                    elif g_pid and g_pid in idx["packages"]:
+                        chosen = g_pid
+                    elif m_pid and m_pid in idx["packages"]:
+                        chosen = m_pid
+                    if chosen and os.path.isdir(os.path.join(self.packages_dir, chosen)):
+                        return chosen
+                return None
 
-        if clean_missing:
-            # Ciljani mod: samo paketi koji rešavaju prijavljene problematične HWID-ove
-            for raw_h in clean_missing:
-                pid = _pick_for_hwid(raw_h)
-                if pid:
-                    matched_hwids.append(raw_h)
-                    if pid not in seen_pids:
-                        seen_pids.add(pid)
-                        selected_pids.append(pid)
-                else:
-                    unmatched_hwids.append(raw_h)
-        else:
-            # Puni mod modela: ceo manifest modela + dopuna iz Pool-a za poznate all_hwids uređaja
-            if manifest:
-                for pid in (manifest.get("packages") or []):
-                    if pid in idx["packages"] and pid not in seen_pids and os.path.isdir(os.path.join(self.packages_dir, pid)):
-                        seen_pids.add(pid)
-                        selected_pids.append(pid)
-            for raw_h in clean_all:
-                pid = _pick_for_hwid(raw_h)
-                if pid:
-                    matched_hwids.append(raw_h)
-                    if pid not in seen_pids:
-                        seen_pids.add(pid)
-                        selected_pids.append(pid)
-                else:
-                    unmatched_hwids.append(raw_h)
+            if clean_missing:
+                # Ciljani mod: samo paketi koji rešavaju prijavljene problematične HWID-ove
+                for raw_h in clean_missing:
+                    pid = _pick_for_hwid(raw_h)
+                    if pid:
+                        matched_hwids.append(raw_h)
+                        if pid not in seen_pids:
+                            seen_pids.add(pid)
+                            selected_pids.append(pid)
+                    else:
+                        unmatched_hwids.append(raw_h)
+            else:
+                # Puni mod modela: ceo manifest modela + dopuna iz Pool-a za poznate all_hwids uređaja
+                if manifest:
+                    for pid in (manifest.get("packages") or []):
+                        if pid in idx["packages"] and pid not in seen_pids and os.path.isdir(os.path.join(self.packages_dir, pid)):
+                            seen_pids.add(pid)
+                            selected_pids.append(pid)
+                for raw_h in clean_all:
+                    pid = _pick_for_hwid(raw_h)
+                    if pid:
+                        matched_hwids.append(raw_h)
+                        if pid not in seen_pids:
+                            seen_pids.add(pid)
+                            selected_pids.append(pid)
+                    else:
+                        unmatched_hwids.append(raw_h)
+
+            for pid in selected_pids:
+                pmeta = dict(idx["packages"].get(pid, {}))
+                pkg_snapshots[pid] = (pmeta, os.path.join(self.packages_dir, pid))
 
         if not selected_pids:
             return {
                 "available": False,
-                "model": (manifest or {}).get("model") or model,
+                "model": manifest_model or model,
                 "package_count": 0,
                 "matched_hwids": matched_hwids,
                 "missing_unmatched_hwids": unmatched_hwids,
@@ -1096,11 +1217,11 @@ class DriverPoolManager:
         if not bundle_sha:
             os.makedirs(self.bundles_dir, exist_ok=True)
             tmp_tar = f"{bundle_path}.{uuid.uuid4().hex[:6]}.tmp"
+            tmp_meta = f"{meta_path}.{uuid.uuid4().hex[:6]}.tmp"
             try:
                 with tarfile.open(tmp_tar, "w") as tf:
                     for pid in sorted_pids:
-                        pmeta = idx["packages"].get(pid, {})
-                        pdir = os.path.join(self.packages_dir, pid)
+                        pmeta, pdir = pkg_snapshots.get(pid, ({}, os.path.join(self.packages_dir, pid)))
                         if not os.path.isdir(pdir):
                             continue
                         stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(pmeta.get("inf_stem") or "drv")).strip("_") or "drv"
@@ -1114,23 +1235,23 @@ class DriverPoolManager:
                                 tf.add(full_f, arcname=f"{folder_prefix}/{rel}", recursive=False)
                 bundle_sha = _file_sha256(tmp_tar)
                 os.replace(tmp_tar, bundle_path)
-                tmp_meta = f"{meta_path}.tmp"
                 with open(tmp_meta, "w", encoding="utf-8") as mf:
                     json.dump({"sha256": bundle_sha, "packages": sorted_pids, "created_at": datetime.now().isoformat()}, mf)
                 os.replace(tmp_meta, meta_path)
             except Exception:
-                if os.path.exists(tmp_tar):
-                    try:
-                        os.remove(tmp_tar)
-                    except OSError:
-                        pass
+                for leftover in (tmp_tar, tmp_meta):
+                    if os.path.exists(leftover):
+                        try:
+                            os.remove(leftover)
+                        except OSError:
+                            pass
                 raise
 
         sz_bytes = os.path.getsize(bundle_path)
         pkg_details = []
         sources_set = set()
         for pid in sorted_pids:
-            pm = idx["packages"].get(pid, {})
+            pm, _ = pkg_snapshots.get(pid, ({}, ""))
             for s in (pm.get("sources") or []):
                 sources_set.add(s)
             pkg_details.append({
@@ -1145,7 +1266,7 @@ class DriverPoolManager:
 
         return {
             "available": True,
-            "model": (manifest or {}).get("model") or safe_model_lbl,
+            "model": manifest_model or safe_model_lbl,
             "package_count": len(sorted_pids),
             "matched_hwids": matched_hwids,
             "missing_unmatched_hwids": unmatched_hwids,
@@ -1329,6 +1450,7 @@ class DriverPoolManager:
                 oldest = list(self.jobs.keys())[:-30]
                 for k in oldest:
                     self.jobs.pop(k, None)
+        self._invalidate_stats_cache()
 
         def _runner():
             try:
@@ -1342,11 +1464,18 @@ class DriverPoolManager:
                     job_rec["status"] = "error"
                     job_rec["error"] = str(ex)
                     job_rec["finished_at"] = datetime.now().isoformat()
+            finally:
+                self._invalidate_stats_cache()
 
         threading.Thread(target=_runner, daemon=True).start()
         return dict(job_rec)
 
     def get_stats(self) -> Dict[str, Any]:
+        with self._stats_cache_lock:
+            if self._stats_cache is not None:
+                return copy.deepcopy(self._stats_cache)
+            ver_before = self._stats_version
+
         with self.lock:
             idx = self._ensure_index_loaded()
             pkgs = idx.get("packages", {})
@@ -1362,23 +1491,29 @@ class DriverPoolManager:
                     if s in source_counts:
                         source_counts[s] += 1
 
-        return {
-            "status": "ok",
-            "pool_dir": self.pool_dir,
-            "unique_packages": len(pkgs),
-            "hwid_winners_count": len(idx.get("hwid_winners", {})),
-            "models_count": len(manifests),
-            "total_pool_bytes": total_pool_bytes,
-            "total_pool_mb": round(total_pool_bytes / (1024 * 1024), 2),
-            "dedup_hits": int(stats.get("dedup_hits") or 0),
-            "dedup_saved_bytes": dedup_saved,
-            "dedup_saved_mb": round(dedup_saved / (1024 * 1024), 2),
-            "older_skipped_count": int(stats.get("older_skipped_count") or 0),
-            "ingests_count": int(stats.get("ingests_count") or 0),
-            "source_counts": source_counts,
-            "oem_catalogs": self.catalog_mgr.get_catalog_status(),
-            "jobs": jobs_list,
-        }
+            result = {
+                "status": "ok",
+                "pool_dir": self.pool_dir,
+                "unique_packages": len(pkgs),
+                "hwid_winners_count": len(idx.get("hwid_winners", {})),
+                "models_count": len(manifests),
+                "total_pool_bytes": total_pool_bytes,
+                "total_pool_mb": round(total_pool_bytes / (1024 * 1024), 2),
+                "dedup_hits": int(stats.get("dedup_hits") or 0),
+                "dedup_saved_bytes": dedup_saved,
+                "dedup_saved_mb": round(dedup_saved / (1024 * 1024), 2),
+                "older_skipped_count": int(stats.get("older_skipped_count") or 0),
+                "ingests_count": int(stats.get("ingests_count") or 0),
+                "source_counts": source_counts,
+                "oem_catalogs": self.catalog_mgr.get_catalog_status(),
+                "jobs": jobs_list,
+            }
+
+        with self._stats_cache_lock:
+            if self._stats_version == ver_before:
+                self._stats_cache = copy.deepcopy(result)
+
+        return result
 
     def scan_and_ingest_archives(
         self,
@@ -1439,7 +1574,9 @@ class DriverPoolManager:
 
             scanned += 1
             try:
-                file_size = os.path.getsize(full_path)
+                st = os.stat(full_path)
+                file_size = int(st.st_size)
+                file_mtime_ns = int(st.st_mtime_ns)
             except OSError:
                 skipped += 1
                 continue
@@ -1455,6 +1592,22 @@ class DriverPoolManager:
             clean_model = sanitize_model_pack_name(base_name)
             is_generic = is_generic_model_pack_name(clean_model)
 
+            fast_skip = False
+            with self.lock:
+                idx = self._ensure_index_loaded()
+                rec = idx.get("ingested_archives", {}).get(fn)
+                if (
+                    isinstance(rec, dict)
+                    and rec.get("size_bytes") == file_size
+                    and rec.get("mtime_ns") == file_mtime_ns
+                ):
+                    if is_generic or self.has_model_manifest(clean_model):
+                        fast_skip = True
+
+            if fast_skip:
+                skipped += 1
+                continue
+
             try:
                 file_sha = _file_sha256(full_path)
             except OSError as ex:
@@ -1468,6 +1621,10 @@ class DriverPoolManager:
                 if isinstance(rec, dict) and rec.get("sha256") == file_sha:
                     if is_generic or self.has_model_manifest(clean_model):
                         already_done = True
+                        if rec.get("mtime_ns") != file_mtime_ns or rec.get("size_bytes") != file_size:
+                            rec["mtime_ns"] = file_mtime_ns
+                            rec["size_bytes"] = file_size
+                            self._save_index_locked(idx)
 
             if already_done:
                 skipped += 1
@@ -1485,6 +1642,7 @@ class DriverPoolManager:
                         "sha256": file_sha,
                         "model": None if is_generic else clean_model,
                         "size_bytes": file_size,
+                        "mtime_ns": file_mtime_ns,
                         "ingested_at": datetime.now().isoformat(),
                     }
                     self._save_index_locked(idx)
@@ -1492,11 +1650,14 @@ class DriverPoolManager:
                 details.append({
                     "file": fn,
                     "model": None if is_generic else clean_model,
-                    "ingested_count": res.get("ingested_count", 0),
-                    "total_units": res.get("total_units", 0),
+                    "ingested_count": res.get("packages_added", 0),
+                    "total_units": res.get("units_discovered", 0),
                 })
             except Exception as ex:
                 errors.append({"file": fn, "error": str(ex)})
+
+        if ingested > 0:
+            gc.collect()
 
         return {
             "status": "ok",

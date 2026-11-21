@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.4.1 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.4.1 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.4.1 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.4.2 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.4.2 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.4.2 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -840,6 +840,138 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         for src_name, src_body in (("WIS.Apps.psm1", apps_src), ("WIS.Core.psm1", core_src)):
             for pat in forbidden_patterns:
                 self.assertNotRegex(src_body, re.compile(pat, re.IGNORECASE), f"Zabranjen obrazac {pat} pronađen u {src_name}")
+
+    def test_20_v342_imp34_bug01_location_and_lfsvc_not_blocked_in_phase3(self):
+        """IMP-34 / BUG-01: WIS.Branding.psm1 ne sme postavljati DisableLocation=1 niti gasiti lfsvc pre Faze 5."""
+        branding_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        tel_cfg_blk = branding_src.split("$Global:WisTelemetryConfig = @{", 1)[1].split("function Disable-LocationPrivacyPrompts", 1)[0]
+        self.assertNotIn("DisableLocation", tel_cfg_blk)
+        self.assertNotIn('"lfsvc"', tel_cfg_blk)
+        self.assertIn('"DiagTrack"', tel_cfg_blk)
+        self.assertIn('"dmwappushservice"', tel_cfg_blk)
+        self.assertIn("ShowGlobalPrompts", tel_cfg_blk)
+
+        brand_fn = branding_src.split("function Invoke-SystemOptimizationAndBranding", 1)[1].split("function Set-OptimalDisplayScaling", 1)[0]
+        self.assertNotIn("DisableLocation", brand_fn)
+        self.assertNotIn("lfsvc", brand_fn)
+        self.assertIn("Disable-LocationPrivacyPrompts", brand_fn)
+        self.assertIn("AllowTelemetry", brand_fn)
+        self.assertIn("DiagTrack", brand_fn)
+        self.assertIn("dmwappushservice", brand_fn)
+        self.assertIn("AdvertisingInfo", brand_fn)
+        self.assertIn("BingSearchEnabled", brand_fn)
+        self.assertIn("CortanaConsent", brand_fn)
+
+    def test_21_v342_imp21_imp29_imp28_imp33_update_and_core_heartbeat(self):
+        """IMP-21, IMP-29, IMP-28, IMP-33 i IMP-22 ugovori u WIS.Common, WIS.Update, WIS.Core, WIS.Cleanup i Phase6."""
+        common_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Common.psm1").read_text(encoding="utf-8")
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8")
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+
+        # IMP-21: ValidateSet sadrzi driver_pool i izolovan try/catch oko Add-WisBenchmarkTransfer
+        bench_fn = common_src.split("function Add-WisBenchmarkTransfer", 1)[1].split("function Record-WisStepBenchmark", 1)[0]
+        self.assertIn('[ValidateSet("driver", "update", "model_pack", "oem_pack", "driver_pool")]', bench_fn)
+        pool_fn = self.update_src.split("function Invoke-DriverPoolBundleInstall", 1)[1].split("function Invoke-ModelDriversPreInstall", 1)[0]
+        self.assertIn("try {", pool_fn.split("Add-WisBenchmarkTransfer", 1)[0].splitlines()[-1] + "\n" + pool_fn.split("Add-WisBenchmarkTransfer", 1)[0])
+        self.assertIn('-Level "WARN" -Component "NAS"', pool_fn)
+
+        # IMP-29: fail-fast /api/drivers/pool/bundle Timeout=15000 + ReadWriteTimeout=300000 & 4 MiB FileStream <Model>.tar kopiranje
+        self.assertIn("$req.Timeout = 15000", pool_fn)
+        self.assertIn("$req.ReadWriteTimeout = 300000", pool_fn)
+        pre_fn = self.update_src.split("function Invoke-ModelDriversPreInstall", 1)[1].split("function Get-WisUpdateHubEndpoint", 1)[0]
+        self.assertNotIn("Copy-Item -Path $tarArchive -Destination $localTar", pre_fn)
+        self.assertIn("New-Object byte[] 4194304", pre_fn)
+        self.assertIn("[System.IO.File]::OpenRead($tarArchive)", pre_fn)
+        self.assertIn("[System.IO.File]::Create($localTar)", pre_fn)
+        self.assertIn("-Phase 2", pre_fn)
+        self.assertIn("Mbps", pre_fn)
+        self.assertIn("Remove-Item -LiteralPath $localTar", pre_fn)
+
+        # IMP-28: prepoznavanje -2145116147 (0x8024200d / WU_E_UH_NEEDANOTHERDOWNLOAD)
+        inst_pkg = self.update_src.split("function Install-LocalUpdatePackageFile", 1)[1].split("function Receive-UpdateFileFromUrl", 1)[0]
+        self.assertIn("-2145116147", inst_pkg)
+        self.assertIn("0x8024200d", inst_pkg)
+        self.assertIn("WU_E_UH_NEEDANOTHERDOWNLOAD", inst_pkg)
+        self.assertIn("SSU", inst_pkg)
+
+        # IMP-33: Wait-WindowsUpdateCompletionBarrier salje -Phase 6 i ne duplira se u Invoke-Phase6Finalize
+        barrier_blk = self.update_src.split("function Wait-WindowsUpdateCompletionBarrier", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertNotIn("-Phase 5", barrier_blk)
+        self.assertIn('-Phase 6 -PhaseName "Završetak"', barrier_blk)
+        self.assertIn("Wait-WindowsUpdateCompletionBarrier -TimeoutSeconds 45", phase6_src)
+        self.assertIn("$Global:WisWuBarrierCompletedInPhase6 = $true", phase6_src)
+        p6_fin_fn = cleanup_src.split("function Invoke-Phase6Finalize", 1)[1].split("function Invoke-Phase5Finalize", 1)[0]
+        self.assertIn("WisWuBarrierCompletedInPhase6", p6_fin_fn)
+
+        # IMP-22: Sync-ProgramiFromNas asinhroni WaitForExit(15000) sa Send-IpcProgress i Write-ServisLog
+        sync_prog_fn = core_src.split("function Sync-ProgramiFromNas", 1)[1].split("function Format-WisCoreProcessArg", 1)[0]
+        self.assertNotIn("-Wait -PassThru", sync_prog_fn)
+        self.assertIn("WaitForExit(15000)", sync_prog_fn)
+        self.assertIn("Send-IpcProgress", sync_prog_fn)
+        self.assertIn("Write-ServisLog", sync_prog_fn)
+        self.assertIn("$proc.ExitCode", sync_prog_fn)
+
+    def test_22_v342_imp24_imp30_apps_retry_and_preserve_phase(self):
+        """IMP-24 i IMP-30: License single-app retry WARN/exit 0 i PreserveCurrentPhase u Phase4-Apps / WIS.Apps."""
+        phase4_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase4-Apps.ps1").read_text(encoding="utf-8")
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+
+        self.assertIn("[switch]$PreserveCurrentPhase", phase4_src)
+        self.assertIn("-PreserveCurrentPhase:$PreserveCurrentPhase", phase4_src)
+
+        inv_p4 = apps_src.split("function Invoke-Phase4Apps", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("[switch]$PreserveCurrentPhase", inv_p4)
+        self.assertIn("$preservePhase = [bool]($PreserveCurrentPhase -or $isSingleAppRetry)", inv_p4)
+        self.assertNotRegex(inv_p4, re.compile(r"if\s*\(-not\s*\$isSingleAppRetry\b[^\r\n]*Send-IpcProgress"))
+
+        retry_blk = inv_p4.split("# Režim pojedinačnog Retry-a", 1)[1].split("# Uklanjanje flag datoteke", 1)[0]
+        self.assertIn("$isLicenseBestEffortWarn", retry_blk)
+        self.assertIn('Send-IpcAppUpdate -AppId "License" -Status "WARN"', retry_blk)
+        self.assertIn("$global:LASTEXITCODE = 0", retry_blk)
+        self.assertNotIn("Send-IpcProgress", retry_blk)
+
+    def test_23_v342_imp32_imp23_phase6_antileak_order_and_telemetry_retry(self):
+        """IMP-32 i IMP-23: Clear-ServisWifiSecrets u finally posle izvestaja, 10s/3x retry, initial_start_time i 1x COMPLETED."""
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8")
+        tel_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Telemetry.psm1").read_text(encoding="utf-8")
+
+        # IMP-32: u Phase6-Finalize.ps1 slanje izvestaja dolazi pre Clear-ServisWifiSecrets i Clear-ServisWifiSecrets je u finally
+        idx_invoke_p6 = phase6_src.find("Invoke-Phase6Finalize -LocalSetupDir")
+        idx_send_rep = phase6_src.find("Send-FleetFinalReport")
+        idx_finally = phase6_src.find("} finally {")
+        idx_clear_wifi = phase6_src.find("Clear-ServisWifiSecrets -LocalSetupDir")
+        self.assertGreater(idx_invoke_p6, 0)
+        self.assertGreater(idx_send_rep, 0)
+        self.assertGreater(idx_finally, idx_invoke_p6)
+        self.assertGreater(idx_clear_wifi, idx_finally, "Clear-ServisWifiSecrets mora biti iskljucivo u finally bloku posle slanja izvestaja")
+        self.assertIn("WIS_FORCE_ANTILEAK_FAIL", phase6_src)
+        self.assertIn("exit 2", phase6_src)
+        self.assertNotIn("DeleteSetupDir = $true", phase6_src)
+
+        # IMP-23 jednokratno slanje i duration_seconds u Send-FleetFinalReport
+        send_fn = tel_src.split("function Send-FleetFinalReport", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("WisFinalReportSentStatus", send_fn)
+        self.assertIn("$req.Timeout = 10000", send_fn)
+        self.assertIn("$req.ReadWriteTimeout = 10000", send_fn)
+        self.assertIn("X-ServisHub-Client-Token", send_fn)
+        self.assertIn("@(0, 1, 2)", send_fn)
+        idx_init_time = send_fn.find("stObj.initial_start_time")
+        idx_bench_dur = send_fn.find("benchSummary.total_phase_duration_sec")
+        idx_script_dur = send_fn.find("Global:ScriptStartTime")
+        self.assertGreater(idx_init_time, 0)
+        self.assertGreater(idx_bench_dur, idx_init_time)
+        self.assertGreater(idx_script_dur, idx_bench_dur)
+
+        # Fallback HTTP u WIS.Cleanup.psm1 (10s timeout, 3x retry, token, WisFinalReportSentStatus)
+        p6_fin_fn = cleanup_src.split("function Invoke-Phase6Finalize", 1)[1].split("function Invoke-Phase5Finalize", 1)[0]
+        self.assertIn("$req.Timeout = 10000", p6_fin_fn)
+        self.assertIn("$req.ReadWriteTimeout = 10000", p6_fin_fn)
+        self.assertIn("X-ServisHub-Client-Token", p6_fin_fn)
+        self.assertIn("$retryDelaysClean = @(0, 1, 2)", p6_fin_fn)
+        self.assertIn('$Global:WisFinalReportSentStatus = "COMPLETED"', p6_fin_fn)
+        self.assertIn('$Global:WisFinalReportSentStatus -ne "COMPLETED"', phase6_src)
 
 
 if __name__ == "__main__":

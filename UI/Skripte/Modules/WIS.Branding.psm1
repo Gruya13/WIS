@@ -35,14 +35,13 @@ $Global:WisTelemetryConfig = @{
     RegValues = @(
         @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; Name = "AllowTelemetry"; Value = 0; Type = "DWord" },
         @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"; Name = "MaxTelemetryAllowed"; Value = 0; Type = "DWord" },
-        @{ Path = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"; Name = "DisableLocation"; Value = 1; Type = "DWord" },
         @{ Path = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"; Name = "ShowGlobalPrompts"; Value = 0; Type = "DWord" },
         @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"; Name = "ShowGlobalPrompts"; Value = 0; Type = "DWord" },
         @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo"; Name = "Enabled"; Value = 0; Type = "DWord" },
         @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"; Name = "BingSearchEnabled"; Value = 0; Type = "DWord" },
         @{ Path = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search"; Name = "CortanaConsent"; Value = 0; Type = "DWord" }
     )
-    Services = @("DiagTrack", "dmwappushservice", "lfsvc")
+    Services = @("DiagTrack", "dmwappushservice")
 }
 
 function Disable-LocationPrivacyPrompts {
@@ -293,7 +292,7 @@ function Invoke-SystemOptimizationAndBranding {
         }
     }
 
-    # B. Gasenje telemetrije i lokacije
+    # B. Gasenje telemetrije
     try {
         New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
@@ -303,10 +302,6 @@ function Invoke-SystemOptimizationAndBranding {
         Stop-Service -Name "dmwappushservice" -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         Set-Service -Name "dmwappushservice" -StartupType Disabled -ErrorAction SilentlyContinue
 
-        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Force -ErrorAction SilentlyContinue | Out-Null
-        Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors" -Name "DisableLocation" -Type DWord -Value 1 -Force -ErrorAction SilentlyContinue
-        Stop-Service -Name "lfsvc" -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
-        Set-Service -Name "lfsvc" -StartupType Disabled -ErrorAction SilentlyContinue
         Disable-LocationPrivacyPrompts
 
         New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Force -ErrorAction SilentlyContinue | Out-Null
@@ -314,6 +309,8 @@ function Invoke-SystemOptimizationAndBranding {
 
         New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "BingSearchEnabled" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+
+        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "CortanaConsent" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
     } catch {}
 
     # C. Preimenovanje korisnika u marku (DELL, HP, LENOVO...)
