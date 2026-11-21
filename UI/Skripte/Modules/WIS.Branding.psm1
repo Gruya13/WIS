@@ -186,8 +186,18 @@ function Set-OptimalDisplayScaling {
     }
 
     if ($targetScale -eq 100) {
+        try {
+            if (-not (Test-Path "HKCU:\Control Panel\Desktop")) {
+                New-Item -Path "HKCU:\Control Panel\Desktop" -Force | Out-Null
+            }
+            Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -Value 96 -Type DWord -ErrorAction SilentlyContinue
+            if (-not (Test-Path "C:\setup")) {
+                New-Item -Path "C:\setup" -ItemType Directory -Force | Out-Null
+            }
+            Set-Content -Path "C:\setup\dpi-scaling-done.flag" -Value "100% (${screenWidth}x${screenHeight})" -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+        } catch {}
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Rezolucija ekrana je ${screenWidth}x${screenHeight} ($scaleCategory). Zadrzava se fabricki default 100% scale (LogPixels=96)." -Level "INFO" -Component "Branding"
+            Write-ServisLog "Rezolucija ekrana je ${screenWidth}x${screenHeight} ($scaleCategory). Zadrzava se fabricki default 100% scale (LogPixels=96, flag kreiran)." -Level "INFO" -Component "Branding"
         }
         return
     }
@@ -405,6 +415,9 @@ function Invoke-ServisInterimReboot {
 
         if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
             Show-ServisDashboard -LiveStatus "Drajveri i optimizacije primenjeni. Sistem se restartuje za 5 sekundi radi stabilizacije..."
+        }
+        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+            Send-IpcStatus -Phase 3 -SubPhase "Restart u toku" -StatusMessage "Drajveri i optimizacije primenjeni. Sistem se restartuje radi stabilizacije..."
         }
 
         # 1. Azuriraj stanje u State objektu na Fazu 4
@@ -728,9 +741,11 @@ function Invoke-Phase3Optimization {
     # 4. OPTIMALNO DPI SKALIRANJE EKRANA - P3.Scaling
     # =========================================================================
     $null = Invoke-WisStep -Phase 3 -StepId "P3.Scaling" -Title "Optimalno DPI skaliranje ekrana" -Test {
+        $dpiFlagPath = "C:\setup\dpi-scaling-done.flag"
         $logPixels = (Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -ErrorAction SilentlyContinue).LogPixels
-        if ($null -ne $logPixels -and [int]$logPixels -ge 96) {
-            return @{ Done = $true; Reason = "DPI skaliranje je podešeno (LogPixels = $logPixels)" }
+        if ((Test-Path $dpiFlagPath) -or ($null -ne $logPixels -and [int]$logPixels -ge 96)) {
+            $reasonMsg = if ($null -ne $logPixels) { "DPI skaliranje je podešeno (LogPixels = $logPixels)" } else { "DPI skaliranje je potvrđeno flagom ($dpiFlagPath)" }
+            return @{ Done = $true; Reason = $reasonMsg }
         } else {
             return @{ Done = $false; Reason = "DPI skaliranje još nije konfigurisano" }
         }
@@ -802,6 +817,62 @@ function Invoke-Phase3Optimization {
                     }
                     foreach ($e in $exes) { $vcInstallers += $e }
                 } catch {}
+            }
+        }
+
+        if ($vcInstallers.Count -eq 0 -and -not (Get-Command Connect-ServisNasUpdatesShare -ErrorAction SilentlyContinue)) {
+            $updModCand = @(
+                (Join-Path $PSScriptRoot "WIS.Update.psm1"),
+                (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
+                "C:\setup\Skripte\Modules\WIS.Update.psm1"
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($updModCand) {
+                try { Import-Module $updModCand -Force -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+
+        if ($vcInstallers.Count -eq 0 -and (Get-Command Connect-ServisNasUpdatesShare -ErrorAction SilentlyContinue)) {
+            $nasVcCtx = $null
+            try {
+                $nasVcCtx = Connect-ServisNasUpdatesShare -Subfolder "Programi\VCRedist"
+                $nasVcCandidates = @()
+                if ($nasVcCtx -and $nasVcCtx.Connected) {
+                    if ($nasVcCtx.UpdatesDir -and (Test-Path $nasVcCtx.UpdatesDir -ErrorAction SilentlyContinue)) {
+                        $nasVcCandidates += $nasVcCtx.UpdatesDir
+                    }
+                    if ($nasVcCtx.NasHost) {
+                        $nasVcCandidates += "\\$($nasVcCtx.NasHost)\Programi\VCRedist"
+                    }
+                }
+                $localVcCache = Join-Path $LocalSetupDir "Programi\VCRedist"
+                foreach ($nasVcDir in ($nasVcCandidates | Select-Object -Unique)) {
+                    if (-not (Test-Path $nasVcDir -ErrorAction SilentlyContinue)) { continue }
+                    $nasExes = Get-ChildItem -Path $nasVcDir -Filter "*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object {
+                        $_.Name -match '(?i)vcredist|vc_redist|visual_c'
+                    }
+                    if ($nasExes -and @($nasExes).Count -gt 0) {
+                        if (-not (Test-Path $localVcCache)) {
+                            New-Item -Path $localVcCache -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                        }
+                        foreach ($ne in $nasExes) {
+                            $destVc = Join-Path $localVcCache $ne.Name
+                            Copy-Item -Path $ne.FullName -Destination $destVc -Force -ErrorAction SilentlyContinue
+                            if (Test-Path $destVc) {
+                                $vcInstallers += (Get-Item -Path $destVc)
+                            }
+                        }
+                        if ($vcInstallers.Count -gt 0) {
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "P3.VcRedist: Pronađeno $($vcInstallers.Count) VC++ instalera na servisnom NAS-u ($nasVcDir) - preskačem winget." -Level "INFO" -Component "Branding"
+                            }
+                            break
+                        }
+                    }
+                }
+            } catch {} finally {
+                if ($nasVcCtx -and $nasVcCtx.UncShare -and (Get-Command Disconnect-ServisNasUpdatesShare -ErrorAction SilentlyContinue)) {
+                    try { Disconnect-ServisNasUpdatesShare -UncShare $nasVcCtx.UncShare } catch {}
+                }
             }
         }
 

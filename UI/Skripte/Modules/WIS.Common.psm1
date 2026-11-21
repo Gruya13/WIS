@@ -298,6 +298,37 @@ function Send-IpcStep {
     Send-IpcMessage -Data $payload
 }
 
+function Send-IpcAppUpdate {
+    <#
+    .SYNOPSIS
+        Salje status pojedinacne aplikacije ka WIS.UI IPC interfejsu (apps objekat).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AppId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Status,
+
+        [string]$Detail = ""
+    )
+
+    $appEntry = @{
+        status = $Status
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Detail)) {
+        $appEntry["detail"] = $Detail
+    }
+
+    $payload = @{
+        apps = @{
+            $AppId = $appEntry
+        }
+    }
+    Send-IpcMessage -Data $payload
+}
+
 # ------------------------------------------------------------------------------
 # 4. KOOPERATIVNA PAUZA I SIGURNE KONTROLNE TACKE
 # ------------------------------------------------------------------------------
@@ -1517,6 +1548,7 @@ Export-ModuleMember -Function `
     Send-IpcProgress, `
     Send-IpcStatus, `
     Send-IpcStep, `
+    Send-IpcAppUpdate, `
     Wait-ServisUICooperativePause, `
     Test-ServisSkipRequested, `
     Format-ExitCodeDescription, `

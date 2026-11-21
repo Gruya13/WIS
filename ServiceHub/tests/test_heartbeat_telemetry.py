@@ -574,6 +574,53 @@ class TestHeartbeatTelemetry(unittest.TestCase):
         self.assertEqual(stored_rep.get("hw", {}).get("model"), "EliteBook 840 14 inch G10 Notebook PC")
         self.assertEqual(stored_rep.get("hw", {}).get("serial"), "5CG3441F8P")
 
+    def test_13_v330_imp15_restart_u_toku_ttl_and_phase3_interim_reboot(self):
+        """IMP-15: Restart u toku vazi za Fazu 2 i kontrolisani Faza 3 reboot najduze 720s; stariji uredjaji postaju Offline."""
+        import time as _time
+        fs = FleetStore()
+        now = _time.time()
+        fs.fleet_devices["TK-REBOOT-P2-FRESH"] = {
+            "computer_name": "TK-REBOOT-P2-FRESH",
+            "phase": 2,
+            "last_seen": now - 120,
+        }
+        fs.fleet_devices["TK-REBOOT-P2-STALE"] = {
+            "computer_name": "TK-REBOOT-P2-STALE",
+            "phase": 2,
+            "last_seen": now - 900,
+        }
+        fs.fleet_devices["TK-REBOOT-P3-INTERIM"] = {
+            "computer_name": "TK-REBOOT-P3-INTERIM",
+            "phase": 3,
+            "interim_reboot": True,
+            "last_seen": now - 90,
+        }
+        fs.fleet_devices["TK-REBOOT-P3-LIVE"] = {
+            "computer_name": "TK-REBOOT-P3-LIVE",
+            "phase": 3,
+            "live_status": "Drajveri i optimizacije primenjeni. Sistem se restartuje radi stabilizacije...",
+            "last_seen": now - 90,
+        }
+        fs.fleet_devices["TK-REBOOT-P3-PLAIN"] = {
+            "computer_name": "TK-REBOOT-P3-PLAIN",
+            "phase": 3,
+            "last_seen": now - 90,
+        }
+        fs.fleet_devices["TK-REBOOT-P3-STALE"] = {
+            "computer_name": "TK-REBOOT-P3-STALE",
+            "phase": 3,
+            "interim_reboot": True,
+            "last_seen": now - 900,
+        }
+
+        summary = fs.get_devices_summary()
+        self.assertEqual(summary["TK-REBOOT-P2-FRESH"]["status_label"], "Restart u toku")
+        self.assertEqual(summary["TK-REBOOT-P2-STALE"]["status_label"], "Offline")
+        self.assertEqual(summary["TK-REBOOT-P3-INTERIM"]["status_label"], "Restart u toku")
+        self.assertEqual(summary["TK-REBOOT-P3-LIVE"]["status_label"], "Restart u toku")
+        self.assertEqual(summary["TK-REBOOT-P3-PLAIN"]["status_label"], "Offline")
+        self.assertEqual(summary["TK-REBOOT-P3-STALE"]["status_label"], "Offline")
+
 
 if __name__ == "__main__":
     unittest.main()

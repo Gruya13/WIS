@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.2.1 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.2.1 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.2.1 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.2.2 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.2.2 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.2.2 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -511,6 +511,102 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
 
         build_ps1 = (ROOT / "ISO" / "Skripte" / "Build-WIS.ps1").read_text(encoding="utf-8")
         self.assertIn("Test-StepGuard.ps1", build_ps1)
+
+    def test_17_v330_live_audit_improvements_imp02_to_imp13(self):
+        """Proverava implementaciju svih PS5.1/ini unapredjenja (IMP-02..IMP-09, IMP-11..IMP-13)."""
+        common_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Common.psm1").read_text(encoding="utf-8")
+        branding_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        ini_root = (ROOT / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+        ini_iso = (ROOT / "ISO" / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+
+        # IMP-04: Send-IpcAppUpdate definisana i izvezena
+        self.assertIn("function Send-IpcAppUpdate", common_src)
+        self.assertIn("Send-IpcAppUpdate,", common_src.split("Export-ModuleMember", 1)[1])
+
+        # IMP-06: DPI scaling flag i LogPixels=96 za 100% Sub-FHD
+        self.assertIn(r"C:\setup\dpi-scaling-done.flag", branding_src)
+        scale_block = branding_src.split("function Set-OptimalDisplayScaling", 1)[1].split("function ", 1)[0]
+        self.assertIn('"LogPixels" -Value 96', scale_block)
+        p3_scale_test = branding_src.split('-StepId "P3.Scaling"', 1)[1].split('-Action {', 1)[0]
+        self.assertIn("dpi-scaling-done.flag", p3_scale_test)
+
+        # IMP-05: P3.VcRedist prvo trazi NAS Programi\VCRedist pre winget fallbacka (sa lazy importom WIS.Update i ispravnim Disconnect)
+        p3_vc = branding_src.split('-StepId "P3.VcRedist"', 1)[1].split('# 6. OSLOBA', 1)[0]
+        self.assertIn("WIS.Update.psm1", p3_vc)
+        self.assertIn("Disconnect-ServisNasUpdatesShare -UncShare $nasVcCtx.UncShare", p3_vc)
+        nas_idx = p3_vc.find("Connect-ServisNasUpdatesShare")
+        wg_idx = p3_vc.find("winget.exe")
+        self.assertGreater(nas_idx, 0)
+        self.assertGreater(wg_idx, nas_idx)
+
+        # IMP-15: Invoke-ServisInterimReboot emituje Send-IpcStatus za Fazu 3 Restart u toku
+        reboot_block = branding_src.split("function Invoke-ServisInterimReboot", 1)[1].split("function Invoke-Phase3Optimization", 1)[0]
+        self.assertIn('Send-IpcStatus -Phase 3 -SubPhase "Restart u toku"', reboot_block)
+
+        # IMP-09: Realna procena kopiranja u WIS.Core i Mode=DriversOnly uz ocuvan HarvestMode=All
+        self.assertIn("obicno 1-5 min", core_src)
+        self.assertIn("Mode=DriversOnly", ini_root)
+        self.assertIn("HarvestMode=All", ini_root)
+        self.assertIn("Mode=DriversOnly", ini_iso)
+        self.assertIn("HarvestMode=All", ini_iso)
+
+        # IMP-09: Install-LocalUpdatePackageFile ne blokira slepo na -Wait i salje heartbeat
+        inst_pkg = self.update_src.split("function Install-LocalUpdatePackageFile", 1)[1].split("function Receive-UpdateFileFromUrl", 1)[0]
+        self.assertNotIn("-Wait -PassThru", inst_pkg)
+        self.assertIn("WaitForExit(1000)", inst_pkg)
+        self.assertIn("Send-IpcStatus", inst_pkg)
+        self.assertIn("2400", inst_pkg)
+
+        # IMP-02, IMP-12, IMP-13: Harvest heartbeat kopiranje, notify-harvest, TTL cleanup za lock i .tar.tmp.*
+        self.assertIn("function Send-ServisHubHarvestNotify", self.update_src)
+        self.assertIn("function Copy-FileWithHeartbeat", self.update_src)
+        self.assertIn("/api/drivers/pool/notify-harvest", self.update_src)
+        export_tail = self.update_src.split("Export-ModuleMember", 1)[1]
+        self.assertIn("Send-ServisHubHarvestNotify", export_tail)
+        self.assertIn("Copy-FileWithHeartbeat", export_tail)
+        self.assertIn("Connect-ServisNasUpdatesShare", export_tail)
+        self.assertIn("Disconnect-ServisNasUpdatesShare", export_tail)
+        harvest_fn = self.update_src.split("function Export-ServisHardwareDrivers", 1)[1].split("function Export-ServisNetworkDrivers", 1)[0]
+        self.assertIn("Copy-FileWithHeartbeat", harvest_fn)
+        self.assertIn("Send-ServisHubHarvestNotify", harvest_fn)
+        self.assertIn(".tar.tmp.*", harvest_fn)
+        self.assertIn("TotalMinutes -lt 30", harvest_fn)
+
+        # IMP-03: Uklonjen $onlyGenericGpu bypass i dodata provera DM pre wu-drivers-skipped.flag
+        p2_block = self.update_src.split("function Invoke-Phase2Drivers", 1)[1].split("function Write-BackgroundWuStatus", 1)[0]
+        self.assertNotIn("$onlyGenericGpu", p2_block)
+        self.assertIn("$dmSkipVerify = if (Get-Command Test-WisDeviceManagerClean", p2_block)
+
+        # IMP-07: Instant break za 0x80248007/0x80070103 i 12s za 0x80240016
+        self.assertIn('"0x80248007", "0x80070103"', p2_block)
+        self.assertIn('{ 12 } else { 3 }', p2_block)
+
+        # IMP-11: Asinhroni BeginInvoke cleanup u Invoke-WindowsUpdateSecondPass
+        sp_block = self.update_src.split("function Invoke-WindowsUpdateSecondPass", 1)[1].split("function Wait-WindowsUpdateCompletionBarrier", 1)[0]
+        self.assertIn("BeginInvoke()", sp_block)
+
+    def test_18_v322_overnight_fixes_imp16_imp17_imp18(self):
+        """Proverava IMP-16 (SecondPass Search timeout 120s), IMP-17 (Basic Display u Resolve) i IMP-18 (WinRAR/Chrome NAS retry)."""
+        # IMP-16: Asinhroni Search() sa 120s watchdog-om u Invoke-WindowsUpdateSecondPass
+        sp_block = self.update_src.split("function Invoke-WindowsUpdateSecondPass", 1)[1].split("function Wait-WindowsUpdateCompletionBarrier", 1)[0]
+        self.assertIn("$searchTimeoutSec = 120", sp_block)
+        self.assertIn("$searchJob = Start-Job", sp_block)
+        self.assertIn("SEARCH_TIMEOUT", sp_block)
+        self.assertIn("$cleanupSearchPs.BeginInvoke()", sp_block)
+
+        # IMP-17: Microsoft Basic Display Adapter / Standard VGA ukljucen u Resolve-MissingDriversFromHub
+        res_block = self.hw_src.split("function Resolve-MissingDriversFromHub", 1)[1].split("function Send-WisModelDnaToHub", 1)[0]
+        self.assertIn("function Get-WisProblematicPnpDevices", res_block)
+        self.assertIn("Microsoft Basic Display Adapter|Standard VGA", res_block)
+        self.assertIn("Get-WisProblematicPnpDevices", res_block)
+
+        # IMP-18: WinRAR i Chrome rade Sync-ProgramiFromNas retry pre winget fallbacka
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        p4_wr = apps_src.split("# 2. WINRAR - P4.WinRAR", 1)[1].split("# 3. GOOGLE CHROME - P4.Chrome", 1)[0]
+        p4_ch = apps_src.split("# 3. GOOGLE CHROME - P4.Chrome", 1)[1].split("# 4. ADOBE ACROBAT PRO - P4.Acrobat", 1)[0]
+        self.assertIn("Sync-ProgramiFromNas", p4_wr)
+        self.assertIn("Sync-ProgramiFromNas", p4_ch)
 
 
 if __name__ == "__main__":

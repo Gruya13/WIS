@@ -6,6 +6,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using WIS.HwTest.Core;
 using WIS.HwTest.Interop;
@@ -26,9 +27,23 @@ namespace WIS.HwTest
         private readonly Dictionary<string, TextBlock> _descTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TextBlock> _metricTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Button> _runBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _statusIndicatorMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _statusIconMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _spinnerRingMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, RotateTransform> _spinnerRotateMap = new Dictionary<string, RotateTransform>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _statusBadgeMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _statusBadgeTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _elapsedTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, ProgressBar> _runningBarMap = new Dictionary<string, ProgressBar>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> _runningStartUtcMap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Border _summaryBadgeBorder;
         private readonly TextBlock _summaryBadge;
         private readonly StackPanel _cardsPanel;
+        private readonly StackPanel _autoCardsPanel;
+        private readonly StackPanel _manualCardsPanel;
+        private readonly ProgressBar _overallProgressBar;
         private readonly Stopwatch _runStopwatch;
+        private DispatcherTimer _runningUiTimer;
         private bool _showNotApplicable = false;
         private TextBlock _factoryBannerText;
         private Button _btnToggleHidden;
@@ -38,6 +53,7 @@ namespace WIS.HwTest
         private readonly CancelFlag _autoStressCancel = new CancelFlag();
         private Button _btnRunAutoSuite;
         private TextBlock _autoSectionStatus;
+        private TextBlock _manualSectionCountText;
 
         // Embedded i Phase 5 orkestracija (WIS v3.0.0)
         private Grid _rootGrid;
@@ -151,35 +167,38 @@ namespace WIS.HwTest
             MinHeight = 650;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             WindowState = WindowState.Maximized;
-            Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
+            Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
             SourceInitialized += (s, e) => NativeMethods.EnableDarkTitleBar(this);
 
             // Inicijalizacija testova (prikazuju se samo prisutni / fabrički očekivani uređaji)
             InitTestList();
 
-            // Izgradnja UI-ja
+            // Izgradnja UI-ja (kompaktan 2-kolonski list raspored sa živim indikatorima rada)
             Grid root = new Grid();
             _rootGrid = root;
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(85) });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(75) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // 1. Header
+            // 1. Kompaktno objedinjeno zaglavlje + fabrička traka + globalni progress bar
             Border header = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(16, 9, 16, 9)
             };
+            StackPanel headerStack = new StackPanel();
+
             Grid hg = new Grid();
             hg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             hg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            StackPanel spH = new StackPanel();
+            StackPanel spH = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             TextBlock title = new TextBlock
             {
-                Text = "🧪 WIS HARDVERSKA DIJAGNOSTIKA I TESTIRANJE",
-                FontSize = 18,
+                Text = "HARDVERSKA DIJAGNOSTIKA I TESTIRANJE",
+                FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             };
@@ -189,105 +208,160 @@ namespace WIS.HwTest
             {
                 Text = string.Format("Model: {0} | Serijski broj: {1} | Šasija: {2}",
                     _modelName, _serialNumber, _hwInfo.IsLaptop ? "Laptop" : "Desktop"),
-                FontSize = 13,
+                FontSize = 11,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 170)),
-                Margin = new Thickness(0, 4, 0, 0)
+                Margin = new Thickness(0, 2, 0, 0)
             };
             _subTitleBlock = sub;
             spH.Children.Add(sub);
             hg.Children.Add(spH);
 
-            _summaryBadge = new TextBlock
+            StackPanel hdrRight = new StackPanel
             {
-                Text = "⏳ Čeka pokretanje",
-                FontSize = 14,
-                FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White,
-                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
-                Padding = new Thickness(14, 8, 14, 8),
+                Orientation = Orientation.Horizontal,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            Grid.SetColumn(_summaryBadge, 1);
-            hg.Children.Add(_summaryBadge);
-            header.Child = hg;
-            Grid.SetRow(header, 0);
-            root.Children.Add(header);
-
-            // 1b. Info traka o fabričkoj detekciji i sakrivenim N/A testovima
-            Border factoryBar = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(28, 31, 38)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(45, 50, 60)),
-                BorderThickness = new Thickness(0, 1, 0, 1),
-                Padding = new Thickness(25, 8, 25, 8)
-            };
-            Grid fbg = new Grid();
-            fbg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            fbg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            _factoryBannerText = new TextBlock
-            {
-                FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(170, 180, 195)),
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap
-            };
-            fbg.Children.Add(_factoryBannerText);
 
             _btnToggleHidden = new Button
             {
-                Background = new SolidColorBrush(Color.FromRgb(50, 56, 68)),
+                Background = new SolidColorBrush(Color.FromRgb(45, 48, 56)),
                 Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 230)),
-                FontSize = 12,
-                Padding = new Thickness(12, 4, 12, 4),
-                Margin = new Thickness(15, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
+                BorderBrush = new SolidColorBrush(Color.FromRgb(70, 77, 92)),
+                BorderThickness = new Thickness(1),
+                FontSize = 11,
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 10, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnToggleHidden.Click += (s, e) => {
                 _showNotApplicable = !_showNotApplicable;
                 RefreshCardVisibility();
             };
-            Grid.SetColumn(_btnToggleHidden, 1);
-            fbg.Children.Add(_btnToggleHidden);
-            factoryBar.Child = fbg;
-            Grid.SetRow(factoryBar, 1);
-            root.Children.Add(factoryBar);
+            hdrRight.Children.Add(_btnToggleHidden);
 
-            // 2. Central Scrollable Cards
+            _summaryBadge = new TextBlock
+            {
+                Text = "⏳ Čeka pokretanje",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            _summaryBadgeBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 5, 10, 5),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = _summaryBadge
+            };
+            hdrRight.Children.Add(_summaryBadgeBorder);
+
+            Grid.SetColumn(hdrRight, 1);
+            hg.Children.Add(hdrRight);
+            headerStack.Children.Add(hg);
+
+            Border factoryLine = new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Margin = new Thickness(0, 6, 0, 0),
+                Padding = new Thickness(0, 5, 0, 0)
+            };
+            _factoryBannerText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(158, 170, 184)),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            factoryLine.Child = _factoryBannerText;
+            headerStack.Children.Add(factoryLine);
+
+            _overallProgressBar = new ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 0,
+                Height = 4,
+                Margin = new Thickness(0, 6, 0, 0),
+                Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
+                BorderThickness = new Thickness(0)
+            };
+            headerStack.Children.Add(_overallProgressBar);
+
+            header.Child = headerStack;
+            Grid.SetRow(header, 0);
+            root.Children.Add(header);
+
+            // 2. Centralna 2-kolonska lista testova (Automatski levo | Periferni desno)
             ScrollViewer sv = new ScrollViewer
             {
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                Padding = new Thickness(25, 15, 25, 15)
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Padding = new Thickness(12, 10, 12, 10)
             };
+
             _cardsPanel = new StackPanel();
-            bool addedAutoHeader = false;
-            bool addedManualHeader = false;
+            Grid colsGrid = new Grid();
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            Border autoColBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8, 10, 8)
+            };
+            StackPanel autoColStack = new StackPanel();
+            autoColStack.Children.Add(CreateAutoSectionHeader());
+            _autoCardsPanel = new StackPanel();
+            autoColStack.Children.Add(_autoCardsPanel);
+            autoColBorder.Child = autoColStack;
+            Grid.SetColumn(autoColBorder, 0);
+            colsGrid.Children.Add(autoColBorder);
+
+            Border manualColBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8, 10, 8)
+            };
+            StackPanel manualColStack = new StackPanel();
+            manualColStack.Children.Add(CreateManualSectionHeader());
+            _manualCardsPanel = new StackPanel();
+            manualColStack.Children.Add(_manualCardsPanel);
+            manualColBorder.Child = manualColStack;
+            Grid.SetColumn(manualColBorder, 2);
+            colsGrid.Children.Add(manualColBorder);
+
             foreach (TestItemResult t in _testItems)
             {
-                if (t.IsAutomated && !addedAutoHeader)
-                {
-                    _cardsPanel.Children.Add(CreateAutoSectionHeader());
-                    addedAutoHeader = true;
-                }
-                else if (!t.IsAutomated && !addedManualHeader)
-                {
-                    _cardsPanel.Children.Add(CreateManualSectionHeader());
-                    addedManualHeader = true;
-                }
-
                 Border card = CreateTestCard(t);
-                _cardsPanel.Children.Add(card);
                 _cardMap[t.Id] = card;
+                if (t.IsAutomated)
+                    _autoCardsPanel.Children.Add(card);
+                else
+                    _manualCardsPanel.Children.Add(card);
             }
+
+            _cardsPanel.Children.Add(colsGrid);
             sv.Content = _cardsPanel;
-            Grid.SetRow(sv, 2);
+            Grid.SetRow(sv, 1);
             root.Children.Add(sv);
 
-            // 3. Footer Bar
+            // 3. Kompaktni Footer Bar
             Border footer = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(14, 8, 14, 8)
             };
             Grid fg = new Grid();
             fg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -299,8 +373,10 @@ namespace WIS.HwTest
                 Content = "▶ Pokreni sve testove redom",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
+                FontSize = 12,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(20, 10, 20, 10)
+                Padding = new Thickness(14, 6, 14, 6),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             btnRunAll.Click += (s, e) => RunSequentialTests();
             Grid.SetColumn(btnRunAll, 0);
@@ -309,10 +385,12 @@ namespace WIS.HwTest
             Button btnFinish = new Button
             {
                 Content = "✓ Završi i sačuvaj izveštaj",
-                Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
+                Background = new SolidColorBrush(Color.FromRgb(35, 134, 54)),
                 Foreground = Brushes.White,
+                FontSize = 12,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(25, 10, 25, 10)
+                Padding = new Thickness(16, 6, 16, 6),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnFinish = btnFinish;
             btnFinish.Click += (s, e) => FinishAndSave();
@@ -320,8 +398,11 @@ namespace WIS.HwTest
             fg.Children.Add(btnFinish);
 
             footer.Child = fg;
-            Grid.SetRow(footer, 3);
+            Grid.SetRow(footer, 2);
             root.Children.Add(footer);
+
+            _runningUiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _runningUiTimer.Tick += (s, e) => UpdateRunningElapsedTimers();
 
             Content = root;
             RefreshCardVisibility();
@@ -331,6 +412,7 @@ namespace WIS.HwTest
             Closing += (s, e) =>
             {
                 _phase5WorkflowActive = false;
+                if (_runningUiTimer != null) _runningUiTimer.Stop();
                 _autoStressCancel.Cancel();
                 _autoEngine.Dispose();
             };
@@ -360,6 +442,10 @@ namespace WIS.HwTest
         public void ShutdownEmbedded()
         {
             _phase5WorkflowActive = false;
+            if (_runningUiTimer != null)
+            {
+                try { _runningUiTimer.Stop(); } catch { }
+            }
             _autoStressCancel.Cancel();
             try { _autoEngine.Dispose(); } catch { }
         }
@@ -716,42 +802,46 @@ namespace WIS.HwTest
                 Background = new SolidColorBrush(Color.FromRgb(27, 34, 44)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 BorderThickness = new Thickness(0, 0, 0, 2),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(16, 10, 16, 10),
-                Margin = new Thickness(0, 2, 0, 10)
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 0, 0, 8)
             };
             Grid g = new Grid();
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            StackPanel sp = new StackPanel();
+            StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             sp.Children.Add(new TextBlock
             {
-                Text = "⚡ AUTOMATSKI TESTOVI HARDVERA",
-                FontSize = 14,
+                Text = "⚡ AUTOMATSKI TESTOVI",
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             });
             _autoSectionStatus = new TextBlock
             {
-                Text = "Pasivne provere (Baterija, Mreža, BIOS/TPM/PnP, SMART) pokreću se automatski pri otvaranju; stres testovi (Disk, RAM, CPU, GPU) idu sekvencijalno jednim klikom.",
-                FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(180, 195, 210)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 0, 0)
+                Text = "Pasivno (Baterija, Mreža, BIOS/TPM/PnP, SMART) + stres (Disk, RAM, CPU, GPU)",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(165, 180, 198)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
             };
+            _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
             sp.Children.Add(_autoSectionStatus);
             g.Children.Add(sp);
 
             _btnRunAutoSuite = new Button
             {
-                Content = "⚡ Pokreni automatski stres paket",
+                Content = "⚡ Stres paket",
+                ToolTip = "Pokreni sekvencijalni automatski stres paket (Disk, RAM, CPU, GPU)",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(16, 8, 16, 8),
+                Padding = new Thickness(10, 4, 10, 4),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(15, 0, 0, 0)
+                Margin = new Thickness(8, 0, 0, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnRunAutoSuite.Click += (s, e) => ToggleAutoStressSuite();
             Grid.SetColumn(_btnRunAutoSuite, 1);
@@ -768,114 +858,204 @@ namespace WIS.HwTest
                 Background = new SolidColorBrush(Color.FromRgb(27, 30, 36)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(65, 72, 85)),
                 BorderThickness = new Thickness(0, 0, 0, 2),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(16, 9, 16, 9),
-                Margin = new Thickness(0, 10, 0, 10)
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 0, 0, 8)
             };
-            StackPanel sp = new StackPanel();
+            Grid g = new Grid();
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             sp.Children.Add(new TextBlock
             {
                 Text = "🔧 PERIFERNI TESTOVI SERVISERA",
-                FontSize = 14,
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(220, 225, 235))
             });
             sp.Children.Add(new TextBlock
             {
                 Text = "Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja",
-                FontSize = 12,
+                FontSize = 10,
                 Foreground = new SolidColorBrush(Color.FromRgb(150, 160, 175)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
                 Margin = new Thickness(0, 2, 0, 0)
             });
-            b.Child = sp;
+            g.Children.Add(sp);
+
+            _manualSectionCountText = new TextBlock
+            {
+                Text = "0/0 završeno",
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(158, 170, 184)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            Grid.SetColumn(_manualSectionCountText, 1);
+            g.Children.Add(_manualSectionCountText);
+
+            b.Child = g;
             return b;
         }
 
         private Border CreateTestCard(TestItemResult t)
         {
-            bool hasWarning = t.HasWarning || (t.Details != null &&
-                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os")));
-
             Border card = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                BorderBrush = hasWarning
-                    ? new SolidColorBrush(Color.FromRgb(255, 193, 7))
-                    : new SolidColorBrush(Color.FromRgb(50, 54, 64)),
+                Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56)),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(20, 14, 20, 14),
-                Margin = new Thickness(0, 0, 0, 10),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(9, 6, 9, 6),
+                Margin = new Thickness(0, 0, 0, 5),
                 Tag = t
             };
 
+            StackPanel rootStack = new StackPanel();
+
             Grid cg = new Grid();
+            cg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            // Info leva strana
-            StackPanel spInfo = new StackPanel();
+            // Col 0: Indikator statusa / animirani spinner dok test radi
+            Grid indHost = new Grid
+            {
+                Width = 18,
+                Height = 18,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0)
+            };
+
+            Border statusCircle = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(9),
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72))
+            };
+            TextBlock statusIcon = new TextBlock
+            {
+                Text = "○",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            statusCircle.Child = statusIcon;
+            _statusIndicatorMap[t.Id] = statusCircle;
+            _statusIconMap[t.Id] = statusIcon;
+            indHost.Children.Add(statusCircle);
+
+            RotateTransform spinRot = new RotateTransform(0);
+            Border spinnerRing = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(9),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                BorderThickness = new Thickness(2, 2, 0, 0),
+                RenderTransformOrigin = new Point(0.5, 0.5),
+                RenderTransform = spinRot,
+                Visibility = Visibility.Collapsed
+            };
+            _spinnerRingMap[t.Id] = spinnerRing;
+            _spinnerRotateMap[t.Id] = spinRot;
+            indHost.Children.Add(spinnerRing);
+
+            Grid.SetColumn(indHost, 0);
+            cg.Children.Add(indHost);
+
+            // Col 1: Naziv testa + živo trajanje i 1 kompaktna linija rezultata/opisa
+            StackPanel spInfo = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+
+            Grid titleRow = new Grid();
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
             TextBlock tbTitle = new TextBlock
             {
                 Text = t.Title,
-                FontSize = 16,
-                FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White
-            };
-            spInfo.Children.Add(tbTitle);
-
-            string descDisplay = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
-                ? (t.Description + " — " + t.Reason)
-                : t.Description;
-
-            TextBlock tbDesc = new TextBlock
-            {
-                Text = descDisplay,
                 FontSize = 12,
-                Foreground = hasWarning
-                    ? new SolidColorBrush(Color.FromRgb(255, 209, 102))
-                    : new SolidColorBrush(Color.FromRgb(160, 160, 170)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 0, 0)
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                TextTrimming = TextTrimming.CharacterEllipsis
             };
-            spInfo.Children.Add(tbDesc);
-            _descTextMap[t.Id] = tbDesc;
+            Grid.SetColumn(tbTitle, 0);
+            titleRow.Children.Add(tbTitle);
+
+            TextBlock tbElapsed = new TextBlock
+            {
+                Text = "",
+                FontSize = 10,
+                FontFamily = new FontFamily("Consolas"),
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(136, 136, 136)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            _elapsedTextMap[t.Id] = tbElapsed;
+            Grid.SetColumn(tbElapsed, 1);
+            titleRow.Children.Add(tbElapsed);
+            spInfo.Children.Add(titleRow);
 
             TextBlock tbMetric = new TextBlock
             {
                 Text = t.MetricSummary ?? "",
-                FontSize = 12,
+                FontSize = 10.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 4, 0, 0),
-                Visibility = string.IsNullOrEmpty(t.MetricSummary) ? Visibility.Collapsed : Visibility.Visible
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = t.MetricSummary ?? "",
+                Margin = new Thickness(0, 1, 0, 0)
             };
             spInfo.Children.Add(tbMetric);
             _metricTextMap[t.Id] = tbMetric;
 
+            TextBlock tbDesc = new TextBlock
+            {
+                Text = t.Description ?? "",
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(150, 155, 165)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = t.Description ?? "",
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+            spInfo.Children.Add(tbDesc);
+            _descTextMap[t.Id] = tbDesc;
+
+            Grid.SetColumn(spInfo, 1);
             cg.Children.Add(spInfo);
 
-            // Status Badge u sredini
+            // Col 2: Kompaktan status bedž
             Border statusBorder = new Border
             {
-                CornerRadius = new CornerRadius(5),
-                Padding = new Thickness(12, 6, 12, 6),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(7, 2, 7, 2),
+                MinWidth = 60,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(15, 0, 15, 0)
+                Margin = new Thickness(8, 0, 8, 0)
             };
             TextBlock tbStatus = new TextBlock
             {
-                FontSize = 13,
+                FontSize = 10,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center
             };
             statusBorder.Child = tbStatus;
-            Grid.SetColumn(statusBorder, 1);
+            _statusBadgeMap[t.Id] = statusBorder;
+            _statusBadgeTextMap[t.Id] = tbStatus;
+            Grid.SetColumn(statusBorder, 2);
             cg.Children.Add(statusBorder);
 
-            // Dugmad desno
+            // Col 3: Kompaktna dugmad desno
             StackPanel spBtns = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -886,11 +1066,14 @@ namespace WIS.HwTest
             {
                 Button btnDetails = new Button
                 {
-                    Content = "🔍 Detalji",
+                    Content = "Detalji",
+                    ToolTip = "Otvori detaljan izveštaj testa",
                     Background = new SolidColorBrush(Color.FromRgb(50, 56, 70)),
                     Foreground = Brushes.White,
-                    Padding = new Thickness(10, 6, 10, 6),
-                    Margin = new Thickness(0, 0, 8, 0)
+                    FontSize = 10.5,
+                    Padding = new Thickness(7, 3, 7, 3),
+                    Margin = new Thickness(0, 0, 5, 0),
+                    Cursor = System.Windows.Input.Cursors.Hand
                 };
                 btnDetails.Click += (s, e) => OpenAutoDetails(t);
                 spBtns.Children.Add(btnDetails);
@@ -898,12 +1081,15 @@ namespace WIS.HwTest
 
             Button btnRun = new Button
             {
-                Content = "Pokreni",
+                Content = "▶",
+                ToolTip = "Pokreni ovaj test",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
-                FontWeight = FontWeights.SemiBold,
-                Padding = new Thickness(14, 6, 14, 6),
-                Margin = new Thickness(0, 0, 8, 0)
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(8, 3, 8, 3),
+                Margin = new Thickness(0, 0, 5, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             btnRun.Click += (s, e) => RunSingleTest(t);
             _runBtnMap[t.Id] = btnRun;
@@ -911,108 +1097,314 @@ namespace WIS.HwTest
 
             Button btnSkip = new Button
             {
-                Content = "Preskoči",
+                Content = "»",
+                ToolTip = "Preskoči test uz obrazloženje",
                 Background = new SolidColorBrush(Color.FromRgb(70, 75, 85)),
                 Foreground = Brushes.White,
-                Padding = new Thickness(10, 6, 10, 6)
+                FontSize = 10.5,
+                Padding = new Thickness(7, 3, 7, 3),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             btnSkip.Click += (s, e) => PromptSkipReason(t);
             spBtns.Children.Add(btnSkip);
 
-            Grid.SetColumn(spBtns, 2);
+            Grid.SetColumn(spBtns, 3);
             cg.Children.Add(spBtns);
 
-            card.Child = cg;
+            rootStack.Children.Add(cg);
+
+            // Indikator rada duž dna reda (vidljiv samo kada test radi)
+            ProgressBar runBar = new ProgressBar
+            {
+                IsIndeterminate = true,
+                Height = 3,
+                Margin = new Thickness(0, 5, 0, 0),
+                Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                BorderThickness = new Thickness(0),
+                Visibility = Visibility.Collapsed
+            };
+            _runningBarMap[t.Id] = runBar;
+            rootStack.Children.Add(runBar);
+
+            card.Child = rootStack;
             UpdateCardVisual(card, t);
             return card;
         }
 
-        private void UpdateCardVisual(Border card, TestItemResult t)
+        private void SyncCardRowTexts(TestItemResult t)
         {
-            Grid cg = card.Child as Grid;
-            if (cg == null) return;
-
+            if (t == null) return;
             bool hasWarn = t.HasWarning || (t.Details != null &&
                 (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os")));
 
-            if (t.Status == TestStatus.Fail)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-            else if (hasWarn)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-            else if (t.Status == TestStatus.Pass)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(45, 110, 72));
-            else
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(50, 54, 64));
-
             TextBlock tbMetric;
+            bool hasMetric = !string.IsNullOrEmpty(t.MetricSummary);
             if (_metricTextMap.TryGetValue(t.Id, out tbMetric))
             {
                 tbMetric.Text = t.MetricSummary ?? "";
-                tbMetric.Visibility = string.IsNullOrEmpty(t.MetricSummary) ? Visibility.Collapsed : Visibility.Visible;
+                tbMetric.ToolTip = t.MetricSummary ?? "";
+                tbMetric.Foreground = (t.Status == TestStatus.Running)
+                    ? new SolidColorBrush(Color.FromRgb(56, 189, 248))
+                    : new SolidColorBrush(Color.FromRgb(78, 201, 176));
+                tbMetric.Visibility = hasMetric ? Visibility.Visible : Visibility.Collapsed;
             }
 
             TextBlock tbDesc;
             if (_descTextMap.TryGetValue(t.Id, out tbDesc))
             {
+                string fullDesc;
                 if (t.IsAutomated && !string.IsNullOrEmpty(t.Reason) && t.Status != TestStatus.Pending)
                 {
-                    tbDesc.Text = t.Reason;
-                    if (t.Status == TestStatus.Fail)
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 130, 140));
-                    else if (hasWarn)
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102));
-                    else
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(175, 185, 195));
+                    fullDesc = t.Reason;
                 }
                 else
                 {
-                    tbDesc.Text = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
+                    fullDesc = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
                         ? (t.Description + " — " + t.Reason)
-                        : t.Description;
-                    tbDesc.Foreground = hasWarn
-                        ? new SolidColorBrush(Color.FromRgb(255, 209, 102))
-                        : new SolidColorBrush(Color.FromRgb(160, 160, 170));
+                        : (!string.IsNullOrEmpty(t.Reason) && (t.Status == TestStatus.Fail || t.Status == TestStatus.Skip || hasWarn))
+                            ? t.Reason
+                            : t.Description;
+                }
+
+                tbDesc.Text = fullDesc ?? "";
+                tbDesc.ToolTip = fullDesc ?? "";
+
+                if (t.Status == TestStatus.Fail)
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 130, 140));
+                else if (hasWarn)
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102));
+                else
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(155, 162, 174));
+
+                bool showDesc = !hasMetric || t.Status == TestStatus.Fail || hasWarn || t.Status == TestStatus.NotApplicable;
+                tbDesc.Visibility = (showDesc && !string.IsNullOrEmpty(fullDesc)) ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private static string FormatShortDuration(int seconds)
+        {
+            if (seconds < 0) seconds = 0;
+            int mins = seconds / 60;
+            int secs = seconds % 60;
+            return string.Format("{0:00}:{1:00}", mins, secs);
+        }
+
+        private void UpdateRunningElapsedTimers()
+        {
+            if (_runningStartUtcMap.Count == 0)
+            {
+                if (_runningUiTimer != null) _runningUiTimer.Stop();
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            foreach (KeyValuePair<string, DateTime> kv in _runningStartUtcMap)
+            {
+                TextBlock tbElapsed;
+                if (_elapsedTextMap.TryGetValue(kv.Key, out tbElapsed))
+                {
+                    int sec = (int)Math.Max(0, (now - kv.Value).TotalSeconds);
+                    tbElapsed.Text = FormatShortDuration(sec);
+                    tbElapsed.Visibility = Visibility.Visible;
+                }
+            }
+        }
+
+        private void UpdateCardVisual(Border card, TestItemResult t)
+        {
+            if (card == null || t == null) return;
+
+            bool hasWarn = t.HasWarning || (t.Details != null &&
+                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os")));
+
+            if (t.Status == TestStatus.Running)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(27, 40, 54));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.Fail)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(38, 28, 30));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (hasWarn)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(38, 34, 26));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.Pass)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(30, 34, 32));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(45, 110, 72));
+                card.BorderThickness = new Thickness(2, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.NotApplicable)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(28, 28, 31));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(46, 48, 55));
+                card.BorderThickness = new Thickness(1);
+                card.Opacity = 0.68;
+            }
+            else
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56));
+                card.BorderThickness = new Thickness(1);
+                card.Opacity = 1.0;
+            }
+
+            SyncCardRowTexts(t);
+
+            // Indikator rada (spinner + progress bar + live tajmer)
+            Border statusCircle;
+            TextBlock statusIcon;
+            Border spinnerRing;
+            RotateTransform spinRot;
+            ProgressBar runBar;
+            TextBlock tbElapsed;
+
+            _statusIndicatorMap.TryGetValue(t.Id, out statusCircle);
+            _statusIconMap.TryGetValue(t.Id, out statusIcon);
+            _spinnerRingMap.TryGetValue(t.Id, out spinnerRing);
+            _spinnerRotateMap.TryGetValue(t.Id, out spinRot);
+            _runningBarMap.TryGetValue(t.Id, out runBar);
+            _elapsedTextMap.TryGetValue(t.Id, out tbElapsed);
+
+            if (t.Status == TestStatus.Running)
+            {
+                if (statusCircle != null) statusCircle.Visibility = Visibility.Collapsed;
+                if (spinnerRing != null) spinnerRing.Visibility = Visibility.Visible;
+                if (spinRot != null)
+                {
+                    DoubleAnimation anim = new DoubleAnimation(0.0, 360.0, new Duration(TimeSpan.FromMilliseconds(900)));
+                    anim.RepeatBehavior = RepeatBehavior.Forever;
+                    spinRot.BeginAnimation(RotateTransform.AngleProperty, anim);
+                }
+                if (runBar != null) runBar.Visibility = Visibility.Visible;
+
+                if (!_runningStartUtcMap.ContainsKey(t.Id))
+                {
+                    _runningStartUtcMap[t.Id] = DateTime.UtcNow;
+                }
+                if (_runningUiTimer != null && !_runningUiTimer.IsEnabled)
+                {
+                    _runningUiTimer.Start();
+                }
+                if (tbElapsed != null)
+                {
+                    int sec = (int)Math.Max(0, (DateTime.UtcNow - _runningStartUtcMap[t.Id]).TotalSeconds);
+                    tbElapsed.Text = FormatShortDuration(sec);
+                    tbElapsed.Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                    tbElapsed.Visibility = Visibility.Visible;
+                }
+            }
+            else
+            {
+                _runningStartUtcMap.Remove(t.Id);
+                if (_runningStartUtcMap.Count == 0 && _runningUiTimer != null && _runningUiTimer.IsEnabled)
+                {
+                    _runningUiTimer.Stop();
+                }
+
+                if (spinRot != null) spinRot.BeginAnimation(RotateTransform.AngleProperty, null);
+                if (spinnerRing != null) spinnerRing.Visibility = Visibility.Collapsed;
+                if (runBar != null) runBar.Visibility = Visibility.Collapsed;
+                if (statusCircle != null) statusCircle.Visibility = Visibility.Visible;
+
+                if (tbElapsed != null)
+                {
+                    if (t.DurationSeconds > 0)
+                    {
+                        tbElapsed.Text = FormatShortDuration(t.DurationSeconds);
+                        tbElapsed.Foreground = new SolidColorBrush(Color.FromRgb(136, 136, 136));
+                        tbElapsed.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        tbElapsed.Visibility = Visibility.Collapsed;
+                    }
                 }
             }
 
-            Border statusBorder = cg.Children[1] as Border;
-            TextBlock tbStatus = statusBorder != null ? statusBorder.Child as TextBlock : null;
+            if (statusCircle != null && statusIcon != null)
+            {
+                switch (t.Status)
+                {
+                    case TestStatus.Pending:
+                        statusCircle.Background = hasWarn
+                            ? new SolidColorBrush(Color.FromRgb(210, 153, 34))
+                            : new SolidColorBrush(Color.FromRgb(55, 60, 72));
+                        statusIcon.Text = hasWarn ? "!" : "○";
+                        break;
+                    case TestStatus.Pass:
+                        statusCircle.Background = t.HasWarning
+                            ? new SolidColorBrush(Color.FromRgb(217, 130, 15))
+                            : new SolidColorBrush(Color.FromRgb(35, 134, 54));
+                        statusIcon.Text = t.HasWarning ? "!" : "✓";
+                        break;
+                    case TestStatus.Fail:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                        statusIcon.Text = "✗";
+                        break;
+                    case TestStatus.Skip:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(108, 117, 125));
+                        statusIcon.Text = "»";
+                        break;
+                    case TestStatus.NotApplicable:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(60, 65, 75));
+                        statusIcon.Text = "—";
+                        break;
+                }
+            }
 
-            if (tbStatus != null)
+            Border statusBorder;
+            TextBlock tbStatus;
+            _statusBadgeMap.TryGetValue(t.Id, out statusBorder);
+            _statusBadgeTextMap.TryGetValue(t.Id, out tbStatus);
+
+            if (statusBorder != null && tbStatus != null)
             {
                 switch (t.Status)
                 {
                     case TestStatus.Pending:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(55, 60, 72));
-                        tbStatus.Text = "⏳ Čeka";
+                        tbStatus.Text = "ČEKA";
                         break;
                     case TestStatus.Running:
-                        statusBorder.Background = new SolidColorBrush(Color.FromRgb(217, 150, 15));
-                        tbStatus.Text = "🔄 U toku";
+                        statusBorder.Background = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                        tbStatus.Text = "U TOKU";
                         break;
                     case TestStatus.Pass:
                         if (t.HasWarning)
                         {
                             statusBorder.Background = new SolidColorBrush(Color.FromRgb(217, 130, 15));
-                            tbStatus.Text = "⚠ PASS (UPOZ.)";
+                            tbStatus.Text = "UPOZ.";
                         }
                         else
                         {
-                            statusBorder.Background = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-                            tbStatus.Text = "✓ PASS";
+                            statusBorder.Background = new SolidColorBrush(Color.FromRgb(35, 134, 54));
+                            tbStatus.Text = "PASS";
                         }
                         break;
                     case TestStatus.Fail:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                        tbStatus.Text = "❌ FAIL";
+                        tbStatus.Text = "FAIL";
                         break;
                     case TestStatus.Skip:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(108, 117, 125));
-                        tbStatus.Text = "⏭️ SKIP";
+                        tbStatus.Text = "SKIP";
                         break;
                     case TestStatus.NotApplicable:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(60, 65, 75));
-                        tbStatus.Text = "⚪ N/A";
+                        tbStatus.Text = "N/A";
                         break;
                 }
             }
@@ -1261,17 +1653,14 @@ namespace WIS.HwTest
                             UpdateSummaryBadge();
                         }));
 
+                        HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test '{0}' ({1})", item.Id, item.Title));
+
                         TestItemResult result = ExecuteAutoWorkerById(id, (msg) =>
                         {
                             Dispatcher.BeginInvoke(new Action(() =>
                             {
                                 item.MetricSummary = msg;
-                                TextBlock tm;
-                                if (_metricTextMap.TryGetValue(item.Id, out tm))
-                                {
-                                    tm.Text = msg;
-                                    tm.Visibility = Visibility.Visible;
-                                }
+                                SyncCardRowTexts(item);
                             }));
                         });
 
@@ -1361,12 +1750,7 @@ namespace WIS.HwTest
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             item.MetricSummary = msg;
-                            TextBlock tm;
-                            if (_metricTextMap.TryGetValue(item.Id, out tm))
-                            {
-                                tm.Text = msg;
-                                tm.Visibility = Visibility.Visible;
-                            }
+                            SyncCardRowTexts(item);
                         }));
                     });
                 }
@@ -1411,7 +1795,7 @@ namespace WIS.HwTest
         {
             if (_btnRunAutoSuite != null)
             {
-                _btnRunAutoSuite.Content = busy ? "⏹ Zaustavi stres" : "⚡ Pokreni automatski stres paket";
+                _btnRunAutoSuite.Content = busy ? "⏹ Zaustavi" : "⚡ Stres paket";
                 _btnRunAutoSuite.Background = busy
                     ? new SolidColorBrush(Color.FromRgb(185, 65, 50))
                     : new SolidColorBrush(Color.FromRgb(0, 122, 204));
@@ -1546,12 +1930,7 @@ namespace WIS.HwTest
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             item.MetricSummary = msg;
-                            TextBlock tm;
-                            if (_metricTextMap.TryGetValue(item.Id, out tm))
-                            {
-                                tm.Text = msg;
-                                tm.Visibility = Visibility.Visible;
-                            }
+                            SyncCardRowTexts(item);
                         }));
                     });
                 }
@@ -1579,9 +1958,19 @@ namespace WIS.HwTest
 
         private void UpdateSummaryBadge()
         {
-            int pass = 0, warn = 0, fail = 0, skip = 0, na = 0, pending = 0;
+            int pass = 0, warn = 0, fail = 0, skip = 0, na = 0, pending = 0, running = 0;
+            int manualTotal = 0, manualDone = 0;
             foreach (TestItemResult t in _testItems)
             {
+                if (!t.IsAutomated && t.Status != TestStatus.NotApplicable)
+                {
+                    manualTotal++;
+                    if (t.Status != TestStatus.Pending && t.Status != TestStatus.Running)
+                    {
+                        manualDone++;
+                    }
+                }
+
                 if (t.Status == TestStatus.Pass)
                 {
                     pass++;
@@ -1590,29 +1979,61 @@ namespace WIS.HwTest
                 else if (t.Status == TestStatus.Fail) fail++;
                 else if (t.Status == TestStatus.Skip) skip++;
                 else if (t.Status == TestStatus.NotApplicable) na++;
+                else if (t.Status == TestStatus.Running) running++;
                 else pending++;
             }
 
+            int applicable = pass + fail + skip + pending + running;
+            int completed = pass + fail + skip;
+            double pct = applicable > 0 ? Math.Round((completed * 100.0) / applicable, 1) : 100.0;
+
+            if (_overallProgressBar != null)
+            {
+                _overallProgressBar.Value = pct;
+                if (fail > 0)
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                else if ((pending + running) == 0)
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(46, 204, 113));
+                else
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+            }
+
+            if (_manualSectionCountText != null)
+            {
+                _manualSectionCountText.Text = string.Format("{0}/{1} završeno", manualDone, manualTotal);
+            }
+
+            Brush badgeBg;
             if (fail > 0)
             {
-                _summaryBadge.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                _summaryBadge.Text = string.Format("❌ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
+                badgeBg = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                _summaryBadge.Text = string.Format("✗ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
+            }
+            else if (running > 0)
+            {
+                badgeBg = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                _summaryBadge.Text = string.Format("▶ {0} U TOKU | {1}/{2} završeno", running, completed, applicable);
             }
             else if (pending > 0)
             {
-                _summaryBadge.Background = new SolidColorBrush(Color.FromRgb(217, 150, 15));
+                badgeBg = new SolidColorBrush(Color.FromRgb(217, 150, 15));
                 _summaryBadge.Text = (na > 0)
-                    ? string.Format("⏳ U toku ({0} preostalo | {1} odsutno)", pending, na)
-                    : string.Format("⏳ U toku ({0} preostalo)", pending);
+                    ? string.Format("⏳ {0}/{1} ({2} odsutno)", completed, applicable, na)
+                    : string.Format("⏳ {0}/{1} završeno", completed, applicable);
             }
             else
             {
-                _summaryBadge.Background = warn > 0
+                badgeBg = warn > 0
                     ? new SolidColorBrush(Color.FromRgb(217, 130, 15))
-                    : new SolidColorBrush(Color.FromRgb(40, 167, 69));
+                    : new SolidColorBrush(Color.FromRgb(35, 134, 54));
                 _summaryBadge.Text = warn > 0
-                    ? string.Format("⚠ ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", pass, warn, skip)
-                    : string.Format("✓ SVI TESTOVI ZAVRŠENI ({0} PASS, {1} SKIP)", pass, skip);
+                    ? string.Format("! ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", pass, warn, skip)
+                    : string.Format("✓ ZAVRŠENO ({0} PASS, {1} SKIP)", pass, skip);
+            }
+
+            if (_summaryBadgeBorder != null)
+            {
+                _summaryBadgeBorder.Background = badgeBg;
             }
         }
 
@@ -1804,17 +2225,14 @@ namespace WIS.HwTest
                                 UpdateSummaryBadge();
                             }));
 
+                            HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test '{0}' ({1})", item.Id, item.Title));
+
                             TestItemResult result = ExecuteAutoWorkerById(id, (msg) =>
                             {
                                 Dispatcher.BeginInvoke(new Action(() =>
                                 {
                                     item.MetricSummary = msg;
-                                    TextBlock tm;
-                                    if (_metricTextMap.TryGetValue(item.Id, out tm))
-                                    {
-                                        tm.Text = msg;
-                                        tm.Visibility = Visibility.Visible;
-                                    }
+                                    SyncCardRowTexts(item);
                                 }));
                             });
 

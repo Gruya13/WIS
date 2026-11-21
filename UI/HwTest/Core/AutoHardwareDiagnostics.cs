@@ -26,6 +26,7 @@ namespace WIS.HwTest.Core
         private readonly object _sensorLock = new object();
         private ThermalSensorEngine _sensorEngine;
         private bool _sensorInitAttempted;
+        private bool _sensorTimedOut;
         private bool _disposed;
 
         private ThermalSensorEngine GetSensors()
@@ -52,13 +53,52 @@ namespace WIS.HwTest.Core
 
         public ThermalSensorEngine EnsureSensorsAndUpdate()
         {
-            ThermalSensorEngine eng = GetSensors();
-            if (eng != null)
+            if (_sensorTimedOut || _disposed) return null;
+
+            ThermalSensorEngine resultEng = null;
+            bool completed = false;
+            object waitSync = new object();
+
+            Thread t = new Thread(() =>
             {
-                try { eng.Update(); }
+                ThermalSensorEngine localEng = null;
+                try
+                {
+                    localEng = GetSensors();
+                    if (localEng != null)
+                    {
+                        localEng.Update();
+                    }
+                }
                 catch { }
+                finally
+                {
+                    lock (waitSync)
+                    {
+                        resultEng = localEng;
+                        completed = true;
+                        Monitor.PulseAll(waitSync);
+                    }
+                }
+            });
+            t.IsBackground = true;
+            t.Start();
+
+            lock (waitSync)
+            {
+                if (!completed)
+                {
+                    Monitor.Wait(waitSync, 4000);
+                }
             }
-            return eng;
+
+            if (!completed)
+            {
+                _sensorTimedOut = true;
+                HwTestLogger.Warn("AUTO_SENSORS", "EnsureSensorsAndUpdate prekoracio 4000ms timeout - nastavljam bez termalnih senzora.");
+                return null;
+            }
+            return resultEng;
         }
 
         public void Dispose()
@@ -2060,6 +2100,8 @@ namespace WIS.HwTest.Core
             }
 
             float peakTemp = 0f;
+            float minTemp = 0f;
+            int tempSamples = 0;
             float avgClock = 0f;
             int clockSamples = 0;
             float maxThrottle = 0f;
@@ -2119,7 +2161,12 @@ namespace WIS.HwTest.Core
                     catch { }
                 }
 
-                if (curTemp > peakTemp) peakTemp = curTemp;
+                if (curTemp > 0f)
+                {
+                    if (curTemp > peakTemp) peakTemp = curTemp;
+                    if (minTemp <= 0f || curTemp < minTemp) minTemp = curTemp;
+                    tempSamples++;
+                }
                 if (curThrottle > maxThrottle) maxThrottle = curThrottle;
                 if (curClock > 0)
                 {
@@ -2173,6 +2220,20 @@ namespace WIS.HwTest.Core
             }
 
             float meanClockMhz = clockSamples > 0 ? (avgClock / clockSamples) : 0f;
+            string rawSensorSrc = eng != null ? eng.SensorSource : "NONE";
+            bool staticAcpiZone = (
+                string.Equals(rawSensorSrc, "WMI_ACPI", StringComparison.OrdinalIgnoreCase) &&
+                tempSamples >= 4 &&
+                peakTemp > 0f &&
+                peakTemp <= 32.0f &&
+                (peakTemp - minTemp) < 0.5f
+            );
+            float rawAcpiTemp = peakTemp;
+            if (staticAcpiZone)
+            {
+                peakTemp = 0f;
+            }
+
             res.Details["cpu_name"] = cpuName;
             res.Details["cores"] = cores;
             res.Details["logical_processors"] = logical;
@@ -2183,9 +2244,16 @@ namespace WIS.HwTest.Core
             res.Details["max_fan_rpm"] = maxFanRpm;
             res.Details["worker_errors"] = workerCrashCount;
             res.Details["iterations"] = totalIterations;
-            res.Details["sensor_source"] = eng != null ? eng.SensorSource : "NONE";
+            res.Details["sensor_source"] = staticAcpiZone ? "WMI_ACPI_STATIC" : rawSensorSrc;
+            if (staticAcpiZone)
+            {
+                res.Details["sensor_static_acpi"] = true;
+                res.Details["raw_acpi_temp_c"] = Math.Round(rawAcpiTemp, 1);
+            }
 
-            string tempStr = peakTemp > 0 ? string.Format("Peak: {0:0}°C", peakTemp) : "Temp: N/A";
+            string tempStr = peakTemp > 0
+                ? string.Format("Peak: {0:0}°C", peakTemp)
+                : (staticAcpiZone ? "Temp: N/A (ACPI static)" : "Temp: N/A");
             string clkStr = meanClockMhz > 0 ? string.Format(" | Takt: {0:0} MHz", meanClockMhz) : string.Format(" | Baza: {0} MHz", baseClockMhz);
             string fanStr = maxFanRpm > 0 ? string.Format(" | Fan: {0} RPM", maxFanRpm) : "";
             res.MetricSummary = string.Format("{0} ({1}T) | {2}{3}{4}", ShortModel(cpuName, 24), threadCount, tempStr, clkStr, fanStr);
@@ -2213,13 +2281,14 @@ namespace WIS.HwTest.Core
                 res.Status = TestStatus.Fail;
                 res.Reason = string.Format("Ekstreman thermal throttling: takt pao na {0:0} MHz (baza {1} MHz) uz {2:0}°C", meanClockMhz, baseClockMhz, peakTemp);
             }
-            else if (peakTemp >= 85.0f || moderateThrottle)
+            else if (peakTemp >= 85.0f || moderateThrottle || staticAcpiZone)
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = true;
                 List<string> warns = new List<string>();
                 if (peakTemp >= 85.0f) warns.Add(string.Format("Povišena temperatura pod opterećenjem ({0:0}°C)", peakTemp));
                 if (moderateThrottle) warns.Add(string.Format("Detektovan umereni throttling (takt {0:0}/{1} MHz, throttle {2:0}%)", meanClockMhz, baseClockMhz, maxThrottle));
+                if (staticAcpiZone) warns.Add(string.Format("Statična ACPI zona ({0:0.0}°C) — pravi CPU termalni senzor nedostupan", rawAcpiTemp));
                 res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
             }
             else

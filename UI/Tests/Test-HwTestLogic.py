@@ -567,15 +567,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.2.1 u root version.json i komponentama
+        # 1. Verzije v3.2.2 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.2.1")
-        self.assertEqual(root_ver["release_package"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.5.0")
+        self.assertEqual(root_ver["version"], "3.2.2")
+        self.assertEqual(root_ver["release_package"]["version"], "3.2.2")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.2.2")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.2.2")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.2.2")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.2.2")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.5.1")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -837,7 +837,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.2.1";', result_src)
+        self.assertIn('AppVersion = "3.2.2";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -906,6 +906,23 @@ class TestHwTestComponents(unittest.TestCase):
             self.assertIn("ig-systems", low, f"Nedostaje IG-Systems u {path}")
         for doc_md in (ROOT / "docs").rglob("*.md"):
             self.assertNotIn(forbidden_brand, doc_md.read_text(encoding="utf-8").lower(), f"Zaostali brend u {doc_md}")
+
+    def test_wis_task_262_v330_hwtest_improvements(self):
+        """Proverava IMP-10 (timeout 6000ms + WMI_ACPI_STATIC) i IMP-14 (4000ms senzor guard + TEST_START log)."""
+        mpc_src = (HWTEST_DIR / "Core" / "ModelProfileClient.cs").read_text(encoding="utf-8")
+        kb_part = mpc_src.split("/api/keyboard-layout", 1)[1].split("public bool PostKeyboardOverride", 1)[0]
+        self.assertIn("req.Timeout = 6000;", kb_part)
+        self.assertIn("req.ReadWriteTimeout = 6000;", kb_part)
+
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        self.assertGreaterEqual(shell_src.count('HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test'), 2)
+
+        autodiag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        self.assertIn("private bool _sensorTimedOut;", autodiag_src)
+        self.assertIn("Monitor.Wait(waitSync, 4000);", autodiag_src)
+        self.assertIn("WMI_ACPI_STATIC", autodiag_src)
+        self.assertIn('"sensor_static_acpi"', autodiag_src)
+        self.assertIn('"raw_acpi_temp_c"', autodiag_src)
 
 
 if __name__ == "__main__":

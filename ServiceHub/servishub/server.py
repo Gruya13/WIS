@@ -143,8 +143,30 @@ def run_hub_server(
     print("=" * 70)
     print(" Pritisnite Ctrl+C za prekid servera.\n")
 
+    import threading as _wh_threading
+    watcher_stop = _wh_threading.Event()
+
+    def _harvest_pool_watcher():
+        # Kratko čekanje pri startu, zatim skeniranje na svakih 300s
+        if watcher_stop.wait(10.0):
+            return
+        while not watcher_stop.is_set():
+            try:
+                packs_dir = getattr(cfg, "model_packs_dir", None)
+                if driver_pool_mgr is not None and packs_dir:
+                    res = driver_pool_mgr.scan_and_ingest_archives(packs_dir)
+                    if res.get("ingested", 0) > 0:
+                        print(f"[DriverPool Watcher] Automatski ingestovano {res.get('ingested')} novih Harvest arhiva.")
+            except Exception as ex:
+                print(f"[DriverPool Watcher] Upozorenje pri skeniranju: {ex}")
+            if watcher_stop.wait(300.0):
+                break
+
+    _wh_threading.Thread(target=_harvest_pool_watcher, name="wis-harvest-pool-watcher", daemon=True).start()
+
     def handle_shutdown(signum, frame):
         print("\n[!] Zaustavljam Servisni Hub...")
+        watcher_stop.set()
         udp_srv.running = False
         httpd.server_close()
         print("[OK] Server je ugašen.")

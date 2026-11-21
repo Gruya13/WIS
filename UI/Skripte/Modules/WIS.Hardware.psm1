@@ -2152,27 +2152,54 @@ function Resolve-MissingDriversFromHub {
         if ($biosInfo -and $biosInfo.SerialNumber) { $sysSerial = $biosInfo.SerialNumber.Trim() }
     } catch {}
 
-    # 1. Pronalaženje svih aktivnih uređaja sa stvarnim kodom greške drajvera (isključuje kod 14 PendingRestart, 22 Disabled, 45 Disconnected i ROOT/SWD)
-    $badDevices = @()
-    try {
-        $badDevices = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
+    function Get-WisProblematicPnpDevices {
+        $collected = [System.Collections.Generic.List[object]]::new()
+        $seenIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+        $allPnp = @()
+        try {
+            $allPnp = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue)
+        } catch {
+            try {
+                $allPnp = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue)
+            } catch {}
+        }
+
+        foreach ($d in ($allPnp | Where-Object {
             $_.ConfigManagerErrorCode -and
             $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
             $_.HardwareID -and
             $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
             $_.DeviceID -notmatch '^(ROOT|SWD)\\'
-        })
-    } catch {
+        })) {
+            if ($d.DeviceID -and $seenIds.Add($d.DeviceID)) { $collected.Add($d) }
+        }
+
+        # IMP-17: Microsoft Basic Display Adapter / Standard VGA ima ConfigManagerErrorCode = 0 ali nedostaje pravi GPU drajver
+        $basicGpuIds = @()
         try {
-            $badDevices = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-                $_.ConfigManagerErrorCode -and
-                $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
-                $_.HardwareID -and
-                $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
-                $_.DeviceID -notmatch '^(ROOT|SWD)\\'
-            })
+            $basicGpuIds = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -match '(?i)Microsoft Basic Display Adapter|Standard VGA' -and $_.PNPDeviceID -match '^PCI\\VEN_'
+            } | Select-Object -ExpandProperty PNPDeviceID)
         } catch {}
+
+        foreach ($d in ($allPnp | Where-Object {
+            $_.HardwareID -and
+            $_.DeviceID -match '^PCI\\VEN_' -and
+            (
+                ($_.Name -match '(?i)Microsoft Basic Display Adapter|Standard VGA') -or
+                ($_.Description -match '(?i)Microsoft Basic Display Adapter|Standard VGA') -or
+                ($basicGpuIds -contains $_.DeviceID)
+            )
+        })) {
+            if ($d.DeviceID -and $seenIds.Add($d.DeviceID)) { $collected.Add($d) }
+        }
+
+        return @($collected)
     }
+
+    # 1. Pronalaženje svih aktivnih uređaja sa stvarnim kodom greške drajvera + Microsoft Basic Display Adapter (IMP-17)
+    $badDevices = @(Get-WisProblematicPnpDevices)
 
     if (-not $badDevices -or $badDevices.Count -eq 0) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -2212,18 +2239,7 @@ function Resolve-MissingDriversFromHub {
             $poolCleanModel = if (Get-Command Get-CleanComputerModel -ErrorAction SilentlyContinue) { Get-CleanComputerModel } else { $sysModel }
             try {
                 if (Invoke-DriverPoolBundleInstall -HubUrl $HubUrl -CleanModel $poolCleanModel -Manufacturer $sysMfg -MissingHwids $batchMissingHwids) {
-                    $remainingBad = @()
-                    try {
-                        $remainingBad = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-                            $_.ConfigManagerErrorCode -and
-                            $_.ConfigManagerErrorCode -notin @(0, 14, 22, 45) -and
-                            $_.HardwareID -and
-                            $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice') -and
-                            $_.DeviceID -notmatch '^(ROOT|SWD)\\'
-                        })
-                    } catch {
-                        $remainingBad = @($badDevices)
-                    }
+                    $remainingBad = @(Get-WisProblematicPnpDevices)
                     $poolSolved = [math]::Max(0, ($badDevices.Count - $remainingBad.Count))
                     $resolvedCount += $poolSolved
                     $badDevices = $remainingBad

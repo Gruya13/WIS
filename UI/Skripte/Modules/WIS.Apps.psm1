@@ -3642,6 +3642,16 @@ function Invoke-Phase4Apps {
         }
 
         $rarCandidates = @(Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($rarCandidates.Count -eq 0 -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Lokalni WinRAR instaler nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "WinRAR"
+            }
+            $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+            if (Test-Path "C:\setup\Programi") {
+                $activeProgDir = "C:\setup\Programi"
+            }
+            $rarCandidates = @(Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        }
         $wrInstalledNow = $false
         $rarExe = $null
 
@@ -3774,6 +3784,23 @@ function Invoke-Phase4Apps {
         if (-not $msiPath -and (Test-Path $activeProgDir)) {
             $foundMsi = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($foundMsi) { $msiPath = $foundMsi.FullName }
+        }
+        if (-not $msiPath -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            $hasChromeExeLoc = @(Get-ChildItem -Path $activeProgDir -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "(?i)chrome.*(standalone|setup|install)" -or $_.Name -eq "ChromeStandaloneSetup64.exe" }).Count -gt 0
+            if (-not $hasChromeExeLoc) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Lokalni Google Chrome paket nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "Chrome"
+                }
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+                if (Test-Path "C:\setup\Programi") {
+                    $activeProgDir = "C:\setup\Programi"
+                }
+                $msiPath = $chromeMsiCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+                if (-not $msiPath -and (Test-Path "C:\setup\Programi")) {
+                    $foundMsiAfterSync = Get-ChildItem -Path "C:\setup\Programi" -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($foundMsiAfterSync) { $msiPath = $foundMsiAfterSync.FullName }
+                }
+            }
         }
 
         $installedOk = $false

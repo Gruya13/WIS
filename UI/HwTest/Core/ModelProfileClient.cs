@@ -197,7 +197,8 @@ namespace WIS.HwTest.Core
                 string url = string.Format("{0}/api/keyboard-layout?{1}", _hubBaseUrl, qs.ToString());
                 HwTestLogger.Info("HUB", "GET " + url);
                 HttpWebRequest req = (HttpWebRequest)WebRequest.Create(url);
-                req.Timeout = 2000;
+                req.Timeout = 6000;
+                req.ReadWriteTimeout = 6000;
                 req.Method = "GET";
 
                 using (HttpWebResponse resp = (HttpWebResponse)req.GetResponse())

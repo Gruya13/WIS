@@ -1843,6 +1843,37 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             self._send_json(res, 200)
             return
 
+        if path == "/api/drivers/pool/notify-harvest":
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            packs_dir = getattr(self.config, "model_packs_dir", None)
+            target_archive = str(payload.get("archive") or payload.get("filename") or "").strip()
+            if not target_archive and payload.get("model"):
+                from servishub.drivers.pool import sanitize_model_pack_name
+                clean_m = sanitize_model_pack_name(str(payload.get("model")))
+                if clean_m and clean_m != "Unknown_Model":
+                    target_archive = f"{clean_m}.tar"
+            sync_mode = bool(payload.get("sync", False))
+            pool_mgr = self._get_driver_pool_mgr()
+            if sync_mode:
+                try:
+                    res = pool_mgr.scan_and_ingest_archives(packs_dir, target_archive=target_archive or None)
+                    self._send_json(res, 200)
+                except Exception as ex:
+                    self._send_json({"error": f"Greška pri skeniranju Harvest arhiva: {ex}"}, 500)
+                return
+            job = pool_mgr.start_background_job(
+                "notify_harvest",
+                pool_mgr.scan_and_ingest_archives,
+                packs_dir,
+                target_archive=target_archive or None,
+            )
+            self._send_json({"status": "accepted", "job": job, "target_archive": target_archive or None}, 202)
+            return
+
         if path == "/api/drivers/resolve":
             if not isinstance(payload, dict):
                 self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
