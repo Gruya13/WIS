@@ -396,16 +396,94 @@ def generate_markdown_report(report_data: dict) -> str:
     return "\n".join(lines)
 
 
-def save_device_report(device_id: str, payload: dict, reports_dir: str) -> tuple[str, str, str, str]:
+def save_device_report(
+    device_id: str,
+    payload: dict,
+    reports_dir: str,
+    dedup_window_sec: int = 1800,
+) -> tuple[str, str, str, str]:
     """
     Arhivira JSON i Markdown servisni karton na disk.
+    Ako unutar `dedup_window_sec` (podrazumevano 30 min) već postoji izveštaj
+    za isti `clean_id` (uz kompatibilan `serial_number` i `session_id`/`run_id`),
+    ažurira taj postojeći izveštaj umesto pravljenja duplih fajlova.
     Vraća (json_filepath, md_filepath, json_filename, md_filename).
     """
+    import json as _rep_json
+    import time as _rep_time
+
     os.makedirs(reports_dir, exist_ok=True)
     clean_id = sanitize_id(device_id)
-    date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    json_filename = f"{date_str}_{clean_id}.json"
-    md_filename = f"{date_str}_{clean_id}.md"
+    now_ts = _rep_time.time()
+
+    def _extract_sn(rec: dict) -> str:
+        if not isinstance(rec, dict):
+            return ""
+        hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else (rec.get("hardware") if isinstance(rec.get("hardware"), dict) else {})
+        raw_sn = str(rec.get("serial_number") or rec.get("serial") or hw.get("serial") or "").strip()
+        if raw_sn.lower() in ("", "unknown", "none", "n/a", "to be filled by o.e.m.", "default string"):
+            return ""
+        return raw_sn.lower()
+
+    def _extract_sid(rec: dict) -> str:
+        if not isinstance(rec, dict):
+            return ""
+        return str(rec.get("session_id") or rec.get("run_id") or "").strip()
+
+    in_sn = _extract_sn(payload)
+    in_sid = _extract_sid(payload)
+
+    reuse_json_filename = None
+    reuse_md_filename = None
+    if dedup_window_sec and dedup_window_sec > 0:
+        suffix = f"_{clean_id}.json"
+        candidates = []
+        try:
+            for fn in os.listdir(reports_dir):
+                if not fn.endswith(suffix) or fn.endswith(".tmp"):
+                    continue
+                fp = os.path.join(reports_dir, fn)
+                if not os.path.isfile(fp):
+                    continue
+                try:
+                    mtime = os.path.getmtime(fp)
+                except OSError:
+                    continue
+                if (now_ts - mtime) <= dedup_window_sec:
+                    candidates.append((mtime, fn, fp))
+        except OSError:
+            candidates = []
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _, cand_fn, cand_fp in candidates:
+            try:
+                with open(cand_fp, "r", encoding="utf-8") as f:
+                    old_data = _rep_json.load(f)
+            except Exception:
+                old_data = {}
+            old_sn = _extract_sn(old_data)
+            old_sid = _extract_sid(old_data)
+            if in_sn and old_sn and in_sn != old_sn:
+                continue
+            if in_sid and old_sid and in_sid != old_sid:
+                continue
+            reuse_json_filename = cand_fn
+            reuse_md_filename = cand_fn[:-5] + ".md"
+            break
+
+    if reuse_json_filename and reuse_md_filename:
+        json_filename = reuse_json_filename
+        md_filename = reuse_md_filename
+    else:
+        date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_filename = f"{date_str}_{clean_id}.json"
+        md_filename = f"{date_str}_{clean_id}.md"
+        seq = 1
+        while os.path.exists(os.path.join(reports_dir, json_filename)):
+            json_filename = f"{date_str}_{seq}_{clean_id}.json"
+            md_filename = f"{date_str}_{seq}_{clean_id}.md"
+            seq += 1
+
     json_filepath = os.path.join(reports_dir, json_filename)
     md_filepath = os.path.join(reports_dir, md_filename)
 

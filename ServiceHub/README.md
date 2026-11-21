@@ -1,6 +1,6 @@
 # ServisHub u WIS monorepo-u (`IG-Systems`)
 
-Komponentna razvojna verzija: **3.5.0**, u WIS paketu **3.2.0**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
+Komponentna razvojna verzija: **3.6.0**, u WIS paketu **3.4.0**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
 
 Aktivni razvoj servera nalazi se u `ServiceHub/` ovog repozitorijuma. Prethodni samostalni direktorijum je arhiva; produkcioni NAS nije menjan. Opis API-ja ispod čuva prethodne funkcionalnosti, dok je sledeći ugovor merodavan za release pipeline razvoja 2.17.
 
@@ -16,13 +16,13 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 ---
 
 # ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
-### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), jedinstveni Driver Pool (CAS) & OEM XML kataloge, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.5.0)
+### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), jedinstveni Driver Pool (CAS) & OEM XML kataloge, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.6.0)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-brightgreen.svg)]()
 [![Docker Ready](https://img.shields.io/badge/Docker-TrueNAS%20SCALE-blueviolet.svg)]()
 
-[![Version](https://img.shields.io/badge/Release-v3.5.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/Release-v3.6.0-orange.svg)]()
 
 ---
 
@@ -45,7 +45,7 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 
 **ServisHub** je centralni višenamenski kontrolni server, telemetrijski agregator, pametni keširajući proksi za drajvere, upravljač butabilnih instalacionih medija i OTA (Over-The-Air) distributivni repozitorijum razvijen za potrebe servisa računara **"WIS Service"**.
 
-U verziji **v3.4.0** (`WIS v3.1.0`), pored **1 Hz Live Ogledala Ekrana**, daljinskih komandi (`reboot_uefi`, `reboot_pxe`, `skip_step`, `cancel`, `abort`), telemetrije i trozupca OEM provajdera (Lenovo, Dell, HP), ServisHub uvodi fail-closed autentifikaciju za administrativne rute (`SERVIS_HUB_ADMIN_TOKEN`, HTTP `503` bez eksplicitnog `SERVIS_HUB_ALLOW_UNAUTHENTICATED_LAN`), opcioni `SERVIS_HUB_CLIENT_TOKEN` (`X-ServisHub-Client-Token`), konfigurabilnu CORS allowlist-u (`SERVIS_HUB_CORS_ORIGINS`), `429` SSE limite, validaciju `.tar` model pakova (`_validate_model_pack_tar_archive`), `bsdtar` cross-model `.inf` HWID indeks (`inf_hwid_index.json`), kanonsku deduplikaciju po serijskom broju/SMBIOS UUID-u, TTL/RAM kapu za Screen Mirror i 30-dnevnu rotaciju logova, kohorte u **WIS Benchmark** (`v3_modern` vs `legacy` + `phase5_timing` + `None`/`N/A` pri nultim transferima), jedinstveni `compute_handover_status`, te atomične upise izveštaja i profila:
+U verziji **v3.6.0** (`WIS v3.4.0`), pored CAS **Driver Pool**-a, zvaničnih Dell/HP/Lenovo OEM XML kataloga (`v3.5.0`), **1 Hz Live Ogledala Ekrana**, daljinskih komandi (`reboot_uefi`, `reboot_pxe`, `skip_step`, `cancel`, `abort`), telemetrije i trozupca OEM provajdera (Lenovo, Dell, HP), ServisHub obezbeđuje fail-closed autentifikaciju za administrativne rute (`SERVIS_HUB_ADMIN_TOKEN`, HTTP `503` bez eksplicitnog `SERVIS_HUB_ALLOW_UNAUTHENTICATED_LAN`), fail-closed `SERVIS_HUB_CLIENT_TOKEN` (`X-ServisHub-Client-Token`) na `/api/updates/upload`, `/api/drivers/model-pack/upload` i `POST /api/drivers/pool/notify-harvest`, auto-ingest `<Model>.tar` berbi (`scan_and_ingest_archives` + 300s `_harvest_pool_watcher`), `/device/<id>` & `/karton/<id>` deep-link rute za QR kod, `14400s` outlier prag u **WIS Benchmark**-u + `1800s` deduplikaciju izveštaja (`reports.py`), konfigurabilnu CORS allowlist-u (`SERVIS_HUB_CORS_ORIGINS`), `429` SSE limite, validaciju `.tar` model pakova (`_validate_model_pack_tar_archive`), `bsdtar` cross-model `.inf` HWID indeks (`inf_hwid_index.json`), kanonsku deduplikaciju po serijskom broju/SMBIOS UUID-u, TTL/RAM kapu za Screen Mirror i 30-dnevnu rotaciju logova, kohorte u **WIS Benchmark** (`v3_modern` vs `legacy` + `phase5_timing` + `None`/`N/A` pri nultim transferima), jedinstveni `compute_handover_status`, te atomične upise izveštaja i profila:
 - **WIS Benchmark & Analitika Flote (`servishub/benchmark.py`):** Automatsko merenje trajanja svake faze (Faze 1–6), LAN/WAN protoka u Mbps, `Cache Hit Ratio` / `Byte Hit Ratio` efikasnosti keša, `First-Pass Success Rate`, P50/P90 percentila po modelima, spajanja parcijalnih `DESKTOP-*` i punih `TK-*` izveštaja (`_merge_report_records`, uz očuvanje `hwtest`), usklađivanja `recent_runs.status = "NEEDS_ATTENTION"` kad je `success == False`, i MTM alias kanonikalizacije.
 - **Predictive Cache & Model DNA (`servishub/predictive_cache.py`, `model_profiles.py`):** Pre-arrival zagrevanje keša (`POST /api/predictive/prewarm`, `GET /api/predictive/status`) sa računanjem `Readiness Score` (`0–100%`) i učenjem hardverskog HWID otiska (`model_aliases` MTM $\leftrightarrow$ marketinški naziv).
 - **1 Hz Live Ogledala Ekrana (Screen Mirror):** Uživo praćenje ekrana klijentskih mašina u radionici preko laganog in-memory JPEG bafera (5s TTL).
@@ -70,8 +70,8 @@ U verziji **v3.4.0** (`WIS v3.1.0`), pored **1 Hz Live Ogledala Ekrana**, daljin
 
 ```text
 ServiceHub/
-├── servishub/                     # Glavni modularni Python paket (v3.4.0)
-│   ├── __init__.py & version.py   # Verzija (v3.4.0) i metapodaci
+├── servishub/                     # Glavni modularni Python paket (v3.6.0)
+│   ├── __init__.py & version.py   # Verzija (v3.6.0) i metapodaci
 │   ├── benchmark.py               # WIS Benchmark agregacija, P50/P90, merge izveštaja (`DESKTOP-*`/`TK-*`) i MTM normalizacija
 │   ├── predictive_cache.py        # Pre-Arrival Pre-Warming motor i Readiness Score (0-100%)
 │   ├── model_profiles.py          # Perzistencija profila modela (tastatura/USB/Model DNA & model_aliases)
@@ -243,6 +243,8 @@ Kada Windows prijavi nepoznat uređaj u Device Manager-u, njegov identifikator �
 | `/api/model-profile/dna` | `POST` | Sinhronizacija PnP HWID otiska i `model_aliases` parova za model uređaja | `{"model": str, "hwids": [...], "model_aliases": [...]}` | JSON ažurirani profil modela |
 | `/api/predictive/prewarm` | `POST` | Pre-Arrival zagrevanje keša (garancija, BOM, OEM/.cab drajveri, WU spremnost i Readiness Score) | `{"manufacturer": str, "model": str, "serial_number": str}` | JSON rezultat pre-warm posla |
 | `/api/predictive/status` | `GET` | Stanje Predictive Cache poslova, poznatih modela i Win11 LCU keša | - | JSON status spremnosti keša |
+| `/device/<id>`, `/karton/<id>` | `GET` | Deep-link rute za direktno otvaranje servisnog kartona sa QR koda (`WIS v3.4.0`) | - | `302` redirekcija na Cockpit sa parametrom |
+| `/api/drivers/pool/notify-harvest` | `POST` | Fail-closed (`X-ServisHub-Client-Token`) okidač auto-ingesta nove `<Model>.tar` berbe u Driver Pool (`v3.6.0`) | `{"archive": str, "model": str, "sync": bool}` | `202` / `200` JSON status ingesta |
 
 ---
 
@@ -840,4 +842,4 @@ Pokriveni scenariji (`309` unittest metoda u `33` test modula — `289 PASS, 20 
   - **Operativni Runbook:** `wiki/memory/ops-runbook.md`
   - **Glavni Indeks (MOC):** `wiki/index.md`
 
-`servishub.__version__` koristi generisani `VERSION=3.5.0` (`WIS v3.2.0`, **IG-Systems**). Za razvoj i unapređenja `v3.4.0`–`v3.5.0`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0254](../docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [ADR-0258](../docs/decisions/ADR-0258-jedinstveni-driver-pool-i-oem-katalozi.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).
+`servishub.__version__` koristi generisani `VERSION=3.6.0` (`WIS v3.4.0`, **IG-Systems**). Za razvoj i unapređenja `v3.4.0`–`v3.6.0`, pogledajte [ADR-0253](../docs/decisions/ADR-0253-wis-3-1-0-security-hardening-and-audit-remediation.md), [ADR-0254](../docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [ADR-0258](../docs/decisions/ADR-0258-jedinstveni-driver-pool-i-oem-katalozi.md), [ADR-0189](../docs/decisions/ADR-0189-manual-hardware-test-suite.md) i [ADR-0225](../docs/decisions/ADR-0225-wis-v300-embedded-hwtest-bidirectional-wu-and-preoobe-autopilot.md).

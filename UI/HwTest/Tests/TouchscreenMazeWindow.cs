@@ -57,16 +57,19 @@ namespace WIS.HwTest.Tests
         private bool _stylusDetected;
         private float _maxStylusPressure = 0.0f;
         private readonly TextBlock _stylusBadge;
+        private readonly Action<string> _onRequestUefiBiosReboot;
 
+        public Action<string> OnRequestUefiBiosReboot { get; set; }
         public TestItemResult Result { get; private set; }
 
-        public TouchscreenMazeWindow() : this(null)
+        public TouchscreenMazeWindow() : this(null, null)
         {
         }
 
-        public TouchscreenMazeWindow(HardwareProbeResult hwInfo)
+        public TouchscreenMazeWindow(HardwareProbeResult hwInfo, Action<string> onRequestUefiBiosReboot = null)
         {
             _hwInfo = hwInfo;
+            _onRequestUefiBiosReboot = onRequestUefiBiosReboot;
             _hasStylusPen = (_hwInfo != null && _hwInfo.HasStylusPen);
             Title = _hasStylusPen
                 ? "WIS — Test Ekrana na Dodir i Aktivne Olovke (Stylus)"
@@ -149,6 +152,41 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(30, 32, 40)),
                 Padding = new Thickness(25, 10, 25, 10)
             };
+            DockPanel footerDock = new DockPanel();
+            bool showBiosReboot = _hwInfo != null &&
+                (_hwInfo.TouchscreenDisabledInBios ||
+                 (!_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent)));
+
+            if (showBiosReboot)
+            {
+                StackPanel spBiosLeft = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                Button btnBiosReboot = new Button
+                {
+                    Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                    Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
+                    Foreground = Brushes.White,
+                    FontWeight = FontWeights.Bold,
+                    Padding = new Thickness(15, 6, 15, 6),
+                    Margin = new Thickness(0, 0, 12, 0),
+                    Cursor = Cursors.Hand
+                };
+                btnBiosReboot.Click += (s, e) => RequestUefiBiosReboot();
+                spBiosLeft.Children.Add(btnBiosReboot);
+                spBiosLeft.Children.Add(new TextBlock
+                {
+                    Text = "BIOS tasteri: HP F10, Lenovo F1, Dell F2",
+                    Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                    FontSize = 12,
+                    VerticalAlignment = VerticalAlignment.Center
+                });
+                DockPanel.SetDock(spBiosLeft, Dock.Left);
+                footerDock.Children.Add(spBiosLeft);
+            }
+
             StackPanel spFooter = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -181,30 +219,26 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(15, 6, 15, 6),
-                Margin = new Thickness(0, 0, 12, 0)
+                Padding = new Thickness(15, 6, 15, 6)
             };
             btnFail.Click += (s, e) => FinishFail();
             spFooter.Children.Add(btnFail);
 
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test ekrana na dodir",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 6, 15, 6)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            spFooter.Children.Add(btnSkip);
+            DockPanel.SetDock(spFooter, Dock.Right);
+            footerDock.Children.Add(spFooter);
 
-            footer.Child = spFooter;
+            footer.Child = footerDock;
             Grid.SetRow(footer, 2);
             root.Children.Add(footer);
 
             Content = root;
 
             Loaded += (s, e) => SetupSerpentinePhase();
-            Closed += (s, e) => StopMultitouchTimer();
+            Closed += (s, e) =>
+            {
+                _isClosingOrDone = true;
+                StopMultitouchTimer();
+            };
 
             TouchDown += OnScreenTouchDown;
             TouchMove += OnScreenTouchMove;
@@ -955,15 +989,28 @@ namespace WIS.HwTest.Tests
             SafeCloseDialog(false);
         }
 
-        private void FinishSkip()
+        private void RequestUefiBiosReboot()
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
             StopMultitouchTimer();
 
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test ekrana na dodir";
+            Result.Status = TestStatus.Pending;
+            Action<string> cb = OnRequestUefiBiosReboot ?? _onRequestUefiBiosReboot;
+            try { Topmost = false; } catch { }
             SafeCloseDialog(false);
+            if (cb != null)
+            {
+                cb("touchscreen");
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Za uključivanje ekrana na dodir restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite Touchscreen.",
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
         }
     }
 }

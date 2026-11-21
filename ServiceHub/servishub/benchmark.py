@@ -20,6 +20,7 @@ from servishub.model_profiles import list_model_profiles, normalize_model_name
 from servishub.reports import compute_handover_status
 
 PHASE_KEYS = ("Phase1", "Phase2", "Phase3", "Phase4", "Phase5", "Phase6")
+OUTLIER_DURATION_THRESHOLD_SEC = 14400.0  # 4h: zaglavljene sesije ne kvare prosek/P50/P90 flote
 
 _GENERIC_MODEL_LABELS = {
     "",
@@ -429,6 +430,8 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
     total = len(records_by_id)
     successful = 0
     durations: List[float] = []
+    raw_durations: List[float] = []
+    outlier_sessions_excluded = 0
     phase_buckets: Dict[str, List[float]] = {pk: [] for pk in PHASE_KEYS}
 
     total_hits = 0
@@ -460,21 +463,26 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
             successful += 1
 
         dur = _safe_float(bm.get("total_duration_sec"), 0.0)
+        is_outlier_dur = dur > OUTLIER_DURATION_THRESHOLD_SEC
         if dur > 0:
-            durations.append(dur)
+            raw_durations.append(dur)
+            if is_outlier_dur:
+                outlier_sessions_excluded += 1
+            else:
+                durations.append(dur)
 
         is_v3_modern = bool(bm.get("has_benchmark") or any(_safe_float(v, 0.0) > 0.0 for v in bm["phase_durations_sec"].values()))
         if is_v3_modern:
             v3_total += 1
             if ok:
                 v3_successful += 1
-            if dur > 0:
+            if dur > 0 and not is_outlier_dur:
                 v3_durations.append(dur)
         else:
             legacy_total += 1
             if ok:
                 legacy_successful += 1
-            if dur > 0:
+            if dur > 0 and not is_outlier_dur:
                 legacy_durations.append(dur)
 
         if bm.get("operator_wait_sec") is not None:
@@ -484,7 +492,7 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
 
         for pk in PHASE_KEYS:
             pv = _safe_float(bm["phase_durations_sec"].get(pk), 0.0)
-            if pv > 0:
+            if 0 < pv <= OUTLIER_DURATION_THRESHOLD_SEC and not is_outlier_dur:
                 phase_buckets[pk].append(pv)
 
         total_hits += bm["cache_hits"]
@@ -512,7 +520,7 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
         mg["count"] += 1
         if ok:
             mg["success_count"] += 1
-        if dur > 0:
+        if dur > 0 and not is_outlier_dur:
             mg["durations"].append(dur)
         mg["hits"] += bm["cache_hits"]
         mg["misses"] += bm["cache_misses"]
@@ -543,6 +551,7 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
 
     sorted_durs = sorted(durations)
     avg_dur = round(sum(durations) / len(durations), 1) if durations else 0.0
+    raw_avg_dur = round(sum(raw_durations) / len(raw_durations), 1) if raw_durations else 0.0
     p50_dur = _percentile(sorted_durs, 50.0)
     p90_dur = _percentile(sorted_durs, 90.0)
 
@@ -590,8 +599,11 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
         "successful_installations": successful,
         "success_rate_pct": success_rate_pct,
         "avg_duration_seconds": avg_dur,
+        "raw_avg_duration_seconds": raw_avg_dur,
         "p50_duration_seconds": p50_dur,
         "p90_duration_seconds": p90_dur,
+        "outlier_threshold_seconds": int(OUTLIER_DURATION_THRESHOLD_SEC),
+        "outlier_sessions_excluded": outlier_sessions_excluded,
         "phase_averages_sec": phase_averages,
         "bottleneck_phase": bottleneck_phase,
         "cohorts": {

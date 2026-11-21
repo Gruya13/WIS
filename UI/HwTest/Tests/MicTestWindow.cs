@@ -56,11 +56,17 @@ namespace WIS.HwTest.Tests
         private float _originalMicVolume = -1f;
         private bool _originalMicMuted = false;
         private bool _micVolumeModified = false;
+        private readonly Action<string> _onRequestUefiBiosReboot;
+        private readonly bool _showBiosRebootHint;
+        private readonly Border _footerBorder;
 
+        public Action<string> OnRequestUefiBiosReboot { get; set; }
         public TestItemResult Result { get; private set; }
 
-        public MicTestWindow()
+        public MicTestWindow(Action<string> onRequestUefiBiosReboot = null, bool showBiosRebootHint = false)
         {
+            _onRequestUefiBiosReboot = onRequestUefiBiosReboot;
+            _showBiosRebootHint = showBiosRebootHint;
             Title = "WIS — Test Mikrofona";
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
@@ -72,7 +78,7 @@ namespace WIS.HwTest.Tests
             Grid root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(80) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(70) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             // Header
             Border header = new Border
@@ -234,24 +240,44 @@ namespace WIS.HwTest.Tests
             Grid.SetRow(centerBorder, 1);
             root.Children.Add(centerBorder);
 
-            // Footer
-            Border footer = new Border
+            // Footer (prikazuje se samo kada je potrebno uslovno UEFI BIOS dugme)
+            _footerBorder = new Border
             {
                 Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
+                Padding = new Thickness(25, 12, 25, 12),
+                Visibility = _showBiosRebootHint ? Visibility.Visible : Visibility.Collapsed
             };
-            Button btnSkip = new Button
+            DockPanel footerDock = new DockPanel();
+            TextBlock biosHintLabel = new TextBlock
             {
-                Content = "Preskoči test mikrofona",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                HorizontalAlignment = HorizontalAlignment.Right,
-                Padding = new Thickness(15, 8, 15, 8)
+                Text = "⚠️ Mikrofon je onemogućen u BIOS-u ili nedostaje uprkos OEM BOM-u (HP: F10, Lenovo: F1, Dell: F2).",
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 16, 0)
             };
-            btnSkip.Click += (s, e) => FinishSkip();
-            footer.Child = btnSkip;
-            Grid.SetRow(footer, 2);
-            root.Children.Add(footer);
+            DockPanel.SetDock(biosHintLabel, Dock.Left);
+
+            Button btnUefiBios = new Button
+            {
+                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(16, 9, 16, 9),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btnUefiBios.Click += (s, e) => RequestUefiBiosReboot();
+            DockPanel.SetDock(btnUefiBios, Dock.Right);
+
+            footerDock.Children.Add(btnUefiBios);
+            footerDock.Children.Add(biosHintLabel);
+            _footerBorder.Child = footerDock;
+            Grid.SetRow(_footerBorder, 2);
+            root.Children.Add(_footerBorder);
 
             Content = root;
 
@@ -265,6 +291,12 @@ namespace WIS.HwTest.Tests
                 _isClosingOrDone = true;
                 _isClosing = true;
                 Interlocked.Increment(ref _micInitGeneration);
+                StopAutoPassTimer();
+                if (_recordTimer != null)
+                {
+                    try { _recordTimer.Stop(); } catch { }
+                    _recordTimer = null;
+                }
                 Thread cleanupThread = new Thread(() => {
                     try
                     {
@@ -1065,16 +1097,35 @@ namespace WIS.HwTest.Tests
             SafeCloseDialog(false);
         }
 
-        private void FinishSkip()
+        private void RequestUefiBiosReboot()
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
             _isClosing = true;
             Interlocked.Increment(ref _micInitGeneration);
             StopAutoPassTimer();
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test mikrofona";
+            if (_recordTimer != null)
+            {
+                try { _recordTimer.Stop(); } catch { }
+                _recordTimer = null;
+            }
+
+            Result.Status = TestStatus.Pending;
+            Action<string> cb = OnRequestUefiBiosReboot ?? _onRequestUefiBiosReboot;
+            try { Topmost = false; } catch { }
             SafeCloseDialog(false);
+            if (cb != null)
+            {
+                cb("mic");
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Za uključivanje mikrofona restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite ugrađeni mikrofon.",
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+            }
         }
     }
 }

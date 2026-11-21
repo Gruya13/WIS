@@ -739,14 +739,10 @@ namespace WIS.UI
                     catch { }
                 }
 
-                string formatTag = "";
-                if (screenW == 1920 && screenH == 1080) formatTag = "(FHD)";
-                else if (screenW == 1920 && screenH == 1200) formatTag = "(FHD+)";
-                else if (screenW == 2560 && screenH == 1440) formatTag = "(QHD / 2K)";
-                else if (screenW == 2560 && screenH == 1600) formatTag = "(QHD+)";
-                else if (screenW == 3840 && screenH == 2160) formatTag = "(4K UHD)";
-                else if (screenW == 1366 && screenH == 768) formatTag = "(HD)";
-                else if (screenW == 1600 && screenH == 900) formatTag = "(HD+)";
+                string resClass = LabelPrintService.ClassifyResolution(screenW, screenH);
+                string formatTag = (!string.IsNullOrEmpty(resClass) && resClass.IndexOf('x') < 0)
+                    ? string.Format("({0})", resClass)
+                    : "";
 
                 int digitizerFlags = 0;
                 int touches = 0;
@@ -780,7 +776,8 @@ namespace WIS.UI
                 int displayNits = 0;
                 int displaySrgb = 0;
                 int displayNtsc = 0;
-                GetEdidDisplayDetails(out displayModel, out displayNits, out displaySrgb, out displayNtsc);
+                double displayDiagonalInches = 0.0;
+                GetEdidDisplayDetails(out displayModel, out displayNits, out displaySrgb, out displayNtsc, out displayDiagonalInches);
 
                 string displaySpecStr = "";
                 if (!string.IsNullOrEmpty(displayModel) && displayModel != "Standardni panel")
@@ -788,6 +785,10 @@ namespace WIS.UI
                     displaySpecStr = displayModel + " • ";
                 }
                 displaySpecStr += string.Format("{0}x{1} @ {2}Hz {3}", screenW, screenH, refreshRate, formatTag).Trim();
+                if (displayDiagonalInches > 0.0)
+                {
+                    displaySpecStr += string.Format(System.Globalization.CultureInfo.InvariantCulture, " • {0:0.#}\"", displayDiagonalInches);
+                }
                 if (displayNits > 0)
                 {
                     displaySpecStr += string.Format(" • ~{0} nits (Procenjeno)", displayNits);
@@ -821,6 +822,7 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.DisplayHeight = screenH;
                         ViewModel.HardwareInfo.DisplayRefreshHz = refreshRate;
                         ViewModel.HardwareInfo.DisplayPanelType = panelType ?? "";
+                        ViewModel.HardwareInfo.DisplayDiagonalInches = displayDiagonalInches;
                         ViewModel.HardwareInfo.HasTouchscreen = hasTouch;
                         ViewModel.HardwareInfo.TouchscreenStatus = touchStatusStr;
                         ViewModel.HardwareInfo.TouchscreenBrush = touchBrush;
@@ -840,6 +842,7 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.DisplayModel = "N/A";
                         ViewModel.HardwareInfo.DisplayNits = "N/A";
                         ViewModel.HardwareInfo.DisplayColorGamut = "N/A";
+                        ViewModel.HardwareInfo.DisplayDiagonalInches = 0.0;
                         ViewModel.HardwareInfo.HasTouchscreen = false;
                         ViewModel.HardwareInfo.TouchscreenStatus = "N/A";
                     }
@@ -1231,28 +1234,29 @@ namespace WIS.UI
                 try
                 {
                     using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                        "SELECT Name, DeviceID, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE PNPClass = 'Biometric'"))
+                        "SELECT Name, Description, DeviceID, PNPClass, Service, ConfigManagerErrorCode FROM Win32_PnPEntity"))
                     {
                         foreach (ManagementObject obj in searcher.Get())
                         {
                             string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
-                            string devId = obj["DeviceID"] != null ? obj["DeviceID"].ToString() : "";
+                            string desc = obj["Description"] != null ? obj["Description"].ToString().Trim() : "";
+                            string devId = obj["DeviceID"] != null ? obj["DeviceID"].ToString().Trim() : "";
+                            string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "";
+                            string svc = obj["Service"] != null ? obj["Service"].ToString().Trim() : "";
                             uint errCode = obj["ConfigManagerErrorCode"] != null ? Convert.ToUInt32(obj["ConfigManagerErrorCode"]) : 0;
 
-                            if (name.IndexOf("Face", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                name.IndexOf("Software", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                name.IndexOf("Virtual", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                devId.IndexOf("MS_FACE", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                devId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase))
+                            bool isBiometricClass;
+                            if (!WIS.HwTest.Core.HardwareProbe.IsFingerprintPnpCandidate(name, desc, devId, pnpClass, svc, errCode, out isBiometricClass))
                             {
                                 continue;
                             }
 
-                            if (errCode == 0 && !string.IsNullOrEmpty(name))
+                            string fpCandName = !string.IsNullOrEmpty(name) ? name : desc;
+                            if (errCode == 0 && !string.IsNullOrEmpty(fpCandName))
                             {
                                 hasFp = true;
-                                fpDetectedName = name;
-                                fpStatus = string.Format(LocalizationService.Instance.GetString("HwFpYes", "👆 Da ({0})"), name);
+                                fpDetectedName = fpCandName;
+                                fpStatus = string.Format(LocalizationService.Instance.GetString("HwFpYes", "👆 Da ({0})"), fpCandName);
                                 fpBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
                                 break;
                             }
@@ -1328,6 +1332,31 @@ namespace WIS.UI
                     ? string.Format(LocalizationService.Instance.GetString("HwMicYes", "🎤 Da ({0})"), micName)
                     : LocalizationService.Instance.GetString("HwMicNo", "Nije detektovan");
 
+                bool hasWifi = false;
+                string wifiAdapterName = "";
+                string wifiStandardLabel = "";
+                bool hasBluetooth = false;
+                string bluetoothInfo = "";
+                bool hasWwan = false;
+                string wwanInfo = "";
+                string wwanAdapterName = "";
+                bool hasSmartCard = false;
+                bool hasNfc = false;
+                bool hasThunderbolt = false;
+
+                DetectWifiAndExtraPeripherals(
+                    out hasWifi,
+                    out wifiAdapterName,
+                    out wifiStandardLabel,
+                    out hasBluetooth,
+                    out bluetoothInfo,
+                    out hasWwan,
+                    out wwanInfo,
+                    out wwanAdapterName,
+                    out hasSmartCard,
+                    out hasNfc,
+                    out hasThunderbolt);
+
                 Dispatcher.BeginInvoke((Action)delegate
                 {
                     if (ViewModel.HardwareInfo != null)
@@ -1357,10 +1386,343 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.MicDeviceName = micName;
                         ViewModel.HardwareInfo.MicrophoneStatus = finalMicStatus;
                         ViewModel.HardwareInfo.MicrophoneBrush = micBrush;
+
+                        ViewModel.HardwareInfo.WifiAdapterName = wifiAdapterName;
+                        ViewModel.HardwareInfo.WifiStandardLabel = wifiStandardLabel;
+                        ViewModel.HardwareInfo.HasWifi = hasWifi;
+                        ViewModel.HardwareInfo.HasBluetooth = hasBluetooth;
+                        ViewModel.HardwareInfo.BluetoothInfo = bluetoothInfo;
+                        ViewModel.HardwareInfo.WwanAdapterName = wwanAdapterName;
+                        ViewModel.HardwareInfo.WwanInfo = wwanInfo;
+                        ViewModel.HardwareInfo.HasWwan = hasWwan;
+                        ViewModel.HardwareInfo.HasSmartCard = hasSmartCard;
+                        ViewModel.HardwareInfo.HasNfc = hasNfc;
+                        ViewModel.HardwareInfo.HasThunderbolt = hasThunderbolt;
+
+                        ViewModel.HardwareInfo.RebuildOverviewPeripherals(true);
                     }
                 });
             }
             catch { }
+        }
+
+        private static void DetectWifiAndExtraPeripherals(
+            out bool hasWifi,
+            out string wifiAdapterName,
+            out string wifiStandardLabel,
+            out bool hasBluetooth,
+            out string bluetoothInfo,
+            out bool hasWwan,
+            out string wwanInfo,
+            out string wwanAdapterName,
+            out bool hasSmartCard,
+            out bool hasNfc,
+            out bool hasThunderbolt)
+        {
+            hasWifi = false;
+            wifiAdapterName = "";
+            wifiStandardLabel = "";
+            hasBluetooth = false;
+            bluetoothInfo = "";
+            hasWwan = false;
+            wwanInfo = "";
+            wwanAdapterName = "";
+            hasSmartCard = false;
+            hasNfc = false;
+            hasThunderbolt = false;
+
+            // 1. Wi-Fi adapter i eventualni WWAN adapter iz Win32_NetworkAdapter (pa fallback na Win32_PnPEntity Net)
+            try
+            {
+                using (ManagementObjectSearcher wifiSearcher = new ManagementObjectSearcher(
+                    "SELECT Name, PhysicalAdapter FROM Win32_NetworkAdapter WHERE PhysicalAdapter = True"))
+                {
+                    foreach (ManagementObject obj in wifiSearcher.Get())
+                    {
+                        string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
+                        if (!hasWifi && IsPhysicalWifiAdapterName(name))
+                        {
+                            hasWifi = true;
+                            wifiAdapterName = name;
+                            wifiStandardLabel = FormatWifiStandardLabel(name);
+                        }
+                        if (!hasWwan && IsWwanModemName(name))
+                        {
+                            hasWwan = true;
+                            wwanAdapterName = name;
+                            wwanInfo = FormatWwanLabel(name);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (!hasWifi || !hasWwan)
+            {
+                try
+                {
+                    using (ManagementObjectSearcher netPnpSearcher = new ManagementObjectSearcher(
+                        "SELECT Name FROM Win32_PnPEntity WHERE PNPClass = 'Net'"))
+                    {
+                        foreach (ManagementObject obj in netPnpSearcher.Get())
+                        {
+                            string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
+                            if (!hasWifi && IsPhysicalWifiAdapterName(name))
+                            {
+                                hasWifi = true;
+                                wifiAdapterName = name;
+                                wifiStandardLabel = FormatWifiStandardLabel(name);
+                            }
+                            if (!hasWwan && IsWwanModemName(name))
+                            {
+                                hasWwan = true;
+                                wwanAdapterName = name;
+                                wwanInfo = FormatWwanLabel(name);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            // 2. Bluetooth, WWAN (4G LTE / 5G modem), SmartCard, NFC, Thunderbolt / USB4
+            try
+            {
+                using (ManagementObjectSearcher extraSearcher = new ManagementObjectSearcher(
+                    "SELECT Name, PNPClass, Service FROM Win32_PnPEntity WHERE " +
+                    "PNPClass = 'Bluetooth' OR Service = 'BTHUSB' OR " +
+                    "PNPClass = 'SmartCardReader' OR PNPClass = 'Proximity' OR " +
+                    "Name LIKE '%Thunderbolt%' OR Name LIKE '%USB4%' OR " +
+                    "Name LIKE '%WWAN%' OR Name LIKE '%LTE%' OR Name LIKE '%Cellular%' OR " +
+                    "Name LIKE '%Fibocom%' OR Name LIKE '%Quectel%' OR Name LIKE '%Sierra Wireless%' OR " +
+                    "Name LIKE '%Mobile Broadband%' OR Name LIKE '%XMM%' OR " +
+                    "Name LIKE '%DW58%' OR Name LIKE '%DW59%' OR Name LIKE '%T77W%' OR Name LIKE '%T99W%' OR " +
+                    "Name LIKE '%EM74%' OR Name LIKE '%EM75%' OR Name LIKE '%EM91%' OR " +
+                    "Name LIKE '%FM350%' OR Name LIKE '%FM101%' OR Name LIKE '%L850%' OR Name LIKE '%L860%' OR " +
+                    "Name LIKE '%RM520%' OR Name LIKE '%Snapdragon X%' OR Name LIKE '%NFC%'"))
+                {
+                    foreach (ManagementObject obj in extraSearcher.Get())
+                    {
+                        string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
+                        string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "";
+                        string service = obj["Service"] != null ? obj["Service"].ToString().Trim() : "";
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        if (string.Equals(pnpClass, "Bluetooth", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(service, "BTHUSB", StringComparison.OrdinalIgnoreCase))
+                        {
+                            hasBluetooth = true;
+                            if (string.IsNullOrEmpty(bluetoothInfo) &&
+                                name.IndexOf("Enumerator", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                name.IndexOf("RFCOMM", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                name.IndexOf("Protocol", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                name.IndexOf("Avrcp", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                name.IndexOf("A2dp", StringComparison.OrdinalIgnoreCase) < 0)
+                            {
+                                bluetoothInfo = name;
+                            }
+                        }
+
+                        if (string.Equals(pnpClass, "SmartCardReader", StringComparison.OrdinalIgnoreCase) &&
+                            name.IndexOf("Virtual", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            hasSmartCard = true;
+                        }
+
+                        if (string.Equals(pnpClass, "Proximity", StringComparison.OrdinalIgnoreCase) ||
+                            name.IndexOf("NFC", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasNfc = true;
+                        }
+
+                        if (name.IndexOf("Thunderbolt", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            name.IndexOf("USB4", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasThunderbolt = true;
+                        }
+
+                        if (!hasWwan && IsWwanModemName(name))
+                        {
+                            hasWwan = true;
+                            wwanAdapterName = name;
+                            wwanInfo = FormatWwanLabel(name);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (hasBluetooth && string.IsNullOrEmpty(bluetoothInfo))
+            {
+                bluetoothInfo = "Bluetooth adapter detektovan";
+            }
+        }
+
+        private static bool IsWwanModemName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            string s = name.ToUpperInvariant();
+            if (s.Contains("MINIPORT") || s.Contains("VIRTUAL") || s.Contains("LOOPBACK") ||
+                s.Contains("BLUETOOTH") || s.Contains("WI-FI") || s.Contains("WIFI") ||
+                s.Contains("ETHERNET") || s.Contains("SENSOR") || s.Contains("GNSS") ||
+                s.Contains("NMEA") || s.Contains("AT PORT") || s.Contains("DM PORT") ||
+                s.Contains("LOCATION"))
+            {
+                return false;
+            }
+            return s.Contains("WWAN") || s.Contains("MOBILE BROADBAND") || s.Contains("CELLULAR") ||
+                   s.Contains("4G LTE") || s.Contains("5G MODEM") || s.Contains("LTE ") || s.Contains(" LTE") ||
+                   s.Contains("FIBOCOM") || s.Contains("QUECTEL") || s.Contains("SIERRA WIRELESS") ||
+                   s.Contains("XMM 7") || s.Contains("XMM7") ||
+                   s.Contains("DW58") || s.Contains("DW59") || s.Contains("T77W") || s.Contains("T99W") ||
+                   s.Contains("EM74") || s.Contains("EM75") || s.Contains("EM91") ||
+                   s.Contains("FM350") || s.Contains("FM101") || s.Contains("L850") || s.Contains("L860") ||
+                   s.Contains("RM520") || s.Contains("SNAPDRAGON X55") || s.Contains("SNAPDRAGON X62") ||
+                   s.Contains("SNAPDRAGON X65");
+        }
+
+        private static string FormatWwanLabel(string rawName)
+        {
+            string raw = (rawName ?? "").Trim();
+            string s = raw.ToUpperInvariant();
+
+            bool is5G = s.Contains("5G") || s.Contains("FM350") || s.Contains("RM520") ||
+                        s.Contains("EM9190") || s.Contains("DW5930") || s.Contains("DW5931") ||
+                        s.Contains("T99W175") || s.Contains("T99W373") ||
+                        s.Contains("X55") || s.Contains("X62") || s.Contains("X65");
+            string genLabel = is5G ? "5G modem" : "4G LTE modem";
+
+            string brand = "";
+            if (s.Contains("FIBOCOM")) brand = "Fibocom";
+            else if (s.Contains("QUECTEL")) brand = "Quectel";
+            else if (s.Contains("SIERRA")) brand = "Sierra";
+            else if (s.Contains("INTEL") || s.Contains("XMM")) brand = "Intel";
+            else if (s.Contains("SNAPDRAGON") || s.Contains("QUALCOMM")) brand = "Qualcomm";
+            else if (s.Contains("DELL") || s.Contains("DW58") || s.Contains("DW59")) brand = "Dell";
+
+            string[] models = new string[]
+            {
+                "FM350", "FM101", "L860", "L850", "RM520",
+                "EM9190", "EM7565", "EM7455", "EM7430", "EM160", "EM120",
+                "DW5931E", "DW5930E", "DW5931", "DW5930", "DW5821E", "DW5820E", "DW5821", "DW5820",
+                "T99W373", "T99W175", "T77W968",
+                "XMM 7560", "XMM 7360", "XMM7560", "XMM7360",
+                "X65", "X62", "X55"
+            };
+            string model = "";
+            for (int i = 0; i < models.Length; i++)
+            {
+                if (s.Contains(models[i]))
+                {
+                    model = models[i];
+                    break;
+                }
+            }
+
+            if (!string.IsNullOrEmpty(model))
+            {
+                string detail = string.IsNullOrEmpty(brand) ? model : (brand + " " + model);
+                return string.Format("{0} ({1})", genLabel, detail);
+            }
+            return genLabel;
+        }
+
+        private static bool IsPhysicalWifiAdapterName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            string s = name.ToUpperInvariant();
+            if (s.Contains("VIRTUAL") || s.Contains("WI-FI DIRECT") || s.Contains("WAN MINIPORT") ||
+                s.Contains("HYPER-V") || s.Contains("VETHERNET") || s.Contains("LOOPBACK") ||
+                s.Contains("BLUETOOTH") || s.Contains("TAP-") || s.Contains("VPN") ||
+                s.Contains("ETHERNET") || s.Contains("GBE FAMILY"))
+            {
+                return false;
+            }
+            return s.Contains("WI-FI") || s.Contains("WIFI") || s.Contains("WIRELESS") ||
+                   s.Contains("802.11") || s.Contains("AX2") || s.Contains("AX1") || s.Contains("BE2") ||
+                   s.Contains("MT79") || s.Contains("RTL885") || s.Contains("RTL882") ||
+                   s.Contains("QCNCM") || s.Contains("WCN685") || s.Contains("QCA61") ||
+                   s.Contains("QCA93") || s.Contains("CENTRINO");
+        }
+
+        private static string FormatWifiStandardLabel(string adapterName)
+        {
+            string raw = (adapterName ?? "").Trim();
+            if (string.IsNullOrEmpty(raw)) return "Wi-Fi";
+            string s = raw.ToUpperInvariant();
+
+            string brand = "";
+            if (s.Contains("INTEL")) brand = "Intel";
+            else if (s.Contains("REALTEK")) brand = "Realtek";
+            else if (s.Contains("MEDIATEK")) brand = "MediaTek";
+            else if (s.Contains("QUALCOMM") || s.Contains("ATHEROS")) brand = "Qualcomm";
+            else if (s.Contains("KILLER")) brand = "Killer";
+            else if (s.Contains("BROADCOM")) brand = "Broadcom";
+
+            string[] modelTokens = new string[]
+            {
+                "BE200", "BE201", "BE202", "QCNCM865", "MT7927",
+                "AX211", "AX210", "AX411", "AX1690", "AX1675", "RZ616", "MT7922", "WCN6856", "WCN685",
+                "AX201", "AX200", "AX101", "AX1650", "MT7921", "RZ608", "RTL8852CE", "RTL8852BE", "RTL8852AE", "RTL8852",
+                "9560", "9260", "8265", "8260", "7265", "7260", "3168", "3165",
+                "RTL8822CE", "RTL8822BE", "RTL8821CE", "QCA6174", "QCA9377"
+            };
+            string model = "";
+            for (int i = 0; i < modelTokens.Length; i++)
+            {
+                if (s.Contains(modelTokens[i]))
+                {
+                    model = modelTokens[i];
+                    break;
+                }
+            }
+
+            string gen = "";
+            if (s.Contains("BE200") || s.Contains("BE201") || s.Contains("BE202") || s.Contains("MT7927") ||
+                s.Contains("QCNCM865") || s.Contains("WI-FI 7") || s.Contains("WIFI 7") || s.Contains("802.11BE"))
+            {
+                gen = "Wi-Fi 7";
+            }
+            else if (s.Contains("AX210") || s.Contains("AX211") || s.Contains("AX411") || s.Contains("AX1675") ||
+                     s.Contains("AX1690") || s.Contains("RZ616") || s.Contains("MT7922") || s.Contains("WCN685") ||
+                     s.Contains("WI-FI 6E") || s.Contains("WIFI 6E"))
+            {
+                gen = "Wi-Fi 6E";
+            }
+            else if (s.Contains("AX200") || s.Contains("AX201") || s.Contains("AX101") || s.Contains("AX1650") ||
+                     s.Contains("MT7921") || s.Contains("RZ608") || s.Contains("RTL8852") ||
+                     s.Contains("WI-FI 6") || s.Contains("WIFI 6") || s.Contains("802.11AX"))
+            {
+                gen = "Wi-Fi 6";
+            }
+            else if (s.Contains("9560") || s.Contains("9260") || s.Contains("8265") || s.Contains("8260") ||
+                     s.Contains("7265") || s.Contains("7260") || s.Contains("3168") || s.Contains("3165") ||
+                     s.Contains("RTL8822") || s.Contains("RTL8821") || s.Contains("QCA61") || s.Contains("QCA93") ||
+                     s.Contains("WI-FI 5") || s.Contains("WIFI 5") || s.Contains("802.11AC") || s.Contains("WIRELESS-AC"))
+            {
+                gen = "Wi-Fi 5";
+            }
+            else if (s.Contains("802.11N") || s.Contains("WIRELESS-N") || s.Contains("CENTRINO"))
+            {
+                gen = "Wi-Fi 4";
+            }
+
+            if (!string.IsNullOrEmpty(gen) && !string.IsNullOrEmpty(model))
+            {
+                string detail = string.IsNullOrEmpty(brand) ? model : (brand + " " + model);
+                return string.Format("{0} ({1})", gen, detail);
+            }
+
+            string clean = raw.Replace("(R)", "").Replace("(TM)", "").Replace("(r)", "").Replace("(tm)", "");
+            clean = clean.Replace("Wireless Network Adapter", "").Replace("Network Adapter", "").Trim();
+            while (clean.Contains("  ")) clean = clean.Replace("  ", " ");
+            if (clean.Length > 34) clean = clean.Substring(0, 31) + "...";
+
+            if (!string.IsNullOrEmpty(gen))
+            {
+                return string.IsNullOrEmpty(clean) ? gen : string.Format("{0} ({1})", gen, clean);
+            }
+            return string.IsNullOrEmpty(clean) ? "Wi-Fi adapter" : clean;
         }
 
         private string GetGpuVram(string gpuName, ulong wmiAdapterRam)
@@ -1593,20 +1955,25 @@ namespace WIS.UI
             {
                 string rawText = (GetMonitorInfoFromWmi() + " " + GetMonitorInfoFromRegistry()).ToUpperInvariant();
 
-                if (rawText.Contains("OLED") || rawText.Contains("AMOLED"))
+                if (rawText.Contains("OLED") || rawText.Contains("AMOLED") ||
+                    rawText.Contains("ATNA") || rawText.Contains("SDC41") || rawText.Contains("SDC42") || rawText.Contains("AMS"))
                 {
                     return "OLED";
                 }
 
                 if (rawText.Contains("IPS") || rawText.Contains("AHVA") || rawText.Contains("PLS") ||
-                    rawText.Contains("ADS") || rawText.Contains("AH-IPS") || rawText.Contains("IGZO"))
+                    rawText.Contains("ADS") || rawText.Contains("AH-IPS") || rawText.Contains("IGZO") ||
+                    rawText.Contains("WVA") || rawText.Contains("UWVA"))
                 {
                     return "IPS";
                 }
 
                 bool hasKnownIpsPrefix = rawText.Contains("NV13") || rawText.Contains("NV14") || rawText.Contains("NV15") || rawText.Contains("NV16") || rawText.Contains("NV17") ||
                                         rawText.Contains("LP13") || rawText.Contains("LP14") || rawText.Contains("LP15") || rawText.Contains("LP16") || rawText.Contains("LP17") ||
-                                        rawText.Contains("B140HAN") || rawText.Contains("B156HAN") || rawText.Contains("B173HAN") ||
+                                        rawText.Contains("B133HAN") || rawText.Contains("B140HAN") || rawText.Contains("B156HAN") || rawText.Contains("B173HAN") ||
+                                        rawText.Contains("B160") || rawText.Contains("N133") || rawText.Contains("N160") ||
+                                        rawText.Contains("NE13") || rawText.Contains("NE14") || rawText.Contains("NE15") || rawText.Contains("NE16") ||
+                                        rawText.Contains("MNE") || rawText.Contains("MND") || rawText.Contains("MNF") ||
                                         rawText.Contains("N140HCE") || rawText.Contains("N156HCE") || rawText.Contains("N173HCE");
                 if (hasKnownIpsPrefix)
                 {
@@ -1638,12 +2005,13 @@ namespace WIS.UI
             return "TN / Standard";
         }
 
-        private static void GetEdidDisplayDetails(out string model, out int nits, out int srgb, out int ntsc)
+        private static void GetEdidDisplayDetails(out string model, out int nits, out int srgb, out int ntsc, out double diagonalInches)
         {
             model = "";
             nits = 0;
             srgb = 0;
             ntsc = 0;
+            diagonalInches = 0.0;
 
             byte[] edidBytes = null;
 
@@ -1822,6 +2190,122 @@ namespace WIS.UI
             {
                 model = "Standardni panel";
             }
+
+            diagonalInches = DetectDisplayDiagonalInches(edidBytes);
+        }
+
+        private static double DetectDisplayDiagonalInches(byte[] edidBytes)
+        {
+            double rawInches = 0.0;
+
+            try
+            {
+                // 1. Primarni izvor: EDID Detailed Timing Descriptor #1 (precizne dimenzije u mm)
+                if (edidBytes != null && edidBytes.Length >= 72 && (edidBytes[54] != 0 || edidBytes[55] != 0))
+                {
+                    int wMm = edidBytes[66] | ((edidBytes[68] & 0xF0) << 4);
+                    int hMm = edidBytes[67] | ((edidBytes[68] & 0x0F) << 8);
+                    if (wMm >= 120 && wMm <= 1800 && hMm >= 70 && hMm <= 1100)
+                    {
+                        double candidate = Math.Sqrt((double)(wMm * wMm + hMm * hMm)) / 25.4;
+                        if (candidate >= 8.0 && candidate <= 55.0)
+                        {
+                            rawInches = candidate;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (rawInches <= 0.0)
+            {
+                try
+                {
+                    // 2. WMI root\wmi -> WmiMonitorBasicDisplayParams (cm -> inči, prioritet Active == true)
+                    var scope = new ManagementScope(@"\\.\root\wmi");
+                    scope.Connect();
+                    using (var searcher = new ManagementObjectSearcher(scope,
+                        new ObjectQuery("SELECT MaxHorizontalImageSize, MaxVerticalImageSize, Active FROM WmiMonitorBasicDisplayParams")))
+                    {
+                        double fallbackCandidate = 0.0;
+                        foreach (ManagementObject obj in searcher.Get())
+                        {
+                            int wCm = obj["MaxHorizontalImageSize"] != null ? Convert.ToInt32(obj["MaxHorizontalImageSize"]) : 0;
+                            int hCm = obj["MaxVerticalImageSize"] != null ? Convert.ToInt32(obj["MaxVerticalImageSize"]) : 0;
+                            bool isActive = obj["Active"] != null && Convert.ToBoolean(obj["Active"]);
+                            if (wCm > 10 && hCm > 6)
+                            {
+                                double candidate = Math.Sqrt((double)(wCm * wCm + hCm * hCm)) / 2.54;
+                                if (candidate >= 8.0 && candidate <= 55.0)
+                                {
+                                    if (isActive)
+                                    {
+                                        rawInches = candidate;
+                                        break;
+                                    }
+                                    if (fallbackCandidate <= 0.0) fallbackCandidate = candidate;
+                                }
+                            }
+                        }
+                        if (rawInches <= 0.0 && fallbackCandidate > 0.0)
+                        {
+                            rawInches = fallbackCandidate;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (rawInches <= 0.0)
+            {
+                try
+                {
+                    // 3. Fallback: EDID header bajtovi 21 i 22 (cm)
+                    if (edidBytes != null && edidBytes.Length >= 23)
+                    {
+                        int wCm = edidBytes[21];
+                        int hCm = edidBytes[22];
+                        if (wCm > 10 && hCm > 6)
+                        {
+                            double candidate = Math.Sqrt((double)(wCm * wCm + hCm * hCm)) / 2.54;
+                            if (candidate >= 8.0 && candidate <= 55.0)
+                            {
+                                rawInches = candidate;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            return NormalizeDisplayDiagonalInches(rawInches);
+        }
+
+        private static double NormalizeDisplayDiagonalInches(double rawInches)
+        {
+            if (rawInches < 8.0 || rawInches > 55.0) return 0.0;
+
+            double[] standardSizes = new double[]
+            {
+                10.1, 11.6, 12.3, 12.5, 13.0, 13.3, 13.5, 14.0, 14.5, 15.0,
+                15.6, 16.0, 16.1, 17.0, 17.3, 18.0, 21.5, 23.8, 24.0, 27.0,
+                31.5, 32.0, 34.0
+            };
+
+            double bestMatch = 0.0;
+            double bestDiff = double.MaxValue;
+            for (int i = 0; i < standardSizes.Length; i++)
+            {
+                double diff = Math.Abs(rawInches - standardSizes[i]);
+                if (diff <= 0.25 && diff < bestDiff)
+                {
+                    bestDiff = diff;
+                    bestMatch = standardSizes[i];
+                }
+            }
+
+            if (bestMatch > 0.0) return bestMatch;
+            return Math.Round(rawInches, 1);
         }
     }
 }

@@ -3475,38 +3475,127 @@ function Invoke-Phase4Apps {
     [CmdletBinding()]
     param(
         [string]$LocalSetupDir = "C:\setup",
-        [string]$ProgramiDir = "C:\setup\Programi"
+        [string]$ProgramiDir = "C:\setup\Programi",
+        [string]$OnlyApp = ""
     )
 
     $env:SEE_MASK_NOZONECHECKS = '1'
     try { [Environment]::SetEnvironmentVariable("SEE_MASK_NOZONECHECKS", "1", "Process") } catch {}
 
+    $isSingleAppRetry = -not [string]::IsNullOrWhiteSpace($OnlyApp)
+    $runDotNet = $true
+    $runWinRAR = $true
+    $runChrome = $true
+    $runAcrobat = $true
+    $runOffice = $true
+    $runBatteryBar = $true
+    $runShortcuts = $true
+    $runPdfDefault = $true
+    $runLicense = $true
+    $retryCanonicalAppId = ""
+    $retryPresenceId = ""
+    $retryStepId = ""
+
+    if ($isSingleAppRetry) {
+        $runDotNet = $false
+        $runWinRAR = $false
+        $runChrome = $false
+        $runAcrobat = $false
+        $runOffice = $false
+        $runBatteryBar = $false
+        $runShortcuts = $false
+        $runPdfDefault = $false
+        $runLicense = $false
+
+        $onlyKey = $OnlyApp.Trim().ToLowerInvariant()
+        switch ($onlyKey) {
+            { $_ -in @("dotnet", "runtimes") } {
+                $runDotNet = $true
+                $retryCanonicalAppId = "DotNet"
+                $retryPresenceId = "DotNet"
+                $retryStepId = "P4.Runtimes"
+            }
+            "winrar" {
+                $runWinRAR = $true
+                $retryCanonicalAppId = "WinRAR"
+                $retryPresenceId = "WinRAR"
+                $retryStepId = "P4.WinRAR"
+            }
+            { $_ -in @("chrome", "google chrome") } {
+                $runChrome = $true
+                $retryCanonicalAppId = "Chrome"
+                $retryPresenceId = "Chrome"
+                $retryStepId = "P4.Chrome"
+            }
+            { $_ -in @("acrobat", "adobe acrobat", "adobe acrobat pro") } {
+                $runAcrobat = $true
+                $runPdfDefault = $true
+                $retryCanonicalAppId = "Acrobat"
+                $retryPresenceId = "Acrobat"
+                $retryStepId = "P4.Acrobat"
+            }
+            { $_ -in @("office", "microsoft office", "ms office") } {
+                $runOffice = $true
+                $retryCanonicalAppId = "Office"
+                $retryPresenceId = "Office"
+                $retryStepId = "P4.Office"
+            }
+            "batterybar" {
+                $runBatteryBar = $true
+                $retryCanonicalAppId = "BatteryBar"
+                $retryPresenceId = "BatteryBar"
+                $retryStepId = "P4.BatteryBar"
+            }
+            "shortcuts" {
+                $runShortcuts = $true
+                $retryCanonicalAppId = "Shortcuts"
+                $retryPresenceId = "Shortcuts"
+                $retryStepId = "P4.Shortcuts"
+            }
+            { $_ -in @("license", "activation") } {
+                $runLicense = $true
+                $retryCanonicalAppId = "License"
+                $retryPresenceId = "Activation"
+                $retryStepId = "P4.Activation"
+            }
+            default {
+                throw "Nepoznat identifikator aplikacije za pojedinačni Retry: $OnlyApp"
+            }
+        }
+    }
+
     $Global:CurrentPhase = 4
     if (-not $Global:State) { $Global:State = @{} }
     $Global:State.Phase = 4
 
-    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "=== POKRETANJE FAZE 4: Korisnicki Programi i Aktivacija ===" -Level "STEP" -Component "Phase4"
-    }
-    if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-        Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
-    }
+    if ($isSingleAppRetry) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "=== POJEDINAČNI RETRY PROGRAMA: $retryCanonicalAppId ===" -Level "STEP" -Component "Phase4"
+        }
+    } else {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "=== POKRETANJE FAZE 4: Korisnicki Programi i Aktivacija ===" -Level "STEP" -Component "Phase4"
+        }
+        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+            Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
+        }
 
-    # Nakon restarta u Fazi 3, ponovo osiguraj da je pozadinski Windows Update radnik aktivan tokom Faza 4 i 5
-    try {
-        if (-not (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue)) {
-            $updMod = @(
-                (Join-Path $PSScriptRoot "WIS.Update.psm1"),
-                (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
-                (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
-                "C:\setup\Skripte\Modules\WIS.Update.psm1"
-            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-            if ($updMod) { Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
-        }
-        if (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue) {
-            Start-BackgroundWindowsUpdateWorker | Out-Null
-        }
-    } catch {}
+        # Nakon restarta u Fazi 3, ponovo osiguraj da je pozadinski Windows Update radnik aktivan tokom Faza 4 i 5
+        try {
+            if (-not (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue)) {
+                $updMod = @(
+                    (Join-Path $PSScriptRoot "WIS.Update.psm1"),
+                    (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
+                    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
+                    "C:\setup\Skripte\Modules\WIS.Update.psm1"
+                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                if ($updMod) { Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+            }
+            if (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue) {
+                Start-BackgroundWindowsUpdateWorker | Out-Null
+            }
+        } catch {}
+    }
 
     if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
         Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Pocetak"
@@ -3535,9 +3624,17 @@ function Invoke-Phase4Apps {
         @{ Id = "P4.PdfDefault"; Title = "Podrazumevani PDF pregledač" },
         @{ Id = "P4.Activation"; Title = "Aktivacija Windows i Office paketa" }
     )
-    foreach ($sc in $phase4StepCatalog) {
-        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
-            Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+    if ($isSingleAppRetry) {
+        foreach ($sc in $phase4StepCatalog) {
+            if ($sc.Id -eq $retryStepId -and (Get-Command Send-IpcStep -ErrorAction SilentlyContinue)) {
+                Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+            }
+        }
+    } else {
+        foreach ($sc in $phase4StepCatalog) {
+            if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+                Send-IpcStep -Phase 4 -StepId $sc.Id -Title $sc.Title -State "WAIT" -Reason ""
+            }
         }
     }
 
@@ -3599,35 +3696,51 @@ function Invoke-Phase4Apps {
 
     $isLaptop = Test-BatteryPresent
 
+    $stepRuntimes = $null
+    $stepWinrar = $null
+    $stepChrome = $null
+    $stepAcrobat = $null
+    $stepOffice = $null
+    $stepBattery = $null
+    $stepShortcuts = $null
+    $stepPdf = $null
+    $stepActivation = $null
+
     # =========================================================================
     # 1. SISTEMSKI RUNTIME PAKETI (VC++ / .NET) - P4.Runtimes
     # =========================================================================
-    $stepRuntimes = Invoke-WisStep -Phase 4 -StepId "P4.Runtimes" -Title "Sistemski runtime paketi (VC++ / .NET)" -Test {
-        Get-WisAppPresence -AppId "DotNet"
-    } -Action {
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-            Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
+    if ($runDotNet) {
+        $stepRuntimes = Invoke-WisStep -Phase 4 -StepId "P4.Runtimes" -Title "Sistemski runtime paketi (VC++ / .NET)" -NoSkip:$isSingleAppRetry -Test {
+            Get-WisAppPresence -AppId "DotNet"
+        } -Action {
+            if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+                Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
+            }
+            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+                Send-IpcAppUpdate -AppId "DotNet" -Status "RUNNING" -Detail "Instalacija sistemskih runtime paketa (.NET / VC++)..."
+            }
+            $null = Install-ServisVCRedist -ProgramiRoot $activeProgDir
+            $null = Install-ServisDotNet -ProgramiRoot $activeProgDir
         }
-        $null = Install-ServisVCRedist -ProgramiRoot $activeProgDir
-        $null = Install-ServisDotNet -ProgramiRoot $activeProgDir
-    }
 
-    $appsStatusMap["DotNet"] = if ($stepRuntimes.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
-    if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        $dnDetail = if ($stepRuntimes.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepRuntimes.State -eq "OK") { "Instaliran .NET Runtime" } else { "Neuspešno - Nastavak" }
-        Send-IpcAppUpdate -AppId "DotNet" -Status $appsStatusMap["DotNet"] -Detail $dnDetail
+        $appsStatusMap["DotNet"] = if ($stepRuntimes.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            $dnDetail = if ($stepRuntimes.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepRuntimes.State -eq "OK") { "Instaliran .NET Runtime" } else { "Neuspešno - Nastavak" }
+            Send-IpcAppUpdate -AppId "DotNet" -Status $appsStatusMap["DotNet"] -Detail $dnDetail
+        }
     }
 
     # =========================================================================
     # 2. WINRAR - P4.WinRAR
     # =========================================================================
-    $stepWinrar = Invoke-WisStep -Phase 4 -StepId "P4.WinRAR" -Title "WinRAR arhiver" -Test {
+    if ($runWinRAR) {
+    $stepWinrar = Invoke-WisStep -Phase 4 -StepId "P4.WinRAR" -Title "WinRAR arhiver" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "WinRAR"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - WinRAR"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 20 -Phase 4 -PhaseName "Programi" -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -3642,6 +3755,16 @@ function Invoke-Phase4Apps {
         }
 
         $rarCandidates = @(Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        if ($rarCandidates.Count -eq 0 -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Lokalni WinRAR instaler nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "WinRAR"
+            }
+            $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+            if (Test-Path "C:\setup\Programi") {
+                $activeProgDir = "C:\setup\Programi"
+            }
+            $rarCandidates = @(Get-ChildItem -Path $activeProgDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue)
+        }
         $wrInstalledNow = $false
         $rarExe = $null
 
@@ -3735,17 +3858,19 @@ function Invoke-Phase4Apps {
         $wrDetail = if ($stepWinrar.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepWinrar.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "WinRAR" -Status $appsStatusMap["WinRAR"] -Detail $wrDetail
     }
+    }
 
     # =========================================================================
     # 3. GOOGLE CHROME - P4.Chrome
     # =========================================================================
-    $stepChrome = Invoke-WisStep -Phase 4 -StepId "P4.Chrome" -Title "Google Chrome pregledač" -Test {
+    if ($runChrome) {
+    $stepChrome = Invoke-WisStep -Phase 4 -StepId "P4.Chrome" -Title "Google Chrome pregledač" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "Chrome"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Google Chrome"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 35 -Phase 4 -PhaseName "Programi" -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -3774,6 +3899,23 @@ function Invoke-Phase4Apps {
         if (-not $msiPath -and (Test-Path $activeProgDir)) {
             $foundMsi = Get-ChildItem -Path $activeProgDir -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($foundMsi) { $msiPath = $foundMsi.FullName }
+        }
+        if (-not $msiPath -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            $hasChromeExeLoc = @(Get-ChildItem -Path $activeProgDir -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "(?i)chrome.*(standalone|setup|install)" -or $_.Name -eq "ChromeStandaloneSetup64.exe" }).Count -gt 0
+            if (-not $hasChromeExeLoc) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Lokalni Google Chrome paket nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "Chrome"
+                }
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+                if (Test-Path "C:\setup\Programi") {
+                    $activeProgDir = "C:\setup\Programi"
+                }
+                $msiPath = $chromeMsiCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+                if (-not $msiPath -and (Test-Path "C:\setup\Programi")) {
+                    $foundMsiAfterSync = Get-ChildItem -Path "C:\setup\Programi" -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($foundMsiAfterSync) { $msiPath = $foundMsiAfterSync.FullName }
+                }
+            }
         }
 
         $installedOk = $false
@@ -3832,17 +3974,19 @@ function Invoke-Phase4Apps {
         $chDetail = if ($stepChrome.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepChrome.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Chrome" -Status $appsStatusMap["Chrome"] -Detail $chDetail
     }
+    }
 
     # =========================================================================
     # 4. ADOBE ACROBAT PRO - P4.Acrobat
     # =========================================================================
-    $stepAcrobat = Invoke-WisStep -Phase 4 -StepId "P4.Acrobat" -Title "Adobe Acrobat Pro" -Test {
+    if ($runAcrobat) {
+    $stepAcrobat = Invoke-WisStep -Phase 4 -StepId "P4.Acrobat" -Title "Adobe Acrobat Pro" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "Acrobat"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Adobe Acrobat Pro"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 50 -Phase 4 -PhaseName "Programi" -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -3963,17 +4107,19 @@ function Invoke-Phase4Apps {
         $acDetail = if ($stepAcrobat.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepAcrobat.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Acrobat" -Status $appsStatusMap["Acrobat"] -Detail $acDetail
     }
+    }
 
     # =========================================================================
     # 5. MICROSOFT OFFICE 2024 - P4.Office
     # =========================================================================
-    $stepOffice = Invoke-WisStep -Phase 4 -StepId "P4.Office" -Title "Microsoft Office 2024" -Test {
+    if ($runOffice) {
+    $stepOffice = Invoke-WisStep -Phase 4 -StepId "P4.Office" -Title "Microsoft Office 2024" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "Office"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Office 2024"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 65 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -4189,7 +4335,7 @@ function Invoke-Phase4Apps {
                 while ((-not $p.HasExited) -and ($odtWait -lt 420)) {
                     Start-Sleep -Seconds 5
                     $odtWait += 5
-                    if (($odtWait % 30 -eq 0) -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
+                    if (-not $isSingleAppRetry -and ($odtWait % 30 -eq 0) -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
                         $offPct = [math]::Min(78, 65 + [int](($odtWait / 420) * 13))
                         Send-IpcProgress -Progress $offPct -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024 (${odtWait}s)..."
                     }
@@ -4270,11 +4416,13 @@ function Invoke-Phase4Apps {
         $offDetail = if ($stepOffice.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepOffice.State -eq "OK") { "Instaliran Office 2024" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Office" -Status $appsStatusMap["Office"] -Detail $offDetail
     }
+    }
 
     # =========================================================================
     # 6. BATTERYBAR - P4.BatteryBar
     # =========================================================================
-    $stepBattery = Invoke-WisStep -Phase 4 -StepId "P4.BatteryBar" -Title "BatteryBar indikator baterije" -Test {
+    if ($runBatteryBar) {
+    $stepBattery = Invoke-WisStep -Phase 4 -StepId "P4.BatteryBar" -Title "BatteryBar indikator baterije" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "BatteryBar"
     } -Action {
         if (-not $isLaptop) {
@@ -4287,7 +4435,7 @@ function Invoke-Phase4Apps {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - BatteryBar"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 80 -Phase 4 -PhaseName "Programi" -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -4333,18 +4481,23 @@ function Invoke-Phase4Apps {
         }
         Send-IpcAppUpdate -AppId "BatteryBar" -Status $appsStatusMap["BatteryBar"] -Detail $bbDetail
     }
+    }
 
     # =========================================================================
     # 7. RADNE PREČICE NA RADNOJ POVRŠINI - P4.Shortcuts
     # =========================================================================
-    $stepShortcuts = Invoke-WisStep -Phase 4 -StepId "P4.Shortcuts" -Title "Radne prečice na radnoj površini" -Test {
+    if ($runShortcuts) {
+    $stepShortcuts = Invoke-WisStep -Phase 4 -StepId "P4.Shortcuts" -Title "Radne prečice na radnoj površini" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "Shortcuts"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Prečice"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 88 -Phase 4 -PhaseName "Programi" -SubPhase "Prečice" -StatusMessage "Kreiranje prečica na radnoj površini..."
+        }
+        if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+            Send-IpcAppUpdate -AppId "Shortcuts" -Status "RUNNING" -Detail "Kreiranje prečica na radnoj površini..."
         }
         Create-ServisShortcuts
     }
@@ -4354,26 +4507,30 @@ function Invoke-Phase4Apps {
         $scDetail = if ($stepShortcuts.State -eq "SKIPPED_DONE") { "Već kreirano" } else { "Prečice kreirane" }
         Send-IpcAppUpdate -AppId "Shortcuts" -Status $appsStatusMap["Shortcuts"] -Detail $scDetail
     }
+    }
 
     # =========================================================================
     # 8. PODRAZUMEVANI PDF PREGLEDAČ - P4.PdfDefault
     # =========================================================================
-    $stepPdf = Invoke-WisStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -Test {
+    if ($runPdfDefault) {
+    $stepPdf = Invoke-WisStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "PdfDefault"
     } -Action {
         $null = Set-AcrobatDefaultPDF
+    }
     }
 
     # =========================================================================
     # 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation
     # =========================================================================
-    $stepActivation = Invoke-WisStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -Test {
+    if ($runLicense) {
+    $stepActivation = Invoke-WisStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "Activation"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
             Wait-ServisUICooperativePause -CheckpointName "Faza 4 - Provera licenci"
         }
-        if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+        if (-not $isSingleAppRetry -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 93 -Phase 4 -PhaseName "Programi" -SubPhase "Provera licenci" -StatusMessage "Verifikacija OEM i sistemskih licenci..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -4394,6 +4551,46 @@ function Invoke-Phase4Apps {
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
         $licDetail = if ($stepActivation.State -eq "SKIPPED_DONE") { "Već licencirano" } elseif ($stepActivation.State -eq "OK") { "Verifikovano" } else { "Best-Effort nastavak" }
         Send-IpcAppUpdate -AppId "License" -Status $appsStatusMap["License"] -Detail $licDetail
+    }
+    }
+
+    # Režim pojedinačnog Retry-a: verifikacija samo izabranog programa i povratak bez resetovanja ostalih
+    if ($isSingleAppRetry) {
+        $targetStepObj = switch ($retryCanonicalAppId) {
+            "DotNet"     { $stepRuntimes }
+            "WinRAR"     { $stepWinrar }
+            "Chrome"     { $stepChrome }
+            "Acrobat"    { $stepAcrobat }
+            "Office"     { $stepOffice }
+            "BatteryBar" { $stepBattery }
+            "Shortcuts"  { $stepShortcuts }
+            "License"    { $stepActivation }
+            default      { $null }
+        }
+        $presenceCheck = Get-WisAppPresence -AppId $retryPresenceId
+        $stepOk = ($null -ne $targetStepObj) -and ($targetStepObj.State -in @("OK", "SKIPPED_DONE"))
+        $retryOk = ([bool]$presenceCheck.Installed) -or $stepOk
+
+        if ($retryOk) {
+            $okDetail = if ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Instalacija uspešno verifikovana" }
+            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+                Send-IpcAppUpdate -AppId $retryCanonicalAppId -Status "OK" -Detail $okDetail
+            }
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Pojedinačni Retry za $retryCanonicalAppId uspešan: $okDetail" -Level "SUCCESS" -Component "Phase4"
+            }
+            $global:LASTEXITCODE = 0
+            return
+        } else {
+            $failDetail = if ($presenceCheck.Reason) { [string]$presenceCheck.Reason } elseif ($presenceCheck.Message) { [string]$presenceCheck.Message } else { "Verifikacija nakon instalacije nije uspela" }
+            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+                Send-IpcAppUpdate -AppId $retryCanonicalAppId -Status "ERROR" -Detail $failDetail
+            }
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Pojedinačni Retry za $retryCanonicalAppId nije uspeo: $failDetail" -Level "ERROR" -Component "Phase4"
+            }
+            throw "Pojedinačni Retry za $retryCanonicalAppId nije uspeo: $failDetail"
+        }
     }
 
     # Uklanjanje flag datoteke za ponovno pokretanje Faze 4

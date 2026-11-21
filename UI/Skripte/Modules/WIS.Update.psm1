@@ -1062,11 +1062,12 @@ function Install-LocalUpdatePackageFile {
 
     $ext = ([System.IO.Path]::GetExtension($PackagePath)).ToLower()
     $proc = $null
+    $timeoutSeconds = 2400
     try {
         if ($ext -eq ".msu") {
-            $proc = Start-Process -FilePath "wusa.exe" -ArgumentList "`"$PackagePath`" /quiet /norestart" -Wait -PassThru -ErrorAction Stop
+            $proc = Start-Process -FilePath "wusa.exe" -ArgumentList "`"$PackagePath`" /quiet /norestart" -PassThru -ErrorAction Stop
         } elseif ($ext -eq ".cab") {
-            $proc = Start-Process -FilePath "dism.exe" -ArgumentList "/Online /Add-Package /PackagePath:`"$PackagePath`" /Quiet /NoRestart" -Wait -PassThru -ErrorAction Stop
+            $proc = Start-Process -FilePath "dism.exe" -ArgumentList "/Online /Add-Package /PackagePath:`"$PackagePath`" /Quiet /NoRestart" -PassThru -ErrorAction Stop
         } else {
             return @{ Success = $false; ExitCode = -2; RebootRequired = $false }
         }
@@ -1075,6 +1076,40 @@ function Install-LocalUpdatePackageFile {
             Write-ServisLog "Install-LocalUpdatePackageFile: Greska pri pokretanju instalacije paketa $label ($($_.Exception.Message))." -Level "WARN" -Component "NAS"
         }
         return @{ Success = $false; ExitCode = -3; RebootRequired = $false }
+    }
+
+    if ($proc) {
+        $swPkg = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastIpcSec = -20
+        $lastLogSec = 0
+        $timedOutPkg = $false
+        while (-not $proc.WaitForExit(1000)) {
+            $elapsedSec = [int]$swPkg.Elapsed.TotalSeconds
+            if ($elapsedSec -ge $timeoutSeconds) {
+                $timedOutPkg = $true
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label prekoracio zastitni timeout (${timeoutSeconds}s). Prekidam proces (/T /F)." -Level "WARN" -Component "NAS"
+                }
+                try { & taskkill.exe /PID $($proc.Id) /T /F >$null 2>&1 } catch {}
+                break
+            }
+            if (($elapsedSec - $lastIpcSec) -ge 20) {
+                $lastIpcSec = $elapsedSec
+                if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+                    Send-IpcStatus -SubPhase "Instalacija paketa (${elapsedSec}s)" -StatusMessage "Instaliram lokalni paket $label (${elapsedSec}s)..."
+                }
+            }
+            if (($elapsedSec - $lastLogSec) -ge 60) {
+                $lastLogSec = $elapsedSec
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Install-LocalUpdatePackageFile: Paket $label jos uvek se instalira (${elapsedSec}s)..." -Level "INFO" -Component "NAS"
+                }
+            }
+        }
+        if ($timedOutPkg) {
+            return @{ Success = $false; ExitCode = -4; RebootRequired = $false }
+        }
+        $proc.WaitForExit()
     }
 
     $exitCode = if ($proc) { [int]$proc.ExitCode } else { -1 }
@@ -1250,6 +1285,62 @@ function Test-UpdatePackageBuildCompatible {
     return $true
 }
 
+function Get-ServisHubClientToken {
+    <#
+    .SYNOPSIS
+        Cita klijentski ServiceHub token iz okruzenja ($env:SERVIS_HUB_CLIENT_TOKEN) ili [ServisHub] ClientToken u Wifi-Servis.ini.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$ReferenceFilePath = ""
+    )
+
+    $clientTok = $env:SERVIS_HUB_CLIENT_TOKEN
+    if (-not [string]::IsNullOrWhiteSpace($clientTok)) {
+        return $clientTok.Trim()
+    }
+
+    $iniCandidates = New-Object System.Collections.Generic.List[string]
+    [void]$iniCandidates.Add("C:\setup\Wifi-Servis.ini")
+    if (-not [string]::IsNullOrWhiteSpace($ReferenceFilePath)) {
+        $refParent = Split-Path -Path $ReferenceFilePath -Parent -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($refParent)) {
+            [void]$iniCandidates.Add((Join-Path $refParent "Wifi-Servis.ini"))
+        }
+    }
+    [void]$iniCandidates.Add("C:\Windows\Setup\Scripts\Wifi-Servis.ini")
+    if ($PSScriptRoot) {
+        [void]$iniCandidates.Add((Join-Path $PSScriptRoot "Wifi-Servis.ini"))
+        $modParent = Split-Path -Path $PSScriptRoot -Parent -ErrorAction SilentlyContinue
+        if ($modParent) {
+            [void]$iniCandidates.Add((Join-Path $modParent "Wifi-Servis.ini"))
+            $modGrandParent = Split-Path -Path $modParent -Parent -ErrorAction SilentlyContinue
+            if ($modGrandParent) {
+                [void]$iniCandidates.Add((Join-Path $modGrandParent "Wifi-Servis.ini"))
+            }
+        }
+    }
+
+    foreach ($iniCand in $iniCandidates) {
+        if (-not [string]::IsNullOrWhiteSpace($iniCand) -and (Test-Path -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+            $inHubSec = $false
+            foreach ($ln in (Get-Content -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
+                $tln = ([string]$ln).Trim()
+                if ($tln -match '^\[(.+)\]$') {
+                    $inHubSec = ($matches[1].Trim().ToLower() -eq 'servishub')
+                } elseif ($inHubSec -and $tln -match '^(?i)ClientToken\s*=\s*(.+)$') {
+                    $foundTok = $matches[1].Trim()
+                    if (-not [string]::IsNullOrWhiteSpace($foundTok)) {
+                        return $foundTok
+                    }
+                }
+            }
+        }
+    }
+    return $null
+}
+
 function Invoke-ServisHubBinaryUpload {
     [CmdletBinding()]
     param(
@@ -1296,24 +1387,7 @@ function Invoke-ServisHubBinaryUpload {
             }
         }
         if (-not $hasClientTokenHeader) {
-            $clientTok = $env:SERVIS_HUB_CLIENT_TOKEN
-            if ([string]::IsNullOrWhiteSpace($clientTok)) {
-                foreach ($iniCand in @("C:\setup\Wifi-Servis.ini", (Join-Path (Split-Path -Path $FilePath -Parent) "Wifi-Servis.ini"))) {
-                    if ($iniCand -and (Test-Path -LiteralPath $iniCand -ErrorAction SilentlyContinue)) {
-                        $inHubSec = $false
-                        foreach ($ln in (Get-Content -Path $iniCand -ErrorAction SilentlyContinue)) {
-                            $tln = $ln.Trim()
-                            if ($tln -match '^\[(.+)\]$') {
-                                $inHubSec = ($matches[1].Trim().ToLower() -eq 'servishub')
-                            } elseif ($inHubSec -and $tln -match '^(?i)ClientToken\s*=\s*(.+)$') {
-                                $clientTok = $matches[1].Trim()
-                                break
-                            }
-                        }
-                        if (-not [string]::IsNullOrWhiteSpace($clientTok)) { break }
-                    }
-                }
-            }
+            $clientTok = Get-ServisHubClientToken -ReferenceFilePath $FilePath
             if (-not [string]::IsNullOrWhiteSpace($clientTok)) {
                 $req.Headers.Add("X-ServisHub-Client-Token", $clientTok)
             }
@@ -1430,6 +1504,139 @@ function Send-ModelDriverPackToServisHub {
         $ok = Invoke-ServisHubBinaryUpload -UploadUrl $uploadUrl -FilePath $FilePath -Headers $hdrs -TimeoutMs 1200000 -LogLabel "$targetName (retry)"
     }
     return $ok
+}
+
+function Send-ServisHubHarvestNotify {
+    <#
+    .SYNOPSIS
+        Obavestava ServiceHub API (/api/drivers/pool/notify-harvest) da skenira i ingestuje
+        novu Harvest tar arhivu odmah po zavrsetku SMB prenosa.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HubUrl,
+
+        [Parameter(Mandatory = $true)]
+        [string]$CleanModel,
+
+        [string]$ArchiveFileName = ""
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HubUrl)) { return $false }
+    $notifyUrl = "$($HubUrl.TrimEnd('/'))/api/drivers/pool/notify-harvest"
+    $payloadObj = [ordered]@{
+        model   = $CleanModel
+        archive = if ([string]::IsNullOrWhiteSpace($ArchiveFileName)) { "$CleanModel.tar" } else { $ArchiveFileName }
+    }
+    $bodyJson = ($payloadObj | ConvertTo-Json -Compress)
+
+    $reqHeaders = @{}
+    $clientTok = Get-ServisHubClientToken
+    if (-not [string]::IsNullOrWhiteSpace($clientTok)) {
+        $reqHeaders["X-ServisHub-Client-Token"] = $clientTok
+    }
+
+    try {
+        $irmParams = @{
+            Uri         = $notifyUrl
+            Method      = "Post"
+            ContentType = "application/json; charset=utf-8"
+            Body        = $bodyJson
+            TimeoutSec  = 15
+            ErrorAction = "Stop"
+        }
+        if ($reqHeaders.Count -gt 0) {
+            $irmParams["Headers"] = $reqHeaders
+        }
+        $resp = Invoke-RestMethod @irmParams
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "ServiceHub obavesten o novoj Harvest arhivi ($CleanModel): status=$($resp.status)" -Level "INFO" -Component "DriverHarvest"
+        }
+        return $true
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Send-ServisHubHarvestNotify upozorenje ($CleanModel): $($_.Exception.Message)" -Level "WARN" -Component "DriverHarvest"
+        }
+        return $false
+    }
+}
+
+function Copy-FileWithHeartbeat {
+    <#
+    .SYNOPSIS
+        Kopira veliki fajl u 4 MB blokovima sa periodicnim IPC/log heartbeat-om i
+        osvezavanjem SMB harvest lock-a da dugi prenosi ne bi delovali zamrznuto.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath,
+
+        [string]$Label = "",
+
+        [string]$HarvestLockPath = ""
+    )
+
+    if (-not (Test-Path -LiteralPath $SourcePath -ErrorAction SilentlyContinue)) {
+        throw "Izvorni fajl ne postoji: $SourcePath"
+    }
+    $srcInfo = Get-Item -LiteralPath $SourcePath -ErrorAction Stop
+    $totalBytes = [long]$srcInfo.Length
+    $dispLabel = if ([string]::IsNullOrWhiteSpace($Label)) { $srcInfo.Name } else { $Label }
+
+    $bufSize = 4194304  # 4 MB
+    $buffer = New-Object byte[] $bufSize
+    $inFs = $null
+    $outFs = $null
+    $swCopy = [System.Diagnostics.Stopwatch]::StartNew()
+    $copiedBytes = [long]0
+    $lastIpcSec = -15
+    $lastLogSec = 0
+    $lastLockSec = 0
+
+    try {
+        $inFs = [System.IO.File]::OpenRead($SourcePath)
+        $outFs = [System.IO.File]::Create($DestinationPath)
+        while (($bytesRead = $inFs.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $outFs.Write($buffer, 0, $bytesRead)
+            $copiedBytes += [long]$bytesRead
+
+            $elapsedSec = [int]$swCopy.Elapsed.TotalSeconds
+            $pct = if ($totalBytes -gt 0) { [int][Math]::Min(100, [Math]::Round(([double]$copiedBytes / [double]$totalBytes) * 100.0)) } else { 100 }
+            $copiedMb = [Math]::Round($copiedBytes / 1MB, 1)
+            $totalMb = [Math]::Round($totalBytes / 1MB, 1)
+            $mbps = if ($swCopy.Elapsed.TotalSeconds -gt 0.2) { [Math]::Round(($copiedBytes / 1MB) / $swCopy.Elapsed.TotalSeconds, 1) } else { 0.0 }
+
+            if (($elapsedSec - $lastIpcSec) -ge 15) {
+                $lastIpcSec = $elapsedSec
+                if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+                    Send-IpcStatus -SubPhase "Prenos na NAS ($pct%)" -StatusMessage "Prebacujem $dispLabel na NAS ($pct%, $copiedMb / $totalMb MB, ${mbps} MB/s)..."
+                }
+            }
+            if (($elapsedSec - $lastLogSec) -ge 60) {
+                $lastLogSec = $elapsedSec
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Copy-FileWithHeartbeat: $dispLabel -> $pct% ($copiedMb / $totalMb MB, ${mbps} MB/s, ${elapsedSec}s)." -Level "INFO" -Component "DriverHarvest"
+                }
+            }
+            if ($HarvestLockPath -and ($elapsedSec - $lastLockSec) -ge 120) {
+                $lastLockSec = $elapsedSec
+                try {
+                    if (Test-Path -LiteralPath $HarvestLockPath -ErrorAction SilentlyContinue) {
+                        (Get-Item -LiteralPath $HarvestLockPath -ErrorAction SilentlyContinue).LastWriteTime = [datetime]::Now
+                    }
+                } catch {}
+            }
+        }
+        $outFs.Flush()
+    } finally {
+        if ($outFs) { try { $outFs.Dispose() } catch {} }
+        if ($inFs) { try { $inFs.Dispose() } catch {} }
+    }
 }
 
 function Connect-ServisNasUpdatesShare {
@@ -2540,9 +2747,24 @@ function Export-ServisHardwareDrivers {
                             Write-ServisLog "Export-ServisHardwareDrivers: Drugi racunar vec vrsi berbu drajvera za model $cleanModel (aktivan lock). Preskacem paralelni izvoz." -Level "INFO" -Component "DriverHarvest"
                         }
                         return
+                    } elseif ($lkItem) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Export-ServisHardwareDrivers: Uklanjam bajati lock za model $cleanModel (starost >= 30 min) i bajate .tar.tmp.* fajlove." -Level "WARN" -Component "DriverHarvest"
+                        }
+                        Remove-Item -LiteralPath $harvestLockPath -Force -ErrorAction SilentlyContinue
                     }
                 } catch {}
             }
+            try {
+                if (Test-Path -LiteralPath $nasArchivesDirPre -ErrorAction SilentlyContinue) {
+                    $staleTmps = Get-ChildItem -LiteralPath $nasArchivesDirPre -Filter "$cleanModel.tar.tmp.*" -File -ErrorAction SilentlyContinue
+                    foreach ($stTmp in $staleTmps) {
+                        if (([datetime]::Now - $stTmp.LastWriteTime).TotalMinutes -ge 30) {
+                            Remove-Item -LiteralPath $stTmp.FullName -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                }
+            } catch {}
         }
 
         if (-not $Force) {
@@ -2781,12 +3003,15 @@ function Export-ServisHardwareDrivers {
                                     }
                                 } else {
                                     $destTarTmp = Join-Path $nasArchivesDir "$cleanModel.tar.tmp.$PID"
-                                    Copy-Item -Path $tarPath -Destination $destTarTmp -Force -ErrorAction Stop
+                                    Copy-FileWithHeartbeat -SourcePath $tarPath -DestinationPath $destTarTmp -Label "$cleanModel.tar" -HarvestLockPath $harvestLockPath
                                     Move-Item -Path $destTarTmp -Destination $destTarPath -Force -ErrorAction Stop
                                     $destTarTmp = $null
                                     $tarStoredOnSmb = $true
                                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                                         Write-ServisLog "Drajveri modela $cleanModel uspesno arhivirani u $cleanModel.tar na NAS-u (mrezni paketi: $copiedNetFolders)." -Level "SUCCESS" -Component "DriverHarvest"
+                                    }
+                                    if ($hubUrl) {
+                                        $null = Send-ServisHubHarvestNotify -HubUrl $hubUrl -CleanModel $cleanModel -ArchiveFileName "$cleanModel.tar"
                                     }
                                     if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
                                         Show-ServisDashboard -LiveStatus "[OK] Arhiva $cleanModel.tar sacuvana na NAS-u"
@@ -2874,6 +3099,10 @@ function Export-ServisHardwareDrivers {
             Write-ServisLog "UPOZORENJE: Neocekivana greska tokom izvoza drajvera: $($_.Exception.Message)" -Level "WARN" -Component "DriverHarvest"
         }
     } finally {
+        # Uklanjanje privremenog .tar.tmp.* fajla na NAS-u ako je ostao usled greske
+        if ($destTarTmp -and (Test-Path -LiteralPath $destTarTmp -ErrorAction SilentlyContinue)) {
+            Remove-Item -LiteralPath $destTarTmp -Force -ErrorAction SilentlyContinue
+        }
         # Uklanjanje lock fajla na NAS-u ako je ovaj proces vlasnik
         if ($ownsHarvestLock -and $harvestLockPath -and (Test-Path -LiteralPath $harvestLockPath -ErrorAction SilentlyContinue)) {
             Remove-Item -LiteralPath $harvestLockPath -Force -ErrorAction SilentlyContinue
@@ -3773,9 +4002,9 @@ function Invoke-Phase2Drivers {
                         }
                         $phaseCtx.SkipWU = $true
                     } else {
-                        $onlyGenericGpu = ($postDm -and $postDm.ProblemDevices -and (@($postDm.ProblemDevices | Where-Object { $_.Type -ne "GenericDisplayDriver" }).Count -eq 0))
-                        if ($onlyGenericGpu) {
-                            $phaseCtx.SkipWU = $true
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            $remReason = if ($postDm -and $postDm.Reason) { $postDm.Reason } else { "preostali uređaji / generički grafički drajver" }
+                            Write-ServisLog "Nakon ServisHub drajvera Device Manager još nije potpuno čist ($remReason) — nastavljam sa Windows Update pretragom." -Level "INFO" -Component "Drivers"
                         }
                     }
                 }
@@ -3809,14 +4038,22 @@ function Invoke-Phase2Drivers {
         return @{ Done = $true; Reason = $dmRes.Reason }
     } -Action {
         if ($phaseCtx.SkipWU) {
-            try {
-                if (-not (Test-Path "C:\setup")) { New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
-                Set-Content -Path "C:\setup\wu-drivers-skipped.flag" -Value (Get-Date).ToString("o") -Encoding UTF8 -Force -ErrorAction SilentlyContinue
-            } catch {}
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Windows Update drajveri preskočeni jer su svi uređaji već prepoznati ili rešeni preko ServisHub-a." -Level "INFO" -Component "WinUpdate"
+            $dmSkipVerify = if (Get-Command Test-WisDeviceManagerClean -ErrorAction SilentlyContinue) { Test-WisDeviceManagerClean } else { $null }
+            if ($dmSkipVerify -and -not $dmSkipVerify.Clean) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "P2.WuDrivers: SkipWU blokiran jer Device Manager nije čist ($($dmSkipVerify.Reason)). Pokrećem Windows Update pretragu." -Level "WARN" -Component "WinUpdate"
+                }
+                $phaseCtx.SkipWU = $false
+            } else {
+                try {
+                    if (-not (Test-Path "C:\setup")) { New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null }
+                    Set-Content -Path "C:\setup\wu-drivers-skipped.flag" -Value (Get-Date).ToString("o") -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+                } catch {}
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Windows Update drajveri preskočeni jer su svi uređaji već prepoznati ili rešeni preko ServisHub-a." -Level "INFO" -Component "WinUpdate"
+                }
+                return
             }
-            return
         }
 
         if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
@@ -3947,6 +4184,12 @@ function Invoke-Phase2Drivers {
                                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                                         Write-ServisLog "P2.WuDrivers ($drvNum/$totalDrv): Neuspeh '$($drv.Title)' na pokusaju $drvTry/2 (ResultCode: $resCode, HResult: $hResHex)." -Level "WARN" -Component "WinUpdate"
                                     }
+                                    if ($hResHex -in @("0x80248007", "0x80070103")) {
+                                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                            Write-ServisLog "P2.WuDrivers ($drvNum/$totalDrv): Permanentni kod ($hResHex) za '$($drv.Title)' — preskacem nepotreban retry." -Level "INFO" -Component "WinUpdate"
+                                        }
+                                        break
+                                    }
                                 }
                             } catch {
                                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -3954,7 +4197,7 @@ function Invoke-Phase2Drivers {
                                 }
                             }
                             if (-not $drvInstalledOk -and $drvTry -lt 2) {
-                                $waitRetrySec = if ($lastDrvHResult -eq "0x80240016") { 10 } else { 3 }
+                                $waitRetrySec = if ($lastDrvHResult -eq "0x80240016") { 12 } else { 3 }
                                 Start-Sleep -Seconds $waitRetrySec
                             }
                         }
@@ -4615,45 +4858,172 @@ function Invoke-WindowsUpdateSecondPass {
         }
     } catch { $isMuRegistered = $false }
 
-    # 2. Inicijalizacija COM objekta Microsoft.Update.Session
+    # 2. Pretraga WUA kataloga unutar asinhronog Start-Job sa 120s watchdog timeout-om (IMP-16)
     $UpdateSession = $null
-    $SearchResult = $null
+    $UpdatesToInstall = $null
+    $searchTimeoutSec = 120
+    $rawCount = 0
+    $rawSearchItems = @()
+    $searchErr = ""
+    $searchTimedOut = $false
+    $searchSkipped = $false
+
+    $searchJob = $null
     try {
-        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
-        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $UpdateSearcher.Online = $true
-        if ($isMuRegistered) {
-            $UpdateSearcher.ServerSelection = 3
-            $UpdateSearcher.ServiceID = $muServiceId
-        } else {
-            $UpdateSearcher.ServerSelection = 2
-        }
-        $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
-    } catch {
-        try {
-            $UpdateSearcher.ServerSelection = 2
-            $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
-        } catch {
+        $searchJob = Start-Job -ScriptBlock {
+            param([string]$muSvcId, [bool]$isMuReg)
+            $out = [ordered]@{
+                RawCount = 0
+                Items    = @()
+                Error    = ""
+            }
             try {
-                $UpdateSearcher.ServerSelection = 0
-                $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and IsHidden=0")
+                $sess = New-Object -ComObject Microsoft.Update.Session
+                $searcher = $sess.CreateUpdateSearcher()
+                $searcher.Online = $true
+                $sr = $null
+                try {
+                    if ($isMuReg) {
+                        $searcher.ServerSelection = 3
+                        $searcher.ServiceID = $muSvcId
+                    } else {
+                        $searcher.ServerSelection = 2
+                    }
+                    $sr = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                } catch {
+                    try {
+                        $searcher.ServerSelection = 2
+                        $sr = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                    } catch {
+                        $searcher.ServerSelection = 0
+                        $sr = $searcher.Search("IsInstalled=0 and IsHidden=0")
+                    }
+                }
+                if ($sr -and $sr.Updates) {
+                    $out.RawCount = [int]$sr.Updates.Count
+                    $itemsList = @()
+                    for ($idx = 0; $idx -lt $sr.Updates.Count; $idx++) {
+                        $u = $sr.Updates.Item($idx)
+                        $cats = @()
+                        if ($u.Categories) {
+                            foreach ($c in $u.Categories) {
+                                $cats += [ordered]@{
+                                    Name = [string]$c.Name
+                                    Type = [string]$c.Type
+                                }
+                            }
+                        }
+                        $itemsList += [ordered]@{
+                            Title      = [string]$u.Title
+                            Type       = [int]$u.Type
+                            Categories = @($cats)
+                        }
+                    }
+                    $out.Items = @($itemsList)
+                }
+            } catch {
+                $out.Error = $_.Exception.Message
+            }
+            return ($out | ConvertTo-Json -Depth 5 -Compress)
+        } -ArgumentList $muServiceId, $isMuRegistered
+    } catch {
+        $searchErr = $_.Exception.Message
+    }
+
+    if ($searchJob) {
+        $swSearch = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($searchJob.State -eq 'Running') {
+            $sElapsed = [int]$swSearch.Elapsed.TotalSeconds
+            if ($sElapsed -ge $searchTimeoutSec) {
+                $searchTimedOut = $true
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-WindowsUpdateSecondPass: Pretraga WUA kataloga prekoracila timeout (${searchTimeoutSec}s) - prekidam asinhrono i nastavljam zavrsetak." -Level "WARN" -Component "Update"
+                }
+                try {
+                    $cleanupSearchPs = [powershell]::Create()
+                    $null = $cleanupSearchPs.AddScript({
+                        param($j)
+                        try {
+                            Stop-Job $j -ErrorAction SilentlyContinue
+                            Remove-Job $j -Force -ErrorAction SilentlyContinue
+                        } catch {}
+                    }).AddArgument($searchJob)
+                    $null = $cleanupSearchPs.BeginInvoke()
+                } catch {}
+                break
+            }
+            if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                $searchSkipped = $true
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Invoke-WindowsUpdateSecondPass: Operater zatrazio preskakanje WUA pretrage drugog prolaza." -Level "WARN" -Component "Update"
+                }
+                try {
+                    $cleanupSearchSkipPs = [powershell]::Create()
+                    $null = $cleanupSearchSkipPs.AddScript({
+                        param($j)
+                        try {
+                            Stop-Job $j -ErrorAction SilentlyContinue
+                            Remove-Job $j -Force -ErrorAction SilentlyContinue
+                        } catch {}
+                    }).AddArgument($searchJob)
+                    $null = $cleanupSearchSkipPs.BeginInvoke()
+                } catch {}
+                break
+            }
+            if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                Send-IpcProgress -Progress 9 -Phase 6 -PhaseName "Zavrsetak" -SubPhase "Pretraga WU (${sElapsed}s/${searchTimeoutSec}s)" -StatusMessage "Skeniranje zaostalih Windows Update zakrpi (${sElapsed}s)..."
+            }
+            Start-Sleep -Seconds 2
+        }
+
+        if (-not $searchTimedOut -and -not $searchSkipped -and $searchJob.State -eq 'Completed') {
+            try {
+                $searchJsonOut = Receive-Job $searchJob -ErrorAction SilentlyContinue | Select-Object -Last 1
+                Remove-Job $searchJob -Force -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace("$searchJsonOut")) {
+                    $parsedSearch = ConvertFrom-Json -InputObject "$searchJsonOut" -ErrorAction SilentlyContinue
+                    if ($parsedSearch) {
+                        $rawCount = if ($null -ne $parsedSearch.RawCount) { [int]$parsedSearch.RawCount } else { 0 }
+                        $rawSearchItems = @($parsedSearch.Items | Where-Object { $null -ne $_ })
+                        if ($parsedSearch.Error) { $searchErr = [string]$parsedSearch.Error }
+                    }
+                }
             } catch {
                 $searchErr = $_.Exception.Message
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Invoke-WindowsUpdateSecondPass: Greska pri pretrazi kataloga: $searchErr" -Level "WARN" -Component "Update"
-                }
-                return @{
-                    Success        = $false
-                    InstalledCount = $bgPreInstalled
-                    RebootRequired = $bgPreReboot
-                    Message        = "Greska pri pretrazi: $searchErr"
-                }
             }
         }
     }
 
-    $rawCount = if ($SearchResult -and $SearchResult.Updates) { $SearchResult.Updates.Count } else { 0 }
-    if ($rawCount -eq 0) {
+    if ($searchTimedOut -or $searchSkipped) {
+        $stopStatusMsg = if ($searchTimedOut) {
+            "Pretraga drugog prolaza prekoracila zastitni timeout (${searchTimeoutSec}s) - nastavljam."
+        } else {
+            "Pretraga drugog prolaza preskocena na zahtev operatera."
+        }
+        Write-BackgroundWuStatus -Status $(if ($searchTimedOut) { "WARN" } else { "COMPLETED" }) -PhaseText "Windows Update: Pretraga prekinuta ($bgPreInstalled instalirano)" -FoundCount $bgPreFound -DownloadedCount $bgPreFound -InstalledCount $bgPreInstalled -RebootRequired $bgPreReboot
+        try { Set-Content -Path "C:\setup\wu-secondpass-done.flag" -Value $(if ($searchTimedOut) { "SEARCH_TIMEOUT" } else { "SKIPPED" }) -Encoding ASCII -Force -ErrorAction SilentlyContinue } catch {}
+        return @{
+            Success        = $true
+            InstalledCount = $bgPreInstalled
+            RebootRequired = $bgPreReboot
+            Message        = $stopStatusMsg
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($searchErr) -and $rawCount -eq 0) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Invoke-WindowsUpdateSecondPass: Greska pri pretrazi kataloga: $searchErr" -Level "WARN" -Component "Update"
+        }
+        try { Set-Content -Path "C:\setup\wu-secondpass-done.flag" -Value "SEARCH_ERROR" -Encoding ASCII -Force -ErrorAction SilentlyContinue } catch {}
+        return @{
+            Success        = $false
+            InstalledCount = $bgPreInstalled
+            RebootRequired = $bgPreReboot
+            Message        = "Greska pri pretrazi: $searchErr"
+        }
+    }
+
+    if ($rawCount -eq 0 -or $rawSearchItems.Count -eq 0) {
         $cleanMsg = "Sistem je u potpunosti azuriran (0 zaostalih zakrpi)."
         $totInst = $bgPreInstalled
         Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Windows Update: Sistem azuran ($totInst instalirano)" -FoundCount $bgPreFound -DownloadedCount $bgPreFound -InstalledCount $totInst -RebootRequired $bgPreReboot
@@ -4672,16 +5042,14 @@ function Invoke-WindowsUpdateSecondPass {
         }
     }
 
-    # Filtriranje prema konfiguraciji (DriversOnly, SkipCumulative, Full) i prihvatanje EULA licenci
+    # Filtriranje prema konfiguraciji (DriversOnly, SkipCumulative, Full)
     $wuMode = Get-WUConfigMode
     if ($wuMode -ne "DriversOnly" -and -not (Test-Path "C:\setup\nas-prepatch-done.flag" -ErrorAction SilentlyContinue)) {
         try { Invoke-NasUpdatePrePatch -SkipDriverPreInstall } catch {}
     }
 
-    $UpdatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
     $updateTitles = @()
-    for ($i = 0; $i -lt $rawCount; $i++) {
-        $u = $SearchResult.Updates.Item($i)
+    foreach ($u in $rawSearchItems) {
         $isDrv = Test-IsDriverUpdate -UpdateItem $u
         $isCum = Test-IsCumulativeUpdate -UpdateItem $u
 
@@ -4701,17 +5069,13 @@ function Invoke-WindowsUpdateSecondPass {
             continue
         }
 
-        if (-not $u.EulaAccepted) {
-            try { $u.AcceptEula() } catch {}
-        }
-        $UpdatesToInstall.Add($u) | Out-Null
-        $updateTitles += $u.Title
+        $updateTitles += [string]$u.Title
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "  [ZAOSTALA ZAKRPA] $($u.Title)" -Level "INFO" -Component "Update"
         }
     }
 
-    $count = $UpdatesToInstall.Count
+    $count = $updateTitles.Count
     if ($count -eq 0) {
         $filteredCleanMsg = "Nakon primene filtera ($wuMode) nema preostalih zakrpa za drugi prolaz. Sistem je spreman za zavrsetak."
         Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Windows Update: Zavrseno ($bgPreInstalled instalirano)" -FoundCount $bgPreFound -DownloadedCount $bgPreFound -InstalledCount $bgPreInstalled -RebootRequired $bgPreReboot
@@ -4851,8 +5215,15 @@ function Invoke-WindowsUpdateSecondPass {
                     Write-ServisLog "Invoke-WindowsUpdateSecondPass: Zaštitni timeout (${TimeoutSeconds}s) dostignut tokom obrade zaostalih zakrpi! Prekidam posao bez blokiranja servisa." -Level "WARN" -Component "Update"
                 }
                 try {
-                    Stop-Job $job -ErrorAction SilentlyContinue
-                    Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    $cleanupPs = [powershell]::Create()
+                    $null = $cleanupPs.AddScript({
+                        param($j)
+                        try {
+                            Stop-Job $j -ErrorAction SilentlyContinue
+                            Remove-Job $j -Force -ErrorAction SilentlyContinue
+                        } catch {}
+                    }).AddArgument($job)
+                    $null = $cleanupPs.BeginInvoke()
                 } catch {}
                 break
             }
@@ -4863,8 +5234,15 @@ function Invoke-WindowsUpdateSecondPass {
                     Write-ServisLog "Invoke-WindowsUpdateSecondPass: Operater je zatražio preskakanje drugog prolaza." -Level "WARN" -Component "Update"
                 }
                 try {
-                    Stop-Job $job -ErrorAction SilentlyContinue
-                    Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    $cleanupSkipPs = [powershell]::Create()
+                    $null = $cleanupSkipPs.AddScript({
+                        param($j)
+                        try {
+                            Stop-Job $j -ErrorAction SilentlyContinue
+                            Remove-Job $j -Force -ErrorAction SilentlyContinue
+                        } catch {}
+                    }).AddArgument($job)
+                    $null = $cleanupSkipPs.BeginInvoke()
                 } catch {}
                 break
             }
@@ -4894,7 +5272,7 @@ function Invoke-WindowsUpdateSecondPass {
                 }
             } catch {}
         }
-    } else {
+    } elseif ($UpdateSession -and $UpdatesToInstall) {
         # Fallback na direktno izvršavanje
         try {
             $Downloader = $UpdateSession.CreateUpdateDownloader()
@@ -4922,7 +5300,7 @@ function Invoke-WindowsUpdateSecondPass {
         }
     }
 
-    if ($installedOk -gt 0 -or (-not $timedOut -and $count -gt 0)) {
+    if ($UpdatesToInstall -and ($installedOk -gt 0 -or (-not $timedOut -and $count -gt 0))) {
         try {
             Export-ServisWindowsUpdates -Updates $UpdatesToInstall
         } catch {}
@@ -5167,6 +5545,10 @@ Export-ModuleMember -Function `
     Get-UpdateKbArticleId, `
     Send-UpdatePackageToServisHub, `
     Send-ModelDriverPackToServisHub, `
+    Send-ServisHubHarvestNotify, `
+    Copy-FileWithHeartbeat, `
+    Connect-ServisNasUpdatesShare, `
+    Disconnect-ServisNasUpdatesShare, `
     Save-UpdatePackageFromMsCatalog, `
     Export-ServisWindowsUpdates, `
     Invoke-WindowsUpdateCycle, `

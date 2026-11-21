@@ -502,12 +502,13 @@ class TestDriverPoolAndOemCatalogs(unittest.TestCase):
 
         self.addCleanup(_cleanup)
 
-        # 1. Fail-closed admin rute bez tokena moraju vratiti 503
+        # 1. Fail-closed admin i client upload/ingest rute bez tokena moraju vratiti 503
         for adm_path in (
             "/api/drivers/pool/sync-catalogs",
             "/api/drivers/pool/ingest-oem",
             "/api/drivers/pool/migrate",
             "/api/drivers/pool/prune",
+            "/api/drivers/pool/notify-harvest",
         ):
             body = b'{"manufacturer":"Dell","model":"Latitude 5420"}'
             req = urllib.request.Request(
@@ -650,6 +651,80 @@ class TestDriverPoolAndOemCatalogs(unittest.TestCase):
         with urllib.request.urlopen(prune_req, timeout=5) as p_resp:
             p_json = json.loads(p_resp.read().decode("utf-8"))
         self.assertEqual(p_json["status"], "ok")
+
+        # 7. IMP-01: build_bundle_tar ponovo kreira obrisani bundles_dir bez FileNotFoundError
+        shutil.rmtree(pool_mgr.bundles_dir, ignore_errors=True)
+        self.assertFalse(os.path.isdir(pool_mgr.bundles_dir))
+        ok_bundle = pool_mgr.build_bundle_tar(
+            model="Dell_Latitude_9440",
+            missing_hwids=[r"PCI\VEN_8086&DEV_15BE&SUBSYS_09991028&REV_11"],
+        )
+        self.assertIsNotNone(ok_bundle)
+        self.assertTrue(os.path.isdir(pool_mgr.bundles_dir))
+        self.assertTrue(os.path.isfile(ok_bundle["bundle_path"]))
+
+        # 8. IMP-02: scan_and_ingest_archives + POST /api/drivers/pool/notify-harvest
+        watch_dir = os.path.join(self.tmp_dir, "harvest_archives")
+        os.makedirs(watch_dir, exist_ok=True)
+        model_src = os.path.join(self.tmp_dir, "watch_src")
+        _write_driver_folder(model_src, "wifi", inf_name="watch_wifi.inf", hwid=r"PCI\VEN_8086&DEV_2725")
+        watch_tar = _build_tar_from_dir(model_src, os.path.join(watch_dir, "HP_ProBook_450_G10.tar"))
+        # Privremeni .tmp fajl mora biti ignorisan
+        with open(os.path.join(watch_dir, "HP_ProBook_450_G10.tar.tmp.9999"), "wb") as tfp:
+            tfp.write(b"partial")
+        scan_res = pool_mgr.scan_and_ingest_archives(watch_dir)
+        self.assertEqual(scan_res["scanned"], 1)
+        self.assertEqual(scan_res["ingested"], 1)
+        self.assertTrue(pool_mgr.has_model_manifest("HP_ProBook_450_G10"))
+        # Drugi prolaz preskace vec ingestovanu neizmenjenu arhivu
+        scan_res_2 = pool_mgr.scan_and_ingest_archives(watch_dir)
+        self.assertEqual(scan_res_2["ingested"], 0)
+        self.assertEqual(scan_res_2["skipped"], 1)
+
+        # HTTP notify-harvest sa sync=True nad cfg.model_packs_dir (bez 'archive' da proveri sanitize_model_pack_name u handlers.py)
+        packs_dir = cfg.model_packs_dir
+        os.makedirs(packs_dir, exist_ok=True)
+        notify_tar_src = os.path.join(self.tmp_dir, "notify_src")
+        _write_driver_folder(notify_tar_src, "chip", inf_name="notify_chip.inf", hwid=r"PCI\VEN_8086&DEV_51A3")
+        _build_tar_from_dir(notify_tar_src, os.path.join(packs_dir, "Lenovo_ThinkBook_14_G7.tar"))
+        notify_body = json.dumps({"model": "Lenovo_ThinkBook_14_G7", "sync": True}).encode("utf-8")
+
+        # Bez tokena i sa pogrešnim tokenom mora vratiti 401 i ne sme pokrenuti ingest
+        for bad_hdrs in (
+            {"Content-Type": "application/json", "Content-Length": str(len(notify_body))},
+            {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(notify_body)),
+                "X-ServisHub-Client-Token": "wrong",
+            },
+        ):
+            unauth_notify_req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/drivers/pool/notify-harvest",
+                data=notify_body,
+                method="POST",
+                headers=bad_hdrs,
+            )
+            with self.assertRaises(urllib.error.HTTPError) as ctx_notify_401:
+                urllib.request.urlopen(unauth_notify_req, timeout=5)
+            self.assertEqual(ctx_notify_401.exception.code, 401)
+            ctx_notify_401.exception.close()
+        self.assertFalse(pool_mgr.has_model_manifest("Lenovo_ThinkBook_14_G7"))
+
+        notify_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/drivers/pool/notify-harvest",
+            data=notify_body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(notify_body)),
+                "X-ServisHub-Client-Token": "cli-pool-350",
+            },
+        )
+        with urllib.request.urlopen(notify_req, timeout=10) as n_resp:
+            self.assertEqual(n_resp.status, 200)
+            n_json = json.loads(n_resp.read().decode("utf-8"))
+        self.assertEqual(n_json["ingested"], 1)
+        self.assertTrue(pool_mgr.has_model_manifest("Lenovo_ThinkBook_14_G7"))
 
 
 if __name__ == "__main__":

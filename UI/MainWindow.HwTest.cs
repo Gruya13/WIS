@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -24,6 +25,7 @@ namespace WIS.UI
         private float _phase5LastMaxThrot = 0f;
         private bool _phase5LastThermalCritical = false;
         private bool _phase5LastCancelled = false;
+        private volatile bool _phase5UefiRebootInProgress = false;
 
         private static bool IsPlaceholderIdentity(string val)
         {
@@ -108,6 +110,7 @@ namespace WIS.UI
                     ModelProfileClient client = new ModelProfileClient();
                     HwTestLogger.Initialize(client.HubBaseUrl);
                     _embeddedHwTestShell = new HwTestShell(@"C:\setup\hwtest-result.json", model, serial, mfg, sku, client);
+                    _embeddedHwTestShell.SetUefiBiosRebootHandler(HandlePhase5UefiBiosRebootRequest);
                 }
 
                 if (_hwTestTabItem == null)
@@ -126,7 +129,7 @@ namespace WIS.UI
                     }
                     else
                     {
-                        _hwTestTabItem.Header = "🧪 Hardverski testovi";
+                        _hwTestTabItem.Header = "Hardverski testovi";
                     }
 
                     // Dodajemo na kraj MainTabControl-a da indeksi postojecih tabova (0..7) ostanu netaknuti.
@@ -176,6 +179,7 @@ namespace WIS.UI
 
         private bool ForceSkipEmbeddedPhase5()
         {
+            if (_phase5UefiRebootInProgress) return false;
             ManualResetEvent ev;
             lock (_phase5HwSyncLock)
             {
@@ -308,6 +312,7 @@ namespace WIS.UI
                 {
                     targetPhase.IsExpanded = true;
                 }
+                ViewModel.RefreshProgressBars();
             });
         }
 
@@ -328,11 +333,111 @@ namespace WIS.UI
             }
         }
 
+        private void HandlePhase5UefiBiosRebootRequest(string testId)
+        {
+            // KRITIČNA ZAŠTITA (Race-Condition Guard): mora biti true PRE ShutdownEmbeddedHwTest() i buđenja waitEvent-a
+            _phase5UefiRebootInProgress = true;
+
+            int resumePhase = (ViewModel != null && ViewModel.CurrentPhase >= 2 && ViewModel.CurrentPhase <= 5)
+                ? ViewModel.CurrentPhase
+                : 5;
+            SaveDeployStatePhase(resumePhase);
+            EnsureRunOnceEntry();
+
+            string safeTestId = string.IsNullOrEmpty(testId) ? "peripherals" : testId;
+            try
+            {
+                if (ViewModel != null)
+                {
+                    ViewModel.AddLog("WARN", "Hardver", string.Format(
+                        "Pokrenut restart u UEFI BIOS za test '{0}' (sačuvana Faza {1} i hwtest-checkpoint.json).",
+                        safeTestId, resumePhase));
+                    ViewModel.SubPhase = string.Format("Restart u UEFI BIOS ({0})...", safeTestId);
+                    ViewModel.LiveStatus = "Restartujem u UEFI BIOS — WIS nastavlja automatski po povratku...";
+                }
+            }
+            catch { }
+
+            StopScreenCaptureWorker();
+            ShutdownEmbeddedHwTest();
+
+            bool fwOk = false;
+            int fwExitCode = -1;
+            string fwErr = "";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "shutdown.exe",
+                    Arguments = "/r /fw /t 0",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (Process proc = Process.Start(psi))
+                {
+                    if (proc != null)
+                    {
+                        if (proc.WaitForExit(3000))
+                        {
+                            fwExitCode = proc.ExitCode;
+                            fwOk = (fwExitCode == 0);
+                        }
+                        else
+                        {
+                            fwOk = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                fwErr = ex.Message;
+            }
+
+            if (!fwOk)
+            {
+                try
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog("WARN", "Hardver", string.Format(
+                            "shutdown.exe /r /fw /t 0 nije uspeo (ExitCode={0}{1}) — pokrećem fallback /r /t 3 /f.",
+                            fwExitCode, string.IsNullOrEmpty(fwErr) ? "" : (", " + fwErr)));
+                    }
+                }
+                catch { }
+
+                MessageBox.Show(
+                    "Direktan ulazak u UEFI firmware (/r /fw) nije uspeo na ovom računaru.\n\n" +
+                    "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
+                    "HP: F10 | Lenovo: F1 | Dell: F2",
+                    "Ručni ulazak u BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+
+                try
+                {
+                    ProcessStartInfo fallbackPsi = new ProcessStartInfo
+                    {
+                        FileName = "shutdown.exe",
+                        Arguments = "/r /t 3 /f",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    Process.Start(fallbackPsi);
+                }
+                catch { }
+            }
+
+            Dispatcher.BeginInvoke((Action)(() => Close()));
+        }
+
         private void ExecutePhase5IntegratedHwTest()
         {
             ManualResetEvent waitEvent = new ManualResetEvent(false);
             lock (_phase5HwSyncLock)
             {
+                _phase5UefiRebootInProgress = false;
                 _phase5HwCompletedEvent = waitEvent;
                 _phase5LastCpuDurationSec = 0;
                 _phase5LastMaxTemp = 0f;
@@ -383,8 +488,9 @@ namespace WIS.UI
 
             while (!signaled && elapsedAutoMs < timeoutMs && elapsedManualMs < manualWaitLimitMs)
             {
+                if (_phase5UefiRebootInProgress) break;
                 signaled = waitEvent.WaitOne(500);
-                if (signaled) break;
+                if (signaled || _phase5UefiRebootInProgress) break;
 
                 bool waitingManual = false;
                 try { waitingManual = (_embeddedHwTestShell != null && _embeddedHwTestShell.IsWaitingForManualTests); } catch { }
@@ -407,6 +513,16 @@ namespace WIS.UI
                 catch { }
             }
 
+            if (_phase5UefiRebootInProgress)
+            {
+                lock (_phase5HwSyncLock)
+                {
+                    _phase5HwCompletedEvent = null;
+                }
+                try { waitEvent.Dispose(); } catch { }
+                return;
+            }
+
             if (!signaled)
             {
                 Dispatcher.BeginInvoke((Action)(() =>
@@ -425,6 +541,11 @@ namespace WIS.UI
                 _phase5HwCompletedEvent = null;
             }
             try { waitEvent.Dispose(); } catch { }
+
+            if (_phase5UefiRebootInProgress)
+            {
+                return;
+            }
 
             WriteUiStressTestResultFile(
                 _phase5LastCpuDurationSec,

@@ -4,6 +4,38 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.4.0] / ServiceHub [v3.6.0] — 2026-11-21
+
+### UI/UX Redizajn i Live Kokpit (`WIS-TASK-261`, Koraci 1–35)
+- **Čistiji okvir, globalni watermark i 3-zonski footer (`UI/App.xaml`, `UI/MainWindow.xaml`, `UI/MainWindow.xaml.cs`, `UI/LocalizationService.cs`, `UI/Models.cs`):**
+  - Uklonjen tab `Mreža` iz vizuelnog interfejsa (ostaje **8 tabova** bez emoji prefiksa, dok mrežna svojstva ostaju za IPC/telemetriju).
+  - Globalni pozadinski **`WIS`** watermark premešten iza celog `MainTabControl`-a (vidljiv na svih 8 kartica), dok tab `Autopilot` dobija pulsirajući crveni okvir pri aktivnom alarmu.
+  - Novi 3-zonski footer: levo indikator + dinamička verzija **`ServiceHUB v<verzija>`** (`ProbeHub`), u sredini `Razvija i održava IG-Systems. Sva prava zadržana`, desno **`WIS v<verzija>`**; uklonjena pred-start prepreka `SERVIS SPREMAN` i kontrolna dugmad `Pauza`/`Preskoči`/`Odloži restart`.
+- **Redizajn taba `Pregled` i `CompletionOverlay` (`UI/MainWindow.Hardware.cs`, `UI/MainWindow.Reboot.cs`, `UI/TelemetryService.cs`, `ServiceHub/servishub/handlers.py`, `dashboard.js`):**
+  - Srednji panel `OverviewMiddleGrid` objedinjuje kompletne specifikacije uređaja (EDID/WMI dijagonala + format + tip panela @ Hz, npr. `14" FHD+ IPS @ 60 Hz`, proširena detekcija `WWAN` modema i periferija), live podkartice **`HARDVER MONITOR`** (`ReadLivePowerTelemetry`) i klikabilna **`UPOZORENJA`** (`RebuildOverviewAlerts`), kao i **`260×260` ServiceHub QR kod** sa deep-link rutama `/device/<identifier>` i `/karton/<identifier>`.
+  - Sekcija `TOK INSTALACIJE I FAZE` prikazuje **5 vizuelnih faza** (`DisplayNumber` `1.`–`5.` uz očuvani backend ugovor faza `2..6`) sa uvek vidljivim koracima i `▲`/`▼` skupljanjem, a donja fiksirana `GlobalProgressCard` prikazuje trajanje i procenu **`Traje mm:ss | ETA ~mm:ss`** iz `/api/benchmark/summary`.
+  - Redizajnirani Završni karton (`CompletionOverlay`) objedinjuje specifikacije, periferije, QR kod kartona i klikabilnu listu upozorenja sa kojima je proces završen.
+- **Detaljni tab `HW Monitor` i `↻ Retry` programa (`Phase4-Apps.ps1`, `WIS.Apps.psm1`):**
+  - Tab `Dijagnostika` pretvoren u **`HW Monitor`** sa 5 živih KPI kartica, 6-kanalnim 5-minutnim grafikonom (`CpuLoadGraphPoints` + termika), tabelom od 13 detaljnih senzora (`Min / Trenutno / Max`), taktovima po jezgrima i lazy `PerformanceCounter("PhysicalDisk")` bez `WinRing0`/LHM (Anti-BYOVD).
+  - Kartice programa u tabu `Programi` dobijaju dugme **`↻ Retry`** za neuspešne/nepotpune aplikacije (`-OnlyApp` podrška za `DotNet`, `WinRAR`, `Chrome`, `Acrobat`, `Office`, `BatteryBar`, `Shortcuts`, `License`).
+  - Vizuelne izmene u XAML-u podržane su idempotentnim runtime BAML rekonstrukcijama za kompatibilnost sa Linux Roslyn buildom do pune Windows MSBuild regeneracije `UI/Resources/WIS.UI.g.resources`.
+
+### Unapređenja Hardverskih Testova (`WIS-TASK-263`, `HWT-01`–`HWT-07`)
+- **`HWT-01` (`UI/HwTest/Tests/UsbPortTestWindow.cs`, `UI/HwTest/Interop/NativeMethods.cs`):** Rešena dvostruka detekcija USB porta pri izvlačenju uređaja uvođenjem `CM_Get_DevNode_Status` / `IsUsbDevNodeLiveAndStarted` filtera, odvajanjem kanonskog `RawPortKey` od prikaznog `DisplayLocationInfo`, zabranom upisa za `!newlyAttached`, `280 ms` `DispatcherTimer` debounce-om na `WM_DEVICECHANGE` i `< 500 ms` unplug cooldown-om.
+- **`HWT-02` (`UI/HwTest/HwTestShell.cs`, `UI/HwTest/Tests/*.cs`):** Uklonjena mogućnost da serviser preskoči testove (dugme `»`, `PromptSkipReason`, `Preskoči test ...`, `ESC = preskoči` u `DisplayTestWindow`, ručno `Zaustavi`/`Prekini` tokom stresa); dugme za završetak je zaključano dok svi primenljivi testovi nemaju `PASS` ili `FAIL`, a nasilno zatvaranje prozora ostavlja `Pending` (uz očuvanje termalne zaštite `>= 95°C`, desktop `N/A` i daljinskog ServiceHub override-a).
+- **`HWT-03` (`UI/HwTest/Core/AutoHardwareDiagnostics.cs`, `HwTestShell.cs`, `GpuStressWindow.cs`):** Dodata pre-flight blokada `TryValidateGpuDriverForStress` (plus odbrana po dubini u `GpuStressWindow`) koja sprečava pokretanje GPU 3D testa kada je aktivan `Microsoft Basic Display Adapter`, postoji PnP greška ili je `RenderCapability.Tier == 0`.
+- **`HWT-04` (`HardwareProbe.cs`, `HwTestShell.cs`, `FingerprintTestWindow.cs`, `UI/MainWindow.HwTest.cs`):** Strogo filtriranje `IsFingerprintPnpCandidate` (eliminacija ELAN/Goodix touch lažnih pogodaka), buđenje `WbioSrvc` (`TryWakeWbioService`), uklanjanje `!FactoryBomLoaded` uslova, dugme **`🔧 Restartuj u UEFI BIOS (i nastavi WIS)`** i atomični checkpoint `hwtest-checkpoint.json` (`wis.hwtest.checkpoint.v1`) za automatski nastavak Faze 5 tačno gde je stao (uz race-zaštitu `_phase5UefiRebootInProgress`, `_uefiBiosPromptOpen`, `_uefiBiosRebootRequested`).
+- **`HWT-05` (`HwTestShell.cs`, `TouchpadTestWindow.cs`, `HardwareProbe.cs`, `FactorySpecProbe.cs`):** Razdvojeni **`touchpad`** (`Touchpad`) i **`trackpoint`** (`TrackPoint`) testovi preko `PointingTestMode` (`TouchpadOnly` / `TrackPointOnly`) sa RawInput/HID razdvajanjem dodira i nezavisnim BIOS/BOM prepoznavanjem.
+- **`HWT-06` (`HwTestShell.cs`, `CameraTestWindow.cs`, `HardwareProbe.cs`):** Razdvojeni **`camera`** (`Web kamera (QR kod)`) i **`ir_camera`** (`IR kamera (Windows Hello)`) preko `CameraTestMode` (`RgbOnly` / `IrOnly`), popravljena RGB vs IR PnP klasifikacija (`IsIrCameraEntry`, `IsNonPhysicalCameraImageDevice`), i unificirana matrica vidljivosti + UEFI BIOS restarta za sve periferne testove.
+- **`HWT-07` (`AutoHardwareDiagnostics.cs`, `NativeMethods.cs`):** Unapređen pasivni RF Wi-Fi test unutar `auto_network` (`WlanQueryInterface` sa `wlan_intf_opcode_radio_state = 4u`, svež `WlanScan` + `WlanGetNetworkBssList` za `2.4/5/6 GHz` i RSSI, `TryReadServiceWifiSsid` bez čitanja lozinke i bez `WlanSetProfile`/`WlanConnect`, `FAIL` na RF Kill / `0` mreža, `PASS + WARN` na slab signal `< 55%` / `< -75 dBm` ili izostanak `5 GHz`).
+
+### Integrisana Terenska Unapređenja (`WIS-TASK-262`, `IMP-01`–`IMP-18`) & Bezbednosna Revizija
+- **Terenske popravke (`patch/v3.2.2` integrisan u radno drvo):** Auto-ingest Driver Pool arhiva (`scan_and_ingest_archives`, `_harvest_pool_watcher`, `POST /api/drivers/pool/notify-harvest`, `Send-ServisHubHarvestNotify`), `14400s` outlier filter u `benchmark.py`, deduplikacija izveštaja (`reports.py`), `Mode=DriversOnly` & chunkovani upload berbe (`Copy-FileWithHeartbeat`), asinhroni `120s` `SEARCH_TIMEOUT` u WU Pass 2, `Get-WisProblematicPnpDevices` za generičke GPU adaptere, `Sync-ProgramiFromNas` pre `winget` u `P4.WinRAR`/`P4.Chrome`, `Send-IpcAppUpdate`, `4000 ms` watchdog senzora i detekcija statičke ACPI zone (`WMI_ACPI_STATIC`).
+- **Security Gate (`[SECURITY GREEN]`):** Dodata fail-closed token autentifikacija na `POST /api/drivers/pool/notify-harvest` (`_require_client_upload_token()` u `ServiceHub/servishub/handlers.py` + `Get-ServisHubClientToken` / `X-ServisHub-Client-Token` u `UI/Skripte/Modules/WIS.Update.psm1`) i zatvoren race prozor oko `MessageBox.Show` u `HwTestShell.RequestUefiBiosReboot` (`_uefiBiosPromptOpen`).
+- **Verzionisanje:** Root [`version.json`](version.json) i svi sinhronizovani podsistemi podignuti na **`WIS v3.4.0`** / **`ServiceHub v3.6.0`** (`Sync-Versions.py --check` `[PASS]`).
+
+---
+
 ## [v3.2.1] / ServiceHub [v3.5.0] — 2026-11-19
 
 ### Hitni hotfix: StepGuard PowerShell 5.1 Deadlock & `P4.WinRAR` otpornost (`WIS-TASK-260`)

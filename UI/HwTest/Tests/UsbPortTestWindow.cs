@@ -30,11 +30,17 @@ namespace WIS.HwTest.Tests
         private Button _btnPass;
         private HwndSource _hwndSource;
         private DispatcherTimer _pollTimer;
+        private DispatcherTimer _debounceTimer;
+        private DateTime _lastDeviceChangeUtc = DateTime.MinValue;
         private int _scanInProgress = 0;
         private readonly HashSet<string> _loggedScanKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _loggedSkipKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _baselineUsbPnpIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _currentlyAttachedDevices = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, bool> _attachedDeviceHadStrongLocation = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _deviceReplugCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> _lastUnplugUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private DateTime _lastAnyUnplugUtc = DateTime.MinValue;
         private bool _baselineCaptured = false;
         private int _totalReplugEvents = 0;
         private string _pendingSharedPortKey = null;
@@ -314,21 +320,10 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(16, 8, 16, 8),
-                Margin = new Thickness(0, 0, 15, 0)
+                Padding = new Thickness(16, 8, 16, 8)
             };
             btnUsbFail.Click += (s, e) => FinishFail();
             spF.Children.Add(btnUsbFail);
-
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test USB-a",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            spF.Children.Add(btnSkip);
 
             footer.Child = spF;
             Grid.SetRow(footer, 2);
@@ -349,8 +344,25 @@ namespace WIS.HwTest.Tests
                 _hwndSource.AddHook(HwndHook);
             }
 
+            _debounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(280) };
+            _debounceTimer.Tick += (s, args) =>
+            {
+                if (_debounceTimer != null) _debounceTimer.Stop();
+                if (!_isClosingOrDone) TriggerUsbScan();
+            };
+
             _pollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(700) };
-            _pollTimer.Tick += (s, args) => TriggerUsbScan();
+            _pollTimer.Tick += (s, args) =>
+            {
+                if (_isClosingOrDone) return;
+                if (_debounceTimer != null && _debounceTimer.IsEnabled) return;
+                if (_lastDeviceChangeUtc != DateTime.MinValue &&
+                    (DateTime.UtcNow - _lastDeviceChangeUtc).TotalMilliseconds < 300.0)
+                {
+                    return;
+                }
+                TriggerUsbScan();
+            };
             _pollTimer.Start();
 
             TriggerUsbScan();
@@ -358,6 +370,12 @@ namespace WIS.HwTest.Tests
 
         private void OnWindowClosed(object sender, EventArgs e)
         {
+            _isClosingOrDone = true;
+            if (_debounceTimer != null)
+            {
+                try { _debounceTimer.Stop(); } catch { }
+                _debounceTimer = null;
+            }
             if (_pollTimer != null)
             {
                 try { _pollTimer.Stop(); } catch { }
@@ -379,15 +397,26 @@ namespace WIS.HwTest.Tests
                     eventType == NativeMethods.DBT_DEVICEREMOVECOMPLETE ||
                     eventType == NativeMethods.DBT_DEVNODES_CHANGED)
                 {
-                    TriggerUsbScan();
+                    ScheduleDebouncedUsbScan();
                 }
             }
             else if (msg == NativeMethods.WM_POWERBROADCAST)
             {
                 CheckUsbCChargerPort();
-                TriggerUsbScan();
+                ScheduleDebouncedUsbScan();
             }
             return IntPtr.Zero;
+        }
+
+        private void ScheduleDebouncedUsbScan()
+        {
+            if (_isClosingOrDone) return;
+            _lastDeviceChangeUtc = DateTime.UtcNow;
+            if (_debounceTimer != null)
+            {
+                _debounceTimer.Stop();
+                _debounceTimer.Start();
+            }
         }
 
         private const string AutoChargerPortKey = "AUTO-USBC-CHARGER";
@@ -397,6 +426,7 @@ namespace WIS.HwTest.Tests
             public string DeviceId;
             public string FriendlyName;
             public string RawPortKey;
+            public string DisplayLocationInfo;
             public bool IsStrongLocation;
             public string Diag;
         }
@@ -463,13 +493,52 @@ namespace WIS.HwTest.Tests
             }
         }
 
+        private void LogUsbScanSkipOnce(string pnp, string source, string statusDiag)
+        {
+            string key = string.Format("{0}|{1}|{2}|{3}", _totalReplugEvents, source, pnp, statusDiag ?? "");
+            bool shouldLog;
+            lock (_loggedSkipKeys)
+            {
+                shouldLog = _loggedSkipKeys.Add(key);
+            }
+            if (shouldLog)
+            {
+                HwTestLogger.Info("USB_SCAN_SKIP", string.Format(
+                    "Preskočen neaktivan USB devnode ({0}): pnp='{1}' | {2}",
+                    source, pnp, statusDiag ?? ""));
+            }
+        }
+
+        private bool IsPortCurrentlyOccupiedByOtherDevice(string rawPortKey, string currentDeviceId)
+        {
+            if (string.IsNullOrEmpty(rawPortKey)) return false;
+            foreach (KeyValuePair<string, string> kv in _currentlyAttachedDevices)
+            {
+                if (!string.Equals(kv.Key, currentDeviceId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(kv.Value, rawPortKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static string FormatPortDisplayLabel(string portKey, string displayLocInfo, string friendlyName)
+        {
+            if (!string.IsNullOrEmpty(displayLocInfo))
+                return string.Format("{0} ({1}) ({2})", portKey, displayLocInfo, friendlyName);
+            return string.Format("{0} ({1})", portKey, friendlyName);
+        }
+
         private void TriggerUsbScan()
         {
+            if (_isClosingOrDone) return;
             if (Interlocked.CompareExchange(ref _scanInProgress, 1, 0) != 0)
             {
                 return;
             }
 
+            DateTime scanStartUtc = DateTime.UtcNow;
             ThreadPool.QueueUserWorkItem((state) => {
                 List<UsbCandidateScan> foundPorts = new List<UsbCandidateScan>();
                 bool isFirstBaselinePass = !_baselineCaptured;
@@ -489,6 +558,12 @@ namespace WIS.HwTest.Tests
                                 string model = (drive["Model"] ?? "USB Flash").ToString().Trim();
                                 if (!string.IsNullOrEmpty(pnp) && !candidatePnps.ContainsKey(pnp))
                                 {
+                                    string diskStatusDiag;
+                                    if (!NativeMethods.IsUsbDevNodeLiveAndStarted(pnp, out diskStatusDiag))
+                                    {
+                                        LogUsbScanSkipOnce(pnp, "Win32_DiskDrive", diskStatusDiag);
+                                        continue;
+                                    }
                                     candidatePnps[pnp] = model;
                                 }
                             }
@@ -594,32 +669,47 @@ namespace WIS.HwTest.Tests
                     {
                         string pnp = kv.Key;
                         string friendly = kv.Value;
+
+                        string statusDiag;
+                        if (!NativeMethods.IsUsbDevNodeLiveAndStarted(pnp, out statusDiag))
+                        {
+                            LogUsbScanSkipOnce(pnp, "DevNodeGuard", statusDiag);
+                            continue;
+                        }
+
                         string dbg;
-                        string cfgLoc = NativeMethods.ResolveUsbPhysicalPortLocation(pnp, out dbg);
+                        string displayLocInfo;
+                        string cfgLoc = NativeMethods.ResolveUsbPhysicalPortLocation(pnp, out dbg, out displayLocInfo);
                         string wmiLoc = string.IsNullOrEmpty(cfgLoc) ? QueryUsbLocation(pnp) : null;
                         bool isStrong = !string.IsNullOrEmpty(cfgLoc) || !string.IsNullOrEmpty(wmiLoc);
                         string rawLoc = !string.IsNullOrEmpty(cfgLoc)
                             ? cfgLoc
                             : (!string.IsNullOrEmpty(wmiLoc) ? wmiLoc : pnp);
 
-                        string diag = string.Format("name='{0}' | pnp='{1}' | {2} | wmi='{3}' -> rawLoc='{4}' (strong={5})",
-                            friendly, pnp, dbg, wmiLoc ?? "", rawLoc, isStrong);
+                        string diag = string.Format("name='{0}' | pnp='{1}' | {2} | dev='{3}' | disp='{4}' | wmi='{5}' -> rawLoc='{6}' (strong={7})",
+                            friendly, pnp, dbg, statusDiag ?? "", displayLocInfo ?? "", wmiLoc ?? "", rawLoc, isStrong);
 
                         foundPorts.Add(new UsbCandidateScan
                         {
                             DeviceId = pnp,
                             FriendlyName = friendly,
                             RawPortKey = rawLoc,
+                            DisplayLocationInfo = displayLocInfo,
                             IsStrongLocation = isStrong,
                             Diag = diag
                         });
                     }
+
+                    // Jaka lokacija ima prednost pri deduplikaciji unutar istog skena
+                    foundPorts.Sort((a, b) => b.IsStrongLocation.CompareTo(a.IsStrongLocation));
                 }
                 finally
                 {
                     Dispatcher.BeginInvoke(new Action(() => {
                         try
                         {
+                            if (_isClosingOrDone) return;
+
                             if (isFirstBaselinePass)
                             {
                                 lock (_baselineUsbPnpIds)
@@ -628,6 +718,11 @@ namespace WIS.HwTest.Tests
                                         _baselineUsbPnpIds.Add(newBaselineIds[i]);
                                 }
                                 _baselineCaptured = true;
+                            }
+                            else if (_lastDeviceChangeUtc > scanStartUtc)
+                            {
+                                // Stigao je nov WM_DEVICECHANGE dok je WMI sken trajao: cekamo stabilizaciju debounce tajmera
+                                return;
                             }
 
                             HashSet<string> activeNow = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -643,10 +738,14 @@ namespace WIS.HwTest.Tests
                                 if (!activeNow.Contains(prevId))
                                     removedIds.Add(prevId);
                             }
+                            DateTime unplugUtc = DateTime.UtcNow;
                             for (int i = 0; i < removedIds.Count; i++)
                             {
                                 string remId = removedIds[i];
                                 _currentlyAttachedDevices.Remove(remId);
+                                _attachedDeviceHadStrongLocation.Remove(remId);
+                                _lastUnplugUtc[remId] = unplugUtc;
+                                _lastAnyUnplugUtc = unplugUtc;
                                 int prevCnt = 0;
                                 _deviceReplugCounts.TryGetValue(remId, out prevCnt);
                                 _deviceReplugCounts[remId] = prevCnt + 1;
@@ -657,6 +756,9 @@ namespace WIS.HwTest.Tests
                             }
 
                             // 2. Obrada trenutno prikljucenih uredjaja (Replug u isti ili sledeci port)
+                            DateTime scanProcessUtc = DateTime.UtcNow;
+                            HashSet<string> processedPortKeysThisScan = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
                             for (int i = 0; i < foundPorts.Count; i++)
                             {
                                 UsbCandidateScan cand = foundPorts[i];
@@ -665,14 +767,60 @@ namespace WIS.HwTest.Tests
                                     HwTestLogger.Info("USB_SCAN", cand.Diag);
                                 }
 
+                                // Cooldown posle Unplug-a (< 500 ms): sprecava lazni povratak / #REPLUG- iz WMI kesa
+                                DateTime devLastUnplug;
+                                if (_lastUnplugUtc.TryGetValue(cand.DeviceId, out devLastUnplug))
+                                {
+                                    double devCooldownMs = (scanProcessUtc - devLastUnplug).TotalMilliseconds;
+                                    if (devCooldownMs < 500.0)
+                                    {
+                                        continue;
+                                    }
+                                }
+                                if (!cand.IsStrongLocation &&
+                                    _lastAnyUnplugUtc != DateTime.MinValue &&
+                                    (scanProcessUtc - _lastAnyUnplugUtc).TotalMilliseconds < 500.0)
+                                {
+                                    continue;
+                                }
+
                                 bool newlyAttached = !_currentlyAttachedDevices.ContainsKey(cand.DeviceId);
-                                _currentlyAttachedDevices[cand.DeviceId] = cand.RawPortKey;
+                                bool hadStrongBefore = false;
+                                _attachedDeviceHadStrongLocation.TryGetValue(cand.DeviceId, out hadStrongBefore);
+
+                                if (newlyAttached)
+                                {
+                                    _currentlyAttachedDevices[cand.DeviceId] = cand.RawPortKey;
+                                    _attachedDeviceHadStrongLocation[cand.DeviceId] = cand.IsStrongLocation;
+                                }
+                                else
+                                {
+                                    if (!hadStrongBefore && cand.IsStrongLocation)
+                                    {
+                                        _currentlyAttachedDevices[cand.DeviceId] = cand.RawPortKey;
+                                        _attachedDeviceHadStrongLocation[cand.DeviceId] = true;
+                                    }
+                                    // Apsolutna zabrana dodavanja novog porta ili azuriranja Port #N kad je !newlyAttached
+                                    continue;
+                                }
 
                                 if (string.IsNullOrEmpty(cand.RawPortKey)) continue;
+                                if (hadStrongBefore && !cand.IsStrongLocation) continue;
+
+                                // Deduplikacija multi-node uredjaja unutar istog skena po kanonskom RawPortKey
+                                if (!processedPortKeysThisScan.Add(cand.RawPortKey))
+                                {
+                                    continue;
+                                }
+                                if (IsPortCurrentlyOccupiedByOtherDevice(cand.RawPortKey, cand.DeviceId))
+                                {
+                                    continue;
+                                }
 
                                 int devReplugs = 0;
                                 _deviceReplugCounts.TryGetValue(cand.DeviceId, out devReplugs);
                                 int effectiveReplug = Math.Max(devReplugs, _totalReplugEvents);
+                                string entryDisplay = FormatPortDisplayLabel(cand.RawPortKey, cand.DisplayLocationInfo, cand.FriendlyName);
 
                                 if (!_detectedPortLocations.Contains(cand.RawPortKey))
                                 {
@@ -680,7 +828,7 @@ namespace WIS.HwTest.Tests
                                     {
                                         _pendingSharedPortKey = null;
                                         _pendingSharedDeviceName = null;
-                                        AddPortEntry(string.Format("{0} ({1})", cand.RawPortKey, cand.FriendlyName));
+                                        AddPortEntry(entryDisplay);
                                         UpdateProgress();
                                         HwTestLogger.Info("USB", string.Format("Registrovan port #{0}: {1} [{2}]", _detectedPortLocations.Count, cand.RawPortKey, cand.FriendlyName));
                                     }
@@ -695,7 +843,7 @@ namespace WIS.HwTest.Tests
                                         {
                                             _pendingSharedPortKey = null;
                                             _pendingSharedDeviceName = null;
-                                            AddPortEntry(string.Format("{0} ({1})", uniqueReplugKey, cand.FriendlyName));
+                                            AddPortEntry(FormatPortDisplayLabel(uniqueReplugKey, cand.DisplayLocationInfo, cand.FriendlyName));
                                             UpdateProgress();
                                             HwTestLogger.Info("USB", string.Format("Registrovan port #{0} (replug fallback): {1} [{2}]", _detectedPortLocations.Count, uniqueReplugKey, cand.FriendlyName));
                                         }
@@ -1023,15 +1171,6 @@ namespace WIS.HwTest.Tests
             Result.Details["detected_ports"] = _detectedPortLocations.Count;
             Result.Details["port_locations"] = new List<string>(_detectedPortLocations);
 
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test USB portova";
             SafeCloseDialog(false);
         }
     }

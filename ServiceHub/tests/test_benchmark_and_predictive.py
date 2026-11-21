@@ -533,6 +533,58 @@ class TestBenchmarkAndPredictiveCache(unittest.TestCase):
         self.assertFalse(run_map["TK-FAIL-247"]["success"])
         self.assertEqual(run_map["TK-FAIL-247"]["status"], "NEEDS_ATTENTION")
 
+    def test_v330_imp08_outlier_filtering_excludes_stuck_sessions_above_4h(self):
+        """IMP-08: Sesije > 4h (14400s) iskljucuju se iz avg/P50/P90/phase/by_model uz ocuvan raw_avg i brojac."""
+        from servishub.benchmark import OUTLIER_DURATION_THRESHOLD_SEC
+
+        out_dir = os.path.join(self.test_dir, "outlier_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        records = [
+            {
+                "device_id": "TK-NORM-01",
+                "status": "COMPLETED",
+                "handover_ready": True,
+                "duration_seconds": 600,
+                "hw": {"manufacturer": "HP", "model": "EliteBook 840 G8"},
+                "benchmark": {"phase_durations_sec": {"Phase2": 300, "Phase4": 300}},
+                "timestamp": "2026-11-20T10:00:00+01:00",
+            },
+            {
+                "device_id": "TK-NORM-02",
+                "status": "COMPLETED",
+                "handover_ready": True,
+                "duration_seconds": 1200,
+                "hw": {"manufacturer": "HP", "model": "EliteBook 840 G8"},
+                "benchmark": {"phase_durations_sec": {"Phase2": 600, "Phase4": 600}},
+                "timestamp": "2026-11-20T10:30:00+01:00",
+            },
+            {
+                "device_id": "TK-STUCK-03",
+                "status": "COMPLETED",
+                "handover_ready": True,
+                "duration_seconds": 42000,
+                "hw": {"manufacturer": "HP", "model": "EliteBook 840 G8"},
+                "benchmark": {"phase_durations_sec": {"Phase2": 40000, "Phase4": 2000}},
+                "timestamp": "2026-11-20T11:00:00+01:00",
+            },
+        ]
+        for idx, rec in enumerate(records):
+            with open(os.path.join(out_dir, f"20261120_100{idx}00_{rec['device_id']}.json"), "w", encoding="utf-8") as f:
+                json.dump(rec, f)
+
+        bm = compute_fleet_benchmark_summary(fleet_store=None, reports_dir=out_dir)
+        self.assertEqual(bm["total_installations"], 3)
+        self.assertEqual(bm["outlier_threshold_seconds"], int(OUTLIER_DURATION_THRESHOLD_SEC))
+        self.assertEqual(bm["outlier_sessions_excluded"], 1)
+        self.assertEqual(bm["avg_duration_seconds"], 900.0)
+        self.assertEqual(bm["p50_duration_seconds"], 900.0)
+        self.assertEqual(bm["p90_duration_seconds"], 1140.0)
+        self.assertGreater(bm["raw_avg_duration_seconds"], 10000.0)
+        self.assertEqual(bm["phase_averages_sec"]["Phase2"], 450.0)
+        self.assertEqual(bm["cohorts"]["v3_modern"]["avg_duration_seconds"], 900.0)
+        self.assertEqual(bm["by_model"][0]["count"], 3)
+        self.assertEqual(bm["by_model"][0]["avg_duration_seconds"], 900.0)
+
 
 if __name__ == "__main__":
     unittest.main()

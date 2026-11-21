@@ -287,7 +287,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v3.2.1 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v3.4.0 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -295,15 +295,15 @@ namespace WIS.UI
             _srDict["DiskLabel"] = "🖴 DISK:";
 
             // Tabovi
-            _srDict["TabOverview"] = "📊 Pregled";
-            _srDict["TabHardware"] = "💻 Informacije";
-            _srDict["TabDrivers"] = "⚙ Drajveri";
-            _srDict["TabDiagnostics"] = "🔍 Dijagnostika";
-            _srDict["TabNetwork"] = "🌐 Mreža";
-            _srDict["TabApps"] = "📦 Programi";
-            _srDict["TabLogs"] = "📜 Dnevnik rada";
-            _srDict["TabAutopilot"] = "🛡️ Autopilot";
-            _srDict["TabHwTest"] = "🧪 Hardverski testovi";
+            _srDict["TabOverview"] = "Pregled";
+            _srDict["TabHardware"] = "Informacije";
+            _srDict["TabDrivers"] = "Drajveri";
+            _srDict["TabDiagnostics"] = "HW Monitor";
+            _srDict["TabNetwork"] = "Mreža";
+            _srDict["TabApps"] = "Programi";
+            _srDict["TabLogs"] = "Dnevnik rada";
+            _srDict["TabAutopilot"] = "Autopilot";
+            _srDict["TabHwTest"] = "Hardverski testovi";
 
             // Dugmad i kontrole
             _srDict["BtnStartService"] = "▶ ZAPOČNI INSTALACIJU";
@@ -313,6 +313,8 @@ namespace WIS.UI
             _srDict["BtnDelayRestart"] = "⏱ Odloži restart";
             _srDict["BtnRefreshHardware"] = "🔄 Osveži informacije";
             _srDict["BtnRerunApps"] = "🔄 Ponovi instalaciju programa";
+            _srDict["AppRetryBtn"] = "↻ Retry";
+            _srDict["AppRetryTooltip"] = "Ponovo pokreni instalaciju ovog programa";
             _srDict["BtnRunStressTest"] = "🔥 Pokreni 30s termalni test";
             _srDict["BtnCancelStressTest"] = "⏹ Prekini test";
             _srDict["BtnCleanAndShutdown"] = "🔄 OČISTI I RESTARTUJ RAČUNAR";
@@ -767,22 +769,22 @@ namespace WIS.UI
             // ==========================================
             // ENGLESKI JEZIK (EN - English)
             // ==========================================
-            _enDict["AppTitle"] = "WIS v3.2.1 - Windows Installation Assistant";
+            _enDict["AppTitle"] = "WIS v3.4.0 - Windows Installation Assistant";
             _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
             _enDict["WorkTimeTitle"] = "Elapsed Time";
             _enDict["CpuLabel"] = "⚙ CPU:";
             _enDict["RamLabel"] = "💾 RAM:";
             _enDict["DiskLabel"] = "🖴 Disk:";
 
-            _enDict["TabOverview"] = "📊 Overview";
-            _enDict["TabHardware"] = "💻 Hardware Info";
-            _enDict["TabDrivers"] = "⚙ Drivers";
-            _enDict["TabDiagnostics"] = "🔍 Diagnostics";
-            _enDict["TabNetwork"] = "🌐 Network";
-            _enDict["TabApps"] = "📦 Applications";
-            _enDict["TabLogs"] = "📜 System Log";
-            _enDict["TabAutopilot"] = "🛡️ Autopilot";
-            _enDict["TabHwTest"] = "🧪 Hardware Tests";
+            _enDict["TabOverview"] = "Overview";
+            _enDict["TabHardware"] = "Hardware Info";
+            _enDict["TabDrivers"] = "Drivers";
+            _enDict["TabDiagnostics"] = "HW Monitor";
+            _enDict["TabNetwork"] = "Network";
+            _enDict["TabApps"] = "Applications";
+            _enDict["TabLogs"] = "System Log";
+            _enDict["TabAutopilot"] = "Autopilot";
+            _enDict["TabHwTest"] = "Hardware Tests";
 
             _enDict["BtnStartService"] = "▶ Start Automated Service";
             _enDict["BtnPause"] = "⏸ Pause";
@@ -791,6 +793,8 @@ namespace WIS.UI
             _enDict["BtnDelayRestart"] = "⏱ Delay Reboot";
             _enDict["BtnRefreshHardware"] = "🔄 Refresh Hardware";
             _enDict["BtnRerunApps"] = "🔄 Reinstall Apps";
+            _enDict["AppRetryBtn"] = "↻ Retry";
+            _enDict["AppRetryTooltip"] = "Retry installing this application";
             _enDict["BtnRunStressTest"] = "🔥 Start 30s Stress Test";
 
             _enDict["InstallationFlowTitle"] = "INSTALLATION & OPTIMIZATION FLOW";
@@ -852,7 +856,7 @@ namespace WIS.UI
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v3.2.1 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v3.4.0 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";
@@ -860,15 +864,15 @@ namespace WIS.UI
             _zhDict["DiskLabel"] = "🖴 硬盘:";
 
             // Tabovi
-            _zhDict["TabOverview"] = "📊 概览";
-            _zhDict["TabHardware"] = "💻 硬件信息";
-            _zhDict["TabDrivers"] = "⚙ 驱动程序";
-            _zhDict["TabDiagnostics"] = "🔍 系统诊断";
-            _zhDict["TabNetwork"] = "🌐 网络连接";
-            _zhDict["TabApps"] = "📦 常用软件";
-            _zhDict["TabLogs"] = "📜 运行日志";
-            _zhDict["TabAutopilot"] = "🛡️ 自动巡检";
-            _zhDict["TabHwTest"] = "🧪 硬件测试";
+            _zhDict["TabOverview"] = "概览";
+            _zhDict["TabHardware"] = "硬件信息";
+            _zhDict["TabDrivers"] = "驱动程序";
+            _zhDict["TabDiagnostics"] = "硬件监控";
+            _zhDict["TabNetwork"] = "网络连接";
+            _zhDict["TabApps"] = "常用软件";
+            _zhDict["TabLogs"] = "运行日志";
+            _zhDict["TabAutopilot"] = "自动巡检";
+            _zhDict["TabHwTest"] = "硬件测试";
 
             // Dugmad i kontrole
             _zhDict["BtnStartService"] = "▶ 开始自动化安装";
@@ -878,6 +882,8 @@ namespace WIS.UI
             _zhDict["BtnDelayRestart"] = "⏱ 延迟重启";
             _zhDict["BtnRefreshHardware"] = "🔄 刷新硬件信息";
             _zhDict["BtnRerunApps"] = "🔄 重新安装软件";
+            _zhDict["AppRetryBtn"] = "↻ 重试";
+            _zhDict["AppRetryTooltip"] = "重试安装此应用程序";
             _zhDict["BtnRunStressTest"] = "🔥 启动30秒压力测试";
             _zhDict["BtnCancelStressTest"] = "⏹ 终止测试";
             _zhDict["BtnCleanAndShutdown"] = "🔄 清理并重启电脑";

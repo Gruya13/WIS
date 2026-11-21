@@ -154,10 +154,6 @@ namespace WIS.HwTest.Tests
             };
             spBot.Children.Add(_tbStatus);
 
-            Grid pg = new Grid();
-            pg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            pg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
             _progress = new ProgressBar
             {
                 Minimum = 0,
@@ -166,21 +162,7 @@ namespace WIS.HwTest.Tests
                 Foreground = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Background = new SolidColorBrush(Color.FromRgb(45, 48, 56))
             };
-            pg.Children.Add(_progress);
-
-            Button btnAbort = new Button
-            {
-                Content = "Prekini",
-                Background = new SolidColorBrush(Color.FromRgb(85, 50, 50)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(14, 4, 14, 4),
-                Margin = new Thickness(14, 0, 0, 0)
-            };
-            btnAbort.Click += (s, e) => Close();
-            Grid.SetColumn(btnAbort, 1);
-            pg.Children.Add(btnAbort);
-
-            spBot.Children.Add(pg);
+            spBot.Children.Add(_progress);
             botBar.Child = spBot;
             Grid.SetRow(botBar, 2);
             root.Children.Add(botBar);
@@ -316,6 +298,14 @@ namespace WIS.HwTest.Tests
 
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
+            if (_isBasicDisplay || _hasAnyBasicDisplay || _pnpErr != 0 || _hasAnyErrorAdapter || _renderTier == 0)
+            {
+                Result.Details["gpu_test_blocked_no_driver"] = true;
+                _completedNormally = true;
+                FinalizeAndClose();
+                return;
+            }
+
             _totalSw.Start();
             _fpsWindowSw.Start();
             CompositionTarget.Rendering += OnRenderFrame;
@@ -381,16 +371,15 @@ namespace WIS.HwTest.Tests
 
         private void OnWindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            if (!_completedNormally && !_isClosingOrDone)
+            {
+                e.Cancel = true;
+                return;
+            }
+
             _isClosing = true;
             CompositionTarget.Rendering -= OnRenderFrame;
             if (_telemetryTimer != null) _telemetryTimer.Stop();
-
-            if (!_completedNormally)
-            {
-                Result.Status = TestStatus.Skip;
-                Result.Reason = "GPU 3D test je prekinut pre završetka";
-                Result.MetricSummary = "Prekinuto";
-            }
         }
 
         private void SafeCloseDialog(bool result)
@@ -407,11 +396,13 @@ namespace WIS.HwTest.Tests
             CompositionTarget.Rendering -= OnRenderFrame;
             if (_telemetryTimer != null) _telemetryTimer.Stop();
 
-            double elapsedSec = Math.Max(0.5, _totalSw.Elapsed.TotalSeconds);
-            double avgFps = Math.Round(_totalFrames / elapsedSec, 1);
+            bool blockedNoDriver = Result.Details != null && Result.Details.ContainsKey("gpu_test_blocked_no_driver");
+            double elapsedSec = blockedNoDriver ? 0.0 : Math.Max(0.5, _totalSw.Elapsed.TotalSeconds);
+            double avgFps = blockedNoDriver ? 0.0 : Math.Round(_totalFrames / elapsedSec, 1);
             if (_minFps > 9000) _minFps = avgFps;
 
-            Result.DurationSeconds = (int)Math.Ceiling(elapsedSec);
+            Result.DurationSeconds = blockedNoDriver ? 0 : (int)Math.Ceiling(elapsedSec);
+            Result.Attempts = 1;
             Result.Details["gpu_name"] = _gpuName;
             Result.Details["driver_version"] = _driverVer;
             Result.Details["vram_mb"] = _vramMb;
@@ -431,7 +422,9 @@ namespace WIS.HwTest.Tests
             string shortGpu = _gpuName.Length > 26 ? (_gpuName.Substring(0, 25) + "…") : _gpuName;
             string vramStr = _vramMb > 0 ? string.Format(" | {0} MB", _vramMb) : "";
             string tempStr = _peakGpuTemp > 0 ? string.Format(" | {0:0}°C", _peakGpuTemp) : "";
-            Result.MetricSummary = string.Format("{0}{1} | {2:0} FPS | Tier {3}{4}", shortGpu, vramStr, avgFps, _renderTier, tempStr);
+            Result.MetricSummary = blockedNoDriver
+                ? string.Format("{0}{1} | Tier {2} | Blokiran (nema drajver)", shortGpu, vramStr, _renderTier)
+                : string.Format("{0}{1} | {2:0} FPS | Tier {3}{4}", shortGpu, vramStr, avgFps, _renderTier, tempStr);
 
             if (_isBasicDisplay)
             {

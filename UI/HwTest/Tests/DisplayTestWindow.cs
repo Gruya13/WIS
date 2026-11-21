@@ -200,7 +200,16 @@ namespace WIS.HwTest.Tests
 
             _rootGrid.MouseLeftButtonDown += OnScreenClick;
             KeyDown += OnKeyDown;
-            Closed += (s, e) => StopExtMonitorTimer();
+            Closed += (s, e) =>
+            {
+                bool wasDone = _isClosingOrDone;
+                _isClosingOrDone = true;
+                StopExtMonitorTimer();
+                if (!wasDone)
+                {
+                    RestoreInitialBrightnessIfNeeded();
+                }
+            };
 
             HwTestLogger.Info("DISPLAY", "Test ekrana pokrenut (6 boja + gradijent/kontrast, WMI brightness i HDMI detekcija)");
             StartBrightnessRampCheckAsync();
@@ -245,7 +254,7 @@ namespace WIS.HwTest.Tests
             });
             sp.Children.Add(new TextBlock
             {
-                Text = "Kliknite mišem bilo gde ili pritisnite SPACE / ENTER za sledeću boju   |   H = sakrij/prikaži natpis   |   ESC = preskoči",
+                Text = "Kliknite mišem bilo gde ili pritisnite SPACE / ENTER za sledeću boju   |   H = sakrij/prikaži natpis   |   ESC = pregled rezultata",
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(186, 198, 214)),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -358,7 +367,10 @@ namespace WIS.HwTest.Tests
         {
             if (e.Key == Key.Escape)
             {
-                FinishSkip();
+                if (!_showingDecision)
+                {
+                    ShowDecisionMenu();
+                }
                 return;
             }
 
@@ -680,15 +692,6 @@ namespace WIS.HwTest.Tests
             Result.Details["brightness_ramp_detail"] = _brightnessRampDetail;
             Result.Details["external_monitor_detected"] = (_activeMonitorCount >= 2);
             Result.Details["active_monitors_count"] = _activeMonitorCount;
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test ekrana";
             SafeCloseDialog(false);
         }
     }

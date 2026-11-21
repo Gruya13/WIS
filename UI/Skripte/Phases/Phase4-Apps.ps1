@@ -10,7 +10,8 @@
 [CmdletBinding()]
 param(
     [string]$LocalSetupDir = "C:\setup",
-    [string]$ProgramiDir = "C:\setup\Programi"
+    [string]$ProgramiDir = "C:\setup\Programi",
+    [string]$OnlyApp = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -75,6 +76,7 @@ try {
 
 # 3. Glavno orkestrirano izvrsenje Faze 4 (uz Phase4Active flag za koordinaciju sa pozadinskim WU)
 $phase4ExitCode = 0
+$isSingleAppRetry = -not [string]::IsNullOrWhiteSpace($OnlyApp)
 try {
     try {
         if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) {
@@ -82,18 +84,25 @@ try {
         }
         Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "Phase4Active" -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
     } catch {}
-    if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
-        Start-WisPhaseBenchmark -Phase 4 -PhaseName "Programi" -LocalSetupDir $LocalSetupDir | Out-Null
-    }
-    Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
     $resolvedProgramiRoot = if (Get-Command Get-ServisProgramiRoot -ErrorAction SilentlyContinue) {
         Get-ServisProgramiRoot -LocalSetupDir $LocalSetupDir -PreferredDir $ProgramiDir
     } else {
         $ProgramiDir
     }
-    Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot
-    if (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
-        Complete-WisPhaseBenchmark -Phase 4 -Status "COMPLETED" -LocalSetupDir $LocalSetupDir | Out-Null
+    if ($isSingleAppRetry) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Pokrećem pojedinačni Retry za program: $OnlyApp" -Level "STEP" -Component "Phase4"
+        }
+        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot -OnlyApp $OnlyApp
+    } else {
+        if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
+            Start-WisPhaseBenchmark -Phase 4 -PhaseName "Programi" -LocalSetupDir $LocalSetupDir | Out-Null
+        }
+        Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
+        Invoke-Phase4Apps -LocalSetupDir $LocalSetupDir -ProgramiDir $resolvedProgramiRoot
+        if (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
+            Complete-WisPhaseBenchmark -Phase 4 -Status "COMPLETED" -LocalSetupDir $LocalSetupDir | Out-Null
+        }
     }
 } catch {
     $err = $_

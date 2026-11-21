@@ -21,6 +21,12 @@ namespace WIS.HwTest.Core
         public bool TouchpadDisabledInBios { get; set; }
         public string TouchpadBiosStatus { get; set; }
 
+        public bool TrackPointBiosPresent { get; set; }
+        public bool TrackPointDisabledInBios { get; set; }
+        public string TrackPointBiosStatus { get; set; }
+        public bool? FactoryTrackPoint { get; set; }
+        public string FactoryTrackPointEvidence { get; set; }
+
         public bool HasWebcam { get; set; }
         public bool WebcamPnpPresent { get; set; }
         public string WebcamName { get; set; }
@@ -99,6 +105,8 @@ namespace WIS.HwTest.Core
             StylusPenName = "";
             TouchscreenBiosStatus = "";
             TouchpadBiosStatus = "";
+            TrackPointBiosStatus = "";
+            FactoryTrackPointEvidence = "";
             WebcamName = "Nije pronađena";
             CameraBiosStatus = "";
             IrCameraName = "Nije pronađena";
@@ -306,32 +314,80 @@ namespace WIS.HwTest.Core
             }
             catch { }
 
-            // 4. Web Kamera & IR
+            // 4. Web Kamera & IR (razdvojena RGB vs IR klasifikacija bez lažnog podstringa "IR")
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Name, DeviceID, PNPClass FROM Win32_PnPEntity WHERE PNPClass = 'Camera' OR PNPClass = 'Image'"))
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT Name, Description, DeviceID, PNPClass, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE PNPClass = 'Camera' OR PNPClass = 'Image'"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
-                        string name = (obj["Name"] ?? "").ToString();
-                        string devId = (obj["DeviceID"] ?? "").ToString().ToUpperInvariant();
-
-                        if (!res.HasWebcam && !string.IsNullOrEmpty(name))
+                        string name = (obj["Name"] ?? "").ToString().Trim();
+                        string desc = (obj["Description"] ?? "").ToString().Trim();
+                        string devId = (obj["DeviceID"] ?? "").ToString().Trim();
+                        string pnpClass = (obj["PNPClass"] ?? "").ToString().Trim();
+                        uint errCode = 0;
+                        try
                         {
-                            res.HasWebcam = true;
-                            res.WebcamName = name;
-                            res.WebcamPnpPresent = true;
+                            if (obj["ConfigManagerErrorCode"] != null)
+                                errCode = Convert.ToUInt32(obj["ConfigManagerErrorCode"]);
+                        }
+                        catch { }
+
+                        if (string.IsNullOrEmpty(name)) continue;
+
+                        string upCam = (name + " " + desc + " " + devId).ToUpperInvariant();
+                        if (devId.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase) ||
+                            devId.StartsWith("SWC\\", StringComparison.OrdinalIgnoreCase) ||
+                            devId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase) ||
+                            upCam.Contains("SOFTWARE DEVICE") ||
+                            upCam.Contains("FACIAL RECOGNITION") ||
+                            upCam.Contains("MS_FACE_AUTH"))
+                        {
+                            continue;
                         }
 
-                        if (!res.HasIrCamera)
+                        if (pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) &&
+                            IsNonPhysicalCameraImageDevice(upCam))
                         {
-                            if (name.IndexOf("IR", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                name.IndexOf("Infrared", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                name.IndexOf("Hello Face", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                devId.Contains("IR_CAMERA") || devId.Contains("INFRARED"))
+                            continue;
+                        }
+
+                        if (upCam.Contains("VIRTUAL") ||
+                            Regex.IsMatch(upCam, @"\bOBS\b") ||
+                            upCam.Contains("OBS_") ||
+                            upCam.Contains("OBS-"))
+                        {
+                            continue;
+                        }
+
+                        bool isIrEntry = IsIrCameraEntry(name, desc, devId);
+                        if (errCode != 0 && res.PnpAuditNotes.Count < 45)
+                        {
+                            res.PnpAuditNotes.Add(string.Format(
+                                "Kamera PnP greška: Class='{0}' Err={1} IsIR={2} Name='{3}' Id='{4}'",
+                                pnpClass, errCode, isIrEntry, name, devId));
+                        }
+
+                        if (isIrEntry)
+                        {
+                            if (!res.HasIrCamera)
                             {
                                 res.HasIrCamera = true;
                                 res.IrCameraName = name;
+                            }
+                        }
+                        else
+                        {
+                            res.WebcamPnpPresent = true;
+                            if (errCode == 0 && !res.HasWebcam)
+                            {
+                                res.HasWebcam = true;
+                                res.WebcamName = name;
+                            }
+                            else if (errCode != 0 && (string.IsNullOrEmpty(res.WebcamName) || res.WebcamName == "Nije pronađena"))
+                            {
+                                res.WebcamName = name;
                             }
                         }
                     }
@@ -361,6 +417,8 @@ namespace WIS.HwTest.Core
             }
 
             // 5b. Čitač otiska prsta (Biometric / WBF / USB-ACPI FP / Missing-Driver uređaji + BIOS)
+            string wbioState = "";
+            string wbioStartMode = "";
             try
             {
                 using (ManagementObjectSearcher svcSearcher = new ManagementObjectSearcher(
@@ -368,9 +426,9 @@ namespace WIS.HwTest.Core
                 {
                     foreach (ManagementObject sObj in svcSearcher.Get())
                     {
-                        res.WbioServiceState = string.Format("{0} ({1})",
-                            (sObj["State"] ?? "").ToString(),
-                            (sObj["StartMode"] ?? "").ToString());
+                        wbioState = (sObj["State"] ?? "").ToString().Trim();
+                        wbioStartMode = (sObj["StartMode"] ?? "").ToString().Trim();
+                        res.WbioServiceState = string.Format("{0} ({1})", wbioState, wbioStartMode);
                         break;
                     }
                 }
@@ -379,6 +437,7 @@ namespace WIS.HwTest.Core
 
             ProbeBiosFingerprintStatus(res);
 
+            bool hasBiometricPnpCandidate = false;
             try
             {
                 using (ManagementObjectSearcher fpSearcher = new ManagementObjectSearcher(
@@ -446,18 +505,49 @@ namespace WIS.HwTest.Core
                         if (res.IsThinkPad ||
                             combinedText.Contains("TRACKPOINT") ||
                             combinedText.Contains("POINTING STICK") ||
+                            combinedText.Contains("POINTSTICK") ||
                             combinedText.Contains("DUALPOINT"))
                         {
                             res.HasTrackPoint = true;
                         }
 
-                        // Kamera PnP bez ispravnog drajvera
-                        if (pnpClass.Equals("Camera", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
-                            combinedText.Contains("INTEGRATED CAMERA") ||
-                            combinedText.Contains("WEBCAM"))
+                        // Kamera PnP bez ispravnog drajvera (ne sme prepisati IR kameru niti skener/štampač/virtuelnu kameru)
+                        string camCheckText = (name + " " + desc + " " + devId).ToUpperInvariant();
+                        bool isNonPhysicalCam =
+                            (pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) && IsNonPhysicalCameraImageDevice(camCheckText)) ||
+                            camCheckText.Contains("VIRTUAL") ||
+                            Regex.IsMatch(camCheckText, @"\bOBS\b") ||
+                            camCheckText.Contains("OBS_") ||
+                            camCheckText.Contains("OBS-");
+                        bool isIrCamNode = IsIrCameraEntry(name, desc, devId);
+                        bool isSoftwareCamNode =
+                            upId.StartsWith("SWD\\") ||
+                            upId.StartsWith("SWC\\") ||
+                            upId.StartsWith("ROOT\\") ||
+                            combinedText.Contains("FACIAL RECOGNITION") ||
+                            combinedText.Contains("SOFTWARE DEVICE");
+
+                        if (!isNonPhysicalCam && !isSoftwareCamNode)
                         {
-                            res.WebcamPnpPresent = true;
+                            if (isIrCamNode)
+                            {
+                                if ((pnpClass.Equals("Camera", StringComparison.OrdinalIgnoreCase) ||
+                                     pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
+                                     combinedText.Contains("IR CAMERA") ||
+                                     combinedText.Contains("INFRARED")) &&
+                                    !res.HasIrCamera && !string.IsNullOrEmpty(name))
+                                {
+                                    res.HasIrCamera = true;
+                                    res.IrCameraName = name;
+                                }
+                            }
+                            else if (pnpClass.Equals("Camera", StringComparison.OrdinalIgnoreCase) ||
+                                     pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
+                                     combinedText.Contains("INTEGRATED CAMERA") ||
+                                     combinedText.Contains("WEBCAM"))
+                            {
+                                res.WebcamPnpPresent = true;
+                            }
                         }
 
                         // Beležimo uređaje bez drajvera / sa greškom, USB/SPI/ACPI senzore i biometric za dijagnostiku u logu
@@ -479,59 +569,18 @@ namespace WIS.HwTest.Core
                             }
                         }
 
-                        // Isključujemo kamere/IR/audio/touchpad/tastature/system bridge i Windows Hello software face uređaje iz lažnih pogodaka za fingerprint
-                        if (pnpClass.Equals("Camera", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("MEDIA", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("AudioEndpoint", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("Mouse", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("Keyboard", StringComparison.OrdinalIgnoreCase) ||
-                            pnpClass.Equals("System", StringComparison.OrdinalIgnoreCase) ||
-                            upId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase) ||
-                            upId.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase) ||
-                            combinedText.Contains("FACIAL RECOGNITION") ||
-                            combinedText.Contains("HELLO FACE") ||
-                            combinedText.Contains("SOFTWARE DEVICE"))
+                        bool isBiometricClass;
+                        if (!IsFingerprintPnpCandidate(name, desc, devId, pnpClass, svc, errCode, out isBiometricClass))
                         {
                             continue;
                         }
 
-                        bool isKnownFpUsbOrAcpi =
-                            upId.StartsWith("USB\\VID_06CB") || // Synaptics USB FP
-                            upId.StartsWith("USB\\VID_04F3") || // ELAN USB FP
-                            upId.StartsWith("USB\\VID_27C6") || // Goodix USB FP
-                            upId.StartsWith("USB\\VID_138A") || // Validity USB FP
-                            upId.StartsWith("USB\\VID_1C7A") || // EgisTec USB FP
-                            upId.StartsWith("USB\\VID_2808") || // FocalTech USB FP
-                            upId.StartsWith("USB\\VID_147E") || // AuthenTec/Upek USB FP
-                            upId.Contains("BIOMETRIC") ||
-                            upId.Contains("ELAN7") ||
-                            upId.Contains("SYNA36") ||
-                            upId.Contains("SYNAPTICS_FP") ||
-                            upId.Contains("GXFP") ||
-                            upId.Contains("FPC0") ||
-                            upId.Contains("VFS");
-
-                        bool isNameFp =
-                            pnpClass.Equals("Biometric", StringComparison.OrdinalIgnoreCase) ||
-                            combinedText.Contains("FINGERPRINT") ||
-                            combinedText.Contains("FINGER PRINT") ||
-                            combinedText.Contains("BIOMETRIC") ||
-                            combinedText.Contains("WBDI") ||
-                            combinedText.Contains("TOUCHCHIP") ||
-                            combinedText.Contains("GOODIX") ||
-                            combinedText.Contains("VALIDITY") ||
-                            combinedText.Contains("EGISTEC") ||
-                            combinedText.Contains("EGIS ");
-
-                        // Ako je USB\ROOT_HUB ili Mouse/Touchpad HID, preskačemo
-                        if (upId.Contains("ROOT_HUB") || upId.StartsWith("HID\\"))
+                        if (isBiometricClass)
                         {
-                            if (!pnpClass.Equals("Biometric", StringComparison.OrdinalIgnoreCase))
-                                continue;
+                            hasBiometricPnpCandidate = true;
                         }
 
-                        if (!res.HasFingerprint && (isKnownFpUsbOrAcpi || isNameFp))
+                        if (!res.HasFingerprint)
                         {
                             res.HasFingerprint = true;
                             res.FingerprintName = !string.IsNullOrEmpty(name) ? name : (!string.IsNullOrEmpty(desc) ? desc : devId);
@@ -542,6 +591,14 @@ namespace WIS.HwTest.Core
                 }
             }
             catch { }
+
+            // Bezbedno buđenje WbioSrvc servisa pre WinBioEnumBiometricUnits ako je Stopped (a nije Disabled)
+            if ((hasBiometricPnpCandidate || res.HasFingerprint) &&
+                wbioState.Equals("Stopped", StringComparison.OrdinalIgnoreCase) &&
+                !wbioStartMode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+            {
+                TryWakeWbioService(res, wbioStartMode);
+            }
 
             try
             {
@@ -724,9 +781,13 @@ namespace WIS.HwTest.Core
                 res.ProductMtm ?? "").ToUpperInvariant();
 
             res.IsThinkPad = up.Contains("THINKPAD");
-            if (res.IsThinkPad)
+            if (res.IsThinkPad && res.FactoryTrackPoint != false)
             {
                 res.HasTrackPoint = true;
+            }
+            if (res.FactoryTrackPoint == false)
+            {
+                res.HasTrackPoint = false;
             }
 
             bool isHp = up.Contains("HP") || up.Contains("HEWLETT") || up.Contains("ELITEBOOK") ||
@@ -908,6 +969,9 @@ namespace WIS.HwTest.Core
             bool isTp = IsPrimaryBiosSettingMatch(settingName,
                 new string[] { "TOUCHPAD", "TRACKPAD", "INTERNAL POINTING" },
                 new string[] { "DISABLE ON", "USB MOUSE" });
+            bool isTrackPoint = IsPrimaryBiosSettingMatch(settingName,
+                new string[] { "TRACKPOINT", "POINTING STICK", "POINTSTICK" },
+                new string[] { "DISABLE ON", "USB MOUSE" });
             bool isBacklit = IsPrimaryBiosSettingMatch(settingName,
                 new string[] { "BACKLIT", "BACKLIGHT", "ILLUMINATION", "ILLUMINATED" },
                 null);
@@ -916,12 +980,12 @@ namespace WIS.HwTest.Core
                 new string[] { "AUTH", "SENSOR", "PRIVACY", "AUTHENTICATION" },
                 null);
 
-            if (isAuditExtra && !(isFp || isCam || isMic || isTs || isTp || isBacklit) && res.BiosAuditNotes.Count < 45)
+            if (isAuditExtra && !(isFp || isCam || isMic || isTs || isTp || isTrackPoint || isBacklit) && res.BiosAuditNotes.Count < 45)
             {
                 res.BiosAuditNotes.Add(string.Format("{0} (audit): '{1}' = '{2}'", sourceTag, settingName, settingVal));
             }
 
-            if (!(isFp || isCam || isMic || isTs || isTp || isBacklit)) return;
+            if (!(isFp || isCam || isMic || isTs || isTp || isTrackPoint || isBacklit)) return;
 
             if (res.BiosAuditNotes.Count < 45)
             {
@@ -966,6 +1030,13 @@ namespace WIS.HwTest.Core
                 if (disabled) { res.TouchpadDisabledInBios = true; res.TouchpadBiosStatus = formatted; }
                 else if (!res.TouchpadDisabledInBios && (string.IsNullOrEmpty(res.TouchpadBiosStatus) || enabled))
                     res.TouchpadBiosStatus = formatted;
+            }
+            if (isTrackPoint)
+            {
+                res.TrackPointBiosPresent = true;
+                if (disabled) { res.TrackPointDisabledInBios = true; res.TrackPointBiosStatus = formatted; }
+                else if (!res.TrackPointDisabledInBios && (string.IsNullOrEmpty(res.TrackPointBiosStatus) || enabled))
+                    res.TrackPointBiosStatus = formatted;
             }
             if (isBacklit)
             {
@@ -1292,6 +1363,217 @@ namespace WIS.HwTest.Core
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Proverava da li uređaj u klasi Image predstavlja skener, štampač, virtuelnu kameru ili telefon umesto fizičke kamere.
+        /// </summary>
+        public static bool IsNonPhysicalCameraImageDevice(string upperText)
+        {
+            if (string.IsNullOrEmpty(upperText)) return false;
+            return upperText.Contains("SCANNER") ||
+                   upperText.Contains("PRINTER") ||
+                   upperText.Contains("VIRTUAL") ||
+                   Regex.IsMatch(upperText, @"\bOBS\b") ||
+                   upperText.Contains("OBS_") ||
+                   upperText.Contains("OBS-") ||
+                   upperText.Contains("XIAOMI") ||
+                   Regex.IsMatch(upperText, @"\bPHONE\b") ||
+                   upperText.Contains("IPHONE") ||
+                   upperText.Contains("SMARTPHONE");
+        }
+
+        /// <summary>
+        /// Određuje da li PnP kamera predstavlja IR / Windows Hello Face senzor bez lažnih pogodaka podstringa "IR".
+        /// </summary>
+        public static bool IsIrCameraEntry(string name, string desc, string devId)
+        {
+            string combined = ((name ?? "") + " " + (desc ?? "") + " " + (devId ?? "")).ToUpperInvariant();
+            if (string.IsNullOrEmpty(combined.Trim())) return false;
+
+            if (Regex.IsMatch(combined, @"\bIR\b")) return true;
+
+            return combined.Contains("IR CAMERA") ||
+                   combined.Contains("IR SENSOR") ||
+                   combined.Contains("INFRARED") ||
+                   combined.Contains("HELLO FACE") ||
+                   combined.Contains("WINDOWS HELLO") ||
+                   combined.Contains("IR_CAMERA") ||
+                   combined.Contains("DEPTH CAMERA");
+        }
+
+        /// <summary>
+        /// Stroga provera PnP kandidata za čitač otiska prsta koja sprečava lažne pogotke za ELAN/Goodix/Synaptics touch i touchpad uređaje.
+        /// </summary>
+        public static bool IsFingerprintPnpCandidate(
+            string name,
+            string desc,
+            string devId,
+            string pnpClass,
+            string svc,
+            uint errCode,
+            out bool isBiometricClass)
+        {
+            string pnpCls = (pnpClass ?? "").Trim();
+            isBiometricClass = pnpCls.Equals("Biometric", StringComparison.OrdinalIgnoreCase);
+
+            string upId = (devId ?? "").Trim().ToUpperInvariant();
+            string combinedText = ((name ?? "") + " " + (desc ?? "") + " " + (svc ?? "") + " " + pnpCls).ToUpperInvariant();
+
+            if (string.IsNullOrEmpty(upId) && string.IsNullOrEmpty(combinedText.Trim()))
+            {
+                return false;
+            }
+
+            // Isključujemo kamere/IR/audio/miš/tastature/system bridge i Windows Hello software face uređaje
+            if (pnpCls.Equals("Camera", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("Image", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("MEDIA", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("AudioEndpoint", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("Mouse", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("Keyboard", StringComparison.OrdinalIgnoreCase) ||
+                pnpCls.Equals("System", StringComparison.OrdinalIgnoreCase) ||
+                upId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase) ||
+                upId.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase) ||
+                combinedText.Contains("FACIAL RECOGNITION") ||
+                combinedText.Contains("HELLO FACE") ||
+                combinedText.Contains("SOFTWARE DEVICE"))
+            {
+                return false;
+            }
+
+            // Proširena lista isključenja za touch/pointing/smartcard/NFC/virtual čvorove (osim za Biometric klasu)
+            if (!isBiometricClass && (
+                combinedText.Contains("TOUCHSCREEN") ||
+                combinedText.Contains("TOUCH SCREEN") ||
+                combinedText.Contains("DIGITIZER") ||
+                combinedText.Contains("TOUCHPAD") ||
+                combinedText.Contains("TRACKPAD") ||
+                combinedText.Contains("POINTING") ||
+                combinedText.Contains("PEN ") ||
+                combinedText.Contains("STYLUS") ||
+                combinedText.Contains("SMART CARD") ||
+                combinedText.Contains("SMARTCARD") ||
+                combinedText.Contains("NFC") ||
+                combinedText.Contains("VIRTUAL")))
+            {
+                return false;
+            }
+
+            // Ako je USB\ROOT_HUB ili HID čvor koji nije Biometric klasa, preskačemo
+            if (upId.Contains("ROOT_HUB") || upId.StartsWith("HID\\"))
+            {
+                if (!isBiometricClass)
+                    return false;
+            }
+
+            // Isključivi fingerprint VID-ovi i ACPI/SPI ID-jevi
+            bool isExclusiveFpId =
+                upId.StartsWith("USB\\VID_138A") || // Validity USB FP
+                upId.StartsWith("USB\\VID_1C7A") || // EgisTec USB FP
+                upId.StartsWith("USB\\VID_2808") || // FocalTech USB FP
+                upId.StartsWith("USB\\VID_147E") || // AuthenTec/Upek USB FP
+                upId.StartsWith("USB\\VID_08FF") || // AuthenTec USB FP
+                upId.Contains("BIOMETRIC") ||
+                upId.Contains("ELAN7") ||
+                upId.Contains("SYNA36") ||
+                upId.Contains("SYNAPTICS_FP") ||
+                upId.Contains("GXFP") ||
+                upId.Contains("FPC0") ||
+                upId.Contains("VFS");
+
+            bool hasExplicitFpToken =
+                isBiometricClass ||
+                combinedText.Contains("FINGERPRINT") ||
+                combinedText.Contains("FINGER PRINT") ||
+                combinedText.Contains("BIOMETRIC") ||
+                combinedText.Contains("WBDI") ||
+                combinedText.Contains("WBF") ||
+                combinedText.Contains("TOUCHCHIP") ||
+                combinedText.Contains("FPR");
+
+            bool isExclusiveFpName =
+                combinedText.Contains("VALIDITY") ||
+                combinedText.Contains("EGISTEC") ||
+                combinedText.Contains("EGIS ");
+
+            // Multifunkcionalni vendori (ELAN, Synaptics, Goodix prave i touchscreen/touchpad i fingerprint)
+            bool isMultiFuncVendor =
+                upId.StartsWith("USB\\VID_04F3") || // ELAN
+                upId.StartsWith("USB\\VID_06CB") || // Synaptics
+                upId.StartsWith("USB\\VID_27C6") || // Goodix
+                combinedText.Contains("GOODIX");
+
+            if (isMultiFuncVendor)
+            {
+                bool isErrorOrUnknownNonHid =
+                    (errCode != 0 || pnpCls.Equals("Unknown", StringComparison.OrdinalIgnoreCase)) &&
+                    !upId.StartsWith("HID\\") &&
+                    !pnpCls.Equals("HIDClass", StringComparison.OrdinalIgnoreCase) &&
+                    !combinedText.Contains("TOUCH") &&
+                    !combinedText.Contains("MOUSE") &&
+                    !combinedText.Contains("CAMERA") &&
+                    !combinedText.Contains("WEBCAM");
+
+                return isExclusiveFpId || isBiometricClass || hasExplicitFpToken || isErrorOrUnknownNonHid;
+            }
+
+            return isExclusiveFpId || hasExplicitFpToken || isExclusiveFpName;
+        }
+
+        private static void TryWakeWbioService(HardwareProbeResult res, string fallbackStartMode)
+        {
+            try
+            {
+                using (ManagementObjectSearcher svcSearcher = new ManagementObjectSearcher(
+                    "SELECT Name, State, StartMode FROM Win32_Service WHERE Name = 'WbioSrvc'"))
+                {
+                    foreach (ManagementObject sObj in svcSearcher.Get())
+                    {
+                        string state = (sObj["State"] ?? "").ToString().Trim();
+                        string sm = (sObj["StartMode"] ?? fallbackStartMode ?? "").ToString().Trim();
+                        if (state.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                        {
+                            res.WbioServiceState = string.Format("{0} ({1})", state, sm);
+                            return;
+                        }
+                        if (sm.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return;
+                        }
+
+                        try
+                        {
+                            sObj.InvokeMethod("StartService", null);
+                        }
+                        catch
+                        {
+                            return;
+                        }
+                        break;
+                    }
+                }
+
+                DateTime deadline = DateTime.UtcNow.AddMilliseconds(2500);
+                while (DateTime.UtcNow < deadline)
+                {
+                    System.Threading.Thread.Sleep(250);
+                    using (ManagementObjectSearcher pollSearcher = new ManagementObjectSearcher(
+                        "SELECT State, StartMode FROM Win32_Service WHERE Name = 'WbioSrvc'"))
+                    {
+                        foreach (ManagementObject pObj in pollSearcher.Get())
+                        {
+                            string curState = (pObj["State"] ?? "").ToString().Trim();
+                            string curSm = (pObj["StartMode"] ?? fallbackStartMode ?? "").ToString().Trim();
+                            res.WbioServiceState = string.Format("{0} ({1})", curState, curSm);
+                            if (curState.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                                return;
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { }
         }
     }
 }

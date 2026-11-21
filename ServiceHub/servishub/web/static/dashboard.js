@@ -11,6 +11,13 @@
         let isPollingFrame = false;
         let isScreenStreamActive = false;
         let lastRenderedCockpitId = null;
+        let pendingDeepLinkDevice = '';
+        let pendingDeepLinkView = '';
+        try {
+            const _dlParams = new URLSearchParams(window.location.search || '');
+            pendingDeepLinkDevice = (_dlParams.get('device') || _dlParams.get('serial') || '').trim();
+            pendingDeepLinkView = (_dlParams.get('view') || '').trim().toLowerCase();
+        } catch (e) {}
 
         function getAdminToken() {
             try {
@@ -232,8 +239,45 @@
                 .then(devices => {
                     fleetCachedDevices = devices;
                     renderFleet(devices);
+                    handlePendingDeepLink(devices);
                 })
                 .catch(err => console.error("Greška pri osvežavanju flote:", err));
+        }
+
+        function handlePendingDeepLink(devices) {
+            if (!pendingDeepLinkDevice) return;
+            const target = pendingDeepLinkDevice;
+            const viewMode = pendingDeepLinkView;
+            pendingDeepLinkDevice = '';
+            pendingDeepLinkView = '';
+
+            const targetLower = target.toLowerCase();
+            let matchedKey = null;
+            if (devices && typeof devices === 'object') {
+                for (const key of Object.keys(devices)) {
+                    const d = devices[key] || {};
+                    const hw = d.hw || {};
+                    const candidates = [key, d.computer_name, d.device_tag, d.serial_number, hw.serial];
+                    if (candidates.some(v => v && String(v).trim().toLowerCase() === targetLower)) {
+                        matchedKey = key;
+                        break;
+                    }
+                }
+            }
+
+            if (matchedKey) {
+                selectCockpitDevice(matchedKey);
+                const cockpitEl = document.getElementById('cockpit-panel');
+                if (cockpitEl && cockpitEl.scrollIntoView) {
+                    cockpitEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+                if (viewMode === 'card' && deviceIsCompleted(devices[matchedKey])) {
+                    openReportModal(matchedKey, devices[matchedKey].computer_name || matchedKey);
+                }
+                return;
+            }
+
+            openHistoryModal(target, target, true);
         }
 
         function selectCockpitDevice(devKey) {
@@ -1460,14 +1504,17 @@
             `;
         }
 
-        function openHistoryModal(deviceId, compName) {
+        function openHistoryModal(deviceId, compName, bySerial = false) {
             currentModalDevice = deviceId;
             document.getElementById('history-client-name').textContent = compName;
             const content = document.getElementById('history-modal-content');
             content.innerHTML = '<div class="log-line DEBUG">Učitavam servisnu istoriju i dnevnik intervencija...</div>';
             document.getElementById('history-modal').classList.add('open');
 
-            fetch(`/api/devices/${encodeURIComponent(deviceId)}/history`)
+            const histUrl = bySerial
+                ? `/api/devices/by-serial/${encodeURIComponent(deviceId)}/history`
+                : `/api/devices/${encodeURIComponent(deviceId)}/history`;
+            fetch(histUrl)
                 .then(res => {
                     if (!res.ok) throw new Error("HTTP " + res.status + " pri preuzimanju istorije.");
                     return res.json();

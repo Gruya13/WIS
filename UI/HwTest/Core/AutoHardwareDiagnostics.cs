@@ -26,6 +26,7 @@ namespace WIS.HwTest.Core
         private readonly object _sensorLock = new object();
         private ThermalSensorEngine _sensorEngine;
         private bool _sensorInitAttempted;
+        private bool _sensorTimedOut;
         private bool _disposed;
 
         private ThermalSensorEngine GetSensors()
@@ -52,13 +53,52 @@ namespace WIS.HwTest.Core
 
         public ThermalSensorEngine EnsureSensorsAndUpdate()
         {
-            ThermalSensorEngine eng = GetSensors();
-            if (eng != null)
+            if (_sensorTimedOut || _disposed) return null;
+
+            ThermalSensorEngine resultEng = null;
+            bool completed = false;
+            object waitSync = new object();
+
+            Thread t = new Thread(() =>
             {
-                try { eng.Update(); }
+                ThermalSensorEngine localEng = null;
+                try
+                {
+                    localEng = GetSensors();
+                    if (localEng != null)
+                    {
+                        localEng.Update();
+                    }
+                }
                 catch { }
+                finally
+                {
+                    lock (waitSync)
+                    {
+                        resultEng = localEng;
+                        completed = true;
+                        Monitor.PulseAll(waitSync);
+                    }
+                }
+            });
+            t.IsBackground = true;
+            t.Start();
+
+            lock (waitSync)
+            {
+                if (!completed)
+                {
+                    Monitor.Wait(waitSync, 4000);
+                }
             }
-            return eng;
+
+            if (!completed)
+            {
+                _sensorTimedOut = true;
+                HwTestLogger.Warn("AUTO_SENSORS", "EnsureSensorsAndUpdate prekoracio 4000ms timeout - nastavljam bez termalnih senzora.");
+                return null;
+            }
+            return resultEng;
         }
 
         public void Dispose()
@@ -944,9 +984,46 @@ namespace WIS.HwTest.Core
 
                 int wifiVisibleNetworks = 0;
                 int wifiMaxSignalPct = 0;
+                bool hwRadioOff = false;
+                bool swRadioOff = false;
+                int wifiBssidCount = 0;
+                int wifi24GhzCount = 0;
+                int wifi5GhzCount = 0;
+                int wifi6GhzCount = 0;
+                int wifiMaxRssiDbm = 0;
+                bool wifiHasRssi = false;
+                int wifiMax24Pct = 0;
+                int wifiMax5Pct = 0;
+                bool wifiSupports5Ghz = false;
+                string serviceSsid = TryReadServiceWifiSsid();
+                bool serviceSsidFound = false;
+                int serviceSignalPct = 0;
+                int serviceRssiDbm = 0;
+                bool serviceHasRssi = false;
+                string wlanSvcState = "";
+
                 if (wifiCount > 0)
                 {
-                    ProbeWifiSignalAndNetworks(out wifiVisibleNetworks, out wifiMaxSignalPct);
+                    ProbeWifiSignalAndNetworks(
+                        serviceSsid,
+                        out wifiVisibleNetworks,
+                        out wifiMaxSignalPct,
+                        out hwRadioOff,
+                        out swRadioOff,
+                        out wifiBssidCount,
+                        out wifi24GhzCount,
+                        out wifi5GhzCount,
+                        out wifi6GhzCount,
+                        out wifiMaxRssiDbm,
+                        out wifiHasRssi,
+                        out wifiMax24Pct,
+                        out wifiMax5Pct,
+                        out wifiSupports5Ghz,
+                        out serviceSsidFound,
+                        out serviceSignalPct,
+                        out serviceRssiDbm,
+                        out serviceHasRssi,
+                        out wlanSvcState);
                 }
 
                 bool btPresent;
@@ -958,6 +1035,21 @@ namespace WIS.HwTest.Core
                 res.Details["lan_adapters"] = lanCount;
                 res.Details["wifi_visible_networks"] = wifiVisibleNetworks;
                 res.Details["wifi_max_signal_pct"] = wifiMaxSignalPct;
+                res.Details["wifi_hw_radio_off"] = hwRadioOff;
+                res.Details["wifi_sw_radio_off"] = swRadioOff;
+                res.Details["wifi_bssid_count"] = wifiBssidCount;
+                res.Details["wifi_24ghz_count"] = wifi24GhzCount;
+                res.Details["wifi_5ghz_count"] = wifi5GhzCount;
+                res.Details["wifi_6ghz_count"] = wifi6GhzCount;
+                res.Details["wifi_max_rssi_dbm"] = wifiHasRssi ? wifiMaxRssiDbm : 0;
+                res.Details["wifi_max_24ghz_pct"] = wifiMax24Pct;
+                res.Details["wifi_max_5ghz_pct"] = wifiMax5Pct;
+                res.Details["wifi_supports_5ghz"] = wifiSupports5Ghz;
+                res.Details["wifi_service_ssid"] = string.IsNullOrEmpty(serviceSsid) ? "" : serviceSsid;
+                res.Details["wifi_service_ssid_found"] = serviceSsidFound;
+                res.Details["wifi_service_signal_pct"] = serviceSignalPct;
+                res.Details["wifi_service_rssi_dbm"] = serviceHasRssi ? serviceRssiDbm : 0;
+                if (!string.IsNullOrEmpty(wlanSvcState)) res.Details["wlan_svc_state"] = wlanSvcState;
                 res.Details["bluetooth_present"] = btPresent;
                 res.Details["bluetooth_status"] = btSummary;
                 res.Details["any_link_up"] = anyUp;
@@ -969,22 +1061,53 @@ namespace WIS.HwTest.Core
                 res.Details["interfaces"] = string.Join(" | ", ifaceSummaries.ToArray());
                 res.Details["pnp_errors"] = string.Join("; ", pnpErrors.ToArray());
 
-                string wifiSigTxt = (wifiCount > 0 && (wifiMaxSignalPct > 0 || wifiVisibleNetworks > 0))
-                    ? string.Format(" ({0}%, {1} mr.)", wifiMaxSignalPct, wifiVisibleNetworks)
-                    : "";
+                string wifiSigTxt = "";
+                if (wifiCount > 0)
+                {
+                    if (hwRadioOff || swRadioOff)
+                    {
+                        wifiSigTxt = hwRadioOff ? " (RF Kill HW OFF)" : " (Radio SW OFF)";
+                    }
+                    else if (wifiMaxSignalPct > 0 || wifiVisibleNetworks > 0 || wifiBssidCount > 0)
+                    {
+                        string rssiPart = wifiHasRssi ? string.Format("/{0}dBm", wifiMaxRssiDbm) : "";
+                        string bandPart = string.Format("2.4G:{0} 5G:{1}", wifi24GhzCount, wifi5GhzCount);
+                        if (wifi6GhzCount > 0) bandPart += string.Format(" 6G:{0}", wifi6GhzCount);
+                        string svcPart = "";
+                        if (!string.IsNullOrEmpty(serviceSsid))
+                        {
+                            svcPart = serviceSsidFound
+                                ? string.Format(", AP:{0}%", serviceSignalPct)
+                                : ", AP:nije vidljiv";
+                        }
+                        wifiSigTxt = string.Format(" ({0}%{1}, {2} BSSID [{3}]{4})",
+                            wifiMaxSignalPct, rssiPart, wifiBssidCount > 0 ? wifiBssidCount : wifiVisibleNetworks, bandPart, svcPart);
+                    }
+                }
                 string btBadge = btPresent ? (btOk ? "OK" : "GREŠKA") : "Nema";
                 res.MetricSummary = string.Format("Wi-Fi: {0}{1} | LAN: {2} | BT: {3} | Hub: {4}",
                     wifiInfo, wifiSigTxt, lanInfo, btBadge, anyUp ? hubStatusMsg : "Offline");
 
-                bool noWifiSignalAtAll = (wifiCount > 0 && !wifiUp && wifiVisibleNetworks == 0 && wifiMaxSignalPct == 0);
-                bool weakWifiAntenna = (wifiCount > 0 && ((wifiVisibleNetworks <= 1 && wifiMaxSignalPct > 0 && wifiMaxSignalPct < 35) || noWifiSignalAtAll));
+                bool radioOff = (wifiCount > 0 && (hwRadioOff || swRadioOff));
+                bool noWifiSignalAtAll = (wifiCount > 0 && !wifiUp && wifiVisibleNetworks == 0 && wifiBssidCount == 0 && wifiMaxSignalPct == 0);
+                bool weakServiceSignal = (wifiCount > 0 && !string.IsNullOrEmpty(serviceSsid) && serviceSsidFound &&
+                                          ((serviceSignalPct > 0 && serviceSignalPct < 55) || (serviceHasRssi && serviceRssiDbm < -75)));
+                bool weakSurroundingSignal = (wifiCount > 0 && (string.IsNullOrEmpty(serviceSsid) || !serviceSsidFound) &&
+                                              ((wifiMaxSignalPct > 0 && wifiMaxSignalPct < 55) || (wifiHasRssi && wifiMaxRssiDbm < -75)));
+                bool weakWifiAntenna = weakServiceSignal || weakSurroundingSignal;
+                bool missing5GhzBand = (wifiCount > 0 && wifiSupports5Ghz && wifi24GhzCount > 0 && wifi5GhzCount == 0 && wifi6GhzCount == 0);
+                bool missingServiceSsid = (wifiCount > 0 && !string.IsNullOrEmpty(serviceSsid) && !serviceSsidFound && (wifiBssidCount > 0 || wifiVisibleNetworks > 0));
 
-                if (pnpErrors.Count > 0 || (btPresent && !btOk))
+                if (pnpErrors.Count > 0 || (btPresent && !btOk) || radioOff || noWifiSignalAtAll)
                 {
                     res.Status = TestStatus.Fail;
                     List<string> failParts = new List<string>();
                     if (pnpErrors.Count > 0) failParts.Add("Greška mrežnog drajvera: " + string.Join(", ", pnpErrors.ToArray()));
                     if (btPresent && !btOk) failParts.Add("Bluetooth greška: " + btSummary);
+                    if (hwRadioOff) failParts.Add("Wi-Fi hardverski radio prekidač (RF Kill) je isključen");
+                    if (swRadioOff) failParts.Add("Wi-Fi softverski radio je isključen (Airplane mode / Wi-Fi OFF)");
+                    if (noWifiSignalAtAll && !radioOff)
+                        failParts.Add("Wi-Fi adapter je prisutan, ali vidi 0 Wi-Fi mreža nakon aktivnog skeniranja (otkačene antene ili neispravan RF modul)");
                     res.Reason = string.Join("; ", failParts.ToArray());
                 }
                 else if (wifiCount == 0 && lanCount == 0)
@@ -992,15 +1115,21 @@ namespace WIS.HwTest.Core
                     res.Status = TestStatus.Fail;
                     res.Reason = "Nije pronađen nijedan fizički Wi-Fi ili LAN adapter (fali drajver ili kvar kartice)";
                 }
-                else if (weakWifiAntenna || !anyUp || !hubOk)
+                else if (weakWifiAntenna || missing5GhzBand || missingServiceSsid || !anyUp || !hubOk)
                 {
                     res.Status = TestStatus.Pass;
                     res.HasWarning = true;
                     List<string> warns = new List<string>();
-                    if (noWifiSignalAtAll)
-                        warns.Add("Wi-Fi adapter je prisutan, ali ne vidi nijednu mrežu u dometu (0 mreža) — proverite Wi-Fi antene ili hardverski prekidač");
-                    else if (weakWifiAntenna)
-                        warns.Add(string.Format("Slab Wi-Fi prijem ({0}%, {1} mreža) — proverite Main/Aux kablove antene", wifiMaxSignalPct, wifiVisibleNetworks));
+                    if (weakServiceSignal)
+                        warns.Add(string.Format("Slab signal servisnog AP-a '{0}' ({1}%{2}) — proverite Main/Aux kablove antene",
+                            serviceSsid, serviceSignalPct, serviceHasRssi ? string.Format(" / {0} dBm", serviceRssiDbm) : ""));
+                    else if (weakSurroundingSignal)
+                        warns.Add(string.Format("Slab Wi-Fi prijem ({0}%{1}, {2} mreža) — proverite Main/Aux kablove antene",
+                            wifiMaxSignalPct, wifiHasRssi ? string.Format(" / {0} dBm", wifiMaxRssiDbm) : "", wifiVisibleNetworks));
+                    if (missing5GhzBand)
+                        warns.Add("Dual-band Wi-Fi kartica vidi samo 2.4 GHz mreže (0 mreža na 5 GHz) — proverite konektore antene");
+                    if (missingServiceSsid)
+                        warns.Add(string.Format("Servisni SSID '{0}' nije pronađen u rezultatima skeniranja", serviceSsid));
                     if (!anyUp)
                         warns.Add("Mrežni adapteri su ispravni, ali računar nije povezan ni na Wi-Fi ni na LAN");
                     else if (!hubOk && gwPingMs < 0)
@@ -1013,8 +1142,17 @@ namespace WIS.HwTest.Core
                 {
                     res.Status = TestStatus.Pass;
                     res.HasWarning = false;
-                    res.Reason = string.Format("Mreža, Wi-Fi antena ({0}% / {1} mreža){2} i ServisHub dostupni ({3} ms)",
-                        wifiMaxSignalPct, wifiVisibleNetworks, btPresent ? ", Bluetooth OK" : "", hubMs);
+                    string apInfo = (!string.IsNullOrEmpty(serviceSsid) && serviceSsidFound)
+                        ? string.Format(", AP '{0}' {1}%", serviceSsid, serviceSignalPct)
+                        : "";
+                    res.Reason = string.Format("Mreža, Wi-Fi antena ({0}%{1}, 2.4G:{2}/5G:{3}{4}){5} i ServisHub dostupni ({6} ms)",
+                        wifiMaxSignalPct,
+                        wifiHasRssi ? string.Format("/{0}dBm", wifiMaxRssiDbm) : "",
+                        wifi24GhzCount,
+                        wifi5GhzCount,
+                        apInfo,
+                        btPresent ? ", Bluetooth OK" : "",
+                        hubMs);
                 }
             }
             catch (Exception ex)
@@ -1091,38 +1229,426 @@ namespace WIS.HwTest.Core
             }
         }
 
+        /// <summary>
+        /// Anti-Leak: čita isključivo vrednost ključa SSID= iz sekcije [WiFi] u Wifi-Servis.ini.
+        /// Odbacuje prazan string i primer vrednost "YOUR_SERVICE_WIFI_SSID". Nikada ne čita druge ključeve.
+        /// </summary>
+        public static string TryReadServiceWifiSsid()
+        {
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string[] candidates = new string[] {
+                    @"C:\setup\Wifi-Servis.ini",
+                    Path.Combine(baseDir, "Wifi-Servis.ini"),
+                    Path.Combine(baseDir, "..", "Wifi-Servis.ini"),
+                    Path.Combine(baseDir, "..", "..", "Wifi-Servis.ini")
+                };
+
+                for (int i = 0; i < candidates.Length; i++)
+                {
+                    string path = candidates[i];
+                    if (!File.Exists(path)) continue;
+
+                    bool inWifiSection = false;
+                    string[] lines = File.ReadAllLines(path, Encoding.UTF8);
+                    for (int li = 0; li < lines.Length; li++)
+                    {
+                        string trimmed = (lines[li] ?? "").Trim();
+                        if (string.IsNullOrEmpty(trimmed) || trimmed.StartsWith("#") || trimmed.StartsWith(";"))
+                            continue;
+
+                        if (trimmed.StartsWith("[") && trimmed.EndsWith("]"))
+                        {
+                            inWifiSection = trimmed.Equals("[WiFi]", StringComparison.OrdinalIgnoreCase);
+                            continue;
+                        }
+
+                        if (!inWifiSection) continue;
+
+                        int eqIdx = trimmed.IndexOf('=');
+                        if (eqIdx <= 0) continue;
+
+                        string key = trimmed.Substring(0, eqIdx).Trim();
+                        if (!key.Equals("SSID", StringComparison.OrdinalIgnoreCase)) continue;
+
+                        string val = trimmed.Substring(eqIdx + 1).Trim().Trim('"', '\'');
+                        if (string.IsNullOrEmpty(val) ||
+                            val.Equals("YOUR_SERVICE_WIFI_SSID", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return "";
+                        }
+                        return val;
+                    }
+                }
+            }
+            catch { }
+            return "";
+        }
+
+        private static bool EnsureWlanServiceRunning(out string serviceState)
+        {
+            serviceState = "Nepoznat";
+            try
+            {
+                using (ManagementObjectSearcher s = new ManagementObjectSearcher(
+                    "SELECT Name, State, StartMode FROM Win32_Service WHERE Name = 'WlanSvc'"))
+                using (ManagementObjectCollection col = s.Get())
+                {
+                    foreach (ManagementObject mo in col)
+                    {
+                        string st = mo["State"] != null ? mo["State"].ToString().Trim() : "";
+                        string mode = mo["StartMode"] != null ? mo["StartMode"].ToString().Trim() : "";
+                        serviceState = string.IsNullOrEmpty(st) ? "Nepoznat" : st;
+
+                        if (st.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                            return true;
+
+                        if (mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+                        {
+                            serviceState = "Disabled";
+                            HwTestLogger.Warn("WIFI_SCAN", "WlanSvc servis je onemogućen (StartMode=Disabled).");
+                            return false;
+                        }
+
+                        try
+                        {
+                            object startRes = mo.InvokeMethod("StartService", null);
+                            HwTestLogger.Info("WIFI_SCAN", "Pokrećem WlanSvc servis (StartService=" + (startRes != null ? startRes.ToString() : "null") + ")");
+                            Thread.Sleep(800);
+                            serviceState = "StartRequested";
+                            return true;
+                        }
+                        catch (Exception exStart)
+                        {
+                            HwTestLogger.Warn("WIFI_SCAN", "Neuspešno pokretanje WlanSvc servisa: " + exStart.Message);
+                            return false;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("WIFI_SCAN", "Greška pri proveri WlanSvc servisa: " + ex.Message);
+            }
+            return false;
+        }
+
+        private static bool CheckWifiSupports5GhzFromDrivers()
+        {
+            try
+            {
+                string drvOut = RunNetshStdout("wlan show drivers", 1500);
+                if (!string.IsNullOrEmpty(drvOut))
+                {
+                    if (System.Text.RegularExpressions.Regex.IsMatch(
+                        drvOut, @"\b802\.11(a|ac|ax|be)\b",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static void ParseNetshBssFallback(
+            string output,
+            string serviceSsid,
+            ref int bssidCount,
+            ref int band24Count,
+            ref int band5Count,
+            ref int band6Count,
+            ref int max24Pct,
+            ref int max5Pct,
+            ref bool serviceSsidFound,
+            ref int serviceSignalPct)
+        {
+            if (string.IsNullOrEmpty(output)) return;
+            string[] lines = output.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            string currentSsid = "";
+            bool inBssid = false;
+            int curBand = 0; // 24, 5, 6
+            int curSignal = 0;
+
+            for (int i = 0; i <= lines.Length; i++)
+            {
+                string trimmed = (i < lines.Length) ? lines[i].Trim() : "";
+                bool isNewSsid = (i < lines.Length) && System.Text.RegularExpressions.Regex.IsMatch(
+                    trimmed, @"^SSID\s+\d+\s*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                bool isNewBssid = (i < lines.Length) && System.Text.RegularExpressions.Regex.IsMatch(
+                    trimmed, @"^BSSID\s+\d+\s*:", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                if (inBssid && (i == lines.Length || isNewSsid || isNewBssid))
+                {
+                    bssidCount++;
+                    if (curBand == 24)
+                    {
+                        band24Count++;
+                        if (curSignal > max24Pct) max24Pct = curSignal;
+                    }
+                    else if (curBand == 5)
+                    {
+                        band5Count++;
+                        if (curSignal > max5Pct) max5Pct = curSignal;
+                    }
+                    else if (curBand == 6)
+                    {
+                        band6Count++;
+                    }
+                    inBssid = false;
+                    curBand = 0;
+                    curSignal = 0;
+                }
+
+                if (i == lines.Length) break;
+
+                if (isNewSsid)
+                {
+                    int colon = trimmed.IndexOf(':');
+                    currentSsid = (colon >= 0) ? trimmed.Substring(colon + 1).Trim() : "";
+                    if (!string.IsNullOrEmpty(serviceSsid) &&
+                        string.Equals(currentSsid, serviceSsid, StringComparison.Ordinal))
+                    {
+                        serviceSsidFound = true;
+                    }
+                    continue;
+                }
+
+                if (isNewBssid)
+                {
+                    inBssid = true;
+                    curBand = 0;
+                    curSignal = 0;
+                    continue;
+                }
+
+                if (trimmed.IndexOf("%", StringComparison.Ordinal) >= 0)
+                {
+                    System.Text.RegularExpressions.Match ms = System.Text.RegularExpressions.Regex.Match(
+                        trimmed, @":\s*(\d{1,3})\s*%");
+                    if (ms.Success)
+                    {
+                        int pct;
+                        if (int.TryParse(ms.Groups[1].Value, out pct) && pct >= 0 && pct <= 100)
+                        {
+                            curSignal = pct;
+                            if (!string.IsNullOrEmpty(serviceSsid) &&
+                                string.Equals(currentSsid, serviceSsid, StringComparison.Ordinal))
+                            {
+                                serviceSsidFound = true;
+                                if (pct > serviceSignalPct) serviceSignalPct = pct;
+                            }
+                        }
+                    }
+                }
+                else if (trimmed.IndexOf("6 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    curBand = 6;
+                }
+                else if (trimmed.IndexOf("5 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    curBand = 5;
+                }
+                else if (trimmed.IndexOf("2.4 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    curBand = 24;
+                }
+                else
+                {
+                    System.Text.RegularExpressions.Match mc = System.Text.RegularExpressions.Regex.Match(
+                        trimmed, @"^(?:Channel|Kanal)\s*:\s*(\d{1,3})$",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (mc.Success && curBand == 0)
+                    {
+                        int ch;
+                        if (int.TryParse(mc.Groups[1].Value, out ch))
+                        {
+                            if (ch >= 1 && ch <= 14) curBand = 24;
+                            else if (ch >= 32 && ch <= 177) curBand = 5;
+                        }
+                    }
+                }
+            }
+        }
+
         private static void ProbeWifiSignalAndNetworks(out int visibleNetworks, out int maxSignalPct)
+        {
+            bool hwRadioOff, swRadioOff, wifiHasRssi, wifiSupports5Ghz, serviceSsidFound, serviceHasRssi;
+            int bssidCount, band24Count, band5Count, band6Count, maxRssiDbm, max24Pct, max5Pct, serviceSignalPct, serviceRssiDbm;
+            string wlanSvcState;
+            ProbeWifiSignalAndNetworks(
+                "",
+                out visibleNetworks,
+                out maxSignalPct,
+                out hwRadioOff,
+                out swRadioOff,
+                out bssidCount,
+                out band24Count,
+                out band5Count,
+                out band6Count,
+                out maxRssiDbm,
+                out wifiHasRssi,
+                out max24Pct,
+                out max5Pct,
+                out wifiSupports5Ghz,
+                out serviceSsidFound,
+                out serviceSignalPct,
+                out serviceRssiDbm,
+                out serviceHasRssi,
+                out wlanSvcState);
+        }
+
+        private static void ProbeWifiSignalAndNetworks(
+            string serviceSsid,
+            out int visibleNetworks,
+            out int maxSignalPct,
+            out bool hwRadioOff,
+            out bool swRadioOff,
+            out int bssidCount,
+            out int band24Count,
+            out int band5Count,
+            out int band6Count,
+            out int maxRssiDbm,
+            out bool hasRssi,
+            out int max24Pct,
+            out int max5Pct,
+            out bool wifiSupports5Ghz,
+            out bool serviceSsidFound,
+            out int serviceSignalPct,
+            out int serviceRssiDbm,
+            out bool serviceHasRssi,
+            out string wlanSvcState)
         {
             visibleNetworks = 0;
             maxSignalPct = 0;
+            hwRadioOff = false;
+            swRadioOff = false;
+            bssidCount = 0;
+            band24Count = 0;
+            band5Count = 0;
+            band6Count = 0;
+            maxRssiDbm = 0;
+            hasRssi = false;
+            max24Pct = 0;
+            max5Pct = 0;
+            wifiSupports5Ghz = false;
+            serviceSsidFound = false;
+            serviceSignalPct = 0;
+            serviceRssiDbm = 0;
+            serviceHasRssi = false;
+            wlanSvcState = "";
+
             try
             {
-                string output = RunNetshStdout("wlan show networks mode=bssid", 1800);
-                ParseNetshNetworksOutput(output, ref visibleNetworks, ref maxSignalPct);
+                EnsureWlanServiceRunning(out wlanSvcState);
+                NativeMethods.SuppressLocationPromptPopups();
 
-                if (visibleNetworks == 0)
+                bool radioQueried;
+                NativeMethods.QueryWifiRadioState(out radioQueried, out hwRadioOff, out swRadioOff);
+
+                wifiSupports5Ghz = CheckWifiSupports5GhzFromDrivers();
+
+                NativeMethods.WlanBssScanSummary bss = null;
+                if (!hwRadioOff && !swRadioOff)
                 {
-                    if (NativeMethods.TriggerActiveWlanScan())
+                    NativeMethods.TriggerActiveWlanScan();
+                    Thread.Sleep(1600);
+                    bss = NativeMethods.GetWlanBssScanSummary(serviceSsid);
+
+                    if (bss.BssidCount == 0 && NativeMethods.TriggerActiveWlanScan())
                     {
-                        Thread.Sleep(1500);
-                        visibleNetworks = 0;
-                        maxSignalPct = 0;
-                        string rescanOut = RunNetshStdout("wlan show networks mode=bssid", 1800);
-                        ParseNetshNetworksOutput(rescanOut, ref visibleNetworks, ref maxSignalPct);
+                        Thread.Sleep(1600);
+                        bss = NativeMethods.GetWlanBssScanSummary(serviceSsid);
+                    }
+
+                    if (bss != null && bss.BssidCount > 0)
+                    {
+                        bssidCount = bss.BssidCount;
+                        visibleNetworks = bss.UniqueSsidCount > 0 ? bss.UniqueSsidCount : bss.BssidCount;
+                        band24Count = bss.Band24Count;
+                        band5Count = bss.Band5Count;
+                        band6Count = bss.Band6Count;
+                        maxSignalPct = bss.MaxSignalPct;
+                        maxRssiDbm = bss.MaxRssiDbm;
+                        hasRssi = bss.HasRssi;
+                        max24Pct = bss.Max24Pct;
+                        max5Pct = bss.Max5Pct;
+                        serviceSsidFound = bss.ServiceSsidFound;
+                        serviceSignalPct = bss.ServiceSignalPct;
+                        serviceRssiDbm = bss.ServiceRssiDbm;
+                        serviceHasRssi = bss.HasServiceRssi;
+                        if (band5Count > 0 || band6Count > 0) wifiSupports5Ghz = true;
                     }
                 }
 
-                // Fallback: kada je uređaj već povezan na Wi-Fi ili Windows keš vrati 0 mreža, očitaj aktivan interfejs
-                if (maxSignalPct == 0 || visibleNetworks == 0)
+                // Fallback na netsh ako je WlanGetNetworkBssList odbijen (npr. ERROR_ACCESS_DENIED) ili nije vratio mreže
+                if (!hwRadioOff && !swRadioOff && (bssidCount == 0 || bss == null || !bss.ApiSucceeded || bss.AccessDenied))
+                {
+                    string output = RunNetshStdout("wlan show networks mode=bssid", 1800);
+                    int netshVisible = 0;
+                    int netshMaxPct = 0;
+                    ParseNetshNetworksOutput(output, ref netshVisible, ref netshMaxPct);
+                    if (netshVisible > visibleNetworks) visibleNetworks = netshVisible;
+                    if (netshMaxPct > maxSignalPct) maxSignalPct = netshMaxPct;
+
+                    if (bssidCount == 0)
+                    {
+                        ParseNetshBssFallback(
+                            output,
+                            serviceSsid,
+                            ref bssidCount,
+                            ref band24Count,
+                            ref band5Count,
+                            ref band6Count,
+                            ref max24Pct,
+                            ref max5Pct,
+                            ref serviceSsidFound,
+                            ref serviceSignalPct);
+                        if (band5Count > 0 || band6Count > 0) wifiSupports5Ghz = true;
+                    }
+                }
+
+                // Fallback: kada je uređaj već povezan na Wi-Fi, proveri aktivni interfejs i radio status preko netsh
+                if (maxSignalPct == 0 || visibleNetworks == 0 || !radioQueried)
                 {
                     string ifaceOut = RunNetshStdout("wlan show interfaces", 1500);
                     if (!string.IsNullOrEmpty(ifaceOut))
                     {
                         string[] ifaceLines = ifaceOut.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                        string connectedSsid = "";
+                        int connectedBand = 0;
+                        int connectedSignal = 0;
                         for (int i = 0; i < ifaceLines.Length; i++)
                         {
                             string trimmed = ifaceLines[i].Trim();
-                            if (trimmed.IndexOf("%", StringComparison.Ordinal) >= 0)
+                            if (!radioQueried)
+                            {
+                                if (trimmed.IndexOf("Hardware Off", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    hwRadioOff = true;
+                                if (trimmed.IndexOf("Software Off", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    swRadioOff = true;
+                            }
+                            if (trimmed.StartsWith("SSID", StringComparison.OrdinalIgnoreCase) &&
+                                !trimmed.StartsWith("SSID BSSID", StringComparison.OrdinalIgnoreCase) &&
+                                trimmed.IndexOf(':') > 0)
+                            {
+                                connectedSsid = trimmed.Substring(trimmed.IndexOf(':') + 1).Trim();
+                            }
+                            else if (trimmed.IndexOf("5 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                connectedBand = 5;
+                            }
+                            else if (trimmed.IndexOf("6 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                connectedBand = 6;
+                            }
+                            else if (trimmed.IndexOf("2.4 GHz", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                connectedBand = 24;
+                            }
+                            else if (trimmed.IndexOf("%", StringComparison.Ordinal) >= 0)
                             {
                                 System.Text.RegularExpressions.Match m = System.Text.RegularExpressions.Regex.Match(
                                     trimmed, @":\s*(\d{1,3})\s*%");
@@ -1131,6 +1657,7 @@ namespace WIS.HwTest.Core
                                     int pct;
                                     if (int.TryParse(m.Groups[1].Value, out pct) && pct > 0 && pct <= 100)
                                     {
+                                        connectedSignal = pct;
                                         if (pct > maxSignalPct) maxSignalPct = pct;
                                     }
                                 }
@@ -1139,6 +1666,18 @@ namespace WIS.HwTest.Core
                         if (maxSignalPct > 0 && visibleNetworks == 0)
                         {
                             visibleNetworks = 1;
+                            if (bssidCount == 0) bssidCount = 1;
+                            if (connectedBand == 24 && band24Count == 0) { band24Count = 1; max24Pct = connectedSignal; }
+                            else if (connectedBand == 5 && band5Count == 0) { band5Count = 1; max5Pct = connectedSignal; wifiSupports5Ghz = true; }
+                            else if (connectedBand == 6 && band6Count == 0) { band6Count = 1; wifiSupports5Ghz = true; }
+                        }
+                        if (!string.IsNullOrEmpty(serviceSsid) &&
+                            !serviceSsidFound &&
+                            !string.IsNullOrEmpty(connectedSsid) &&
+                            string.Equals(connectedSsid, serviceSsid, StringComparison.Ordinal))
+                        {
+                            serviceSsidFound = true;
+                            if (connectedSignal > serviceSignalPct) serviceSignalPct = connectedSignal;
                         }
                     }
                 }
@@ -2060,6 +2599,8 @@ namespace WIS.HwTest.Core
             }
 
             float peakTemp = 0f;
+            float minTemp = 0f;
+            int tempSamples = 0;
             float avgClock = 0f;
             int clockSamples = 0;
             float maxThrottle = 0f;
@@ -2119,7 +2660,12 @@ namespace WIS.HwTest.Core
                     catch { }
                 }
 
-                if (curTemp > peakTemp) peakTemp = curTemp;
+                if (curTemp > 0f)
+                {
+                    if (curTemp > peakTemp) peakTemp = curTemp;
+                    if (minTemp <= 0f || curTemp < minTemp) minTemp = curTemp;
+                    tempSamples++;
+                }
                 if (curThrottle > maxThrottle) maxThrottle = curThrottle;
                 if (curClock > 0)
                 {
@@ -2173,6 +2719,20 @@ namespace WIS.HwTest.Core
             }
 
             float meanClockMhz = clockSamples > 0 ? (avgClock / clockSamples) : 0f;
+            string rawSensorSrc = eng != null ? eng.SensorSource : "NONE";
+            bool staticAcpiZone = (
+                string.Equals(rawSensorSrc, "WMI_ACPI", StringComparison.OrdinalIgnoreCase) &&
+                tempSamples >= 4 &&
+                peakTemp > 0f &&
+                peakTemp <= 32.0f &&
+                (peakTemp - minTemp) < 0.5f
+            );
+            float rawAcpiTemp = peakTemp;
+            if (staticAcpiZone)
+            {
+                peakTemp = 0f;
+            }
+
             res.Details["cpu_name"] = cpuName;
             res.Details["cores"] = cores;
             res.Details["logical_processors"] = logical;
@@ -2183,9 +2743,16 @@ namespace WIS.HwTest.Core
             res.Details["max_fan_rpm"] = maxFanRpm;
             res.Details["worker_errors"] = workerCrashCount;
             res.Details["iterations"] = totalIterations;
-            res.Details["sensor_source"] = eng != null ? eng.SensorSource : "NONE";
+            res.Details["sensor_source"] = staticAcpiZone ? "WMI_ACPI_STATIC" : rawSensorSrc;
+            if (staticAcpiZone)
+            {
+                res.Details["sensor_static_acpi"] = true;
+                res.Details["raw_acpi_temp_c"] = Math.Round(rawAcpiTemp, 1);
+            }
 
-            string tempStr = peakTemp > 0 ? string.Format("Peak: {0:0}°C", peakTemp) : "Temp: N/A";
+            string tempStr = peakTemp > 0
+                ? string.Format("Peak: {0:0}°C", peakTemp)
+                : (staticAcpiZone ? "Temp: N/A (ACPI static)" : "Temp: N/A");
             string clkStr = meanClockMhz > 0 ? string.Format(" | Takt: {0:0} MHz", meanClockMhz) : string.Format(" | Baza: {0} MHz", baseClockMhz);
             string fanStr = maxFanRpm > 0 ? string.Format(" | Fan: {0} RPM", maxFanRpm) : "";
             res.MetricSummary = string.Format("{0} ({1}T) | {2}{3}{4}", ShortModel(cpuName, 24), threadCount, tempStr, clkStr, fanStr);
@@ -2213,13 +2780,14 @@ namespace WIS.HwTest.Core
                 res.Status = TestStatus.Fail;
                 res.Reason = string.Format("Ekstreman thermal throttling: takt pao na {0:0} MHz (baza {1} MHz) uz {2:0}°C", meanClockMhz, baseClockMhz, peakTemp);
             }
-            else if (peakTemp >= 85.0f || moderateThrottle)
+            else if (peakTemp >= 85.0f || moderateThrottle || staticAcpiZone)
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = true;
                 List<string> warns = new List<string>();
                 if (peakTemp >= 85.0f) warns.Add(string.Format("Povišena temperatura pod opterećenjem ({0:0}°C)", peakTemp));
                 if (moderateThrottle) warns.Add(string.Format("Detektovan umereni throttling (takt {0:0}/{1} MHz, throttle {2:0}%)", meanClockMhz, baseClockMhz, maxThrottle));
+                if (staticAcpiZone) warns.Add(string.Format("Statična ACPI zona ({0:0.0}°C) — pravi CPU termalni senzor nedostupan", rawAcpiTemp));
                 res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
             }
             else
@@ -2311,6 +2879,83 @@ namespace WIS.HwTest.Core
                 }
             }
             return res;
+        }
+
+        public static bool TryValidateGpuDriverForStress(out TestItemResult blockedResult)
+        {
+            string primaryGpu;
+            string driverVer;
+            long vramMb;
+            uint errCode;
+            bool isBasicAdapter;
+            string allGpus;
+            bool hasAnyBasicDisplay;
+            bool hasAnyErrorAdapter;
+            string problemAdapters;
+
+            InspectGpuAdapters(
+                out primaryGpu, out driverVer, out vramMb, out errCode, out isBasicAdapter, out allGpus,
+                out hasAnyBasicDisplay, out hasAnyErrorAdapter, out problemAdapters);
+
+            int renderTier = 0;
+            try
+            {
+                System.Windows.Application app = System.Windows.Application.Current;
+                if (app != null && app.Dispatcher != null && !app.Dispatcher.CheckAccess())
+                {
+                    app.Dispatcher.Invoke(new Action(delegate { renderTier = (System.Windows.Media.RenderCapability.Tier >> 16); }));
+                }
+                else
+                {
+                    renderTier = (System.Windows.Media.RenderCapability.Tier >> 16);
+                }
+            }
+            catch { }
+
+            if (isBasicAdapter || hasAnyBasicDisplay || errCode != 0 || hasAnyErrorAdapter || renderTier == 0)
+            {
+                blockedResult = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
+                blockedResult.IsAutomated = true;
+                blockedResult.Status = TestStatus.Fail;
+                blockedResult.DurationSeconds = 0;
+                blockedResult.Attempts = 1;
+                blockedResult.Details["gpu_name"] = primaryGpu;
+                blockedResult.Details["driver_version"] = driverVer;
+                blockedResult.Details["vram_mb"] = vramMb;
+                blockedResult.Details["pnp_error_code"] = errCode;
+                blockedResult.Details["is_basic_display"] = isBasicAdapter;
+                blockedResult.Details["has_any_basic_display"] = hasAnyBasicDisplay;
+                blockedResult.Details["has_any_error_adapter"] = hasAnyErrorAdapter;
+                blockedResult.Details["problem_adapters"] = problemAdapters;
+                blockedResult.Details["wpf_render_tier"] = renderTier;
+                blockedResult.Details["all_adapters"] = allGpus;
+                blockedResult.Details["gpu_test_blocked_no_driver"] = true;
+
+                string shortGpu = ShortModel(primaryGpu, 26);
+                string vramTxt = vramMb > 0 ? string.Format(" | VRAM: {0} MB", vramMb) : "";
+                blockedResult.MetricSummary = string.Format("{0}{1} | Tier {2} | Blokiran (nema drajver)", shortGpu, vramTxt, renderTier);
+
+                if (isBasicAdapter)
+                {
+                    blockedResult.Reason = "GPU 3D test ne može da se pokrene: aktivan je Microsoft Basic Display Adapter (nedostaje originalni grafički drajver!)";
+                }
+                else if (errCode != 0)
+                {
+                    blockedResult.Reason = string.Format("GPU 3D test ne može da se pokrene: greška grafičke kartice u Device Manager-u (Error Code {0})", errCode);
+                }
+                else if (hasAnyBasicDisplay || hasAnyErrorAdapter)
+                {
+                    blockedResult.Reason = string.Format("GPU 3D test ne može da se pokrene: sekundarni GPU nema drajver ili ima grešku: {0}", problemAdapters);
+                }
+                else
+                {
+                    blockedResult.Reason = "GPU 3D test ne može da se pokrene: Direct3D hardverska akceleracija nije aktivna (Render Tier 0)!";
+                }
+                return false;
+            }
+
+            blockedResult = null;
+            return true;
         }
 
         public static void InspectGpuAdapters(out string primaryName, out string driverVersion, out long vramMb, out uint errorCode, out bool isBasicDisplay, out string allAdaptersSummary)

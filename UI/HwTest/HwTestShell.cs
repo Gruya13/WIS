@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Text;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using WIS.HwTest.Core;
 using WIS.HwTest.Interop;
@@ -26,9 +30,24 @@ namespace WIS.HwTest
         private readonly Dictionary<string, TextBlock> _descTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TextBlock> _metricTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Button> _runBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Button> _biosBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _statusIndicatorMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _statusIconMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _spinnerRingMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, RotateTransform> _spinnerRotateMap = new Dictionary<string, RotateTransform>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Border> _statusBadgeMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _statusBadgeTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TextBlock> _elapsedTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, ProgressBar> _runningBarMap = new Dictionary<string, ProgressBar>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, DateTime> _runningStartUtcMap = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private readonly Border _summaryBadgeBorder;
         private readonly TextBlock _summaryBadge;
         private readonly StackPanel _cardsPanel;
+        private readonly StackPanel _autoCardsPanel;
+        private readonly StackPanel _manualCardsPanel;
+        private readonly ProgressBar _overallProgressBar;
         private readonly Stopwatch _runStopwatch;
+        private DispatcherTimer _runningUiTimer;
         private bool _showNotApplicable = false;
         private TextBlock _factoryBannerText;
         private Button _btnToggleHidden;
@@ -38,6 +57,7 @@ namespace WIS.HwTest
         private readonly CancelFlag _autoStressCancel = new CancelFlag();
         private Button _btnRunAutoSuite;
         private TextBlock _autoSectionStatus;
+        private TextBlock _manualSectionCountText;
 
         // Embedded i Phase 5 orkestracija (WIS v3.0.0)
         private Grid _rootGrid;
@@ -65,6 +85,15 @@ namespace WIS.HwTest
         private string _phase5ThermalNote = "";
         private DateTime? _autoTestsFinishedUtc = null;
         private DateTime? _firstOperatorInteractionUtc = null;
+
+        // HWT-04 / HWT-06: UEFI BIOS restart i Faza 5 checkpoint
+        private Action<string> _uefiBiosRebootHandler = null;
+        private volatile bool _uefiBiosRebootRequested = false;
+        private volatile bool _uefiBiosPromptOpen = false;
+        private readonly HashSet<string> _restoredTestIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private bool _checkpointRestored = false;
+        private int _checkpointRestoredCount = 0;
+        private int _checkpointTotalApplicable = 0;
 
         private void MarkOperatorInteraction()
         {
@@ -151,35 +180,41 @@ namespace WIS.HwTest
             MinHeight = 650;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             WindowState = WindowState.Maximized;
-            Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
+            Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
             SourceInitialized += (s, e) => NativeMethods.EnableDarkTitleBar(this);
 
             // Inicijalizacija testova (prikazuju se samo prisutni / fabrički očekivani uređaji)
             InitTestList();
 
-            // Izgradnja UI-ja
+            // Restauracija checkpointa Faze 5 posle UEFI BIOS restarta (ako postoji validan checkpoint)
+            TryRestoreCheckpoint();
+
+            // Izgradnja UI-ja (kompaktan 2-kolonski list raspored sa živim indikatorima rada)
             Grid root = new Grid();
             _rootGrid = root;
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(85) });
             root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(75) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
-            // 1. Header
+            // 1. Kompaktno objedinjeno zaglavlje + fabrička traka + globalni progress bar
             Border header = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(16, 9, 16, 9)
             };
+            StackPanel headerStack = new StackPanel();
+
             Grid hg = new Grid();
             hg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             hg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            StackPanel spH = new StackPanel();
+            StackPanel spH = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             TextBlock title = new TextBlock
             {
-                Text = "🧪 WIS HARDVERSKA DIJAGNOSTIKA I TESTIRANJE",
-                FontSize = 18,
+                Text = "HARDVERSKA DIJAGNOSTIKA I TESTIRANJE",
+                FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             };
@@ -189,105 +224,160 @@ namespace WIS.HwTest
             {
                 Text = string.Format("Model: {0} | Serijski broj: {1} | Šasija: {2}",
                     _modelName, _serialNumber, _hwInfo.IsLaptop ? "Laptop" : "Desktop"),
-                FontSize = 13,
+                FontSize = 11,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 170)),
-                Margin = new Thickness(0, 4, 0, 0)
+                Margin = new Thickness(0, 2, 0, 0)
             };
             _subTitleBlock = sub;
             spH.Children.Add(sub);
             hg.Children.Add(spH);
 
-            _summaryBadge = new TextBlock
+            StackPanel hdrRight = new StackPanel
             {
-                Text = "⏳ Čeka pokretanje",
-                FontSize = 14,
-                FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White,
-                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
-                Padding = new Thickness(14, 8, 14, 8),
+                Orientation = Orientation.Horizontal,
                 VerticalAlignment = VerticalAlignment.Center
             };
-            Grid.SetColumn(_summaryBadge, 1);
-            hg.Children.Add(_summaryBadge);
-            header.Child = hg;
-            Grid.SetRow(header, 0);
-            root.Children.Add(header);
-
-            // 1b. Info traka o fabričkoj detekciji i sakrivenim N/A testovima
-            Border factoryBar = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(28, 31, 38)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(45, 50, 60)),
-                BorderThickness = new Thickness(0, 1, 0, 1),
-                Padding = new Thickness(25, 8, 25, 8)
-            };
-            Grid fbg = new Grid();
-            fbg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            fbg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-
-            _factoryBannerText = new TextBlock
-            {
-                FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(170, 180, 195)),
-                VerticalAlignment = VerticalAlignment.Center,
-                TextWrapping = TextWrapping.Wrap
-            };
-            fbg.Children.Add(_factoryBannerText);
 
             _btnToggleHidden = new Button
             {
-                Background = new SolidColorBrush(Color.FromRgb(50, 56, 68)),
+                Background = new SolidColorBrush(Color.FromRgb(45, 48, 56)),
                 Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 230)),
-                FontSize = 12,
-                Padding = new Thickness(12, 4, 12, 4),
-                Margin = new Thickness(15, 0, 0, 0),
-                VerticalAlignment = VerticalAlignment.Center
+                BorderBrush = new SolidColorBrush(Color.FromRgb(70, 77, 92)),
+                BorderThickness = new Thickness(1),
+                FontSize = 11,
+                Padding = new Thickness(10, 4, 10, 4),
+                Margin = new Thickness(0, 0, 10, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnToggleHidden.Click += (s, e) => {
                 _showNotApplicable = !_showNotApplicable;
                 RefreshCardVisibility();
             };
-            Grid.SetColumn(_btnToggleHidden, 1);
-            fbg.Children.Add(_btnToggleHidden);
-            factoryBar.Child = fbg;
-            Grid.SetRow(factoryBar, 1);
-            root.Children.Add(factoryBar);
+            hdrRight.Children.Add(_btnToggleHidden);
 
-            // 2. Central Scrollable Cards
+            _summaryBadge = new TextBlock
+            {
+                Text = "⏳ Čeka pokretanje",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            _summaryBadgeBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 5, 10, 5),
+                VerticalAlignment = VerticalAlignment.Center,
+                Child = _summaryBadge
+            };
+            hdrRight.Children.Add(_summaryBadgeBorder);
+
+            Grid.SetColumn(hdrRight, 1);
+            hg.Children.Add(hdrRight);
+            headerStack.Children.Add(hg);
+
+            Border factoryLine = new Border
+            {
+                BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Margin = new Thickness(0, 6, 0, 0),
+                Padding = new Thickness(0, 5, 0, 0)
+            };
+            _factoryBannerText = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(158, 170, 184)),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            factoryLine.Child = _factoryBannerText;
+            headerStack.Children.Add(factoryLine);
+
+            _overallProgressBar = new ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Value = 0,
+                Height = 4,
+                Margin = new Thickness(0, 6, 0, 0),
+                Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                Foreground = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
+                BorderThickness = new Thickness(0)
+            };
+            headerStack.Children.Add(_overallProgressBar);
+
+            header.Child = headerStack;
+            Grid.SetRow(header, 0);
+            root.Children.Add(header);
+
+            // 2. Centralna 2-kolonska lista testova (Automatski levo | Periferni desno)
             ScrollViewer sv = new ScrollViewer
             {
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                Padding = new Thickness(25, 15, 25, 15)
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Padding = new Thickness(12, 10, 12, 10)
             };
+
             _cardsPanel = new StackPanel();
-            bool addedAutoHeader = false;
-            bool addedManualHeader = false;
+            Grid colsGrid = new Grid();
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(10) });
+            colsGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            Border autoColBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8, 10, 8)
+            };
+            StackPanel autoColStack = new StackPanel();
+            autoColStack.Children.Add(CreateAutoSectionHeader());
+            _autoCardsPanel = new StackPanel();
+            autoColStack.Children.Add(_autoCardsPanel);
+            autoColBorder.Child = autoColStack;
+            Grid.SetColumn(autoColBorder, 0);
+            colsGrid.Children.Add(autoColBorder);
+
+            Border manualColBorder = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8, 10, 8)
+            };
+            StackPanel manualColStack = new StackPanel();
+            manualColStack.Children.Add(CreateManualSectionHeader());
+            _manualCardsPanel = new StackPanel();
+            manualColStack.Children.Add(_manualCardsPanel);
+            manualColBorder.Child = manualColStack;
+            Grid.SetColumn(manualColBorder, 2);
+            colsGrid.Children.Add(manualColBorder);
+
             foreach (TestItemResult t in _testItems)
             {
-                if (t.IsAutomated && !addedAutoHeader)
-                {
-                    _cardsPanel.Children.Add(CreateAutoSectionHeader());
-                    addedAutoHeader = true;
-                }
-                else if (!t.IsAutomated && !addedManualHeader)
-                {
-                    _cardsPanel.Children.Add(CreateManualSectionHeader());
-                    addedManualHeader = true;
-                }
-
                 Border card = CreateTestCard(t);
-                _cardsPanel.Children.Add(card);
                 _cardMap[t.Id] = card;
+                if (t.IsAutomated)
+                    _autoCardsPanel.Children.Add(card);
+                else
+                    _manualCardsPanel.Children.Add(card);
             }
+
+            _cardsPanel.Children.Add(colsGrid);
             sv.Content = _cardsPanel;
-            Grid.SetRow(sv, 2);
+            Grid.SetRow(sv, 1);
             root.Children.Add(sv);
 
-            // 3. Footer Bar
+            // 3. Kompaktni Footer Bar
             Border footer = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
+                Background = new SolidColorBrush(Color.FromRgb(37, 37, 38)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(62, 62, 66)),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(14, 8, 14, 8)
             };
             Grid fg = new Grid();
             fg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -299,8 +389,10 @@ namespace WIS.HwTest
                 Content = "▶ Pokreni sve testove redom",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
+                FontSize = 12,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(20, 10, 20, 10)
+                Padding = new Thickness(14, 6, 14, 6),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             btnRunAll.Click += (s, e) => RunSequentialTests();
             Grid.SetColumn(btnRunAll, 0);
@@ -309,10 +401,12 @@ namespace WIS.HwTest
             Button btnFinish = new Button
             {
                 Content = "✓ Završi i sačuvaj izveštaj",
-                Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
+                Background = new SolidColorBrush(Color.FromRgb(35, 134, 54)),
                 Foreground = Brushes.White,
+                FontSize = 12,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(25, 10, 25, 10)
+                Padding = new Thickness(16, 6, 16, 6),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnFinish = btnFinish;
             btnFinish.Click += (s, e) => FinishAndSave();
@@ -320,10 +414,20 @@ namespace WIS.HwTest
             fg.Children.Add(btnFinish);
 
             footer.Child = fg;
-            Grid.SetRow(footer, 3);
+            Grid.SetRow(footer, 2);
             root.Children.Add(footer);
 
+            _runningUiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _runningUiTimer.Tick += (s, e) => UpdateRunningElapsedTimers();
+
             Content = root;
+            if (_checkpointRestored && _autoSectionStatus != null)
+            {
+                _autoSectionStatus.Text = string.Format(
+                    "♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova.",
+                    _checkpointRestoredCount, _checkpointTotalApplicable);
+                _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+            }
             RefreshCardVisibility();
             UpdateSummaryBadge();
 
@@ -331,6 +435,7 @@ namespace WIS.HwTest
             Closing += (s, e) =>
             {
                 _phase5WorkflowActive = false;
+                if (_runningUiTimer != null) _runningUiTimer.Stop();
                 _autoStressCancel.Cancel();
                 _autoEngine.Dispose();
             };
@@ -360,6 +465,10 @@ namespace WIS.HwTest
         public void ShutdownEmbedded()
         {
             _phase5WorkflowActive = false;
+            if (_runningUiTimer != null)
+            {
+                try { _runningUiTimer.Stop(); } catch { }
+            }
             _autoStressCancel.Cancel();
             try { _autoEngine.Dispose(); } catch { }
         }
@@ -474,39 +583,100 @@ namespace WIS.HwTest
             }
             _testItems.Add(kbd);
 
-            // 3. Touchpad / TrackPoint
-            bool tpExpected = isLaptop && (_hwInfo.HasTouchpad || _hwInfo.FactoryTouchpad == true || _hwInfo.TouchpadDisabledInBios);
-            bool hasTrackPoint = _hwInfo.HasTrackPoint || _hwInfo.IsThinkPad;
-            string tpTitle = hasTrackPoint ? "Touchpad / TrackPoint" : "Touchpad";
-            string tpDesc = hasTrackPoint
-                ? "Provera kursora, 4 ugla, L/D klika i TrackPoint srednjeg tastera"
-                : "Test praćenja pokazivača u 4 ugla, levog/desnog klika i skrola sa dva prsta";
-            if (isLaptop && _hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
+            // 3. Touchpad (razdvojeno od TrackPointa po HWT-05; bez samostalnog BIOS flaga bez HW/BOM potvrde)
+            bool tpExpected = isLaptop && (_hwInfo.HasTouchpad || _hwInfo.FactoryTouchpad == true);
+            bool tpNeedsBiosAction = tpExpected && (_hwInfo.TouchpadDisabledInBios || (!_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true));
+            string tpDesc = "Test praćenja pokazivača u 4 ugla, levog/desnog klika i skrola sa dva prsta";
+            if (tpExpected && _hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
                 tpDesc = "⚠️ UPOZORENJE: Touchpad je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchpadBiosStatus + ")!";
-            TestItemResult tp = new TestItemResult("touchpad", tpTitle, tpDesc);
+            else if (tpExpected && !_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true)
+                tpDesc = "⚠️ FABRIČKI PRISUTAN TOUCHPAD — Nije detektovan u Windowsu (proverite UEFI BIOS ili drajver)!";
+
+            TestItemResult tp = new TestItemResult("touchpad", "Touchpad", tpDesc);
             if (!tpExpected)
             {
                 tp.Status = TestStatus.NotApplicable;
                 tp.Reason = !isLaptop
                     ? "Nije primenljivo — Desktop računar (eksterne periferije)"
                     : "Uređaj fabrički nema touchpad";
+                if (isLaptop && _hwInfo.TouchpadDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "TouchpadDisabledInBios=true ({0}), ali HW/BOM potvrda ne postoji — test ostaje N/A.",
+                        _hwInfo.TouchpadBiosStatus));
+                }
             }
-            else if (_hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
+            else if (tpNeedsBiosAction)
             {
-                tp.Reason = "Touchpad onemogućen u BIOS-u: " + _hwInfo.TouchpadBiosStatus;
-                tp.Details["bios_disabled"] = true;
+                tp.HasWarning = true;
+                tp.Details["bios_action_recommended"] = true;
+                if (_hwInfo.TouchpadDisabledInBios)
+                {
+                    tp.Reason = "Touchpad onemogućen u BIOS-u: " + _hwInfo.TouchpadBiosStatus;
+                    tp.Details["bios_disabled"] = true;
+                }
+                else
+                {
+                    tp.Reason = "Touchpad potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu";
+                    tp.Details["factory_missing_in_os"] = true;
+                }
             }
             _testItems.Add(tp);
 
-            // 4. Touchscreen (+ Stylus olovka)
-            bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.TouchscreenDisabledInBios || _hwInfo.FactoryTouchscreen == true);
+            // 4. TrackPoint (zasebna stavka po HWT-05)
+            bool trackPointExpected = isLaptop && (_hwInfo.HasTrackPoint || _hwInfo.FactoryTrackPoint == true);
+            bool trackPointNeedsBiosAction = trackPointExpected && (_hwInfo.TrackPointDisabledInBios || (!_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true));
+            string trackPointDesc = "Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)";
+            if (trackPointExpected && _hwInfo.TrackPointDisabledInBios && !_hwInfo.HasTrackPoint)
+                trackPointDesc = "⚠️ UPOZORENJE: TrackPoint je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TrackPointBiosStatus + ")!";
+            else if (trackPointExpected && !_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true)
+                trackPointDesc = "⚠️ FABRIČKI PRISUTAN TRACKPOINT (" + (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence) ? _hwInfo.FactoryTrackPointEvidence : "BOM") + ") — Nije aktivan u Windowsu!";
+
+            TestItemResult trackPoint = new TestItemResult("trackpoint", "TrackPoint", trackPointDesc);
+            if (!trackPointExpected)
+            {
+                trackPoint.Status = TestStatus.NotApplicable;
+                trackPoint.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar (eksterne periferije)"
+                    : (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence)
+                        ? ("Uređaj nema TrackPoint (" + _hwInfo.FactoryTrackPointEvidence + ")")
+                        : "Uređaj nema TrackPoint džojstik");
+                if (isLaptop && _hwInfo.TrackPointDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "TrackPointDisabledInBios=true ({0}), ali HW/BOM potvrda ne postoji — test ostaje N/A.",
+                        _hwInfo.TrackPointBiosStatus));
+                }
+            }
+            else if (trackPointNeedsBiosAction)
+            {
+                trackPoint.HasWarning = true;
+                trackPoint.Details["bios_action_recommended"] = true;
+                if (_hwInfo.TrackPointDisabledInBios)
+                {
+                    trackPoint.Reason = "TrackPoint onemogućen u BIOS-u: " + _hwInfo.TrackPointBiosStatus;
+                    trackPoint.Details["bios_disabled"] = true;
+                }
+                else
+                {
+                    trackPoint.Reason = "TrackPoint potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu";
+                    trackPoint.Details["factory_missing_in_os"] = true;
+                    if (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence))
+                        trackPoint.Details["factory_evidence"] = _hwInfo.FactoryTrackPointEvidence;
+                }
+            }
+            _testItems.Add(trackPoint);
+
+            // 5. Touchscreen (+ Stylus olovka)
+            bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.FactoryTouchscreen == true);
+            bool tsNeedsBiosAction = tsExpected && (_hwInfo.TouchscreenDisabledInBios || (!_hwInfo.HasTouchscreen && _hwInfo.FactoryTouchscreen == true));
             string tsTitle = _hwInfo.HasStylusPen ? "Touchscreen + Olovka (Stylus)" : "Ekran na dodir (Touchscreen)";
             string tsDesc = _hwInfo.HasStylusPen
                 ? "Prolazak kroz lavirint prstom, multitouch detekcija (+ provera Stylus olovke i pritiska)"
                 : "Prolazak kroz lavirint prstom i multitouch detekcija";
-            if (isLaptop && _hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
+            if (tsExpected && _hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
                 tsDesc = "⚠️ FABRIČKI PRISUTAN — Touchscreen je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchscreenBiosStatus + ")!";
-            else if (isLaptop && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
+            else if (tsExpected && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
                 tsDesc = "⚠️ FABRIČKI PRISUTAN (" + (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP") + "), ali nije aktivan u Windowsu!";
 
             TestItemResult ts = new TestItemResult("touchscreen", tsTitle, tsDesc);
@@ -518,17 +688,43 @@ namespace WIS.HwTest
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence)
                         ? ("Ekran nije osetljiv na dodir (" + _hwInfo.FactoryTouchscreenEvidence + ")")
                         : "Displej fabrički ne podržava unos dodirom");
+                if (isLaptop && _hwInfo.TouchscreenDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "TouchscreenDisabledInBios=true ({0}), ali HW/PnP/BOM potvrda ne postoji — test ostaje N/A.",
+                        _hwInfo.TouchscreenBiosStatus));
+                }
             }
             else if (!_hwInfo.HasTouchscreen)
             {
                 ts.Details["factory_missing_in_os"] = true;
-                if (_hwInfo.TouchscreenDisabledInBios) ts.Details["bios_disabled"] = true;
                 if (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence))
                     ts.Details["factory_evidence"] = _hwInfo.FactoryTouchscreenEvidence;
+                if (tsNeedsBiosAction)
+                {
+                    ts.HasWarning = true;
+                    ts.Details["bios_action_recommended"] = true;
+                    if (_hwInfo.TouchscreenDisabledInBios)
+                    {
+                        ts.Details["bios_disabled"] = true;
+                        ts.Reason = "Touchscreen onemogućen u BIOS-u: " + _hwInfo.TouchscreenBiosStatus;
+                    }
+                    else
+                    {
+                        ts.Reason = "Touchscreen potvrđen u OEM BOM-u, ali nije aktivan u Windowsu";
+                    }
+                }
+            }
+            else if (tsNeedsBiosAction)
+            {
+                ts.HasWarning = true;
+                ts.Details["bios_action_recommended"] = true;
+                ts.Details["bios_disabled"] = true;
+                ts.Reason = "Touchscreen ima BIOS upozorenje: " + _hwInfo.TouchscreenBiosStatus;
             }
             _testItems.Add(ts);
 
-            // 5. Zvuk (Zvučnici)
+            // 6. Zvuk (Zvučnici)
             bool audioExpected = isLaptop && (_hwInfo.HasSpeakers || _hwInfo.FactorySpeakers == true);
             TestItemResult audio = new TestItemResult("audio", "Zvuk (Levi / Desni kanal)", "Test stereo zvučnika izgovorom nasumičnih cifara na levom i desnom kanalu");
             if (!audioExpected)
@@ -540,13 +736,13 @@ namespace WIS.HwTest
             }
             _testItems.Add(audio);
 
-            // 6. Mikrofon
-            bool micExpected = isLaptop && (_hwInfo.HasMicrophone || _hwInfo.MicrophoneDisabledInBios || _hwInfo.FactoryMicrophone == true ||
-                               (_hwInfo.FactoryMicrophone != false && (_hwInfo.HasWebcam || _hwInfo.FactoryWebcam == true)));
+            // 7. Mikrofon (bez veštačkog fallbacka preko HasWebcam i bez samostalnog BIOS flaga)
+            bool micExpected = isLaptop && (_hwInfo.HasMicrophone || _hwInfo.FactoryMicrophone == true);
+            bool micNeedsBiosAction = micExpected && (_hwInfo.MicrophoneDisabledInBios || (!_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true));
             string micDesc = "VU metar nivoa glasa i automatsko preslušavanje snimka";
-            if (isLaptop && _hwInfo.MicrophoneDisabledInBios && !_hwInfo.HasMicrophone)
+            if (micExpected && _hwInfo.MicrophoneDisabledInBios && !_hwInfo.HasMicrophone)
                 micDesc = "⚠️ FABRIČKI PRISUTAN — Mikrofon je ONEMOGUĆEN u BIOS-u (" + _hwInfo.MicrophoneBiosStatus + ")!";
-            else if (isLaptop && !_hwInfo.HasMicrophone && micExpected)
+            else if (micExpected && !_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true)
                 micDesc = "⚠️ FABRIČKI OČEKIVAN MIKROFON — Nije detektovan aktivan capture uređaj u Windowsu!";
 
             TestItemResult mic = new TestItemResult("mic", "Mikrofon", micDesc);
@@ -556,41 +752,116 @@ namespace WIS.HwTest
                 mic.Reason = !isLaptop
                     ? "Nije primenljivo — Desktop računar"
                     : "Uređaj nema ugrađeni mikrofon";
+                if (isLaptop && _hwInfo.MicrophoneDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "MicrophoneDisabledInBios=true ({0}), ali HW/BOM potvrda ne postoji — test ostaje N/A.",
+                        _hwInfo.MicrophoneBiosStatus));
+                }
             }
-            else if (!_hwInfo.HasMicrophone)
+            else if (micNeedsBiosAction)
             {
-                mic.Details["factory_missing_in_os"] = true;
-                if (_hwInfo.MicrophoneDisabledInBios) mic.Details["bios_disabled"] = true;
+                mic.HasWarning = true;
+                mic.Details["bios_action_recommended"] = true;
+                if (_hwInfo.MicrophoneDisabledInBios)
+                {
+                    mic.Details["bios_disabled"] = true;
+                    mic.Reason = "Mikrofon onemogućen u BIOS-u: " + _hwInfo.MicrophoneBiosStatus;
+                }
+                if (!_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true)
+                {
+                    mic.Details["factory_missing_in_os"] = true;
+                    if (string.IsNullOrEmpty(mic.Reason))
+                        mic.Reason = "Mikrofon potvrđen u OEM BOM-u, ali nije detektovan u Windowsu";
+                }
             }
             _testItems.Add(mic);
 
-            // 7. Kamera (Web / IR)
-            bool camExpected = isLaptop && (_hwInfo.HasWebcam || _hwInfo.HasIrCamera || _hwInfo.WebcamPnpPresent ||
-                               _hwInfo.CameraDisabledInBios || _hwInfo.FactoryWebcam == true || _hwInfo.FactoryIrCamera == true);
-            string camDesc = "Očitavanje otštampanog QR koda kamerom i provera IR senzora";
-            if (isLaptop && _hwInfo.CameraDisabledInBios && !_hwInfo.HasWebcam)
-                camDesc = "⚠️ FABRIČKI PRISUTNA — Kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
-            else if (isLaptop && !_hwInfo.HasWebcam && camExpected)
+            // 8. Web kamera (RGB QR kod — razdvojeno od IR kamere po HWT-06)
+            bool camExpected = isLaptop && (_hwInfo.HasWebcam || _hwInfo.WebcamPnpPresent || _hwInfo.FactoryWebcam == true);
+            bool camNeedsBiosAction = camExpected && (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasWebcam && _hwInfo.FactoryWebcam == true));
+            string camDesc = "Očitavanje otštampanog QR koda RGB web kamerom (WIS-CAMTEST-v1)";
+            if (camExpected && _hwInfo.CameraDisabledInBios && !_hwInfo.HasWebcam)
+                camDesc = "⚠️ FABRIČKI PRISUTNA — Web kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
+            else if (camExpected && !_hwInfo.HasWebcam && (_hwInfo.FactoryWebcam == true || _hwInfo.WebcamPnpPresent))
                 camDesc = "⚠️ FABRIČKI PRISUTNA KAMERA (" + (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence) ? _hwInfo.FactoryWebcamEvidence : "PnP") + "), ali nije aktivna u Windowsu!";
 
-            TestItemResult cam = new TestItemResult("camera", "Kamera (QR kod i IR)", camDesc);
+            TestItemResult cam = new TestItemResult("camera", "Web kamera (QR kod)", camDesc);
             if (!camExpected)
             {
                 cam.Status = TestStatus.NotApplicable;
                 cam.Reason = !isLaptop
                     ? "Nije primenljivo — Desktop računar"
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence)
-                        ? ("Uređaj fabrički nema kameru (" + _hwInfo.FactoryWebcamEvidence + ")")
-                        : "Video kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
+                        ? ("Uređaj fabrički nema web kameru (" + _hwInfo.FactoryWebcamEvidence + ")")
+                        : "Web kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
+                if (isLaptop && _hwInfo.CameraDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "CameraDisabledInBios=true ({0}), ali RGB kamera nije potvrđena u OS/BOM — test web kamere ostaje N/A.",
+                        _hwInfo.CameraBiosStatus));
+                }
             }
-            else if (!_hwInfo.HasWebcam && !_hwInfo.HasIrCamera)
+            else if (camNeedsBiosAction)
             {
-                cam.Details["factory_missing_in_os"] = true;
-                if (_hwInfo.CameraDisabledInBios) cam.Details["bios_disabled"] = true;
+                cam.HasWarning = true;
+                cam.Details["bios_action_recommended"] = true;
+                if (_hwInfo.CameraDisabledInBios)
+                {
+                    cam.Details["bios_disabled"] = true;
+                    cam.Reason = "Web kamera onemogućena u BIOS-u: " + _hwInfo.CameraBiosStatus;
+                }
+                if (!_hwInfo.HasWebcam && _hwInfo.FactoryWebcam == true)
+                {
+                    cam.Details["factory_missing_in_os"] = true;
+                    if (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence))
+                        cam.Details["factory_evidence"] = _hwInfo.FactoryWebcamEvidence;
+                    if (string.IsNullOrEmpty(cam.Reason))
+                        cam.Reason = "Web kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu";
+                }
             }
             _testItems.Add(cam);
 
-            // 8. USB portovi (integrisani na laptopu; na Desktopu nisu obavezni u Fazi 5)
+            // 9. IR kamera (Windows Hello — zasebna stavka po HWT-06)
+            bool irCamExpected = isLaptop && (_hwInfo.HasIrCamera || _hwInfo.FactoryIrCamera == true);
+            bool irCamNeedsBiosAction = irCamExpected && (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true));
+            string irCamDesc = "Provera IR senzora kamere za Windows Hello (prepoznavanje lica)";
+            if (irCamExpected && _hwInfo.CameraDisabledInBios && !_hwInfo.HasIrCamera)
+                irCamDesc = "⚠️ FABRIČKI PRISUTNA — IR kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
+            else if (irCamExpected && !_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true)
+                irCamDesc = "⚠️ FABRIČKI PRISUTNA IR KAMERA (" + (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence) ? _hwInfo.FactoryIrCameraEvidence : "BOM") + "), ali nije aktivna u Windowsu!";
+
+            TestItemResult irCam = new TestItemResult("ir_camera", "IR kamera (Windows Hello)", irCamDesc);
+            if (!irCamExpected)
+            {
+                irCam.Status = TestStatus.NotApplicable;
+                irCam.Reason = !isLaptop
+                    ? "Nije primenljivo — Desktop računar"
+                    : (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence)
+                        ? ("Uređaj fabrički nema IR kameru (" + _hwInfo.FactoryIrCameraEvidence + ")")
+                        : "IR kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
+            }
+            else if (irCamNeedsBiosAction)
+            {
+                irCam.HasWarning = true;
+                irCam.Details["bios_action_recommended"] = true;
+                if (_hwInfo.CameraDisabledInBios)
+                {
+                    irCam.Details["bios_disabled"] = true;
+                    irCam.Reason = "IR kamera onemogućena u BIOS-u: " + _hwInfo.CameraBiosStatus;
+                }
+                if (!_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true)
+                {
+                    irCam.Details["factory_missing_in_os"] = true;
+                    if (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence))
+                        irCam.Details["factory_evidence"] = _hwInfo.FactoryIrCameraEvidence;
+                    if (string.IsNullOrEmpty(irCam.Reason))
+                        irCam.Reason = "IR kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu";
+                }
+            }
+            _testItems.Add(irCam);
+
+            // 10. USB portovi (integrisani na laptopu; na Desktopu nisu obavezni u Fazi 5)
             TestItemResult usb = new TestItemResult("usb", "USB portovi", "Verifikacija svih spoljnih USB portova ubacivanjem fleš diska");
             if (!isLaptop)
             {
@@ -599,18 +870,14 @@ namespace WIS.HwTest
             }
             _testItems.Add(usb);
 
-            // 9. Čitač otiska prsta (OS + PnP + BIOS + OEM BOM provera; ako BOM nije dostupan na laptopu ne krijemo ga naslepo)
-            bool fpExpected = isLaptop && (_hwInfo.HasFingerprint ||
-                              _hwInfo.FingerprintDisabledInBios ||
-                              _hwInfo.FactoryFingerprint == true ||
-                              (!_hwInfo.FactoryBomLoaded && _hwInfo.FactoryFingerprint != false));
+            // 11. Čitač otiska prsta (OS + OEM BOM po HWT-04; bez !FactoryBomLoaded i samostalnog FingerprintDisabledInBios)
+            bool fpExpected = isLaptop && (_hwInfo.HasFingerprint || _hwInfo.FactoryFingerprint == true);
+            bool fpNeedsBiosAction = fpExpected && (_hwInfo.FingerprintDisabledInBios || (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true));
             string fpDesc = "Provera odziva biometrijskog senzora otiska prsta preko Windows Biometric API-ja";
-            if (isLaptop && _hwInfo.FingerprintDisabledInBios)
+            if (fpExpected && _hwInfo.FingerprintDisabledInBios)
                 fpDesc = "⚠️ UPOZORENJE: Uređaj je ONEMOGUĆEN u podešavanjima BIOS-a (" + _hwInfo.FingerprintBiosStatus + ")!";
-            else if (isLaptop && !_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
+            else if (fpExpected && !_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
                 fpDesc = "⚠️ FABRIČKI PRISUTAN U OEM BOM-U (" + _hwInfo.FactoryFingerprintEvidence + "), ali nije detektovan u Windowsu!";
-            else if (isLaptop && !_hwInfo.HasFingerprint && !_hwInfo.FactoryBomLoaded)
-                fpDesc = "⚠️ Senzor nije automatski detektovan (fabrički BOM nedostupan) — ako laptop ima čitač otiska, testirajte ili preskočite ako ga nema.";
 
             TestItemResult fp = new TestItemResult("fingerprint", "Čitač otiska prsta", fpDesc);
             if (!fpExpected)
@@ -621,17 +888,30 @@ namespace WIS.HwTest
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence)
                         ? ("Čitač otiska prsta nije fabrički ugrađen (" + _hwInfo.FactoryFingerprintEvidence + ")")
                         : "Čitač otiska prsta nije pronađen ni u OS-u ni u fabričkoj specifikaciji");
+                if (isLaptop && _hwInfo.FingerprintDisabledInBios)
+                {
+                    HwTestLogger.Info("BIOS_AUDIT", string.Format(
+                        "FingerprintDisabledInBios=true ({0}), ali HW/BOM potvrda ne postoji — test otiska prsta ostaje N/A.",
+                        _hwInfo.FingerprintBiosStatus));
+                }
             }
-            else if (_hwInfo.FingerprintDisabledInBios)
+            else if (fpNeedsBiosAction)
             {
-                fp.Reason = "Čitač otiska prsta je onemogućen u BIOS-u: " + _hwInfo.FingerprintBiosStatus;
-                fp.Details["bios_disabled"] = true;
-                fp.Details["bios_setting"] = _hwInfo.FingerprintBiosStatus;
-            }
-            else if (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
-            {
-                fp.Details["factory_missing_in_os"] = true;
-                fp.Details["factory_evidence"] = _hwInfo.FactoryFingerprintEvidence;
+                fp.HasWarning = true;
+                fp.Details["bios_action_recommended"] = true;
+                if (_hwInfo.FingerprintDisabledInBios)
+                {
+                    fp.Reason = "Čitač otiska prsta je onemogućen u BIOS-u: " + _hwInfo.FingerprintBiosStatus;
+                    fp.Details["bios_disabled"] = true;
+                    fp.Details["bios_setting"] = _hwInfo.FingerprintBiosStatus;
+                }
+                if (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
+                {
+                    fp.Details["factory_missing_in_os"] = true;
+                    fp.Details["factory_evidence"] = _hwInfo.FactoryFingerprintEvidence;
+                    if (string.IsNullOrEmpty(fp.Reason))
+                        fp.Reason = "Čitač otiska prsta potvrđen u OEM BOM-u, ali nije detektovan u Windowsu";
+                }
             }
             _testItems.Add(fp);
 
@@ -716,42 +996,46 @@ namespace WIS.HwTest
                 Background = new SolidColorBrush(Color.FromRgb(27, 34, 44)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 BorderThickness = new Thickness(0, 0, 0, 2),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(16, 10, 16, 10),
-                Margin = new Thickness(0, 2, 0, 10)
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 0, 0, 8)
             };
             Grid g = new Grid();
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            StackPanel sp = new StackPanel();
+            StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             sp.Children.Add(new TextBlock
             {
-                Text = "⚡ AUTOMATSKI TESTOVI HARDVERA",
-                FontSize = 14,
+                Text = "⚡ AUTOMATSKI TESTOVI",
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             });
             _autoSectionStatus = new TextBlock
             {
-                Text = "Pasivne provere (Baterija, Mreža, BIOS/TPM/PnP, SMART) pokreću se automatski pri otvaranju; stres testovi (Disk, RAM, CPU, GPU) idu sekvencijalno jednim klikom.",
-                FontSize = 12,
-                Foreground = new SolidColorBrush(Color.FromRgb(180, 195, 210)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 0, 0)
+                Text = "Pasivno (Baterija, Mreža, BIOS/TPM/PnP, SMART) + stres (Disk, RAM, CPU, GPU)",
+                FontSize = 10,
+                Foreground = new SolidColorBrush(Color.FromRgb(165, 180, 198)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
             };
+            _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
             sp.Children.Add(_autoSectionStatus);
             g.Children.Add(sp);
 
             _btnRunAutoSuite = new Button
             {
-                Content = "⚡ Pokreni automatski stres paket",
+                Content = "⚡ Stres paket",
+                ToolTip = "Pokreni sekvencijalni automatski stres paket (Disk, RAM, CPU, GPU)",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(16, 8, 16, 8),
+                Padding = new Thickness(10, 4, 10, 4),
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(15, 0, 0, 0)
+                Margin = new Thickness(8, 0, 0, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             _btnRunAutoSuite.Click += (s, e) => ToggleAutoStressSuite();
             Grid.SetColumn(_btnRunAutoSuite, 1);
@@ -768,114 +1052,204 @@ namespace WIS.HwTest
                 Background = new SolidColorBrush(Color.FromRgb(27, 30, 36)),
                 BorderBrush = new SolidColorBrush(Color.FromRgb(65, 72, 85)),
                 BorderThickness = new Thickness(0, 0, 0, 2),
-                CornerRadius = new CornerRadius(6),
-                Padding = new Thickness(16, 9, 16, 9),
-                Margin = new Thickness(0, 10, 0, 10)
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 7, 10, 7),
+                Margin = new Thickness(0, 0, 0, 8)
             };
-            StackPanel sp = new StackPanel();
+            Grid g = new Grid();
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             sp.Children.Add(new TextBlock
             {
                 Text = "🔧 PERIFERNI TESTOVI SERVISERA",
-                FontSize = 14,
+                FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(220, 225, 235))
             });
             sp.Children.Add(new TextBlock
             {
                 Text = "Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja",
-                FontSize = 12,
+                FontSize = 10,
                 Foreground = new SolidColorBrush(Color.FromRgb(150, 160, 175)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
                 Margin = new Thickness(0, 2, 0, 0)
             });
-            b.Child = sp;
+            g.Children.Add(sp);
+
+            _manualSectionCountText = new TextBlock
+            {
+                Text = "0/0 završeno",
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(158, 170, 184)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            Grid.SetColumn(_manualSectionCountText, 1);
+            g.Children.Add(_manualSectionCountText);
+
+            b.Child = g;
             return b;
         }
 
         private Border CreateTestCard(TestItemResult t)
         {
-            bool hasWarning = t.HasWarning || (t.Details != null &&
-                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os")));
-
             Border card = new Border
             {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                BorderBrush = hasWarning
-                    ? new SolidColorBrush(Color.FromRgb(255, 193, 7))
-                    : new SolidColorBrush(Color.FromRgb(50, 54, 64)),
+                Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56)),
                 BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(8),
-                Padding = new Thickness(20, 14, 20, 14),
-                Margin = new Thickness(0, 0, 0, 10),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(9, 6, 9, 6),
+                Margin = new Thickness(0, 0, 0, 5),
                 Tag = t
             };
 
+            StackPanel rootStack = new StackPanel();
+
             Grid cg = new Grid();
+            cg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(24) });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             cg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
-            // Info leva strana
-            StackPanel spInfo = new StackPanel();
+            // Col 0: Indikator statusa / animirani spinner dok test radi
+            Grid indHost = new Grid
+            {
+                Width = 18,
+                Height = 18,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0)
+            };
+
+            Border statusCircle = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(9),
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72))
+            };
+            TextBlock statusIcon = new TextBlock
+            {
+                Text = "○",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            statusCircle.Child = statusIcon;
+            _statusIndicatorMap[t.Id] = statusCircle;
+            _statusIconMap[t.Id] = statusIcon;
+            indHost.Children.Add(statusCircle);
+
+            RotateTransform spinRot = new RotateTransform(0);
+            Border spinnerRing = new Border
+            {
+                Width = 18,
+                Height = 18,
+                CornerRadius = new CornerRadius(9),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                BorderThickness = new Thickness(2, 2, 0, 0),
+                RenderTransformOrigin = new Point(0.5, 0.5),
+                RenderTransform = spinRot,
+                Visibility = Visibility.Collapsed
+            };
+            _spinnerRingMap[t.Id] = spinnerRing;
+            _spinnerRotateMap[t.Id] = spinRot;
+            indHost.Children.Add(spinnerRing);
+
+            Grid.SetColumn(indHost, 0);
+            cg.Children.Add(indHost);
+
+            // Col 1: Naziv testa + živo trajanje i 1 kompaktna linija rezultata/opisa
+            StackPanel spInfo = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+
+            Grid titleRow = new Grid();
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            titleRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
             TextBlock tbTitle = new TextBlock
             {
                 Text = t.Title,
-                FontSize = 16,
-                FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White
-            };
-            spInfo.Children.Add(tbTitle);
-
-            string descDisplay = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
-                ? (t.Description + " — " + t.Reason)
-                : t.Description;
-
-            TextBlock tbDesc = new TextBlock
-            {
-                Text = descDisplay,
                 FontSize = 12,
-                Foreground = hasWarning
-                    ? new SolidColorBrush(Color.FromRgb(255, 209, 102))
-                    : new SolidColorBrush(Color.FromRgb(160, 160, 170)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 3, 0, 0)
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                TextTrimming = TextTrimming.CharacterEllipsis
             };
-            spInfo.Children.Add(tbDesc);
-            _descTextMap[t.Id] = tbDesc;
+            Grid.SetColumn(tbTitle, 0);
+            titleRow.Children.Add(tbTitle);
+
+            TextBlock tbElapsed = new TextBlock
+            {
+                Text = "",
+                FontSize = 10,
+                FontFamily = new FontFamily("Consolas"),
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(Color.FromRgb(136, 136, 136)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            _elapsedTextMap[t.Id] = tbElapsed;
+            Grid.SetColumn(tbElapsed, 1);
+            titleRow.Children.Add(tbElapsed);
+            spInfo.Children.Add(titleRow);
 
             TextBlock tbMetric = new TextBlock
             {
                 Text = t.MetricSummary ?? "",
-                FontSize = 12,
+                FontSize = 10.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 4, 0, 0),
-                Visibility = string.IsNullOrEmpty(t.MetricSummary) ? Visibility.Collapsed : Visibility.Visible
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = t.MetricSummary ?? "",
+                Margin = new Thickness(0, 1, 0, 0)
             };
             spInfo.Children.Add(tbMetric);
             _metricTextMap[t.Id] = tbMetric;
 
+            TextBlock tbDesc = new TextBlock
+            {
+                Text = t.Description ?? "",
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(150, 155, 165)),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = t.Description ?? "",
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+            spInfo.Children.Add(tbDesc);
+            _descTextMap[t.Id] = tbDesc;
+
+            Grid.SetColumn(spInfo, 1);
             cg.Children.Add(spInfo);
 
-            // Status Badge u sredini
+            // Col 2: Kompaktan status bedž
             Border statusBorder = new Border
             {
-                CornerRadius = new CornerRadius(5),
-                Padding = new Thickness(12, 6, 12, 6),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(7, 2, 7, 2),
+                MinWidth = 60,
                 VerticalAlignment = VerticalAlignment.Center,
-                Margin = new Thickness(15, 0, 15, 0)
+                Margin = new Thickness(8, 0, 8, 0)
             };
             TextBlock tbStatus = new TextBlock
             {
-                FontSize = 13,
+                FontSize = 10,
                 FontWeight = FontWeights.Bold,
-                Foreground = Brushes.White
+                Foreground = Brushes.White,
+                HorizontalAlignment = HorizontalAlignment.Center
             };
             statusBorder.Child = tbStatus;
-            Grid.SetColumn(statusBorder, 1);
+            _statusBadgeMap[t.Id] = statusBorder;
+            _statusBadgeTextMap[t.Id] = tbStatus;
+            Grid.SetColumn(statusBorder, 2);
             cg.Children.Add(statusBorder);
 
-            // Dugmad desno
+            // Col 3: Kompaktna dugmad desno
             StackPanel spBtns = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -886,11 +1260,14 @@ namespace WIS.HwTest
             {
                 Button btnDetails = new Button
                 {
-                    Content = "🔍 Detalji",
+                    Content = "Detalji",
+                    ToolTip = "Otvori detaljan izveštaj testa",
                     Background = new SolidColorBrush(Color.FromRgb(50, 56, 70)),
                     Foreground = Brushes.White,
-                    Padding = new Thickness(10, 6, 10, 6),
-                    Margin = new Thickness(0, 0, 8, 0)
+                    FontSize = 10.5,
+                    Padding = new Thickness(7, 3, 7, 3),
+                    Margin = new Thickness(0, 0, 5, 0),
+                    Cursor = System.Windows.Input.Cursors.Hand
                 };
                 btnDetails.Click += (s, e) => OpenAutoDetails(t);
                 spBtns.Children.Add(btnDetails);
@@ -898,121 +1275,355 @@ namespace WIS.HwTest
 
             Button btnRun = new Button
             {
-                Content = "Pokreni",
+                Content = "▶",
+                ToolTip = "Pokreni ovaj test",
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
-                FontWeight = FontWeights.SemiBold,
-                Padding = new Thickness(14, 6, 14, 6),
-                Margin = new Thickness(0, 0, 8, 0)
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(8, 3, 8, 3),
+                Margin = new Thickness(0),
+                Cursor = System.Windows.Input.Cursors.Hand
             };
             btnRun.Click += (s, e) => RunSingleTest(t);
             _runBtnMap[t.Id] = btnRun;
             spBtns.Children.Add(btnRun);
 
-            Button btnSkip = new Button
+            if (!t.IsAutomated)
             {
-                Content = "Preskoči",
-                Background = new SolidColorBrush(Color.FromRgb(70, 75, 85)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(10, 6, 10, 6)
-            };
-            btnSkip.Click += (s, e) => PromptSkipReason(t);
-            spBtns.Children.Add(btnSkip);
+                Button btnBios = new Button
+                {
+                    Content = "🔧 UEFI BIOS",
+                    ToolTip = "Restartuj računar u UEFI BIOS podešavanja da biste uključili uređaj (WIS nastavlja gde je stao)",
+                    Background = new SolidColorBrush(Color.FromRgb(180, 110, 20)),
+                    Foreground = Brushes.White,
+                    FontSize = 10.5,
+                    FontWeight = FontWeights.Bold,
+                    Padding = new Thickness(7, 3, 7, 3),
+                    Margin = new Thickness(5, 0, 0, 0),
+                    Cursor = System.Windows.Input.Cursors.Hand,
+                    Visibility = Visibility.Collapsed
+                };
+                btnBios.Click += (s, e) => RequestUefiBiosReboot(t.Id);
+                _biosBtnMap[t.Id] = btnBios;
+                spBtns.Children.Add(btnBios);
+            }
 
-            Grid.SetColumn(spBtns, 2);
+            Grid.SetColumn(spBtns, 3);
             cg.Children.Add(spBtns);
 
-            card.Child = cg;
+            rootStack.Children.Add(cg);
+
+            // Indikator rada duž dna reda (vidljiv samo kada test radi)
+            ProgressBar runBar = new ProgressBar
+            {
+                IsIndeterminate = true,
+                Height = 3,
+                Margin = new Thickness(0, 5, 0, 0),
+                Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248)),
+                BorderThickness = new Thickness(0),
+                Visibility = Visibility.Collapsed
+            };
+            _runningBarMap[t.Id] = runBar;
+            rootStack.Children.Add(runBar);
+
+            card.Child = rootStack;
             UpdateCardVisual(card, t);
             return card;
         }
 
-        private void UpdateCardVisual(Border card, TestItemResult t)
+        private static bool IsBoolDetailTrue(Dictionary<string, object> details, string key)
         {
-            Grid cg = card.Child as Grid;
-            if (cg == null) return;
+            if (details == null || string.IsNullOrEmpty(key) || !details.ContainsKey(key) || details[key] == null)
+                return false;
+            object v = details[key];
+            if (v is bool) return (bool)v;
+            string s = Convert.ToString(v, CultureInfo.InvariantCulture);
+            return string.Equals(s, "true", StringComparison.OrdinalIgnoreCase) || s == "1";
+        }
 
+        private void SyncCardRowTexts(TestItemResult t)
+        {
+            if (t == null) return;
             bool hasWarn = t.HasWarning || (t.Details != null &&
-                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os")));
-
-            if (t.Status == TestStatus.Fail)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-            else if (hasWarn)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-            else if (t.Status == TestStatus.Pass)
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(45, 110, 72));
-            else
-                card.BorderBrush = new SolidColorBrush(Color.FromRgb(50, 54, 64));
+                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os") || IsBoolDetailTrue(t.Details, "bios_action_recommended")));
 
             TextBlock tbMetric;
+            bool hasMetric = !string.IsNullOrEmpty(t.MetricSummary);
             if (_metricTextMap.TryGetValue(t.Id, out tbMetric))
             {
                 tbMetric.Text = t.MetricSummary ?? "";
-                tbMetric.Visibility = string.IsNullOrEmpty(t.MetricSummary) ? Visibility.Collapsed : Visibility.Visible;
+                tbMetric.ToolTip = t.MetricSummary ?? "";
+                tbMetric.Foreground = (t.Status == TestStatus.Running)
+                    ? new SolidColorBrush(Color.FromRgb(56, 189, 248))
+                    : new SolidColorBrush(Color.FromRgb(78, 201, 176));
+                tbMetric.Visibility = hasMetric ? Visibility.Visible : Visibility.Collapsed;
             }
 
             TextBlock tbDesc;
             if (_descTextMap.TryGetValue(t.Id, out tbDesc))
             {
+                string fullDesc;
                 if (t.IsAutomated && !string.IsNullOrEmpty(t.Reason) && t.Status != TestStatus.Pending)
                 {
-                    tbDesc.Text = t.Reason;
-                    if (t.Status == TestStatus.Fail)
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 130, 140));
-                    else if (hasWarn)
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102));
-                    else
-                        tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(175, 185, 195));
+                    fullDesc = t.Reason;
                 }
                 else
                 {
-                    tbDesc.Text = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
+                    fullDesc = (t.Status == TestStatus.NotApplicable && !string.IsNullOrEmpty(t.Reason))
                         ? (t.Description + " — " + t.Reason)
-                        : t.Description;
-                    tbDesc.Foreground = hasWarn
-                        ? new SolidColorBrush(Color.FromRgb(255, 209, 102))
-                        : new SolidColorBrush(Color.FromRgb(160, 160, 170));
+                        : (!string.IsNullOrEmpty(t.Reason) && (t.Status == TestStatus.Fail || t.Status == TestStatus.Skip || hasWarn))
+                            ? t.Reason
+                            : t.Description;
+                }
+
+                tbDesc.Text = fullDesc ?? "";
+                tbDesc.ToolTip = fullDesc ?? "";
+
+                if (t.Status == TestStatus.Fail)
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 130, 140));
+                else if (hasWarn)
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102));
+                else
+                    tbDesc.Foreground = new SolidColorBrush(Color.FromRgb(155, 162, 174));
+
+                bool showDesc = !hasMetric || t.Status == TestStatus.Fail || hasWarn || t.Status == TestStatus.NotApplicable;
+                tbDesc.Visibility = (showDesc && !string.IsNullOrEmpty(fullDesc)) ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private static string FormatShortDuration(int seconds)
+        {
+            if (seconds < 0) seconds = 0;
+            int mins = seconds / 60;
+            int secs = seconds % 60;
+            return string.Format("{0:00}:{1:00}", mins, secs);
+        }
+
+        private void UpdateRunningElapsedTimers()
+        {
+            if (_runningStartUtcMap.Count == 0)
+            {
+                if (_runningUiTimer != null) _runningUiTimer.Stop();
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            foreach (KeyValuePair<string, DateTime> kv in _runningStartUtcMap)
+            {
+                TextBlock tbElapsed;
+                if (_elapsedTextMap.TryGetValue(kv.Key, out tbElapsed))
+                {
+                    int sec = (int)Math.Max(0, (now - kv.Value).TotalSeconds);
+                    tbElapsed.Text = FormatShortDuration(sec);
+                    tbElapsed.Visibility = Visibility.Visible;
+                }
+            }
+        }
+
+        private void UpdateCardVisual(Border card, TestItemResult t)
+        {
+            if (card == null || t == null) return;
+
+            bool needsBiosAction = IsBoolDetailTrue(t.Details, "bios_action_recommended");
+            bool hasWarn = t.HasWarning || (t.Details != null &&
+                (t.Details.ContainsKey("bios_disabled") || t.Details.ContainsKey("factory_missing_in_os") || needsBiosAction));
+
+            Button btnBios;
+            if (_biosBtnMap.TryGetValue(t.Id, out btnBios) && btnBios != null)
+            {
+                bool showBiosBtn = needsBiosAction && t.Status != TestStatus.Pass && t.Status != TestStatus.NotApplicable;
+                btnBios.Visibility = showBiosBtn ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (t.Status == TestStatus.Running)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(27, 40, 54));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.Fail)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(38, 28, 30));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (hasWarn)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(38, 34, 26));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
+                card.BorderThickness = new Thickness(3, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.Pass)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(30, 34, 32));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(45, 110, 72));
+                card.BorderThickness = new Thickness(2, 1, 1, 1);
+                card.Opacity = 1.0;
+            }
+            else if (t.Status == TestStatus.NotApplicable)
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(28, 28, 31));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(46, 48, 55));
+                card.BorderThickness = new Thickness(1);
+                card.Opacity = 0.68;
+            }
+            else
+            {
+                card.Background = new SolidColorBrush(Color.FromRgb(30, 30, 30));
+                card.BorderBrush = new SolidColorBrush(Color.FromRgb(51, 51, 56));
+                card.BorderThickness = new Thickness(1);
+                card.Opacity = 1.0;
+            }
+
+            SyncCardRowTexts(t);
+
+            // Indikator rada (spinner + progress bar + live tajmer)
+            Border statusCircle;
+            TextBlock statusIcon;
+            Border spinnerRing;
+            RotateTransform spinRot;
+            ProgressBar runBar;
+            TextBlock tbElapsed;
+
+            _statusIndicatorMap.TryGetValue(t.Id, out statusCircle);
+            _statusIconMap.TryGetValue(t.Id, out statusIcon);
+            _spinnerRingMap.TryGetValue(t.Id, out spinnerRing);
+            _spinnerRotateMap.TryGetValue(t.Id, out spinRot);
+            _runningBarMap.TryGetValue(t.Id, out runBar);
+            _elapsedTextMap.TryGetValue(t.Id, out tbElapsed);
+
+            if (t.Status == TestStatus.Running)
+            {
+                if (statusCircle != null) statusCircle.Visibility = Visibility.Collapsed;
+                if (spinnerRing != null) spinnerRing.Visibility = Visibility.Visible;
+                if (spinRot != null)
+                {
+                    DoubleAnimation anim = new DoubleAnimation(0.0, 360.0, new Duration(TimeSpan.FromMilliseconds(900)));
+                    anim.RepeatBehavior = RepeatBehavior.Forever;
+                    spinRot.BeginAnimation(RotateTransform.AngleProperty, anim);
+                }
+                if (runBar != null) runBar.Visibility = Visibility.Visible;
+
+                if (!_runningStartUtcMap.ContainsKey(t.Id))
+                {
+                    _runningStartUtcMap[t.Id] = DateTime.UtcNow;
+                }
+                if (_runningUiTimer != null && !_runningUiTimer.IsEnabled)
+                {
+                    _runningUiTimer.Start();
+                }
+                if (tbElapsed != null)
+                {
+                    int sec = (int)Math.Max(0, (DateTime.UtcNow - _runningStartUtcMap[t.Id]).TotalSeconds);
+                    tbElapsed.Text = FormatShortDuration(sec);
+                    tbElapsed.Foreground = new SolidColorBrush(Color.FromRgb(56, 189, 248));
+                    tbElapsed.Visibility = Visibility.Visible;
+                }
+            }
+            else
+            {
+                _runningStartUtcMap.Remove(t.Id);
+                if (_runningStartUtcMap.Count == 0 && _runningUiTimer != null && _runningUiTimer.IsEnabled)
+                {
+                    _runningUiTimer.Stop();
+                }
+
+                if (spinRot != null) spinRot.BeginAnimation(RotateTransform.AngleProperty, null);
+                if (spinnerRing != null) spinnerRing.Visibility = Visibility.Collapsed;
+                if (runBar != null) runBar.Visibility = Visibility.Collapsed;
+                if (statusCircle != null) statusCircle.Visibility = Visibility.Visible;
+
+                if (tbElapsed != null)
+                {
+                    if (t.DurationSeconds > 0)
+                    {
+                        tbElapsed.Text = FormatShortDuration(t.DurationSeconds);
+                        tbElapsed.Foreground = new SolidColorBrush(Color.FromRgb(136, 136, 136));
+                        tbElapsed.Visibility = Visibility.Visible;
+                    }
+                    else
+                    {
+                        tbElapsed.Visibility = Visibility.Collapsed;
+                    }
                 }
             }
 
-            Border statusBorder = cg.Children[1] as Border;
-            TextBlock tbStatus = statusBorder != null ? statusBorder.Child as TextBlock : null;
+            if (statusCircle != null && statusIcon != null)
+            {
+                switch (t.Status)
+                {
+                    case TestStatus.Pending:
+                        statusCircle.Background = hasWarn
+                            ? new SolidColorBrush(Color.FromRgb(210, 153, 34))
+                            : new SolidColorBrush(Color.FromRgb(55, 60, 72));
+                        statusIcon.Text = hasWarn ? "!" : "○";
+                        break;
+                    case TestStatus.Pass:
+                        statusCircle.Background = t.HasWarning
+                            ? new SolidColorBrush(Color.FromRgb(217, 130, 15))
+                            : new SolidColorBrush(Color.FromRgb(35, 134, 54));
+                        statusIcon.Text = t.HasWarning ? "!" : "✓";
+                        break;
+                    case TestStatus.Fail:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                        statusIcon.Text = "✗";
+                        break;
+                    case TestStatus.Skip:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(108, 117, 125));
+                        statusIcon.Text = "»";
+                        break;
+                    case TestStatus.NotApplicable:
+                        statusCircle.Background = new SolidColorBrush(Color.FromRgb(60, 65, 75));
+                        statusIcon.Text = "—";
+                        break;
+                }
+            }
 
-            if (tbStatus != null)
+            Border statusBorder;
+            TextBlock tbStatus;
+            _statusBadgeMap.TryGetValue(t.Id, out statusBorder);
+            _statusBadgeTextMap.TryGetValue(t.Id, out tbStatus);
+
+            if (statusBorder != null && tbStatus != null)
             {
                 switch (t.Status)
                 {
                     case TestStatus.Pending:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(55, 60, 72));
-                        tbStatus.Text = "⏳ Čeka";
+                        tbStatus.Text = "ČEKA";
                         break;
                     case TestStatus.Running:
-                        statusBorder.Background = new SolidColorBrush(Color.FromRgb(217, 150, 15));
-                        tbStatus.Text = "🔄 U toku";
+                        statusBorder.Background = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                        tbStatus.Text = "U TOKU";
                         break;
                     case TestStatus.Pass:
                         if (t.HasWarning)
                         {
                             statusBorder.Background = new SolidColorBrush(Color.FromRgb(217, 130, 15));
-                            tbStatus.Text = "⚠ PASS (UPOZ.)";
+                            tbStatus.Text = "UPOZ.";
                         }
                         else
                         {
-                            statusBorder.Background = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-                            tbStatus.Text = "✓ PASS";
+                            statusBorder.Background = new SolidColorBrush(Color.FromRgb(35, 134, 54));
+                            tbStatus.Text = "PASS";
                         }
                         break;
                     case TestStatus.Fail:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                        tbStatus.Text = "❌ FAIL";
+                        tbStatus.Text = "FAIL";
                         break;
                     case TestStatus.Skip:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(108, 117, 125));
-                        tbStatus.Text = "⏭️ SKIP";
+                        tbStatus.Text = "SKIP";
                         break;
                     case TestStatus.NotApplicable:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(60, 65, 75));
-                        tbStatus.Text = "⚪ N/A";
+                        tbStatus.Text = "N/A";
                         break;
                 }
             }
@@ -1024,7 +1635,7 @@ namespace WIS.HwTest
             {
                 if (_autoStressRunning)
                 {
-                    MessageBox.Show("Automatski stres paket je već u toku. Sačekajte završetak ili kliknite Zaustavi.",
+                    MessageBox.Show("Automatski stres paket je već u toku. Sačekajte da se završi.",
                         "Test u toku", MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
@@ -1037,6 +1648,13 @@ namespace WIS.HwTest
                 return;
             }
 
+            bool prevHadBiosAction = IsBoolDetailTrue(t.Details, "bios_action_recommended");
+            bool prevWarn = t.HasWarning;
+            string prevReason = t.Reason;
+            Dictionary<string, object> prevDetails = t.Details != null
+                ? new Dictionary<string, object>(t.Details, StringComparer.OrdinalIgnoreCase)
+                : null;
+
             Stopwatch sw = Stopwatch.StartNew();
             t.Status = TestStatus.Running;
             HwTestLogger.Info("TEST_START", string.Format("Pokrenut test '{0}' ({1})", t.Id, t.Title));
@@ -1048,11 +1666,30 @@ namespace WIS.HwTest
             {
                 case "display": dlg = new DisplayTestWindow(); break;
                 case "keyboard": dlg = new KeyboardTestWindow(_modelName, _hwInfo.RecommendedLayout, _profileClient, _hwInfo, _serialNumber); break;
-                case "touchpad": dlg = new TouchpadTestWindow(_hwInfo); break;
-                case "touchscreen": dlg = new TouchscreenMazeWindow(_hwInfo); break;
+                case "touchpad":
+                    TouchpadTestWindow tpDlg = new TouchpadTestWindow(_hwInfo);
+                    tpDlg.OnRequestUefiBiosReboot = RequestUefiBiosReboot;
+                    tpDlg.ShowBiosRebootHint = (_hwInfo.TouchpadDisabledInBios || (!_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true));
+                    dlg = tpDlg;
+                    break;
+                case "trackpoint":
+                    bool trkHint = (_hwInfo.TrackPointDisabledInBios || (!_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true));
+                    dlg = new TouchpadTestWindow(_hwInfo, PointingTestMode.TrackPointOnly, RequestUefiBiosReboot, trkHint);
+                    break;
+                case "touchscreen": dlg = new TouchscreenMazeWindow(_hwInfo, RequestUefiBiosReboot); break;
                 case "audio": dlg = new AudioTestWindow(); break;
-                case "mic": dlg = new MicTestWindow(); break;
-                case "camera": dlg = new CameraTestWindow(_hwInfo.HasIrCamera, _hwInfo.WebcamName, _hwInfo.IrCameraName); break;
+                case "mic":
+                    bool micHint = (_hwInfo.MicrophoneDisabledInBios || (!_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true));
+                    dlg = new MicTestWindow(RequestUefiBiosReboot, micHint);
+                    break;
+                case "camera":
+                    bool camHint = (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasWebcam && _hwInfo.FactoryWebcam == true));
+                    dlg = new CameraTestWindow(CameraTestMode.RgbOnly, _hwInfo.WebcamName, RequestUefiBiosReboot, camHint);
+                    break;
+                case "ir_camera":
+                    bool irCamHint = (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true));
+                    dlg = new CameraTestWindow(CameraTestMode.IrOnly, _hwInfo.IrCameraName, RequestUefiBiosReboot, irCamHint);
+                    break;
                 case "usb":
                     ModelProfileData prof = _profileClient != null ? _profileClient.GetProfile(_modelName) : null;
                     int? pCount = (prof != null && prof.UsbPortCount.HasValue && prof.UsbPortCount.Value > 0)
@@ -1060,7 +1697,11 @@ namespace WIS.HwTest
                         : (int?)_hwInfo.EstimatedUsbPortCount;
                     dlg = new UsbPortTestWindow(_modelName, pCount, _profileClient);
                     break;
-                case "fingerprint": dlg = new FingerprintTestWindow(_hwInfo); break;
+                case "fingerprint":
+                    FingerprintTestWindow fpDlg = new FingerprintTestWindow(_hwInfo, RequestUefiBiosReboot);
+                    fpDlg.ShowBiosRebootHint = (_hwInfo.FingerprintDisabledInBios || (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true));
+                    dlg = fpDlg;
+                    break;
             }
 
             if (dlg != null)
@@ -1084,6 +1725,26 @@ namespace WIS.HwTest
                 else if (dlg is FingerprintTestWindow) ApplyResult(t, ((FingerprintTestWindow)dlg).Result);
             }
 
+            // HWT-02 Odluka A4: zatvaranje bez PASS/FAIL vraća test u Pending (nikada Skip ili Running)
+            if (t.Status == TestStatus.Running || t.Status == TestStatus.Pending || t.Status == TestStatus.Skip)
+            {
+                t.Status = TestStatus.Pending;
+                if (prevHadBiosAction)
+                {
+                    t.HasWarning = prevWarn;
+                    if (string.IsNullOrEmpty(t.Reason)) t.Reason = prevReason;
+                    if (t.Details == null) t.Details = new Dictionary<string, object>();
+                    t.Details["bios_action_recommended"] = true;
+                    if (prevDetails != null)
+                    {
+                        if (prevDetails.ContainsKey("bios_disabled")) t.Details["bios_disabled"] = prevDetails["bios_disabled"];
+                        if (prevDetails.ContainsKey("factory_missing_in_os")) t.Details["factory_missing_in_os"] = prevDetails["factory_missing_in_os"];
+                        if (prevDetails.ContainsKey("bios_setting")) t.Details["bios_setting"] = prevDetails["bios_setting"];
+                        if (prevDetails.ContainsKey("factory_evidence")) t.Details["factory_evidence"] = prevDetails["factory_evidence"];
+                    }
+                }
+            }
+
             sw.Stop();
             t.DurationSeconds = (int)sw.Elapsed.TotalSeconds;
             HwTestLogger.Info("TEST_END", string.Format("Završen '{0}' -> Status={1} | Trajanje={2}s | Reason='{3}' | Details={4}",
@@ -1097,9 +1758,37 @@ namespace WIS.HwTest
         {
             Stopwatch sw = Stopwatch.StartNew();
             t.Status = TestStatus.Running;
-            HwTestLogger.Info("TEST_START", string.Format("Pokrenut test '{0}' ({1})", t.Id, t.Title));
+            HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test '{0}' ({1})", t.Id, t.Title));
             Border card;
             if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
+
+            // HWT-03: Pre-flight blokada pokretanja GPU 3D testa ako nedostaje grafički drajver
+            TestItemResult blockedResult;
+            if (!AutoDiagnosticsEngine.TryValidateGpuDriverForStress(out blockedResult))
+            {
+                string blockReason = (blockedResult != null && !string.IsNullOrEmpty(blockedResult.Reason))
+                    ? blockedResult.Reason
+                    : "GPU 3D test ne može da se pokrene: nedostaje grafički drajver.";
+                HwTestLogger.Warn("GPU_BLOCKED", blockReason);
+                if (blockedResult != null)
+                {
+                    ApplyResult(t, blockedResult);
+                }
+                else
+                {
+                    t.Status = TestStatus.Fail;
+                    t.HasWarning = true;
+                    t.Reason = blockReason;
+                }
+                t.DurationSeconds = 0;
+                sw.Stop();
+                HwTestLogger.Info("TEST_END", string.Format("Završen '{0}' -> Status={1} | Warn={2} | Trajanje={3}s | Reason='{4}' | Details={5}",
+                    t.Id, t.Status, t.HasWarning, t.DurationSeconds, t.Reason ?? "", SimpleJson.Serialize(t.Details ?? new Dictionary<string, object>())));
+
+                if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
+                UpdateSummaryBadge();
+                return;
+            }
 
             var gt = new GpuStressWindow(_autoEngine);
             Window gpuOwner = GetDialogOwner();
@@ -1227,9 +1916,6 @@ namespace WIS.HwTest
         {
             if (_autoStressRunning)
             {
-                _autoStressCancel.Cancel();
-                if (_autoSectionStatus != null)
-                    _autoSectionStatus.Text = "⏳ Zaustavljam automatski stres paket nakon trenutnog koraka...";
                 return;
             }
 
@@ -1261,17 +1947,14 @@ namespace WIS.HwTest
                             UpdateSummaryBadge();
                         }));
 
+                        HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test '{0}' ({1})", item.Id, item.Title));
+
                         TestItemResult result = ExecuteAutoWorkerById(id, (msg) =>
                         {
                             Dispatcher.BeginInvoke(new Action(() =>
                             {
                                 item.MetricSummary = msg;
-                                TextBlock tm;
-                                if (_metricTextMap.TryGetValue(item.Id, out tm))
-                                {
-                                    tm.Text = msg;
-                                    tm.Visibility = Visibility.Visible;
-                                }
+                                SyncCardRowTexts(item);
                             }));
                         });
 
@@ -1361,12 +2044,7 @@ namespace WIS.HwTest
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             item.MetricSummary = msg;
-                            TextBlock tm;
-                            if (_metricTextMap.TryGetValue(item.Id, out tm))
-                            {
-                                tm.Text = msg;
-                                tm.Visibility = Visibility.Visible;
-                            }
+                            SyncCardRowTexts(item);
                         }));
                     });
                 }
@@ -1411,9 +2089,10 @@ namespace WIS.HwTest
         {
             if (_btnRunAutoSuite != null)
             {
-                _btnRunAutoSuite.Content = busy ? "⏹ Zaustavi stres" : "⚡ Pokreni automatski stres paket";
+                _btnRunAutoSuite.IsEnabled = !busy;
+                _btnRunAutoSuite.Content = busy ? "⏳ Stres u toku..." : "⚡ Stres paket";
                 _btnRunAutoSuite.Background = busy
-                    ? new SolidColorBrush(Color.FromRgb(185, 65, 50))
+                    ? new SolidColorBrush(Color.FromRgb(65, 82, 108))
                     : new SolidColorBrush(Color.FromRgb(0, 122, 204));
             }
             foreach (KeyValuePair<string, Button> kv in _runBtnMap)
@@ -1421,72 +2100,7 @@ namespace WIS.HwTest
                 if (kv.Key.StartsWith("auto_", StringComparison.OrdinalIgnoreCase))
                     kv.Value.IsEnabled = !busy;
             }
-        }
-
-        private void PromptSkipReason(TestItemResult t)
-        {
-            Window dlg = new Window
-            {
-                Title = "Preskakanje testa: " + t.Title,
-                Width = 460,
-                Height = 220,
-                WindowStartupLocation = GetDialogOwner() != null ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
-                Owner = GetDialogOwner(),
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                WindowStyle = WindowStyle.ToolWindow
-            };
-            dlg.SourceInitialized += (s, e) => NativeMethods.EnableDarkTitleBar(dlg);
-
-            StackPanel sp = new StackPanel { Margin = new Thickness(20) };
-            TextBlock lbl = new TextBlock
-            {
-                Text = "Unesite obavezno obrazloženje za preskakanje:",
-                Foreground = Brushes.White,
-                FontSize = 13,
-                Margin = new Thickness(0, 0, 0, 10)
-            };
-            sp.Children.Add(lbl);
-
-            TextBox tb = new TextBox
-            {
-                Height = 35,
-                FontSize = 14,
-                Background = new SolidColorBrush(Color.FromRgb(45, 48, 56)),
-                Foreground = Brushes.White,
-                BorderBrush = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
-                Margin = new Thickness(0, 0, 0, 20)
-            };
-            sp.Children.Add(tb);
-
-            Button btnOk = new Button
-            {
-                Content = "Potvrdi preskakanje",
-                Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8),
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-            btnOk.Click += (s, e) => {
-                string r = tb.Text.Trim();
-                if (string.IsNullOrEmpty(r))
-                {
-                    MessageBox.Show("Obrazloženje je obavezno!", "Greška", MessageBoxButton.OK, MessageBoxImage.Warning);
-                    return;
-                }
-                t.Status = TestStatus.Skip;
-                t.Reason = r;
-                dlg.DialogResult = true;
-                dlg.Close();
-            };
-            sp.Children.Add(btnOk);
-
-            dlg.Content = sp;
-            if (dlg.ShowDialog() == true)
-            {
-                Border card;
-                if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
-                UpdateSummaryBadge();
-            }
+            UpdateSummaryBadge();
         }
 
         private void RunSequentialTests()
@@ -1494,7 +2108,7 @@ namespace WIS.HwTest
             if (_autoStressRunning)
             {
                 MessageBox.Show(
-                    "Automatski stres testovi su već u toku. Sačekajte da se završe ili ih zaustavite pre sekvencijalnog pokretanja.",
+                    "Automatski stres testovi su već u toku. Sačekajte da se završe pre sekvencijalnog pokretanja.",
                     "Stres test u toku",
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
@@ -1503,6 +2117,7 @@ namespace WIS.HwTest
 
             for (int i = 0; i < _testItems.Count; i++)
             {
+                if (_uefiBiosRebootRequested) break;
                 TestItemResult t = _testItems[i];
                 if (t.Status == TestStatus.Pending)
                 {
@@ -1546,12 +2161,7 @@ namespace WIS.HwTest
                         Dispatcher.BeginInvoke(new Action(() =>
                         {
                             item.MetricSummary = msg;
-                            TextBlock tm;
-                            if (_metricTextMap.TryGetValue(item.Id, out tm))
-                            {
-                                tm.Text = msg;
-                                tm.Visibility = Visibility.Visible;
-                            }
+                            SyncCardRowTexts(item);
                         }));
                     });
                 }
@@ -1579,9 +2189,19 @@ namespace WIS.HwTest
 
         private void UpdateSummaryBadge()
         {
-            int pass = 0, warn = 0, fail = 0, skip = 0, na = 0, pending = 0;
+            int pass = 0, warn = 0, fail = 0, skip = 0, na = 0, pending = 0, running = 0;
+            int manualTotal = 0, manualDone = 0;
             foreach (TestItemResult t in _testItems)
             {
+                if (!t.IsAutomated && t.Status != TestStatus.NotApplicable)
+                {
+                    manualTotal++;
+                    if (t.Status != TestStatus.Pending && t.Status != TestStatus.Running)
+                    {
+                        manualDone++;
+                    }
+                }
+
                 if (t.Status == TestStatus.Pass)
                 {
                     pass++;
@@ -1590,29 +2210,85 @@ namespace WIS.HwTest
                 else if (t.Status == TestStatus.Fail) fail++;
                 else if (t.Status == TestStatus.Skip) skip++;
                 else if (t.Status == TestStatus.NotApplicable) na++;
+                else if (t.Status == TestStatus.Running) running++;
                 else pending++;
             }
 
+            int applicable = pass + fail + skip + pending + running;
+            int completed = pass + fail + skip;
+            double pct = applicable > 0 ? Math.Round((completed * 100.0) / applicable, 1) : 100.0;
+
+            if (_overallProgressBar != null)
+            {
+                _overallProgressBar.Value = pct;
+                if (fail > 0)
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                else if ((pending + running) == 0)
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(46, 204, 113));
+                else
+                    _overallProgressBar.Foreground = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+            }
+
+            if (_manualSectionCountText != null)
+            {
+                _manualSectionCountText.Text = string.Format("{0}/{1} završeno", manualDone, manualTotal);
+            }
+
+            Brush badgeBg;
             if (fail > 0)
             {
-                _summaryBadge.Background = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                _summaryBadge.Text = string.Format("❌ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
+                badgeBg = new SolidColorBrush(Color.FromRgb(220, 53, 69));
+                _summaryBadge.Text = string.Format("✗ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
+            }
+            else if (running > 0)
+            {
+                badgeBg = new SolidColorBrush(Color.FromRgb(0, 122, 204));
+                _summaryBadge.Text = string.Format("▶ {0} U TOKU | {1}/{2} završeno", running, completed, applicable);
             }
             else if (pending > 0)
             {
-                _summaryBadge.Background = new SolidColorBrush(Color.FromRgb(217, 150, 15));
+                badgeBg = new SolidColorBrush(Color.FromRgb(217, 150, 15));
                 _summaryBadge.Text = (na > 0)
-                    ? string.Format("⏳ U toku ({0} preostalo | {1} odsutno)", pending, na)
-                    : string.Format("⏳ U toku ({0} preostalo)", pending);
+                    ? string.Format("⏳ {0}/{1} ({2} odsutno)", completed, applicable, na)
+                    : string.Format("⏳ {0}/{1} završeno", completed, applicable);
             }
             else
             {
-                _summaryBadge.Background = warn > 0
+                badgeBg = warn > 0
                     ? new SolidColorBrush(Color.FromRgb(217, 130, 15))
-                    : new SolidColorBrush(Color.FromRgb(40, 167, 69));
+                    : new SolidColorBrush(Color.FromRgb(35, 134, 54));
                 _summaryBadge.Text = warn > 0
-                    ? string.Format("⚠ ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", pass, warn, skip)
-                    : string.Format("✓ SVI TESTOVI ZAVRŠENI ({0} PASS, {1} SKIP)", pass, skip);
+                    ? string.Format("! ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", pass, warn, skip)
+                    : string.Format("✓ ZAVRŠENO ({0} PASS, {1} SKIP)", pass, skip);
+            }
+
+            if (_summaryBadgeBorder != null)
+            {
+                _summaryBadgeBorder.Background = badgeBg;
+            }
+
+            if (_btnFinish != null)
+            {
+                int remaining = pending + running;
+                bool canFinish = !_autoStressRunning && (pending == 0) && (running == 0);
+                _btnFinish.IsEnabled = canFinish;
+                if (canFinish)
+                {
+                    _btnFinish.Opacity = 1.0;
+                    _btnFinish.ToolTip = "Završi testiranje i sačuvaj konačan hardverski izveštaj";
+                }
+                else if (_autoStressRunning)
+                {
+                    _btnFinish.Opacity = 0.55;
+                    _btnFinish.ToolTip = "Završetak je zaključan dok traje automatski stres paket.";
+                }
+                else
+                {
+                    _btnFinish.Opacity = 0.55;
+                    _btnFinish.ToolTip = string.Format(
+                        "Završetak je zaključan dok svi primenljivi testovi ne dobiju PASS ili FAIL (preostalo: {0}).",
+                        remaining);
+                }
             }
         }
 
@@ -1666,21 +2342,31 @@ namespace WIS.HwTest
             }
         }
 
+        private static bool IsFinalTestStatus(TestStatus status)
+        {
+            return status == TestStatus.Pass ||
+                   status == TestStatus.Fail ||
+                   status == TestStatus.Skip ||
+                   status == TestStatus.NotApplicable;
+        }
+
         private void RunSequentialPeripheralTests()
         {
             for (int i = 0; i < _testItems.Count; i++)
             {
-                if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
+                if (_uefiBiosRebootRequested || _uefiBiosPromptOpen || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
                 TestItemResult t = _testItems[i];
                 if (!t.IsAutomated && t.Status == TestStatus.Pending)
                 {
                     RunSingleTest(t);
+                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) break;
                 }
             }
         }
 
         public void ForceCompletePhase5SkipPending()
         {
+            if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
             _autoStressCancel.Cancel();
             _waitingForManualPeripherals = false;
             bool shouldFinish = false;
@@ -1692,6 +2378,7 @@ namespace WIS.HwTest
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
+                if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
                 Window activeDlg = _activePeripheralDialog;
                 if (activeDlg != null)
                 {
@@ -1705,21 +2392,31 @@ namespace WIS.HwTest
             Action<string, string, string, string> onStepProgress,
             Action<HwTestRunResult, int, float, float, bool, bool> onPhase5Finished)
         {
+            TestItemResult existingCpu = FindItemById("auto_cpu");
+            bool preserveRestoredThermalMetrics = _checkpointRestored && existingCpu != null &&
+                                                  _restoredTestIds.Contains("auto_cpu") && IsFinalTestStatus(existingCpu.Status);
+
             lock (_phase5Lock)
             {
                 _phase5WorkflowActive = true;
                 _phase5CompletedNotified = false;
                 _phase5StepCallback = onStepProgress;
                 _phase5FinishedCallback = onPhase5Finished;
-                _phase5CpuDurationSec = 0;
-                _phase5PeakCpuTemp = 0f;
-                _phase5MaxCpuThrottle = 0f;
-                _phase5ThermalCritical = false;
+                if (!preserveRestoredThermalMetrics)
+                {
+                    _phase5CpuDurationSec = 0;
+                    _phase5PeakCpuTemp = 0f;
+                    _phase5MaxCpuThrottle = 0f;
+                    _phase5ThermalCritical = false;
+                }
             }
 
             _autoStressCancel.Reset();
-            _phase5ThermalCritical = false;
-            _phase5ThermalNote = "";
+            if (!preserveRestoredThermalMetrics)
+            {
+                _phase5ThermalCritical = false;
+                _phase5ThermalNote = "";
+            }
             _autoTestsFinishedUtc = null;
             _firstOperatorInteractionUtc = null;
 
@@ -1728,7 +2425,9 @@ namespace WIS.HwTest
                 StartPassiveAutoChecks();
                 if (_autoSectionStatus != null)
                 {
-                    _autoSectionStatus.Text = "🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...";
+                    _autoSectionStatus.Text = _checkpointRestored
+                        ? string.Format("♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova. Nastavljam Fazu 5...", _checkpointRestoredCount, _checkpointTotalApplicable)
+                        : "🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...";
                 }
             }));
 
@@ -1753,10 +2452,10 @@ namespace WIS.HwTest
                     string[] passiveIds = new string[] { "auto_battery", "auto_network", "auto_security" };
                     for (int i = 0; i < passiveIds.Length; i++)
                     {
-                        if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
+                        if (_uefiBiosRebootRequested || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
                         string pid = passiveIds[i];
                         TestItemResult item = FindItemById(pid);
-                        if (item != null && (item.Status == TestStatus.Pending || item.Status == TestStatus.Running))
+                        if (item != null && !IsFinalTestStatus(item.Status))
                         {
                             TestItemResult r = ExecuteAutoWorkerById(pid, null);
                             if (r != null)
@@ -1777,127 +2476,177 @@ namespace WIS.HwTest
                             autoDiagWarn = true;
                         }
                     }
-                    EmitPhase5Step("P5.AutoDiag", "Automatska provera sistema",
-                        _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (autoDiagWarn ? "WARN" : "OK"), "");
+                    if (!_uefiBiosRebootRequested)
+                    {
+                        EmitPhase5Step("P5.AutoDiag", "Automatska provera sistema",
+                            _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (autoDiagWarn ? "WARN" : "OK"), "");
+                    }
 
                     // 2. Automatski stres paket (Disk, RAM, CPU 30s, GPU 3D)
-                    if (!_autoStressCancel.IsCancelled && _phase5WorkflowActive)
+                    if (!_uefiBiosRebootRequested && !_autoStressCancel.IsCancelled && _phase5WorkflowActive)
                     {
-                        EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "RUNNING", "");
-                        string[] seq = new string[] { "auto_disk", "auto_ram", "auto_cpu" };
-                        for (int i = 0; i < seq.Length; i++)
+                        bool allStressAlreadyDone = true;
+                        string[] allStressIds = new string[] { "auto_disk", "auto_ram", "auto_cpu", "auto_gpu" };
+                        for (int i = 0; i < allStressIds.Length; i++)
                         {
-                            if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
-                            string id = seq[i];
-                            TestItemResult item = FindItemById(id);
-                            if (item == null || item.Status == TestStatus.Skip || item.Status == TestStatus.NotApplicable)
-                                continue;
-
-                            int stepNum = i + 1;
-                            Dispatcher.Invoke(new Action(() =>
+                            TestItemResult si = FindItemById(allStressIds[i]);
+                            if (si == null) continue;
+                            bool restoredOrNonFailDone = IsFinalTestStatus(si.Status) &&
+                                (_restoredTestIds.Contains(si.Id) || si.Id != "auto_gpu" || si.Status != TestStatus.Fail);
+                            if (!restoredOrNonFailDone)
                             {
-                                item.Status = TestStatus.Running;
-                                if (_autoSectionStatus != null)
-                                    _autoSectionStatus.Text = string.Format("🔄 Faza 5 ({0}/4): {1} u toku...", stepNum, item.Title);
-                                Border c;
-                                if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
-                                UpdateSummaryBadge();
-                            }));
+                                allStressAlreadyDone = false;
+                                break;
+                            }
+                        }
 
-                            TestItemResult result = ExecuteAutoWorkerById(id, (msg) =>
+                        if (allStressAlreadyDone)
+                        {
+                            for (int i = 0; i < allStressIds.Length; i++)
                             {
+                                TestItemResult si = FindItemById(allStressIds[i]);
+                                if (si != null && (si.HasWarning || si.Status == TestStatus.Fail))
+                                    stressWarn = true;
+                            }
+                            if (_phase5ThermalCritical)
+                            {
+                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "WARN",
+                                    string.Format("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", _phase5PeakCpuTemp));
+                            }
+                            else
+                            {
+                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)",
+                                    stressWarn ? "WARN" : "OK", "");
+                            }
+                        }
+                        else
+                        {
+                            EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "RUNNING", "");
+                            string[] seq = new string[] { "auto_disk", "auto_ram", "auto_cpu" };
+                            for (int i = 0; i < seq.Length; i++)
+                            {
+                                if (_uefiBiosRebootRequested || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
+                                string id = seq[i];
+                                TestItemResult item = FindItemById(id);
+                                if (item == null || IsFinalTestStatus(item.Status))
+                                {
+                                    if (item != null && (item.HasWarning || item.Status == TestStatus.Fail))
+                                        stressWarn = true;
+                                    continue;
+                                }
+
+                                int stepNum = i + 1;
+                                Dispatcher.Invoke(new Action(() =>
+                                {
+                                    item.Status = TestStatus.Running;
+                                    if (_autoSectionStatus != null)
+                                        _autoSectionStatus.Text = string.Format("🔄 Faza 5 ({0}/4): {1} u toku...", stepNum, item.Title);
+                                    Border c;
+                                    if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
+                                    UpdateSummaryBadge();
+                                }));
+
+                                HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test '{0}' ({1})", item.Id, item.Title));
+
+                                TestItemResult result = ExecuteAutoWorkerById(id, (msg) =>
+                                {
+                                    Dispatcher.BeginInvoke(new Action(() =>
+                                    {
+                                        item.MetricSummary = msg;
+                                        SyncCardRowTexts(item);
+                                    }));
+                                });
+
+                                if (result != null)
+                                {
+                                    if (result.HasWarning || result.Status == TestStatus.Fail) stressWarn = true;
+                                    if (id == "auto_cpu")
+                                    {
+                                        _phase5CpuDurationSec = result.DurationSeconds;
+                                        _phase5PeakCpuTemp = ExtractFloatDetail(result.Details, "peak_temp_c");
+                                        _phase5MaxCpuThrottle = ExtractFloatDetail(result.Details, "max_throttle_pct");
+                                        bool reasonCrit = !string.IsNullOrEmpty(result.Reason) &&
+                                            result.Reason.IndexOf("KRITIČNO PREGREVANJE", StringComparison.OrdinalIgnoreCase) >= 0;
+                                        if ((_phase5PeakCpuTemp >= 95.0f) || (result.Status == TestStatus.Fail && reasonCrit))
+                                        {
+                                            _phase5ThermalCritical = true;
+                                        }
+                                    }
+                                }
+
+                                Dispatcher.Invoke(new Action(() =>
+                                {
+                                    ApplyResult(item, result);
+                                    HwTestLogger.Info("TEST_END", string.Format("Završen '{0}' -> Status={1} | Warn={2} | Trajanje={3}s | Reason='{4}' | Details={5}",
+                                        item.Id, item.Status, item.HasWarning, item.DurationSeconds, item.Reason ?? "", SimpleJson.Serialize(item.Details ?? new Dictionary<string, object>())));
+                                    Border c;
+                                    if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
+                                    UpdateSummaryBadge();
+                                }));
+
+                                if (_phase5ThermalCritical) break;
+                            }
+
+                            if (!_uefiBiosRebootRequested && _phase5ThermalCritical)
+                            {
+                                _phase5ThermalNote = string.Format(
+                                    "NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.",
+                                    _phase5PeakCpuTemp);
+                                HwTestLogger.Warn("THERMAL_NOTE", _phase5ThermalNote);
+                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "WARN",
+                                    string.Format("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", _phase5PeakCpuTemp));
+
+                                TestItemResult gpuSkipItem = FindItemById("auto_gpu");
+                                if (gpuSkipItem != null && gpuSkipItem.Status != TestStatus.Skip && gpuSkipItem.Status != TestStatus.NotApplicable)
+                                {
+                                    Dispatcher.Invoke(new Action(() =>
+                                    {
+                                        gpuSkipItem.Status = TestStatus.Skip;
+                                        gpuSkipItem.HasWarning = true;
+                                        gpuSkipItem.Reason = string.Format("Preskočeno radi zaštite hardvera jer je CPU dostigao {0:F1}°C (>= 95°C)", _phase5PeakCpuTemp);
+                                        gpuSkipItem.MetricSummary = "Preskočeno (CPU >= 95°C)";
+                                        Border gc;
+                                        if (_cardMap.TryGetValue(gpuSkipItem.Id, out gc)) UpdateCardVisual(gc, gpuSkipItem);
+                                        UpdateSummaryBadge();
+                                    }));
+                                }
+
                                 Dispatcher.BeginInvoke(new Action(() =>
                                 {
-                                    item.MetricSummary = msg;
-                                    TextBlock tm;
-                                    if (_metricTextMap.TryGetValue(item.Id, out tm))
-                                    {
-                                        tm.Text = msg;
-                                        tm.Visibility = Visibility.Visible;
-                                    }
+                                    if (_autoSectionStatus != null)
+                                        _autoSectionStatus.Text = string.Format("⚠️ NAPOMENA: CPU se pregrevao ({0:F1}°C >= 95°C) — opterećenje zaustavljeno radi zaštite, nastavljam ostale testove...", _phase5PeakCpuTemp);
                                 }));
-                            });
+                            }
 
-                            if (result != null)
+                            if (!_uefiBiosRebootRequested && !_autoStressCancel.IsCancelled && _phase5WorkflowActive && !_phase5ThermalCritical)
                             {
-                                if (result.HasWarning || result.Status == TestStatus.Fail) stressWarn = true;
-                                if (id == "auto_cpu")
+                                TestItemResult gpuItem = FindItemById("auto_gpu");
+                                if (gpuItem != null)
                                 {
-                                    _phase5CpuDurationSec = result.DurationSeconds;
-                                    _phase5PeakCpuTemp = ExtractFloatDetail(result.Details, "peak_temp_c");
-                                    _phase5MaxCpuThrottle = ExtractFloatDetail(result.Details, "max_throttle_pct");
-                                    bool reasonCrit = !string.IsNullOrEmpty(result.Reason) &&
-                                        result.Reason.IndexOf("KRITIČNO PREGREVANJE", StringComparison.OrdinalIgnoreCase) >= 0;
-                                    if ((_phase5PeakCpuTemp >= 95.0f) || (result.Status == TestStatus.Fail && reasonCrit))
+                                    bool gpuDoneFromCheckpoint = IsFinalTestStatus(gpuItem.Status) &&
+                                        (_restoredTestIds.Contains("auto_gpu") || gpuItem.Status != TestStatus.Fail);
+                                    if (gpuDoneFromCheckpoint)
                                     {
-                                        _phase5ThermalCritical = true;
+                                        if (gpuItem.HasWarning || gpuItem.Status == TestStatus.Fail) stressWarn = true;
+                                    }
+                                    else if (gpuItem.Status != TestStatus.Skip && gpuItem.Status != TestStatus.NotApplicable)
+                                    {
+                                        Dispatcher.Invoke(new Action(() =>
+                                        {
+                                            if (_autoSectionStatus != null)
+                                                _autoSectionStatus.Text = "🔄 Faza 5 (4/4): GPU 3D hardverski stres test...";
+                                            RunGpuStressTest(gpuItem);
+                                            if (gpuItem.HasWarning || gpuItem.Status == TestStatus.Fail) stressWarn = true;
+                                        }));
                                     }
                                 }
                             }
 
-                            Dispatcher.Invoke(new Action(() =>
+                            if (!_uefiBiosRebootRequested && !_phase5ThermalCritical)
                             {
-                                ApplyResult(item, result);
-                                HwTestLogger.Info("TEST_END", string.Format("Završen '{0}' -> Status={1} | Warn={2} | Trajanje={3}s | Reason='{4}' | Details={5}",
-                                    item.Id, item.Status, item.HasWarning, item.DurationSeconds, item.Reason ?? "", SimpleJson.Serialize(item.Details ?? new Dictionary<string, object>())));
-                                Border c;
-                                if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
-                                UpdateSummaryBadge();
-                            }));
-
-                            if (_phase5ThermalCritical) break;
-                        }
-
-                        if (_phase5ThermalCritical)
-                        {
-                            _phase5ThermalNote = string.Format(
-                                "NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.",
-                                _phase5PeakCpuTemp);
-                            HwTestLogger.Warn("THERMAL_NOTE", _phase5ThermalNote);
-                            EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "WARN",
-                                string.Format("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", _phase5PeakCpuTemp));
-
-                            TestItemResult gpuSkipItem = FindItemById("auto_gpu");
-                            if (gpuSkipItem != null && gpuSkipItem.Status != TestStatus.Skip && gpuSkipItem.Status != TestStatus.NotApplicable)
-                            {
-                                Dispatcher.Invoke(new Action(() =>
-                                {
-                                    gpuSkipItem.Status = TestStatus.Skip;
-                                    gpuSkipItem.HasWarning = true;
-                                    gpuSkipItem.Reason = string.Format("Preskočeno radi zaštite hardvera jer je CPU dostigao {0:F1}°C (>= 95°C)", _phase5PeakCpuTemp);
-                                    gpuSkipItem.MetricSummary = "Preskočeno (CPU >= 95°C)";
-                                    Border gc;
-                                    if (_cardMap.TryGetValue(gpuSkipItem.Id, out gc)) UpdateCardVisual(gc, gpuSkipItem);
-                                    UpdateSummaryBadge();
-                                }));
+                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)",
+                                    _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (stressWarn ? "WARN" : "OK"), "");
                             }
-
-                            Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                if (_autoSectionStatus != null)
-                                    _autoSectionStatus.Text = string.Format("⚠️ NAPOMENA: CPU se pregrevao ({0:F1}°C >= 95°C) — opterećenje zaustavljeno radi zaštite, nastavljam ostale testove...", _phase5PeakCpuTemp);
-                            }));
-                        }
-
-                        if (!_autoStressCancel.IsCancelled && _phase5WorkflowActive && !_phase5ThermalCritical)
-                        {
-                            TestItemResult gpuItem = FindItemById("auto_gpu");
-                            if (gpuItem != null && gpuItem.Status != TestStatus.Skip && gpuItem.Status != TestStatus.NotApplicable)
-                            {
-                                Dispatcher.Invoke(new Action(() =>
-                                {
-                                    if (_autoSectionStatus != null)
-                                        _autoSectionStatus.Text = "🔄 Faza 5 (4/4): GPU 3D hardverski stres test...";
-                                    RunGpuStressTest(gpuItem);
-                                    if (gpuItem.HasWarning || gpuItem.Status == TestStatus.Fail) stressWarn = true;
-                                }));
-                            }
-                        }
-
-                        if (!_phase5ThermalCritical)
-                        {
-                            EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)",
-                                _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (stressWarn ? "WARN" : "OK"), "");
                         }
                     }
                 }
@@ -1911,10 +2660,16 @@ namespace WIS.HwTest
                     }));
                 }
 
+                if (_uefiBiosRebootRequested || _uefiBiosPromptOpen)
+                {
+                    return;
+                }
+
                 if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive)
                 {
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
+                        if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
                         SaveCurrentReport(false, true, "Preskočeno od strane servisera", true);
                     }));
                     return;
@@ -1936,6 +2691,7 @@ namespace WIS.HwTest
                 {
                     Dispatcher.Invoke(new Action(() =>
                     {
+                        if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
                         bool alreadyNotified;
                         lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
                         if (alreadyNotified) return;
@@ -1969,11 +2725,14 @@ namespace WIS.HwTest
                 });
                 Dispatcher.Invoke(new Action(() =>
                 {
+                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
                     if (_autoSectionStatus != null)
                     {
                         _autoSectionStatus.Text = "✓ Automatski stres završen — pokrećem interaktivne testove periferija...";
                     }
                     RunSequentialPeripheralTests();
+
+                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
 
                     bool alreadyNotified;
                     lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
@@ -2000,7 +2759,7 @@ namespace WIS.HwTest
                         if (_autoSectionStatus != null)
                         {
                             _autoSectionStatus.Text = string.Format(
-                                "⏳ Preostalo {0} testova. Kliknite ih pojedinačno ili kliknite '✓ Završi i sačuvaj izveštaj' za nastavak u Fazu 6.",
+                                "⏳ Preostalo {0} testova. Dovršite preostale testove da biste otključali završetak i čuvanje izveštaja.",
                                 remainingPending);
                         }
                     }
@@ -2015,23 +2774,43 @@ namespace WIS.HwTest
             MarkOperatorInteraction();
             if (_autoStressRunning)
             {
-                MessageBoxResult stopRes = MessageBox.Show(
-                    "Automatski stres testovi su još uvek u toku.\n\nDa li želite da prekinete stres test i odmah sačuvate izveštaj?",
+                MessageBox.Show(
+                    "Automatski stres testovi su još uvek u toku.\n\nSačekajte da se stres test završi do kraja pre čuvanja izveštaja.",
                     "Stres test u toku",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning);
-                if (stopRes != MessageBoxResult.Yes)
-                {
-                    return;
-                }
-                _autoStressCancel.Cancel();
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
             }
 
-            SaveCurrentReport(true, true, "Preskočeno pri ranom završetku izveštaja", false);
+            List<string> unfinished = new List<string>();
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                {
+                    unfinished.Add("• " + t.Title);
+                }
+            }
+
+            if (unfinished.Count > 0)
+            {
+                MessageBox.Show(
+                    string.Format(
+                        "Nije moguće sačuvati izveštaj dok svi primenljivi testovi nisu završeni (PASS ili FAIL).\n\nPreostali testovi ({0}):\n{1}",
+                        unfinished.Count,
+                        string.Join("\n", unfinished.ToArray())),
+                    "Neizvršeni testovi",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            SaveCurrentReport(false, false, "", false);
         }
 
         private void SaveCurrentReport(bool promptIfPending, bool autoMarkPendingAsSkip, string defaultSkipReason, bool isCancelled)
         {
+            if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
             int pass = 0, warn = 0, fail = 0, skip = 0, na = 0, pending = 0;
             foreach (TestItemResult t in _testItems)
             {
@@ -2046,23 +2825,10 @@ namespace WIS.HwTest
                 else pending++;
             }
 
-            if (pending > 0 && promptIfPending)
-            {
-                MessageBoxResult confirmRes = MessageBox.Show(
-                    string.Format("Ostalo je još {0} neizvršenih testova.\n\nDa li želite da ih označite kao PRESKOČENE (SKIP) i završite izveštaj?", pending),
-                    "Neizvršeni testovi",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Warning);
-                if (confirmRes != MessageBoxResult.Yes)
-                {
-                    return;
-                }
-                autoMarkPendingAsSkip = true;
-            }
-
+            // Sistemski izuzetak (HWT-02 Odluka A3): isključivo za ForceCompletePhase5SkipPending / sistemski prekid
             if (pending > 0 && autoMarkPendingAsSkip)
             {
-                string skipReason = string.IsNullOrEmpty(defaultSkipReason) ? "Preskočeno pri ranom završetku izveštaja" : defaultSkipReason;
+                string skipReason = string.IsNullOrEmpty(defaultSkipReason) ? "Preskočeno u okviru Faze 5" : defaultSkipReason;
                 for (int i = 0; i < _testItems.Count; i++)
                 {
                     TestItemResult t = _testItems[i];
@@ -2193,7 +2959,11 @@ namespace WIS.HwTest
             }
             catch { }
 
-            if (!savedPrimary)
+            if (savedPrimary)
+            {
+                DeleteCheckpointFile();
+            }
+            else
             {
                 MessageBox.Show("Nije moguće upisati izveštaj ni u primarnu ni u TEMP putanju.", "Upozorenje", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
@@ -2220,6 +2990,484 @@ namespace WIS.HwTest
 
             Environment.ExitCode = (fail > 0) ? 1 : 0;
             Close();
+        }
+
+        private string GetCheckpointFilePath()
+        {
+            if (_isEmbedded || string.IsNullOrEmpty(_outJsonPath))
+            {
+                return @"C:\setup\hwtest-checkpoint.json";
+            }
+            try
+            {
+                string dir = Path.GetDirectoryName(_outJsonPath);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    return Path.Combine(dir, "hwtest-checkpoint.json");
+                }
+            }
+            catch { }
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                return Path.Combine(baseDir, "hwtest-checkpoint.json");
+            }
+            return Path.Combine(Path.GetTempPath(), "hwtest-checkpoint.json");
+        }
+
+        private void DeleteCheckpointFile()
+        {
+            try
+            {
+                string cpPath = GetCheckpointFilePath();
+                if (!string.IsNullOrEmpty(cpPath) && File.Exists(cpPath))
+                {
+                    File.Delete(cpPath);
+                    HwTestLogger.Info("CHECKPOINT", "Obrisan privremeni checkpoint fajl nakon čuvanja konačnog izveštaja: " + cpPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("CHECKPOINT", "Nije uspelo brisanje checkpoint fajla: " + ex.Message);
+            }
+        }
+
+        public void SaveCheckpoint(string rebootReasonTestId)
+        {
+            string reasonId = string.IsNullOrEmpty(rebootReasonTestId) ? "" : rebootReasonTestId.Trim();
+            List<object> completedTests = new List<object>();
+
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (!string.IsNullOrEmpty(reasonId) && string.Equals(t.Id, reasonId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (t.Status == TestStatus.Running)
+                        t.Status = TestStatus.Pending;
+                    continue;
+                }
+
+                if (t.Status == TestStatus.Pass ||
+                    t.Status == TestStatus.Fail ||
+                    t.Status == TestStatus.NotApplicable ||
+                    t.Status == TestStatus.Skip)
+                {
+                    Dictionary<string, object> itemDict = new Dictionary<string, object>
+                    {
+                        { "id", t.Id },
+                        { "status", t.Status.ToString().ToUpperInvariant() },
+                        { "warning", t.HasWarning },
+                        { "metric_summary", t.MetricSummary ?? "" },
+                        { "attempts", t.Attempts },
+                        { "duration_s", t.DurationSeconds },
+                        { "reason", t.Reason ?? "" },
+                        { "details", t.Details ?? new Dictionary<string, object>() }
+                    };
+                    completedTests.Add(itemDict);
+                }
+            }
+
+            Dictionary<string, object> phase5Metrics = new Dictionary<string, object>
+            {
+                { "cpu_duration_sec", _phase5CpuDurationSec },
+                { "peak_cpu_temp", (double)_phase5PeakCpuTemp },
+                { "max_cpu_throttle", (double)_phase5MaxCpuThrottle },
+                { "thermal_critical", _phase5ThermalCritical },
+                { "thermal_note", _phase5ThermalNote ?? "" }
+            };
+
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "schema", "wis.hwtest.checkpoint.v1" },
+                { "saved_utc", DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) },
+                { "serial", _serialNumber ?? "" },
+                { "model", _modelName ?? "" },
+                { "reboot_reason_test_id", reasonId },
+                { "phase5_metrics", phase5Metrics },
+                { "completed_tests", completedTests }
+            };
+
+            string json = SimpleJson.Serialize(payload);
+            string cpPath = GetCheckpointFilePath();
+            try
+            {
+                string dir = Path.GetDirectoryName(cpPath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                string tmpPath = cpPath + ".tmp";
+                File.WriteAllText(tmpPath, json, new UTF8Encoding(false));
+                if (File.Exists(cpPath))
+                {
+                    try
+                    {
+                        File.Replace(tmpPath, cpPath, null);
+                    }
+                    catch
+                    {
+                        File.Delete(cpPath);
+                        File.Move(tmpPath, cpPath);
+                    }
+                }
+                else
+                {
+                    File.Move(tmpPath, cpPath);
+                }
+                HwTestLogger.Info("CHECKPOINT_SAVE", string.Format(
+                    "Sačuvan checkpoint na '{0}' (sačuvano={1}, razlog='{2}').",
+                    cpPath, completedTests.Count, reasonId));
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Error("CHECKPOINT_SAVE", "Greška pri upisu checkpointa: " + ex.Message);
+            }
+        }
+
+        private void TryRestoreCheckpoint()
+        {
+            string cpPath = GetCheckpointFilePath();
+            if (string.IsNullOrEmpty(cpPath) || !File.Exists(cpPath))
+                return;
+
+            try
+            {
+                string json = File.ReadAllText(cpPath, Encoding.UTF8);
+                if (string.IsNullOrEmpty(json)) return;
+
+                JavaScriptSerializer ser = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
+                IDictionary<string, object> root = ser.DeserializeObject(json) as IDictionary<string, object>;
+                if (root == null) return;
+
+                string schema = ReadCpString(root, "schema");
+                if (!string.Equals(schema, "wis.hwtest.checkpoint.v1", StringComparison.Ordinal))
+                {
+                    HwTestLogger.Warn("CHECKPOINT_RESTORE", "Ignorišem checkpoint nepoznate šeme: " + schema);
+                    return;
+                }
+
+                string savedUtcStr = ReadCpString(root, "saved_utc");
+                DateTime savedUtc;
+                if (!DateTime.TryParse(savedUtcStr, CultureInfo.InvariantCulture,
+                    DateTimeStyles.RoundtripKind | DateTimeStyles.AdjustToUniversal, out savedUtc))
+                {
+                    HwTestLogger.Warn("CHECKPOINT_RESTORE", "Neispravan saved_utc u checkpointu — ignorišem.");
+                    return;
+                }
+
+                double ageHours = (DateTime.UtcNow - savedUtc).TotalHours;
+                if (ageHours >= 24.0 || ageHours < -1.0)
+                {
+                    HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
+                        "Checkpoint je zastareo ({0:F1}h) — ignorišem.", ageHours));
+                    return;
+                }
+
+                string cpSerial = ReadCpString(root, "serial");
+                if (!IsPlaceholderIdentity(cpSerial) && !IsPlaceholderIdentity(_serialNumber) &&
+                    !string.Equals(cpSerial.Trim(), _serialNumber.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
+                        "Serial neusklađen (checkpoint='{0}', uređaj='{1}') — ignorišem.",
+                        cpSerial, _serialNumber));
+                    return;
+                }
+
+                string rebootReasonId = ReadCpString(root, "reboot_reason_test_id");
+
+                object metricsObj;
+                if (root.TryGetValue("phase5_metrics", out metricsObj))
+                {
+                    IDictionary<string, object> mDict = metricsObj as IDictionary<string, object>;
+                    if (mDict != null)
+                    {
+                        _phase5CpuDurationSec = ReadCpInt(mDict, "cpu_duration_sec");
+                        _phase5PeakCpuTemp = ReadCpFloat(mDict, "peak_cpu_temp");
+                        _phase5MaxCpuThrottle = ReadCpFloat(mDict, "max_cpu_throttle");
+                        _phase5ThermalCritical = ReadCpBool(mDict, "thermal_critical");
+                        _phase5ThermalNote = ReadCpString(mDict, "thermal_note");
+                    }
+                }
+
+                int restoredCount = 0;
+                object testsObj;
+                if (root.TryGetValue("completed_tests", out testsObj) && testsObj != null)
+                {
+                    System.Collections.IEnumerable testsEnum = testsObj as System.Collections.IEnumerable;
+                    if (testsEnum != null)
+                    {
+                        foreach (object entry in testsEnum)
+                        {
+                            IDictionary<string, object> td = entry as IDictionary<string, object>;
+                            if (td == null) continue;
+
+                            string id = ReadCpString(td, "id");
+                            if (string.IsNullOrEmpty(id)) continue;
+
+                            if (!string.IsNullOrEmpty(rebootReasonId) &&
+                                string.Equals(id, rebootReasonId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+                            if (string.Equals(id, "auto_security", StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            TestItemResult item = FindItemById(id);
+                            if (item == null) continue;
+
+                            string statusStr = ReadCpString(td, "status");
+                            TestStatus parsedStatus;
+                            if (!TryParseCheckpointStatus(statusStr, out parsedStatus)) continue;
+
+                            if (parsedStatus == TestStatus.NotApplicable)
+                            {
+                                continue;
+                            }
+
+                            if (item.Status == TestStatus.NotApplicable && parsedStatus != TestStatus.Skip)
+                            {
+                                continue;
+                            }
+
+                            item.Status = parsedStatus;
+                            item.HasWarning = ReadCpBool(td, "warning");
+                            string mSum = ReadCpString(td, "metric_summary");
+                            if (!string.IsNullOrEmpty(mSum)) item.MetricSummary = mSum;
+                            item.Attempts = Math.Max(1, ReadCpInt(td, "attempts"));
+                            item.DurationSeconds = Math.Max(0, ReadCpInt(td, "duration_s"));
+                            item.Reason = ReadCpString(td, "reason");
+                            object dObj;
+                            if (td.TryGetValue("details", out dObj))
+                            {
+                                item.Details = NormalizeCpDetails(dObj as IDictionary<string, object>);
+                            }
+                            _restoredTestIds.Add(item.Id);
+                            restoredCount++;
+                        }
+                    }
+                }
+
+                int applicableTotal = 0;
+                for (int i = 0; i < _testItems.Count; i++)
+                {
+                    if (_testItems[i].Status != TestStatus.NotApplicable)
+                        applicableTotal++;
+                }
+
+                _checkpointRestoredCount = restoredCount;
+                _checkpointTotalApplicable = applicableTotal;
+                _checkpointRestored = (restoredCount > 0 || !string.IsNullOrEmpty(rebootReasonId));
+
+                HwTestLogger.Info("CHECKPOINT_RESTORE", string.Format(
+                    "Restaurirano {0}/{1} već završenih testova iz checkpointa '{2}' (reboot_reason='{3}').",
+                    restoredCount, applicableTotal, cpPath, rebootReasonId));
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("CHECKPOINT_RESTORE", "Greška pri čitanju checkpointa: " + ex.Message);
+            }
+        }
+
+        private static bool TryParseCheckpointStatus(string statusStr, out TestStatus status)
+        {
+            status = TestStatus.Pending;
+            if (string.IsNullOrEmpty(statusStr)) return false;
+            string s = statusStr.Trim().ToUpperInvariant();
+            if (s == "PASS") { status = TestStatus.Pass; return true; }
+            if (s == "FAIL") { status = TestStatus.Fail; return true; }
+            if (s == "SKIP") { status = TestStatus.Skip; return true; }
+            if (s == "NOTAPPLICABLE" || s == "N/A") { status = TestStatus.NotApplicable; return true; }
+            return false;
+        }
+
+        private static Dictionary<string, object> NormalizeCpDetails(IDictionary<string, object> raw)
+        {
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            if (raw == null) return result;
+            foreach (KeyValuePair<string, object> kv in raw)
+            {
+                result[kv.Key] = NormalizeCpValue(kv.Value);
+            }
+            return result;
+        }
+
+        private static object NormalizeCpValue(object v)
+        {
+            if (v == null) return null;
+            if (v is decimal) return Convert.ToDouble((decimal)v, CultureInfo.InvariantCulture);
+            IDictionary<string, object> dict = v as IDictionary<string, object>;
+            if (dict != null) return NormalizeCpDetails(dict);
+            if (!(v is string))
+            {
+                System.Collections.IEnumerable arr = v as System.Collections.IEnumerable;
+                if (arr != null)
+                {
+                    List<object> list = new List<object>();
+                    foreach (object elem in arr) list.Add(NormalizeCpValue(elem));
+                    return list;
+                }
+            }
+            return v;
+        }
+
+        private static string ReadCpString(IDictionary<string, object> dict, string key)
+        {
+            if (dict == null || !dict.ContainsKey(key) || dict[key] == null) return "";
+            return Convert.ToString(dict[key], CultureInfo.InvariantCulture) ?? "";
+        }
+
+        private static int ReadCpInt(IDictionary<string, object> dict, string key)
+        {
+            if (dict == null || !dict.ContainsKey(key) || dict[key] == null) return 0;
+            int res;
+            if (int.TryParse(Convert.ToString(dict[key], CultureInfo.InvariantCulture), NumberStyles.Any, CultureInfo.InvariantCulture, out res))
+                return res;
+            return 0;
+        }
+
+        private static float ReadCpFloat(IDictionary<string, object> dict, string key)
+        {
+            if (dict == null || !dict.ContainsKey(key) || dict[key] == null) return 0f;
+            float res;
+            if (float.TryParse(Convert.ToString(dict[key], CultureInfo.InvariantCulture), NumberStyles.Any, CultureInfo.InvariantCulture, out res))
+                return res;
+            return 0f;
+        }
+
+        private static bool ReadCpBool(IDictionary<string, object> dict, string key)
+        {
+            if (dict == null || !dict.ContainsKey(key) || dict[key] == null) return false;
+            object v = dict[key];
+            if (v is bool) return (bool)v;
+            string s = Convert.ToString(v, CultureInfo.InvariantCulture);
+            return string.Equals(s, "true", StringComparison.OrdinalIgnoreCase) || s == "1";
+        }
+
+        public void SetUefiBiosRebootHandler(Action<string> handler)
+        {
+            _uefiBiosRebootHandler = handler;
+        }
+
+        public void RequestUefiBiosReboot(string testId)
+        {
+            string safeTestId = string.IsNullOrEmpty(testId) ? "peripherals" : testId.Trim();
+            TestItemResult target = FindItemById(safeTestId);
+            string testTitle = target != null ? target.Title : safeTestId;
+
+            MessageBoxResult confirm = MessageBoxResult.No;
+            _uefiBiosPromptOpen = true;
+            try
+            {
+                confirm = MessageBox.Show(
+                    string.Format(
+                        "Računar će biti restartovan direktno u UEFI BIOS podešavanja kako biste uključili uređaj za test '{0}'.\n\n" +
+                        "• Svi dosadašnji završeni rezultati i progres Faze 5 biće sačuvani u checkpoint fajlu.\n" +
+                        "• Po izlasku iz UEFI BIOS-a, Windows i WIS će se automatski podići i nastaviti tačno gde ste stali.\n" +
+                        "• Tipični BIOS tasteri: HP: F10, Lenovo: F1, Dell: F2.\n\n" +
+                        "Da li želite da odmah restartujete računar u UEFI BIOS?",
+                        testTitle),
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+                if (confirm == MessageBoxResult.Yes)
+                {
+                    _uefiBiosRebootRequested = true;
+                }
+            }
+            finally
+            {
+                _uefiBiosPromptOpen = false;
+            }
+
+            if (confirm != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            _phase5WorkflowActive = false;
+            _waitingForManualPeripherals = false;
+            _autoStressCancel.Cancel();
+
+            if (target != null && target.Status == TestStatus.Running)
+            {
+                target.Status = TestStatus.Pending;
+            }
+
+            SaveCheckpoint(safeTestId);
+
+            HwTestLogger.Warn("UEFI_REBOOT", string.Format(
+                "Potvrđen restart u UEFI BIOS zbog testa '{0}' (checkpoint='{1}').",
+                safeTestId, GetCheckpointFilePath()));
+
+            Action<string> handler = _uefiBiosRebootHandler;
+            if (handler != null)
+            {
+                handler(safeTestId);
+                return;
+            }
+
+            // Standalone režim (bez WIS.UI hosta): izvrši shutdown.exe /r /fw /t 0 sa fallbackom
+            bool fwOk = false;
+            int exitCode = -1;
+            string errMsg = "";
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "shutdown.exe",
+                    Arguments = "/r /fw /t 0",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null)
+                    {
+                        if (p.WaitForExit(3000))
+                        {
+                            exitCode = p.ExitCode;
+                            fwOk = (exitCode == 0);
+                        }
+                        else
+                        {
+                            fwOk = true;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errMsg = ex.Message;
+            }
+
+            if (!fwOk)
+            {
+                HwTestLogger.Warn("UEFI_REBOOT", string.Format(
+                    "Standalone shutdown.exe /r /fw /t 0 nije uspeo (ExitCode={0}, Err='{1}') — pokrećem fallback /r /t 3 /f.",
+                    exitCode, errMsg));
+                MessageBox.Show(
+                    "Direktan ulazak u UEFI firmware (/r /fw) nije podržan na ovom računaru.\n\n" +
+                    "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
+                    "HP: F10 | Lenovo: F1 | Dell: F2",
+                    "Ručni ulazak u BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                try
+                {
+                    ProcessStartInfo fallbackPsi = new ProcessStartInfo
+                    {
+                        FileName = "shutdown.exe",
+                        Arguments = "/r /t 3 /f",
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+                    Process.Start(fallbackPsi);
+                }
+                catch { }
+            }
+
+            try { Close(); } catch { }
         }
     }
 }

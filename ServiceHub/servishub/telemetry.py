@@ -1285,7 +1285,24 @@ class FleetStore:
                 elif d.get("status_label") == "Zavrseno" or str(d.get("deployment_status") or d.get("status") or "").upper() in ("DONE", "READY", "COMPLETED", "SUCCESS"):
                     status_lbl = "Zavrseno"
                 elif not is_online:
-                    if phase == 2:
+                    reboot_text = " ".join(
+                        str(d.get(fld) or "")
+                        for fld in (
+                            "current_step", "current_step_title", "step", "step_title",
+                            "status_label", "message", "live_status", "sub_phase",
+                            "status_message", "phase_name",
+                        )
+                    ).lower()
+                    is_interim_reboot = (phase == 2) or (
+                        phase == 3
+                        and (
+                            bool(d.get("interim_reboot"))
+                            or bool(d.get("reboot_pending"))
+                            or "restart" in reboot_text
+                            or "reboot" in reboot_text
+                        )
+                    )
+                    if is_interim_reboot and sec_ago <= 720:
                         status_lbl = "Restart u toku"
                     else:
                         status_lbl = "Offline"

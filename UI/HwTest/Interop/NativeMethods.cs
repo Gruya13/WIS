@@ -854,8 +854,16 @@ namespace WIS.HwTest.Interop
         private const uint CM_DRP_ADDRESS = 0x0000001D;
         private const uint CM_DRP_LOCATION_PATHS = 0x00000024;
 
+        // Windows SDK cfg.h DevNode status flegovi
+        public const uint DN_STARTED = 0x00000008u;
+        public const uint DN_HAS_PROBLEM = 0x00000400u;
+        public const uint DN_WILL_BE_REMOVED = 0x00040000u;
+
         [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode)]
         public static extern int CM_Locate_DevNodeW(out uint pdnDevInst, string pDeviceID, uint ulFlags);
+
+        [DllImport("cfgmgr32.dll")]
+        public static extern int CM_Get_DevNode_Status(out uint pulStatus, out uint pulProblemNumber, uint dnDevInst, uint ulFlags);
 
         [DllImport("cfgmgr32.dll")]
         public static extern int CM_Get_Parent(out uint pdnDevInst, uint dnDevInst, uint ulFlags);
@@ -923,12 +931,63 @@ namespace WIS.HwTest.Interop
         }
 
         /// <summary>
+        /// Proverava da li je USB PnP čvor trenutno prisutan u stablu, startovan (DN_STARTED),
+        /// bez najavljenog uklanjanja (DN_WILL_BE_REMOVED) i bez greške (DN_HAS_PROBLEM / problem == 0).
+        /// </summary>
+        public static bool IsUsbDevNodeLiveAndStarted(string pnpDeviceId, out string statusDiag)
+        {
+            statusDiag = "";
+            if (string.IsNullOrEmpty(pnpDeviceId))
+            {
+                statusDiag = "pnpDeviceId=empty";
+                return false;
+            }
+            try
+            {
+                uint devInst = 0;
+                int crLocate = CM_Locate_DevNodeW(out devInst, pnpDeviceId, 0);
+                if (crLocate != 0 || devInst == 0)
+                {
+                    statusDiag = string.Format("CR=0x{0:X} status=0x00000000 problem=0 (devInst={1})", crLocate, devInst);
+                    return false;
+                }
+
+                uint status = 0;
+                uint problem = 0;
+                int crStatus = CM_Get_DevNode_Status(out status, out problem, devInst, 0);
+                statusDiag = string.Format("CR=0x{0:X} status=0x{1:X8} problem={2}", crStatus, status, problem);
+                if (crStatus != 0) return false;
+                if ((status & DN_STARTED) == 0u) return false;
+                if ((status & DN_WILL_BE_REMOVED) != 0u) return false;
+                if ((status & DN_HAS_PROBLEM) != 0u || problem != 0u) return false;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                statusDiag = "CR=EX err=" + ex.Message;
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Pronalazi jedinstvenu fizicku putanju USB porta penjanjem kroz PnP stablo do USB\... parent cvora.
-        /// Spasava situaciju kada USBSTOR\DISK nema LocationPaths ili je prazan u WMI.
+        /// Vraća čist kanonski ključ porta bez dodavanja prikaznog sufiksa.
         /// </summary>
         public static string ResolveUsbPhysicalPortLocation(string pnpDeviceId, out string debugInfo)
         {
+            string dummyDisplay;
+            return ResolveUsbPhysicalPortLocation(pnpDeviceId, out debugInfo, out dummyDisplay);
+        }
+
+        /// <summary>
+        /// Pronalazi jedinstvenu fizicku putanju USB porta penjanjem kroz PnP stablo do USB\... parent cvora.
+        /// Spasava situaciju kada USBSTOR\DISK nema LocationPaths ili je prazan u WMI.
+        /// Kanonski ključ se vraća čist (bez sufiksa), dok se usbLocInfo vraća odvojeno kroz displayLocationInfo za UI prikaz.
+        /// </summary>
+        public static string ResolveUsbPhysicalPortLocation(string pnpDeviceId, out string debugInfo, out string displayLocationInfo)
+        {
             debugInfo = "";
+            displayLocationInfo = "";
             if (string.IsNullOrEmpty(pnpDeviceId)) return null;
             try
             {
@@ -992,14 +1051,13 @@ namespace WIS.HwTest.Interop
                     }
                 }
 
+                displayLocationInfo = !string.IsNullOrEmpty(usbLocInfo) ? usbLocInfo : (leafLocInfo ?? "");
                 debugInfo = string.Format(
                     "leafPaths='{0}' leafInfo='{1}' usbNode='{2}' usbPaths='{3}' usbInfo='{4}' addr={5} hub='{6}'",
                     leafLocPaths ?? "", leafLocInfo ?? "", usbNodeId ?? "", usbLocPaths ?? "", usbLocInfo ?? "", usbAddr, hubNodeId ?? "");
 
                 if (!string.IsNullOrEmpty(usbLocPaths))
                 {
-                    if (!string.IsNullOrEmpty(usbLocInfo))
-                        return usbLocPaths + " (" + usbLocInfo + ")";
                     return usbLocPaths;
                 }
                 if (!string.IsNullOrEmpty(leafLocPaths))
@@ -1203,6 +1261,106 @@ namespace WIS.HwTest.Interop
         #endregion
 
         #region WlanApi
+        public const uint wlan_intf_opcode_radio_state = 4u; // Windows SDK wlanapi.h: WLAN_INTF_OPCODE.wlan_intf_opcode_radio_state
+        public const uint ERROR_ACCESS_DENIED = 5u;
+
+        public enum DOT11_RADIO_STATE : uint
+        {
+            dot11_radio_state_unknown = 0,
+            dot11_radio_state_on = 1,
+            dot11_radio_state_off = 2
+        }
+
+        public enum DOT11_BSS_TYPE : uint
+        {
+            dot11_BSS_type_infrastructure = 1,
+            dot11_BSS_type_independent = 2,
+            dot11_BSS_type_any = 3
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_PHY_RADIO_STATE
+        {
+            public uint dwPhyIndex;
+            public uint dot11SoftwareRadioState;
+            public uint dot11HardwareRadioState;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_RADIO_STATE
+        {
+            public uint dwNumberOfPhys;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
+            public WLAN_PHY_RADIO_STATE[] PhyRadioState;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct DOT11_SSID
+        {
+            public uint uSSIDLength;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+            public byte[] ucSSID;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_RATE_SET
+        {
+            public uint uRateSetLength;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 126)]
+            public ushort[] usRateSet;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_BSS_ENTRY
+        {
+            public DOT11_SSID dot11Ssid;
+            public uint uPhyId;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 6)]
+            public byte[] dot11Bssid;
+            public uint dot11BssType;
+            public uint dot11BssPhyType;
+            public int lRssi;
+            public uint uLinkQuality;
+            public byte bInRegDomain;
+            public ushort usBeaconPeriod;
+            public ulong ullTimestamp;
+            public ulong ullHostTimestamp;
+            public ushort usCapabilityInformation;
+            public uint ulChCenterFrequency;
+            public WLAN_RATE_SET wlanRateSet;
+            public uint ulIeOffset;
+            public uint ulIeSize;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WLAN_BSS_LIST
+        {
+            public uint dwTotalSize;
+            public uint dwNumberOfItems;
+        }
+
+        public class WlanBssScanSummary
+        {
+            public bool ApiSucceeded { get; set; }
+            public bool AccessDenied { get; set; }
+            public uint LastError { get; set; }
+            public int UniqueSsidCount { get; set; }
+            public int BssidCount { get; set; }
+            public int Band24Count { get; set; }
+            public int Band5Count { get; set; }
+            public int Band6Count { get; set; }
+            public int MaxSignalPct { get; set; }
+            public int MaxRssiDbm { get; set; }
+            public bool HasRssi { get; set; }
+            public int Max24Pct { get; set; }
+            public int Max5Pct { get; set; }
+            public int Max6Pct { get; set; }
+            public bool ServiceSsidFound { get; set; }
+            public int ServiceSignalPct { get; set; }
+            public int ServiceRssiDbm { get; set; }
+            public bool HasServiceRssi { get; set; }
+        }
+
         [DllImport("wlanapi.dll", SetLastError = true)]
         public static extern uint WlanOpenHandle(
             uint dwClientVersion,
@@ -1230,7 +1388,325 @@ namespace WIS.HwTest.Interop
             IntPtr pReserved);
 
         [DllImport("wlanapi.dll", SetLastError = true)]
+        public static extern uint WlanQueryInterface(
+            IntPtr hClientHandle,
+            ref Guid pInterfaceGuid,
+            uint OpCode,
+            IntPtr pReserved,
+            out uint pdwDataSize,
+            out IntPtr ppData,
+            out uint pWlanOpcodeValueType);
+
+        [DllImport("wlanapi.dll", SetLastError = true)]
+        public static extern uint WlanGetNetworkBssList(
+            IntPtr hClientHandle,
+            ref Guid pInterfaceGuid,
+            IntPtr pDot11Ssid,
+            uint dot11BssType,
+            [MarshalAs(UnmanagedType.Bool)] bool bSecurityEnabled,
+            IntPtr pReserved,
+            out IntPtr ppWlanBssList);
+
+        [DllImport("wlanapi.dll", SetLastError = true)]
         public static extern void WlanFreeMemory(IntPtr pMemory);
+
+        private static System.Collections.Generic.List<Guid> CollectWlanInterfaceGuids(IntPtr pIfList)
+        {
+            var physical = new System.Collections.Generic.List<Guid>();
+            var all = new System.Collections.Generic.List<Guid>();
+            if (pIfList == IntPtr.Zero) return physical;
+
+            int count = Marshal.ReadInt32(pIfList, 0);
+            if (count < 0 || count > 64) count = 0;
+            const int wlanInterfaceInfoSize = 532; // Guid (16) + WCHAR[256] (512) + State (4)
+            for (int i = 0; i < count; i++)
+            {
+                IntPtr itemPtr = new IntPtr(pIfList.ToInt64() + 8L + ((long)i * wlanInterfaceInfoSize));
+                byte[] guidBytes = new byte[16];
+                Marshal.Copy(itemPtr, guidBytes, 0, 16);
+                Guid ifaceGuid = new Guid(guidBytes);
+                all.Add(ifaceGuid);
+
+                string desc = "";
+                try
+                {
+                    desc = Marshal.PtrToStringUni(new IntPtr(itemPtr.ToInt64() + 16L), 256) ?? "";
+                    int nul = desc.IndexOf('\0');
+                    if (nul >= 0) desc = desc.Substring(0, nul);
+                }
+                catch { }
+
+                bool isVirtual = desc.IndexOf("Virtual", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                 desc.IndexOf("Wi-Fi Direct", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                 desc.IndexOf("Hosted", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!isVirtual)
+                {
+                    physical.Add(ifaceGuid);
+                }
+            }
+            return physical.Count > 0 ? physical : all;
+        }
+
+        public static bool QueryWifiRadioState(out bool queried, out bool hwRadioOff, out bool swRadioOff)
+        {
+            queried = false;
+            hwRadioOff = false;
+            swRadioOff = false;
+
+            IntPtr clientHandle = IntPtr.Zero;
+            IntPtr pIfList = IntPtr.Zero;
+            try
+            {
+                uint negotiatedVersion;
+                if (WlanOpenHandle(2u, IntPtr.Zero, out negotiatedVersion, out clientHandle) != 0u || clientHandle == IntPtr.Zero)
+                {
+                    return false;
+                }
+                if (WlanEnumInterfaces(clientHandle, IntPtr.Zero, out pIfList) != 0u || pIfList == IntPtr.Zero)
+                {
+                    return false;
+                }
+
+                System.Collections.Generic.List<Guid> ifaces = CollectWlanInterfaceGuids(pIfList);
+                uint phyStructSize = (uint)Marshal.SizeOf(typeof(WLAN_PHY_RADIO_STATE));
+
+                for (int i = 0; i < ifaces.Count; i++)
+                {
+                    Guid ifaceGuid = ifaces[i];
+                    IntPtr pRadioData = IntPtr.Zero;
+                    try
+                    {
+                        uint dataSize;
+                        uint opcodeValueType;
+                        uint err = WlanQueryInterface(
+                            clientHandle,
+                            ref ifaceGuid,
+                            wlan_intf_opcode_radio_state,
+                            IntPtr.Zero,
+                            out dataSize,
+                            out pRadioData,
+                            out opcodeValueType);
+
+                        if (err == 0u && pRadioData != IntPtr.Zero && dataSize >= 4u)
+                        {
+                            uint numPhys = unchecked((uint)Marshal.ReadInt32(pRadioData, 0));
+                            if (numPhys > 64u) numPhys = 64u;
+                            if (numPhys > 0u && dataSize >= (4u + numPhys * phyStructSize))
+                            {
+                                queried = true;
+                                bool ifaceHwOff = false;
+                                bool ifaceHwOn = false;
+                                bool ifaceSwOff = false;
+                                bool ifaceSwOn = false;
+
+                                for (uint p = 0; p < numPhys; p++)
+                                {
+                                    IntPtr phyPtr = new IntPtr(pRadioData.ToInt64() + 4L + ((long)p * phyStructSize));
+                                    WLAN_PHY_RADIO_STATE phy = (WLAN_PHY_RADIO_STATE)Marshal.PtrToStructure(phyPtr, typeof(WLAN_PHY_RADIO_STATE));
+                                    if (phy.dot11HardwareRadioState == (uint)DOT11_RADIO_STATE.dot11_radio_state_off)
+                                        ifaceHwOff = true;
+                                    else if (phy.dot11HardwareRadioState == (uint)DOT11_RADIO_STATE.dot11_radio_state_on)
+                                        ifaceHwOn = true;
+
+                                    if (phy.dot11SoftwareRadioState == (uint)DOT11_RADIO_STATE.dot11_radio_state_off)
+                                        ifaceSwOff = true;
+                                    else if (phy.dot11SoftwareRadioState == (uint)DOT11_RADIO_STATE.dot11_radio_state_on)
+                                        ifaceSwOn = true;
+                                }
+
+                                if (ifaceHwOff && !ifaceHwOn) hwRadioOff = true;
+                                if (ifaceSwOff && !ifaceSwOn) swRadioOff = true;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (pRadioData != IntPtr.Zero)
+                        {
+                            try { WlanFreeMemory(pRadioData); } catch { }
+                        }
+                    }
+                }
+                return queried;
+            }
+            catch
+            {
+                return false;
+            }
+            finally
+            {
+                if (pIfList != IntPtr.Zero)
+                {
+                    try { WlanFreeMemory(pIfList); } catch { }
+                }
+                if (clientHandle != IntPtr.Zero)
+                {
+                    try { WlanCloseHandle(clientHandle, IntPtr.Zero); } catch { }
+                }
+            }
+        }
+
+        public static WlanBssScanSummary GetWlanBssScanSummary(string targetServiceSsid)
+        {
+            WlanBssScanSummary summary = new WlanBssScanSummary();
+            IntPtr clientHandle = IntPtr.Zero;
+            IntPtr pIfList = IntPtr.Zero;
+
+            try
+            {
+                uint negotiatedVersion;
+                uint openErr = WlanOpenHandle(2u, IntPtr.Zero, out negotiatedVersion, out clientHandle);
+                if (openErr != 0u || clientHandle == IntPtr.Zero)
+                {
+                    summary.LastError = openErr;
+                    return summary;
+                }
+
+                uint enumErr = WlanEnumInterfaces(clientHandle, IntPtr.Zero, out pIfList);
+                if (enumErr != 0u || pIfList == IntPtr.Zero)
+                {
+                    summary.LastError = enumErr;
+                    return summary;
+                }
+
+                System.Collections.Generic.List<Guid> ifaces = CollectWlanInterfaceGuids(pIfList);
+                var uniqueSsids = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+                var seenBssids = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int entrySize = Marshal.SizeOf(typeof(WLAN_BSS_ENTRY));
+
+                for (int i = 0; i < ifaces.Count; i++)
+                {
+                    Guid ifaceGuid = ifaces[i];
+                    IntPtr pBssList = IntPtr.Zero;
+                    try
+                    {
+                        uint bssErr = WlanGetNetworkBssList(
+                            clientHandle,
+                            ref ifaceGuid,
+                            IntPtr.Zero,
+                            (uint)DOT11_BSS_TYPE.dot11_BSS_type_any,
+                            false,
+                            IntPtr.Zero,
+                            out pBssList);
+
+                        if (bssErr == ERROR_ACCESS_DENIED)
+                        {
+                            summary.AccessDenied = true;
+                            summary.LastError = bssErr;
+                            continue;
+                        }
+                        if (bssErr != 0u || pBssList == IntPtr.Zero)
+                        {
+                            summary.LastError = bssErr;
+                            continue;
+                        }
+
+                        summary.ApiSucceeded = true;
+                        uint totalSize = unchecked((uint)Marshal.ReadInt32(pBssList, 0));
+                        uint numItems = unchecked((uint)Marshal.ReadInt32(pBssList, 4));
+                        if (totalSize < 8u || numItems == 0u) continue;
+                        if (numItems > 2048u) numItems = 2048u;
+
+                        for (uint j = 0; j < numItems; j++)
+                        {
+                            long relOffset = 8L + ((long)j * entrySize);
+                            if (relOffset + entrySize > (long)totalSize) break;
+
+                            IntPtr entryPtr = new IntPtr(pBssList.ToInt64() + relOffset);
+                            WLAN_BSS_ENTRY entry = (WLAN_BSS_ENTRY)Marshal.PtrToStructure(entryPtr, typeof(WLAN_BSS_ENTRY));
+
+                            string bssidKey = "";
+                            if (entry.dot11Bssid != null && entry.dot11Bssid.Length == 6)
+                            {
+                                bssidKey = BitConverter.ToString(entry.dot11Bssid) + "|" + entry.ulChCenterFrequency;
+                            }
+                            if (!string.IsNullOrEmpty(bssidKey) && !seenBssids.Add(bssidKey))
+                            {
+                                continue;
+                            }
+
+                            string ssid = "";
+                            int ssidLen = (int)Math.Min(entry.dot11Ssid.uSSIDLength, 32u);
+                            if (ssidLen > 0 && entry.dot11Ssid.ucSSID != null)
+                            {
+                                int safeLen = Math.Min(ssidLen, entry.dot11Ssid.ucSSID.Length);
+                                ssid = System.Text.Encoding.UTF8.GetString(entry.dot11Ssid.ucSSID, 0, safeLen).TrimEnd('\0');
+                            }
+                            if (!string.IsNullOrEmpty(ssid))
+                            {
+                                uniqueSsids.Add(ssid);
+                            }
+
+                            summary.BssidCount++;
+                            int pct = (int)Math.Min(100u, entry.uLinkQuality);
+                            int rssi = entry.lRssi;
+                            bool validRssi = (rssi < 0 && rssi >= -120);
+
+                            if (pct > summary.MaxSignalPct) summary.MaxSignalPct = pct;
+                            if (validRssi && (!summary.HasRssi || rssi > summary.MaxRssiDbm))
+                            {
+                                summary.MaxRssiDbm = rssi;
+                                summary.HasRssi = true;
+                            }
+
+                            uint freqKhz = entry.ulChCenterFrequency;
+                            if (freqKhz >= 2400000u && freqKhz <= 2500000u)
+                            {
+                                summary.Band24Count++;
+                                if (pct > summary.Max24Pct) summary.Max24Pct = pct;
+                            }
+                            else if (freqKhz >= 4900000u && freqKhz <= 5900000u)
+                            {
+                                summary.Band5Count++;
+                                if (pct > summary.Max5Pct) summary.Max5Pct = pct;
+                            }
+                            else if (freqKhz >= 5925000u && freqKhz <= 7125000u)
+                            {
+                                summary.Band6Count++;
+                                if (pct > summary.Max6Pct) summary.Max6Pct = pct;
+                            }
+
+                            if (!string.IsNullOrEmpty(targetServiceSsid) &&
+                                string.Equals(ssid, targetServiceSsid, StringComparison.Ordinal))
+                            {
+                                summary.ServiceSsidFound = true;
+                                if (pct > summary.ServiceSignalPct) summary.ServiceSignalPct = pct;
+                                if (validRssi && (!summary.HasServiceRssi || rssi > summary.ServiceRssiDbm))
+                                {
+                                    summary.ServiceRssiDbm = rssi;
+                                    summary.HasServiceRssi = true;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (pBssList != IntPtr.Zero)
+                        {
+                            try { WlanFreeMemory(pBssList); } catch { }
+                        }
+                    }
+                }
+
+                summary.UniqueSsidCount = uniqueSsids.Count;
+                return summary;
+            }
+            catch
+            {
+                return summary;
+            }
+            finally
+            {
+                if (pIfList != IntPtr.Zero)
+                {
+                    try { WlanFreeMemory(pIfList); } catch { }
+                }
+                if (clientHandle != IntPtr.Zero)
+                {
+                    try { WlanCloseHandle(clientHandle, IntPtr.Zero); } catch { }
+                }
+            }
+        }
 
         public static bool TriggerActiveWlanScan()
         {
@@ -1248,15 +1724,10 @@ namespace WIS.HwTest.Interop
                 {
                     return false;
                 }
-                int count = Marshal.ReadInt32(pIfList, 0);
-                if (count < 0 || count > 64) count = 0;
-                const int wlanInterfaceInfoSize = 532; // Guid (16) + WCHAR[256] (512) + State (4)
-                for (int i = 0; i < count; i++)
+                System.Collections.Generic.List<Guid> ifaces = CollectWlanInterfaceGuids(pIfList);
+                for (int i = 0; i < ifaces.Count; i++)
                 {
-                    IntPtr itemPtr = new IntPtr(pIfList.ToInt64() + 8L + ((long)i * wlanInterfaceInfoSize));
-                    byte[] guidBytes = new byte[16];
-                    Marshal.Copy(itemPtr, guidBytes, 0, 16);
-                    Guid ifaceGuid = new Guid(guidBytes);
+                    Guid ifaceGuid = ifaces[i];
                     if (WlanScan(clientHandle, ref ifaceGuid, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) == 0u)
                     {
                         scannedAny = true;

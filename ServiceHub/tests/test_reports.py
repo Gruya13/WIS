@@ -83,5 +83,42 @@ class TestReports(unittest.TestCase):
         self.assertTrue(os.path.isfile(m_fp))
 
 
+    def test_v330_imp08_save_device_report_dedup_window(self):
+        """IMP-08: Ponovni submit za isti uredjaj i sesiju unutar 30 min prepisuje isti fajl; novi session_id ili mtime > 30 min pravi novi."""
+        import json as _json
+        import time as _time
+
+        rep_a = {
+            "device_id": "TK-LAPTOP-DEDUP01",
+            "computer_name": "TK-LAPTOP-DEDUP01",
+            "serial_number": "SN-DEDUP-1",
+            "session_id": "sess-1",
+            "status": "COMPLETED",
+            "duration_seconds": 500,
+        }
+        j1, m1, jn1, _ = save_device_report("TK-LAPTOP-DEDUP01", rep_a, self.test_dir)
+        rep_a_upd = dict(rep_a, duration_seconds=620)
+        j2, m2, jn2, _ = save_device_report("TK-LAPTOP-DEDUP01", rep_a_upd, self.test_dir)
+
+        self.assertEqual(j1, j2)
+        self.assertEqual(m1, m2)
+        self.assertEqual(jn1, jn2)
+        with open(j2, "r", encoding="utf-8") as f:
+            self.assertEqual(_json.load(f)["duration_seconds"], 620)
+
+        # Razlicit session_id pravi odvojen izvestaj
+        rep_b = dict(rep_a, session_id="sess-2", duration_seconds=700)
+        j3, _, _, _ = save_device_report("TK-LAPTOP-DEDUP01", rep_b, self.test_dir)
+        self.assertNotEqual(j3, j1)
+
+        # Istekao prozor (> 1800s) za sess-2 takodje pravi novi fajl
+        old_ts = _time.time() - 2000
+        os.utime(j3, (old_ts, old_ts))
+        j4, _, _, _ = save_device_report("TK-LAPTOP-DEDUP01", dict(rep_b, duration_seconds=710), self.test_dir)
+        self.assertNotEqual(j4, j3)
+        json_files = [fn for fn in os.listdir(self.test_dir) if fn.endswith(".json")]
+        self.assertEqual(len(json_files), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

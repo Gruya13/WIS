@@ -102,7 +102,7 @@
 
         <!-- Dark Theme TabControl Style -->
         <Style TargetType="TabControl">
-            <Setter Property="Background" Value="#1E1E1E" />
+            <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="0" />
         </Style>

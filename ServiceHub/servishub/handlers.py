@@ -13,7 +13,7 @@ import uuid
 import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 from http.server import BaseHTTPRequestHandler
 
 from servishub.config import active_config
@@ -541,6 +541,18 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        if path.startswith("/device/") or path.startswith("/karton/"):
+            parts = path.strip("/").split("/", 1)
+            raw_id = unquote(parts[1]).strip().strip("/") if len(parts) > 1 else ""
+            target = f"/?device={quote(raw_id, safe='')}&view=card" if raw_id else "/"
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self._send_security_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         if path in ("/static/dashboard.css", "/static/dashboard.js"):
@@ -1841,6 +1853,39 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             pool_mgr = self._get_driver_pool_mgr()
             res = pool_mgr.prune_unused_packages(max_bundle_age_sec=max_age)
             self._send_json(res, 200)
+            return
+
+        if path == "/api/drivers/pool/notify-harvest":
+            if not self._require_client_upload_token():
+                return
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            packs_dir = getattr(self.config, "model_packs_dir", None)
+            target_archive = str(payload.get("archive") or payload.get("filename") or "").strip()
+            if not target_archive and payload.get("model"):
+                from servishub.drivers.pool import sanitize_model_pack_name
+                clean_m = sanitize_model_pack_name(str(payload.get("model")))
+                if clean_m and clean_m != "Unknown_Model":
+                    target_archive = f"{clean_m}.tar"
+            sync_mode = bool(payload.get("sync", False))
+            pool_mgr = self._get_driver_pool_mgr()
+            if sync_mode:
+                try:
+                    res = pool_mgr.scan_and_ingest_archives(packs_dir, target_archive=target_archive or None)
+                    self._send_json(res, 200)
+                except Exception as ex:
+                    self._send_json({"error": f"Greška pri skeniranju Harvest arhiva: {ex}"}, 500)
+                return
+            job = pool_mgr.start_background_job(
+                "notify_harvest",
+                pool_mgr.scan_and_ingest_archives,
+                packs_dir,
+                target_archive=target_archive or None,
+            )
+            self._send_json({"status": "accepted", "job": job, "target_archive": target_archive or None}, 202)
             return
 
         if path == "/api/drivers/resolve":

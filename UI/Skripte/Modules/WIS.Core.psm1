@@ -774,7 +774,7 @@ function Sync-ProgramiFromNas {
         Write-Host "======================================================================================" -ForegroundColor Cyan
         Write-Host "   [PXE/NAS] Pronadjen mrezni repozitorijum programa: $nasProgDir" -ForegroundColor Green
         Write-Host "   [KOPIRANJE] Prenosim instalacione pakete sa servisnog NAS-a na SSD ($DestinationDir)..." -ForegroundColor Yellow
-        Write-Host "   Molimo sacekajte ~30-60 sekundi (prenos ide punom brzinom lokalne mreze)." -ForegroundColor White
+        Write-Host "   Molimo sacekajte (kopiranje zavisi od brzine mreze i velicine paketa, obicno 1-5 min)..." -ForegroundColor White
         Write-Host "--------------------------------------------------------------------------------------" -ForegroundColor DarkGray
 
         Write-ServisLog "Zapocinjem robocopy prenos paketa sa NAS-a ($nasProgDir) na SSD ($DestinationDir)..." -Level "STEP" -Component "NasProgrami"

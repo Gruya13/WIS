@@ -15,6 +15,12 @@ using WIS.HwTest.Interop;
 
 namespace WIS.HwTest.Tests
 {
+    public enum PointingTestMode
+    {
+        TouchpadOnly,
+        TrackPointOnly
+    }
+
     public class TouchpadTestWindow : Window
     {
         private readonly Canvas _testCanvas;
@@ -23,7 +29,11 @@ namespace WIS.HwTest.Tests
         private readonly HashSet<int> _visitedTargets;
 
         private readonly HardwareProbeResult _hwInfo;
+        private readonly PointingTestMode _mode;
         private readonly bool _hasTrackPoint;
+        private bool _showBiosRebootHint;
+        private Button _btnBiosReboot;
+        private TextBlock _biosHintBanner;
 
         private bool _leftClickDone;
         private bool _rightClickDone;
@@ -64,6 +74,7 @@ namespace WIS.HwTest.Tests
         private readonly HashSet<IntPtr> _hidTouchpadDevices = new HashSet<IntPtr>();
         private readonly HashSet<string> _loggedRawSamples = new HashSet<string>();
         private bool _hasPrecisionTouchpadHid;
+        private bool _hasSeenTouchpadHidPacket;
         private bool _canSeparateTrackPointButtons;
         private int _lastTouchpadHidTicks;
         private string _lastMouseRawSource = "";
@@ -78,26 +89,50 @@ namespace WIS.HwTest.Tests
         }
 
         public TestItemResult Result { get; private set; }
+        public Action<string> OnRequestUefiBiosReboot { get; set; }
 
-        public TouchpadTestWindow() : this(null)
+        public bool ShowBiosRebootHint
+        {
+            get { return _showBiosRebootHint; }
+            set
+            {
+                _showBiosRebootHint = value;
+                UpdateBiosRebootHintUi();
+            }
+        }
+
+        public TouchpadTestWindow() : this(null, PointingTestMode.TouchpadOnly, null, false)
         {
         }
 
         public TouchpadTestWindow(HardwareProbeResult hwInfo)
+            : this(hwInfo, PointingTestMode.TouchpadOnly, null, false)
+        {
+        }
+
+        public TouchpadTestWindow(
+            HardwareProbeResult hwInfo,
+            PointingTestMode mode,
+            Action<string> onRequestUefiBiosReboot = null,
+            bool showBiosRebootHint = false)
         {
             _hwInfo = hwInfo;
-            _hasTrackPoint = (_hwInfo != null && (_hwInfo.HasTrackPoint || _hwInfo.IsThinkPad));
+            _mode = mode;
+            _hasTrackPoint = (_mode == PointingTestMode.TrackPointOnly);
+            OnRequestUefiBiosReboot = onRequestUefiBiosReboot;
+            _showBiosRebootHint = showBiosRebootHint;
 
-            Title = _hasTrackPoint ? "WIS — Test Touchpada i TrackPointa" : "WIS — Test Touchpada";
+            Title = _hasTrackPoint ? "WIS — Test TrackPointa" : "WIS — Test Touchpada";
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
             Topmost = true;
 
-            Result = new TestItemResult("touchpad", _hasTrackPoint ? "Touchpad / TrackPoint" : "Touchpad",
-                _hasTrackPoint
-                    ? "Ispitivanje touchpada (kretanje, levi/desni klik, skrol) i TrackPoint srednjeg tastera"
-                    : "Ispitivanje praćenja pokazivača, levog/desnog klika i skrola sa dva prsta");
+            Result = _hasTrackPoint
+                ? new TestItemResult("trackpoint", "TrackPoint",
+                    "Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)")
+                : new TestItemResult("touchpad", "Touchpad",
+                    "Ispitivanje praćenja pokazivača, levog/desnog klika i skrola sa dva prsta");
 
             _targets = new List<Ellipse>();
             _visitedTargets = new HashSet<int>();
@@ -116,36 +151,52 @@ namespace WIS.HwTest.Tests
             StackPanel spH = new StackPanel();
             _instructions = new TextBlock
             {
-                Text = "👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana",
+                Text = _hasTrackPoint
+                    ? "🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)"
+                    : "👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana",
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             };
             spH.Children.Add(_instructions);
 
-            // Task indicators (Touchpad)
+            // Indikatori napretka u zaglavlju (odvojeni po modu)
             WrapPanel spTasks = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 0) };
-            _statusMove = CreateBadge("1. Kretanje (4 ugla): 0/4");
-            _statusLeft = CreateBadge(_hasTrackPoint ? "2. Touchpad levi: ⏳" : "2. Levi klik: ⏳");
-            _statusRight = CreateBadge(_hasTrackPoint ? "3. Touchpad desni: ⏳" : "3. Desni klik: ⏳");
-            _statusScroll = CreateBadge("4. Skrol (2 prsta): ⏳");
-            spTasks.Children.Add(_statusMove);
-            spTasks.Children.Add(_statusLeft);
-            spTasks.Children.Add(_statusRight);
-            spTasks.Children.Add(_statusScroll);
-            spH.Children.Add(spTasks);
-
             if (_hasTrackPoint)
             {
-                WrapPanel spTpTasks = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 5, 0, 0) };
-                _statusTpLeft = CreateBadge("5a. TrackPoint levi: ⏳");
-                _statusMiddle = CreateBadge("5b. TrackPoint srednji / Scroll: ⏳");
-                _statusTpRight = CreateBadge("5c. TrackPoint desni: ⏳");
-                spTpTasks.Children.Add(_statusTpLeft);
-                spTpTasks.Children.Add(_statusMiddle);
-                spTpTasks.Children.Add(_statusTpRight);
-                spH.Children.Add(spTpTasks);
+                _statusMove = CreateBadge("1. TrackPoint kretanje (4 mete): 0/4");
+                _statusTpLeft = CreateBadge("2. TrackPoint levi: ⏳");
+                _statusMiddle = CreateBadge("3. TrackPoint srednji / Scroll: ⏳");
+                _statusTpRight = CreateBadge("4. TrackPoint desni: ⏳");
+                spTasks.Children.Add(_statusMove);
+                spTasks.Children.Add(_statusTpLeft);
+                spTasks.Children.Add(_statusMiddle);
+                spTasks.Children.Add(_statusTpRight);
             }
+            else
+            {
+                _statusMove = CreateBadge("1. Kretanje (4 ugla): 0/4");
+                _statusLeft = CreateBadge("2. Levi klik: ⏳");
+                _statusRight = CreateBadge("3. Desni klik: ⏳");
+                _statusScroll = CreateBadge("4. Skrol (2 prsta): ⏳");
+                spTasks.Children.Add(_statusMove);
+                spTasks.Children.Add(_statusLeft);
+                spTasks.Children.Add(_statusRight);
+                spTasks.Children.Add(_statusScroll);
+            }
+            spH.Children.Add(spTasks);
+
+            _biosHintBanner = new TextBlock
+            {
+                Text = "⚠️ Uređaj je onemogućen u BIOS podešavanjima ili nije aktivan u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 6, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            spH.Children.Add(_biosHintBanner);
+
             header.Child = spH;
             Grid.SetRow(header, 0);
             root.Children.Add(header);
@@ -171,6 +222,20 @@ namespace WIS.HwTest.Tests
                 Orientation = Orientation.Horizontal,
                 HorizontalAlignment = HorizontalAlignment.Right
             };
+
+            _btnBiosReboot = new Button
+            {
+                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(15, 8, 15, 8),
+                Margin = new Thickness(0, 0, 12, 0),
+                Visibility = Visibility.Collapsed
+            };
+            _btnBiosReboot.Click += (s, e) => RequestUefiBiosRebootFromWindow();
+            spFooter.Children.Add(_btnBiosReboot);
+
             if (_hasTrackPoint)
             {
                 Button btnManualMiddle = new Button
@@ -199,44 +264,107 @@ namespace WIS.HwTest.Tests
             }
             Button btnTouchpadFail = new Button
             {
-                Content = "✗ Prijavi kvar touchpada (FAIL)",
+                Content = _hasTrackPoint
+                    ? "✗ Prijavi kvar TrackPointa (FAIL)"
+                    : "✗ Prijavi kvar touchpada (FAIL)",
                 Background = new SolidColorBrush(Color.FromRgb(185, 38, 48)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(15, 8, 15, 8),
-                Margin = new Thickness(0, 0, 12, 0)
+                Padding = new Thickness(15, 8, 15, 8)
             };
             btnTouchpadFail.Click += (s, e) => FinishFailGeneral();
             spFooter.Children.Add(btnTouchpadFail);
 
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test touchpada",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            spFooter.Children.Add(btnSkip);
             footer.Child = spFooter;
             Grid.SetRow(footer, 2);
             root.Children.Add(footer);
 
             Content = root;
+            UpdateBiosRebootHintUi();
 
             Loaded += (s, e) =>
             {
                 SetupTargets();
+                UpdateBiosRebootHintUi();
                 try { Activate(); Focus(); } catch { }
-                InstallHwndAndRawInputHook();
                 if (_hasTrackPoint)
                 {
+                    InstallHwndAndRawInputHook();
                     StartMiddleButtonMonitoring();
                 }
             };
             Closed += (s, e) => StopMiddleButtonMonitoring();
             PreviewMouseDown += OnCanvasMouseDown;
             PreviewMouseUp += OnCanvasMouseDown;
+        }
+
+        private bool ShouldShowBiosRebootHint()
+        {
+            if (_showBiosRebootHint) return true;
+            if (_hwInfo != null)
+            {
+                if (_hasTrackPoint)
+                {
+                    if (_hwInfo.TrackPointDisabledInBios || (!_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true))
+                        return true;
+                }
+                else
+                {
+                    if (_hwInfo.TouchpadDisabledInBios || (!_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private void UpdateBiosRebootHintUi()
+        {
+            bool show = ShouldShowBiosRebootHint();
+            if (_btnBiosReboot != null)
+            {
+                _btnBiosReboot.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (_biosHintBanner != null)
+            {
+                if (show && _hwInfo != null)
+                {
+                    if (_hasTrackPoint && _hwInfo.TrackPointDisabledInBios && !string.IsNullOrEmpty(_hwInfo.TrackPointBiosStatus))
+                    {
+                        _biosHintBanner.Text = string.Format(
+                            "⚠️ TrackPoint je onemogućen u BIOS-u ({0}) — restartujte u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2).",
+                            _hwInfo.TrackPointBiosStatus);
+                    }
+                    else if (!_hasTrackPoint && _hwInfo.TouchpadDisabledInBios && !string.IsNullOrEmpty(_hwInfo.TouchpadBiosStatus))
+                    {
+                        _biosHintBanner.Text = string.Format(
+                            "⚠️ Touchpad je onemogućen u BIOS-u ({0}) — restartujte u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2).",
+                            _hwInfo.TouchpadBiosStatus);
+                    }
+                }
+                _biosHintBanner.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void RequestUefiBiosRebootFromWindow()
+        {
+            if (_isClosingOrDone) return;
+            _isClosingOrDone = true;
+            Result.Status = TestStatus.Pending;
+
+            string testId = _hasTrackPoint ? "trackpoint" : "touchpad";
+            if (OnRequestUefiBiosReboot == null)
+            {
+                MessageBox.Show(
+                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili uređaj.",
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                SafeCloseDialog(false);
+                return;
+            }
+
+            SafeCloseDialog(false);
+            OnRequestUefiBiosReboot(testId);
         }
 
         private TextBlock CreateBadge(string text)
@@ -265,6 +393,7 @@ namespace WIS.HwTest.Tests
                 new Point(80, h - 80 - radius*2),
                 new Point(w - 80 - radius*2, h - 80 - radius*2)
             };
+            string[] tpLabels = new string[] { "↖ TP 1", "↗ TP 2", "↙ TP 3", "↘ TP 4" };
 
             for (int i = 0; i < pts.Length; i++)
             {
@@ -272,8 +401,12 @@ namespace WIS.HwTest.Tests
                 {
                     Width = radius * 2,
                     Height = radius * 2,
-                    Fill = new SolidColorBrush(Color.FromArgb(100, 78, 201, 176)),
-                    Stroke = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
+                    Fill = _hasTrackPoint
+                        ? new SolidColorBrush(Color.FromArgb(115, 220, 53, 69))
+                        : new SolidColorBrush(Color.FromArgb(100, 78, 201, 176)),
+                    Stroke = _hasTrackPoint
+                        ? new SolidColorBrush(Color.FromRgb(235, 75, 88))
+                        : new SolidColorBrush(Color.FromRgb(78, 201, 176)),
                     StrokeThickness = 3,
                     Tag = i
                 };
@@ -281,6 +414,23 @@ namespace WIS.HwTest.Tests
                 Canvas.SetTop(el, pts[i].Y);
                 _testCanvas.Children.Add(el);
                 _targets.Add(el);
+
+                if (_hasTrackPoint)
+                {
+                    TextBlock lbl = new TextBlock
+                    {
+                        Text = tpLabels[i],
+                        Foreground = Brushes.White,
+                        FontSize = 13,
+                        FontWeight = FontWeights.Bold,
+                        Width = radius * 2,
+                        TextAlignment = TextAlignment.Center,
+                        IsHitTestVisible = false
+                    };
+                    Canvas.SetLeft(lbl, pts[i].X);
+                    Canvas.SetTop(lbl, pts[i].Y + radius - 10);
+                    _testCanvas.Children.Add(lbl);
+                }
             }
 
             if (_hasTrackPoint)
@@ -417,9 +567,38 @@ namespace WIS.HwTest.Tests
             if (tb != null) tb.Text = text;
         }
 
+        private bool _showingTouchpadWarning;
+
+        private void ShowTrackPointTouchpadWarning()
+        {
+            _showingTouchpadWarning = true;
+            _instructions.Text = "⚠️ Koristite crveni TrackPoint džojstik, ne touchpad!";
+            _instructions.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
+        }
+
+        private void ClearTrackPointTouchpadWarning()
+        {
+            if (!_showingTouchpadWarning) return;
+            _showingTouchpadWarning = false;
+            _instructions.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
+            UpdateNextInstruction();
+        }
+
         private void OnCanvasMouseMove(object sender, MouseEventArgs e)
         {
+            if (_isClosingOrDone) return;
+
             Point p = e.GetPosition(_testCanvas);
+            bool allowTrackPointMove = true;
+            if (_hasTrackPoint && _hasPrecisionTouchpadHid)
+            {
+                allowTrackPointMove = IsRecentRawTrackPointSource();
+                if (allowTrackPointMove)
+                {
+                    ClearTrackPointTouchpadWarning();
+                }
+            }
+
             for (int i = 0; i < _targets.Count; i++)
             {
                 if (_visitedTargets.Contains(i)) continue;
@@ -430,26 +609,55 @@ namespace WIS.HwTest.Tests
 
                 if (r.Contains(p))
                 {
+                    if (_hasTrackPoint && _hasPrecisionTouchpadHid && !allowTrackPointMove)
+                    {
+                        ShowTrackPointTouchpadWarning();
+                        continue;
+                    }
                     _visitedTargets.Add(i);
                     _targets[i].Fill = new SolidColorBrush(Color.FromArgb(200, 40, 167, 69));
                     _targets[i].Stroke = Brushes.White;
                 }
             }
 
-            _statusMove.Text = string.Format("1. Kretanje (4 ugla): {0}/4", _visitedTargets.Count);
+            _statusMove.Text = _hasTrackPoint
+                ? string.Format("1. TrackPoint kretanje (4 mete): {0}/4", _visitedTargets.Count)
+                : string.Format("1. Kretanje (4 ugla): {0}/4", _visitedTargets.Count);
             if (_visitedTargets.Count >= 4)
             {
                 _statusMove.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-                _statusMove.Text = "1. Kretanje (4 ugla): ✓ Prošlo";
+                _statusMove.Text = _hasTrackPoint
+                    ? "1. TrackPoint kretanje (4 mete): ✓ Prošlo"
+                    : "1. Kretanje (4 ugla): ✓ Prošlo";
                 UpdateNextInstruction();
+                CheckAllPassed();
             }
         }
 
         private void OnCanvasLeftDown(object sender, MouseButtonEventArgs e)
         {
-            if (_hasTrackPoint && _canSeparateTrackPointButtons && IsRecentRawTrackPointSource())
+            if (_hasTrackPoint)
             {
-                MarkTrackPointLeftDone("RawInput (bez Touchpad kontakta)");
+                if (_hasPrecisionTouchpadHid)
+                {
+                    if (IsRecentRawTrackPointSource())
+                    {
+                        ClearTrackPointTouchpadWarning();
+                        MarkTrackPointLeftDone("RawInput (bez Touchpad kontakta)");
+                    }
+                    else
+                    {
+                        ShowTrackPointTouchpadWarning();
+                    }
+                    return;
+                }
+                if (unchecked((uint)(Environment.TickCount - _lastMouseRawTicks)) <= 120u && _lastMouseRawSource == "TOUCHPAD")
+                {
+                    ShowTrackPointTouchpadWarning();
+                    return;
+                }
+                ClearTrackPointTouchpadWarning();
+                MarkTrackPointLeftDone("zajednički PS/2 ulaz");
                 return;
             }
             MarkTouchpadLeftDone();
@@ -457,9 +665,28 @@ namespace WIS.HwTest.Tests
 
         private void OnCanvasRightDown(object sender, MouseButtonEventArgs e)
         {
-            if (_hasTrackPoint && _canSeparateTrackPointButtons && IsRecentRawTrackPointSource())
+            if (_hasTrackPoint)
             {
-                MarkTrackPointRightDone("RawInput (bez Touchpad kontakta)");
+                if (_hasPrecisionTouchpadHid)
+                {
+                    if (IsRecentRawTrackPointSource())
+                    {
+                        ClearTrackPointTouchpadWarning();
+                        MarkTrackPointRightDone("RawInput (bez Touchpad kontakta)");
+                    }
+                    else
+                    {
+                        ShowTrackPointTouchpadWarning();
+                    }
+                    return;
+                }
+                if (unchecked((uint)(Environment.TickCount - _lastMouseRawTicks)) <= 120u && _lastMouseRawSource == "TOUCHPAD")
+                {
+                    ShowTrackPointTouchpadWarning();
+                    return;
+                }
+                ClearTrackPointTouchpadWarning();
+                MarkTrackPointRightDone("zajednički PS/2 ulaz");
                 return;
             }
             MarkTouchpadRightDone();
@@ -472,8 +699,8 @@ namespace WIS.HwTest.Tests
             {
                 return true;
             }
-            // Ako postoji Precision Touchpad HID i nije bilo kontakta u poslednjih 200ms, klik nije došao sa touchpada
-            if (_hasPrecisionTouchpadHid && unchecked((uint)(now - _lastTouchpadHidTicks)) > 200u)
+            // Ako postoji Precision Touchpad HID i nije bilo kontakta u poslednjih 200ms, ulaz nije došao sa touchpada
+            if (_hasPrecisionTouchpadHid && (!_hasSeenTouchpadHidPacket || unchecked((uint)(now - _lastTouchpadHidTicks)) > 200u))
             {
                 return true;
             }
@@ -482,15 +709,12 @@ namespace WIS.HwTest.Tests
 
         private void MarkTouchpadLeftDone()
         {
+            if (_hasTrackPoint || _isClosingOrDone) return;
             if (!_leftClickDone)
             {
                 _leftClickDone = true;
-                _statusLeft.Text = _hasTrackPoint ? "2. Touchpad levi: ✓ Prošlo" : "2. Levi klik: ✓ Prošlo";
+                _statusLeft.Text = "2. Levi klik: ✓ Prošlo";
                 _statusLeft.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-            }
-            if (_hasTrackPoint && !_canSeparateTrackPointButtons && !_tpLeftDone)
-            {
-                MarkTrackPointLeftDone("zajednički PS/2 ulaz");
             }
             UpdateNextInstruction();
             CheckAllPassed();
@@ -498,15 +722,12 @@ namespace WIS.HwTest.Tests
 
         private void MarkTouchpadRightDone()
         {
+            if (_hasTrackPoint || _isClosingOrDone) return;
             if (!_rightClickDone)
             {
                 _rightClickDone = true;
-                _statusRight.Text = _hasTrackPoint ? "3. Touchpad desni: ✓ Prošlo" : "3. Desni klik: ✓ Prošlo";
+                _statusRight.Text = "3. Desni klik: ✓ Prošlo";
                 _statusRight.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-            }
-            if (_hasTrackPoint && !_canSeparateTrackPointButtons && !_tpRightDone)
-            {
-                MarkTrackPointRightDone("zajednički PS/2 ulaz");
             }
             UpdateNextInstruction();
             CheckAllPassed();
@@ -518,11 +739,12 @@ namespace WIS.HwTest.Tests
             _tpLeftDone = true;
             if (_statusTpLeft != null)
             {
-                _statusTpLeft.Text = "5a. TrackPoint levi: ✓ Prošlo";
+                _statusTpLeft.Text = "2. TrackPoint levi: ✓ Prošlo";
                 _statusTpLeft.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
             HighlightTpButton(_tpBtnLeft, "TP LEVI ✓");
-            HwTestLogger.Info("TOUCHPAD", "TrackPoint levi klik potvrden: " + source);
+            HwTestLogger.Info("TOUCHPAD", "TrackPoint levi klik potvrđen: " + source);
+            ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
             CheckAllPassed();
         }
@@ -533,17 +755,19 @@ namespace WIS.HwTest.Tests
             _tpRightDone = true;
             if (_statusTpRight != null)
             {
-                _statusTpRight.Text = "5c. TrackPoint desni: ✓ Prošlo";
+                _statusTpRight.Text = "4. TrackPoint desni: ✓ Prošlo";
                 _statusTpRight.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
             HighlightTpButton(_tpBtnRight, "TP DESNI ✓");
-            HwTestLogger.Info("TOUCHPAD", "TrackPoint desni klik potvrden: " + source);
+            HwTestLogger.Info("TOUCHPAD", "TrackPoint desni klik potvrđen: " + source);
+            ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
             CheckAllPassed();
         }
 
         private void OnCanvasMouseDown(object sender, MouseButtonEventArgs e)
         {
+            if (!_hasTrackPoint) return;
             if (e.ChangedButton == MouseButton.Middle && !_middleClickDone)
             {
                 MarkMiddleClickDone("hardverski srednji taster");
@@ -560,26 +784,36 @@ namespace WIS.HwTest.Tests
             _middleClickDone = true;
             if (_statusMiddle != null)
             {
-                _statusMiddle.Text = "5b. TrackPoint srednji / Scroll: ✓ Prošlo";
+                _statusMiddle.Text = "3. TrackPoint srednji / Scroll: ✓ Prošlo";
                 _statusMiddle.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
             HighlightTpButton(_tpBtnMiddle, "TP SREDNJI ✓");
-            HwTestLogger.Info("TOUCHPAD", "TrackPoint srednji klik potvrden: " + source);
+            HwTestLogger.Info("TOUCHPAD", "TrackPoint srednji klik potvrđen: " + source);
+            ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
             CheckAllPassed();
         }
 
         private void OnCanvasWheel(object sender, MouseWheelEventArgs e)
         {
-            if (_hasTrackPoint && _hasPrecisionTouchpadHid && !_middleClickDone)
+            if (_isClosingOrDone) return;
+
+            if (_hasTrackPoint)
             {
-                int now = Environment.TickCount;
-                // Ako Precision Touchpad HID nije primio nijedan dodir u zadnjih 220ms, skrol potiče od TrackPoint Scroll moda!
-                if (unchecked((uint)(now - _lastTouchpadHidTicks)) > 220u)
+                if (!_middleClickDone)
                 {
-                    MarkMiddleClickDone("TrackPoint Scroll mod (Srednji taster + džojstik)");
-                    return;
+                    int now = Environment.TickCount;
+                    // Ako nema nedavnog Precision Touchpad HID kontakta u zadnjih 220ms, skrol potiče od TrackPoint Scroll moda
+                    if (!_hasPrecisionTouchpadHid || !_hasSeenTouchpadHidPacket || unchecked((uint)(now - _lastTouchpadHidTicks)) > 220u)
+                    {
+                        MarkMiddleClickDone("TrackPoint Scroll mod (Srednji taster + džojstik)");
+                    }
+                    else
+                    {
+                        ShowTrackPointTouchpadWarning();
+                    }
                 }
+                return;
             }
 
             if (e.Delta > 0) _scrollUpDone = true;
@@ -602,37 +836,44 @@ namespace WIS.HwTest.Tests
 
         private void UpdateNextInstruction()
         {
+            if (_showingTouchpadWarning) return;
+
+            if (_hasTrackPoint)
+            {
+                if (_visitedTargets.Count < 4)
+                {
+                    _instructions.Text = "🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)";
+                }
+                else if (!_tpLeftDone)
+                {
+                    _instructions.Text = "🔴 Pritisnite LEVI gornji taster TrackPoint-a (iznad touchpada)";
+                }
+                else if (!_tpRightDone)
+                {
+                    _instructions.Text = "🔴 Pritisnite DESNI gornji taster TrackPoint-a (iznad touchpada)";
+                }
+                else if (!_middleClickDone)
+                {
+                    _instructions.Text = "🔴 SREDNJI TrackPoint taster: kliknite ga ili ga DRŽITE + pomerite crveni džojstik gore/dole (Scroll mod)";
+                }
+                return;
+            }
+
             if (_visitedTargets.Count < 4)
             {
                 _instructions.Text = "👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana";
             }
             else if (!_leftClickDone)
             {
-                _instructions.Text = _hasTrackPoint
-                    ? "👉 Pritisnite LEVI klik na TOUCHPAD-u (donji deo touchpada ili tap)"
-                    : "👉 Pritisnite LEVI klik na touchpadu";
+                _instructions.Text = "👉 Pritisnite LEVI klik na touchpadu";
             }
             else if (!_rightClickDone)
             {
-                _instructions.Text = _hasTrackPoint
-                    ? "👉 Pritisnite DESNI klik na TOUCHPAD-u (dva prsta tap ili desni ugao touchpada)"
-                    : "👉 Pritisnite DESNI klik na touchpadu (dva prsta tap ili desni ugao)";
+                _instructions.Text = "👉 Pritisnite DESNI klik na touchpadu (dva prsta tap ili desni ugao)";
             }
             else if (!_scrollUpDone || !_scrollDownDone)
             {
                 _instructions.Text = "👉 Prevucite dva prsta preko touchpada GORE i DOLE (gest skrola)";
-            }
-            else if (_hasTrackPoint && !_tpLeftDone)
-            {
-                _instructions.Text = "🔴 Pritisnite LEVI gornji taster TrackPoint-a (iznad touchpada)";
-            }
-            else if (_hasTrackPoint && !_tpRightDone)
-            {
-                _instructions.Text = "🔴 Pritisnite DESNI gornji taster TrackPoint-a (iznad touchpada)";
-            }
-            else if (_hasTrackPoint && !_middleClickDone)
-            {
-                _instructions.Text = "🔴 SREDNJI TrackPoint taster: kliknite ga ili ga DRŽITE + pomerite crveni džojstik gore/dole (Scroll mod)";
             }
         }
 
@@ -1073,6 +1314,7 @@ namespace WIS.HwTest.Tests
                             }
                             if (!isVendorCol)
                             {
+                                _hasSeenTouchpadHidPacket = true;
                                 _lastTouchpadHidTicks = Environment.TickCount;
                             }
                             else if (hidSample != null && hidSample.Length > 0 && _loggedRawSamples.Count < 8)
@@ -1107,7 +1349,9 @@ namespace WIS.HwTest.Tests
                         bool explicitPs2TrackPoint = (_hasPrecisionTouchpadHid && (upper.IndexOf("ACPI#LEN") >= 0 || upper.IndexOf("ACPI\\LEN") >= 0));
                         bool explicitTouchpadMouse = (upper.IndexOf("COL03") >= 0 || upper.IndexOf("SYNHID") >= 0 || recentTouchpadHid);
 
-                        if ((btnFlags & NativeMethods.RI_MOUSE_LEFT_BUTTON_DOWN) != 0 || (btnFlags & NativeMethods.RI_MOUSE_RIGHT_BUTTON_DOWN) != 0)
+                        if ((btnFlags & NativeMethods.RI_MOUSE_LEFT_BUTTON_DOWN) != 0 ||
+                            (btnFlags & NativeMethods.RI_MOUSE_RIGHT_BUTTON_DOWN) != 0 ||
+                            lastX != 0 || lastY != 0)
                         {
                             if (explicitTouchpadMouse && !explicitPs2TrackPoint)
                                 _lastMouseRawSource = "TOUCHPAD";
@@ -1177,41 +1421,59 @@ namespace WIS.HwTest.Tests
 
         private void CheckAllPassed()
         {
-            bool tpOk = (!_hasTrackPoint || (_tpLeftDone && _tpRightDone && _middleClickDone));
-            if (_visitedTargets.Count >= 4 && _leftClickDone && _rightClickDone && _scrollUpDone && _scrollDownDone && tpOk)
+            if (_hasTrackPoint)
             {
-                FinishPass();
+                if (_visitedTargets.Count >= 4 && _tpLeftDone && _middleClickDone && _tpRightDone)
+                {
+                    FinishPass();
+                }
+            }
+            else
+            {
+                if (_visitedTargets.Count >= 4 && _leftClickDone && _rightClickDone && _scrollUpDone && _scrollDownDone)
+                {
+                    FinishPass();
+                }
             }
         }
 
         private void PopulateTouchpadResultDetails()
         {
-            Result.Details["movement_corners"] = _visitedTargets.Count;
-            Result.Details["left_click"] = _leftClickDone;
-            Result.Details["right_click"] = _rightClickDone;
-            Result.Details["scroll_2finger"] = (_scrollUpDone && _scrollDownDone);
             if (_hasTrackPoint)
             {
-                Result.Details["has_trackpoint"] = true;
+                Result.Details["mode"] = "trackpoint";
+                Result.Details["trackpoint_movement_targets"] = _visitedTargets.Count;
                 Result.Details["touchpad_separate_detection"] = _canSeparateTrackPointButtons;
                 Result.Details["trackpoint_left_click"] = _tpLeftDone;
                 Result.Details["trackpoint_middle_click"] = _middleClickDone;
                 Result.Details["trackpoint_right_click"] = _tpRightDone;
+            }
+            else
+            {
+                Result.Details["mode"] = "touchpad";
+                Result.Details["movement_corners"] = _visitedTargets.Count;
+                Result.Details["left_click"] = _leftClickDone;
+                Result.Details["right_click"] = _rightClickDone;
+                Result.Details["scroll_2finger"] = (_scrollUpDone && _scrollDownDone);
             }
         }
 
         private List<string> CollectFailedComponents(bool forceIncludeMiddle)
         {
             List<string> failed = new List<string>();
-            if (_visitedTargets.Count < 4) failed.Add("Kretanje kursora (4 ugla)");
-            if (!_leftClickDone) failed.Add(_hasTrackPoint ? "Touchpad levi klik" : "Levi klik");
-            if (!_rightClickDone) failed.Add(_hasTrackPoint ? "Touchpad desni klik" : "Desni klik");
-            if (!(_scrollUpDone && _scrollDownDone)) failed.Add("Skrol (2 prsta)");
             if (_hasTrackPoint)
             {
+                if (_visitedTargets.Count < 4) failed.Add("TrackPoint kretanje (4 mete)");
                 if (!_tpLeftDone) failed.Add("Levi TrackPoint taster");
                 if (forceIncludeMiddle || !_middleClickDone) failed.Add("Srednji TrackPoint taster");
                 if (!_tpRightDone) failed.Add("Desni TrackPoint taster");
+            }
+            else
+            {
+                if (_visitedTargets.Count < 4) failed.Add("Kretanje kursora (4 ugla)");
+                if (!_leftClickDone) failed.Add("Levi klik");
+                if (!_rightClickDone) failed.Add("Desni klik");
+                if (!(_scrollUpDone && _scrollDownDone)) failed.Add("Skrol (2 prsta)");
             }
             return failed;
         }
@@ -1231,10 +1493,10 @@ namespace WIS.HwTest.Tests
         private void FinishMiddleButtonFail()
         {
             List<string> failed = CollectFailedComponents(true);
-            bool allPadOk = (_visitedTargets.Count >= 4 && _leftClickDone && _rightClickDone && _scrollUpDone && _scrollDownDone);
-            string reason = allPadOk
-                ? "Kvar: Srednji TrackPoint taster ne radi (Touchpad kretanje 4/4, levi/desni klik i skrol su ispravni)"
-                : "Kvar touchpada / TrackPointa — ne radi: " + string.Join(", ", failed.ToArray());
+            bool allOtherTpOk = (_visitedTargets.Count >= 4 && _tpLeftDone && _tpRightDone);
+            string reason = allOtherTpOk
+                ? "Kvar: Srednji TrackPoint taster ne radi (TrackPoint kretanje 4/4, levi i desni taster su ispravni)"
+                : "Kvar TrackPointa — ne radi: " + string.Join(", ", failed.ToArray());
             FinishWithFailReason(failed, reason);
         }
 
@@ -1243,9 +1505,9 @@ namespace WIS.HwTest.Tests
             List<string> failed = CollectFailedComponents(false);
             if (failed.Count == 0)
             {
-                failed.Add("Touchpad / TrackPoint (prijavio serviser)");
+                failed.Add(_hasTrackPoint ? "TrackPoint (prijavio serviser)" : "Touchpad (prijavio serviser)");
             }
-            string reason = "Kvar touchpada" + (_hasTrackPoint ? " / TrackPointa" : "") + " — ne radi: " + string.Join(", ", failed.ToArray());
+            string reason = (_hasTrackPoint ? "Kvar TrackPointa — ne radi: " : "Kvar touchpada — ne radi: ") + string.Join(", ", failed.ToArray());
             FinishWithFailReason(failed, reason);
         }
 
@@ -1264,15 +1526,6 @@ namespace WIS.HwTest.Tests
             Result.Attempts = 1;
             PopulateTouchpadResultDetails();
             SafeCloseDialog(true);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test touchpada";
-            SafeCloseDialog(false);
         }
     }
 }

@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace WIS.UI
 {
@@ -201,11 +202,13 @@ namespace WIS.UI
     public class PhaseItem : BaseViewModel
     {
         private int _number;
+        private int _displayNumber;
         private string _title;
         private string _subtitle;
         private string _status = "Pending"; // "Pending", "Active", "Completed", "Skipped", "Warning"
         private ObservableCollection<StepItem> _steps;
-        private bool _isExpanded;
+        private bool _isExpanded = true;
+        private bool _showStepsInOverview = true;
 
         public PhaseItem()
         {
@@ -219,7 +222,25 @@ namespace WIS.UI
         public int Number
         {
             get { return _number; }
-            set { SetProperty(ref _number, value); }
+            set
+            {
+                if (SetProperty(ref _number, value))
+                {
+                    OnPropertyChanged("IconText");
+                }
+            }
+        }
+
+        public int DisplayNumber
+        {
+            get { return _displayNumber; }
+            set
+            {
+                if (SetProperty(ref _displayNumber, value))
+                {
+                    OnPropertyChanged("IconText");
+                }
+            }
         }
 
         public string Title
@@ -254,7 +275,13 @@ namespace WIS.UI
         public bool IsExpanded
         {
             get { return _isExpanded; }
-            set { SetProperty(ref _isExpanded, value); }
+            set { SetProperty(ref _isExpanded, true); }
+        }
+
+        public bool ShowStepsInOverview
+        {
+            get { return _showStepsInOverview; }
+            set { SetProperty(ref _showStepsInOverview, value); }
         }
 
         public string Status
@@ -324,8 +351,157 @@ namespace WIS.UI
                 if (IsSkipped) return "»";
                 if (IsWarning) return "⚠";
                 if (IsActive) return "▶";
-                return Number.ToString();
+                return (_displayNumber > 0 ? _displayNumber : Number).ToString();
             }
+        }
+    }
+
+    public class BenchmarkBaseline
+    {
+        public double FleetP50TotalSeconds { get; set; }
+        public Dictionary<int, double> PhaseAveragesSeconds { get; private set; }
+        public Dictionary<string, double> ModelAveragesSeconds { get; private set; }
+        public string SourceLabel { get; set; }
+
+        public BenchmarkBaseline()
+        {
+            PhaseAveragesSeconds = new Dictionary<int, double>();
+            ModelAveragesSeconds = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            SourceLabel = "Podrazumevani WIS v3 benchmark";
+        }
+    }
+
+    public class ActiveStepProgressItem : BaseViewModel
+    {
+        private string _id;
+        private int _phaseNumber;
+        private string _phaseLabel;
+        private string _title;
+        private string _detail;
+        private int _progress;
+        private bool _isIndeterminate;
+        private string _elapsedText = "00:00";
+        private string _etaText = "--:--";
+        private string _timingTooltip = "Trajanje i benchmark ETA procena";
+        private Brush _barBrush = CreateFrozenBrush(78, 201, 176);
+        private Brush _badgeBrush = CreateFrozenBrush(0, 122, 204);
+
+        public string Id { get { return _id; } set { SetProperty(ref _id, value); } }
+        public int PhaseNumber { get { return _phaseNumber; } set { SetProperty(ref _phaseNumber, value); } }
+        public string PhaseLabel { get { return _phaseLabel; } set { SetProperty(ref _phaseLabel, value); } }
+        public string Title { get { return _title; } set { SetProperty(ref _title, value); } }
+        public string ElapsedText { get { return _elapsedText; } set { SetProperty(ref _elapsedText, value); } }
+        public string EtaText { get { return _etaText; } set { SetProperty(ref _etaText, value); } }
+        public string TimingTooltip { get { return _timingTooltip; } set { SetProperty(ref _timingTooltip, value); } }
+        public string Detail
+        {
+            get { return _detail; }
+            set
+            {
+                if (SetProperty(ref _detail, value))
+                {
+                    OnPropertyChanged("DetailSuffix");
+                }
+            }
+        }
+        public string DetailSuffix { get { return string.IsNullOrWhiteSpace(_detail) ? "" : (" - " + _detail.Trim()); } }
+
+        public int Progress
+        {
+            get { return _progress; }
+            set
+            {
+                if (SetProperty(ref _progress, Math.Max(0, Math.Min(100, value))))
+                {
+                    OnPropertyChanged("PercentText");
+                }
+            }
+        }
+
+        public bool IsIndeterminate
+        {
+            get { return _isIndeterminate; }
+            set
+            {
+                if (SetProperty(ref _isIndeterminate, value))
+                {
+                    OnPropertyChanged("PercentText");
+                }
+            }
+        }
+
+        public Brush BarBrush { get { return _barBrush; } set { SetProperty(ref _barBrush, value); } }
+        public Brush BadgeBrush { get { return _badgeBrush; } set { SetProperty(ref _badgeBrush, value); } }
+
+        public string PercentText
+        {
+            get
+            {
+                return _isIndeterminate ? "U toku..." : string.Format("{0}%", _progress);
+            }
+        }
+    }
+
+    public class OverviewAlertItem : BaseViewModel
+    {
+        public string Key { get; set; }
+        public string Severity { get; set; }
+        public string BadgeText { get; set; }
+        public string Title { get; set; }
+        public string Detail { get; set; }
+        public string TargetTab { get; set; }
+        public Brush AccentBrush { get; set; }
+        public Brush BackgroundBrush { get; set; }
+        public Brush BorderBrush { get; set; }
+        public Brush TitleBrush { get; set; }
+
+        public static OverviewAlertItem Create(string key, string severity, string title, string detail, string targetTab)
+        {
+            string normSev = string.IsNullOrEmpty(severity) ? "WARNING" : severity.Trim().ToUpperInvariant();
+            Brush accent;
+            Brush bg;
+            Brush border;
+            Brush titleBrush;
+            string badge;
+
+            if (normSev == "CRITICAL")
+            {
+                badge = "KRITIČNO";
+                accent = CreateFrozenBrush(231, 76, 60);
+                bg = CreateFrozenBrush(45, 27, 30);
+                border = CreateFrozenBrush(110, 43, 43);
+                titleBrush = CreateFrozenBrush(255, 138, 128);
+            }
+            else if (normSev == "WARNING")
+            {
+                badge = "UPOZORENJE";
+                accent = CreateFrozenBrush(243, 156, 18);
+                bg = CreateFrozenBrush(44, 36, 24);
+                border = CreateFrozenBrush(107, 81, 34);
+                titleBrush = CreateFrozenBrush(245, 208, 114);
+            }
+            else
+            {
+                badge = "INFO";
+                accent = CreateFrozenBrush(56, 189, 248);
+                bg = CreateFrozenBrush(25, 36, 46);
+                border = CreateFrozenBrush(45, 78, 102);
+                titleBrush = CreateFrozenBrush(156, 220, 254);
+            }
+
+            return new OverviewAlertItem
+            {
+                Key = key ?? "",
+                Severity = normSev,
+                BadgeText = badge,
+                Title = title ?? "",
+                Detail = detail ?? "",
+                TargetTab = string.IsNullOrEmpty(targetTab) ? "overview" : targetTab,
+                AccentBrush = accent,
+                BackgroundBrush = bg,
+                BorderBrush = border,
+                TitleBrush = titleBrush
+            };
         }
     }
 
@@ -333,7 +509,7 @@ namespace WIS.UI
     {
         private string _id;
         private string _name;
-        private string _status = "WAIT"; // "WAIT", "RUNNING", "OK", "ERROR", "SKIPPED"
+        private string _status = "WAIT"; // "WAIT", "RUNNING", "OK", "WARN", "ERROR", "SKIPPED"
         private string _detail = "U redu čekanja";
         private string _iconGlyph = "📦";
 
@@ -372,7 +548,8 @@ namespace WIS.UI
             {
                 string norm = (value ?? "WAIT").ToUpperInvariant().Trim();
                 if (norm == "COMPLETED" || norm == "SUCCESS" || norm == "INSTALLED") norm = "OK";
-                else if (norm == "FAILED") norm = "ERROR";
+                else if (norm == "FAILED" || norm == "FAIL" || norm == "ERROR") norm = "ERROR";
+                else if (norm == "WARNING" || norm == "WARN") norm = "WARN";
                 else if (norm == "SKIPPED" || norm == "SKIPPED_DONE" || norm == "SKIPPED_USER") { }
                 else if (norm == "PENDING" || norm == "QUEUED") norm = "WAIT";
 
@@ -393,7 +570,10 @@ namespace WIS.UI
                     OnPropertyChanged("IsRunning");
                     OnPropertyChanged("IsCompleted");
                     OnPropertyChanged("IsSkipped");
+                    OnPropertyChanged("IsWarning");
                     OnPropertyChanged("IsError");
+                    OnPropertyChanged("ShowRetryButton");
+                    OnPropertyChanged("CanRetry");
                 }
             }
         }
@@ -409,7 +589,20 @@ namespace WIS.UI
         public bool IsRunning { get { return Status == "RUNNING"; } }
         public bool IsCompleted { get { return Status == "OK"; } }
         public bool IsSkipped { get { return Status == "SKIPPED" || Status == "SKIPPED_DONE" || Status == "SKIPPED_USER"; } }
+        public bool IsWarning { get { return Status == "WARN"; } }
         public bool IsError { get { return Status == "ERROR"; } }
+        public bool ShowRetryButton { get { return Status == "ERROR" || Status == "WARN"; } }
+        public bool CanRetry { get { return (Status == "ERROR" || Status == "WARN") && !IsRunning; } }
+
+        public string RetryButtonText
+        {
+            get { return LocalizationService.Get("AppRetryBtn", LocalizationService.Instance.IsChinese ? "↻ 重试" : "↻ Retry"); }
+        }
+
+        public string RetryButtonTooltip
+        {
+            get { return LocalizationService.Get("AppRetryTooltip", LocalizationService.Instance.IsChinese ? "重试安装此应用程序" : "Ponovo pokreni instalaciju ovog programa"); }
+        }
 
         public Brush BadgeBackground
         {
@@ -421,6 +614,8 @@ namespace WIS.UI
                         return CreateFrozenBrush(39, 174, 96); // Green #27ae60
                     case "RUNNING":
                         return CreateFrozenBrush(243, 156, 18); // Orange #f39c12
+                    case "WARN":
+                        return CreateFrozenBrush(210, 153, 34); // Amber #D29922
                     case "ERROR":
                         return CreateFrozenBrush(231, 76, 60); // Red #e74c3c
                     case "SKIPPED_DONE":
@@ -443,6 +638,7 @@ namespace WIS.UI
                 {
                     case "OK":
                     case "RUNNING":
+                    case "WARN":
                     case "ERROR":
                     case "SKIPPED":
                     case "SKIPPED_DONE":
@@ -463,7 +659,8 @@ namespace WIS.UI
                 {
                     case "OK": return isZh ? "✓ 完成" : "✓ OK";
                     case "RUNNING": return isZh ? "⚙ 正在进行" : "⚙ RAD";
-                    case "ERROR": return isZh ? "✗ 错误" : "✗ GRESKA";
+                    case "WARN": return isZh ? "⚠ 未完成" : "⚠ UPOZ.";
+                    case "ERROR": return isZh ? "✗ 错误" : "✗ GREŠKA";
                     case "SKIPPED_DONE": return isZh ? "» 已跳过" : "» PRESKOČENO";
                     case "SKIPPED_USER":
                     case "SKIPPED": return isZh ? "⏭ 已跳过" : "⏭ PRESKOČENO";
@@ -476,6 +673,8 @@ namespace WIS.UI
         public void RefreshLocalization()
         {
             OnPropertyChanged("IconText");
+            OnPropertyChanged("RetryButtonText");
+            OnPropertyChanged("RetryButtonTooltip");
         }
 
         public static string GetGlyphForAppId(string appId)
@@ -893,6 +1092,15 @@ namespace WIS.UI
         }
     }
 
+    public class PeripheralBadgeItem : BaseViewModel
+    {
+        public string Label { get; set; }
+        public string Detail { get; set; }
+        public Brush AccentBrush { get; set; }
+        public Brush BorderBrush { get; set; }
+        public Brush BackgroundBrush { get; set; }
+    }
+
     public class HardwareInfoViewModel : BaseViewModel
     {
         // CPU
@@ -1042,18 +1250,53 @@ namespace WIS.UI
         private bool _hasDualGpu = false;
         private string _displaySpec = "Detekcija displeja...";
 
-        public string GpuPrimary { get { return _gpuPrimary; } set { SetProperty(ref _gpuPrimary, value); } }
-        public string GpuSecondary { get { return _gpuSecondary; } set { SetProperty(ref _gpuSecondary, value); } }
-        public bool HasDualGpu { get { return _hasDualGpu; } set { SetProperty(ref _hasDualGpu, value); } }
-        public string DisplaySpec { get { return _displaySpec; } set { SetProperty(ref _displaySpec, value); } }
+        public string GpuPrimary
+        {
+            get { return _gpuPrimary; }
+            set { if (SetProperty(ref _gpuPrimary, value)) NotifyOverviewGpuChanged(); }
+        }
+        public string GpuSecondary
+        {
+            get { return _gpuSecondary; }
+            set { if (SetProperty(ref _gpuSecondary, value)) NotifyOverviewGpuChanged(); }
+        }
+        public bool HasDualGpu
+        {
+            get { return _hasDualGpu; }
+            set { if (SetProperty(ref _hasDualGpu, value)) NotifyOverviewGpuChanged(); }
+        }
+        public string DisplaySpec
+        {
+            get { return _displaySpec; }
+            set
+            {
+                if (SetProperty(ref _displaySpec, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
 
         private string _gpuPrimaryVram = "Učitavanje...";
-        public string GpuPrimaryVram { get { return _gpuPrimaryVram; } set { SetProperty(ref _gpuPrimaryVram, value); } }
+        public string GpuPrimaryVram
+        {
+            get { return _gpuPrimaryVram; }
+            set { if (SetProperty(ref _gpuPrimaryVram, value)) NotifyOverviewGpuChanged(); }
+        }
         private string _gpuSecondaryVram = "";
-        public string GpuSecondaryVram { get { return _gpuSecondaryVram; } set { SetProperty(ref _gpuSecondaryVram, value); } }
+        public string GpuSecondaryVram
+        {
+            get { return _gpuSecondaryVram; }
+            set { if (SetProperty(ref _gpuSecondaryVram, value)) NotifyOverviewGpuChanged(); }
+        }
 
         private bool _hasTouchscreen = false;
-        public bool HasTouchscreen { get { return _hasTouchscreen; } set { SetProperty(ref _hasTouchscreen, value); } }
+        public bool HasTouchscreen
+        {
+            get { return _hasTouchscreen; }
+            set { if (SetProperty(ref _hasTouchscreen, value)) RebuildOverviewPeripherals(false); }
+        }
         private string _touchscreenStatus = "Detekcija...";
         public string TouchscreenStatus { get { return _touchscreenStatus; } set { SetProperty(ref _touchscreenStatus, value); } }
         private SolidColorBrush _touchscreenBrush = CreateFrozenBrush(136, 136, 136);
@@ -1078,7 +1321,11 @@ namespace WIS.UI
         private SolidColorBrush _webcamBrush = CreateFrozenBrush(136, 136, 136);
 
         public string WebcamModel { get { return _webcamModel; } set { SetProperty(ref _webcamModel, value); } }
-        public bool HasWebcam { get { return _hasWebcam; } set { SetProperty(ref _hasWebcam, value); } }
+        public bool HasWebcam
+        {
+            get { return _hasWebcam; }
+            set { if (SetProperty(ref _hasWebcam, value)) RebuildOverviewPeripherals(false); }
+        }
         public SolidColorBrush WebcamBrush { get { return _webcamBrush; } set { SetProperty(ref _webcamBrush, value); } }
 
         private string _irCameraStatus = "Detekcija IR...";
@@ -1086,7 +1333,11 @@ namespace WIS.UI
         private SolidColorBrush _irCameraBrush = CreateFrozenBrush(136, 136, 136);
 
         public string IrCameraStatus { get { return _irCameraStatus; } set { SetProperty(ref _irCameraStatus, value); } }
-        public bool HasIrCamera { get { return _hasIrCamera; } set { SetProperty(ref _hasIrCamera, value); } }
+        public bool HasIrCamera
+        {
+            get { return _hasIrCamera; }
+            set { if (SetProperty(ref _hasIrCamera, value)) RebuildOverviewPeripherals(false); }
+        }
         public SolidColorBrush IrCameraBrush { get { return _irCameraBrush; } set { SetProperty(ref _irCameraBrush, value); } }
 
         private string _backlitKeyboardStatus = "Detekcija...";
@@ -1094,7 +1345,11 @@ namespace WIS.UI
         private SolidColorBrush _backlitKeyboardBrush = CreateFrozenBrush(136, 136, 136);
 
         public string BacklitKeyboardStatus { get { return _backlitKeyboardStatus; } set { SetProperty(ref _backlitKeyboardStatus, value); } }
-        public bool HasBacklitKeyboard { get { return _hasBacklitKeyboard; } set { SetProperty(ref _hasBacklitKeyboard, value); } }
+        public bool HasBacklitKeyboard
+        {
+            get { return _hasBacklitKeyboard; }
+            set { if (SetProperty(ref _hasBacklitKeyboard, value)) RebuildOverviewPeripherals(false); }
+        }
         public SolidColorBrush BacklitKeyboardBrush { get { return _backlitKeyboardBrush; } set { SetProperty(ref _backlitKeyboardBrush, value); } }
 
         private string _fingerprintSensor = "Detekcija senzora...";
@@ -1102,7 +1357,11 @@ namespace WIS.UI
         private SolidColorBrush _fingerprintBrush = CreateFrozenBrush(136, 136, 136);
 
         public string FingerprintSensor { get { return _fingerprintSensor; } set { SetProperty(ref _fingerprintSensor, value); } }
-        public bool HasFingerprint { get { return _hasFingerprint; } set { SetProperty(ref _hasFingerprint, value); } }
+        public bool HasFingerprint
+        {
+            get { return _hasFingerprint; }
+            set { if (SetProperty(ref _hasFingerprint, value)) RebuildOverviewPeripherals(false); }
+        }
         public SolidColorBrush FingerprintBrush { get { return _fingerprintBrush; } set { SetProperty(ref _fingerprintBrush, value); } }
 
         // Model panela, osvetljenje i raspon boja (v2.14.0 - HW-03)
@@ -1110,20 +1369,269 @@ namespace WIS.UI
         private string _displayNits = "N/A";
         private string _displayColorGamut = "N/A";
 
-        public string DisplayModel { get { return _displayModel; } set { SetProperty(ref _displayModel, value); } }
+        public string DisplayModel
+        {
+            get { return _displayModel; }
+            set
+            {
+                if (SetProperty(ref _displayModel, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
         public string DisplayNits { get { return _displayNits; } set { SetProperty(ref _displayNits, value); } }
         public string DisplayColorGamut { get { return _displayColorGamut; } set { SetProperty(ref _displayColorGamut, value); } }
 
-        // Strukturisani podaci o ekranu za nalepnicu (WIS-TASK-188)
+        // Strukturisani podaci o ekranu za nalepnicu i Pregled (WIS-TASK-188 / WIS-TASK-261)
         private int _displayWidth = 0;
         private int _displayHeight = 0;
         private int _displayRefreshHz = 0;
         private string _displayPanelType = "";
+        private double _displayDiagonalInches = 0.0;
 
-        public int DisplayWidth { get { return _displayWidth; } set { SetProperty(ref _displayWidth, value); } }
-        public int DisplayHeight { get { return _displayHeight; } set { SetProperty(ref _displayHeight, value); } }
-        public int DisplayRefreshHz { get { return _displayRefreshHz; } set { SetProperty(ref _displayRefreshHz, value); } }
-        public string DisplayPanelType { get { return _displayPanelType; } set { SetProperty(ref _displayPanelType, value); } }
+        public int DisplayWidth
+        {
+            get { return _displayWidth; }
+            set
+            {
+                if (SetProperty(ref _displayWidth, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
+        public int DisplayHeight
+        {
+            get { return _displayHeight; }
+            set
+            {
+                if (SetProperty(ref _displayHeight, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
+        public int DisplayRefreshHz
+        {
+            get { return _displayRefreshHz; }
+            set
+            {
+                if (SetProperty(ref _displayRefreshHz, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
+        public string DisplayPanelType
+        {
+            get { return _displayPanelType; }
+            set
+            {
+                if (SetProperty(ref _displayPanelType, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
+        public double DisplayDiagonalInches
+        {
+            get { return _displayDiagonalInches; }
+            set
+            {
+                if (SetProperty(ref _displayDiagonalInches, value))
+                {
+                    OnPropertyChanged("OverviewResolution");
+                    OnPropertyChanged("OverviewResolutionTooltip");
+                }
+            }
+        }
+
+        private static string FormatDiagonalInches(double inches)
+        {
+            if (inches < 8.0 || inches > 55.0) return "";
+            double rounded = Math.Round(inches, 1);
+            if (Math.Abs(rounded - Math.Round(rounded)) < 0.05)
+            {
+                return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0}\"", Math.Round(rounded));
+            }
+            return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0:0.0}\"", rounded);
+        }
+
+        private static string FormatShortPanelType(string rawPanel)
+        {
+            if (string.IsNullOrWhiteSpace(rawPanel)) return "";
+            string up = rawPanel.Trim().ToUpperInvariant();
+            if (up.Contains("OLED") || up.Contains("AMOLED")) return "OLED";
+            if (up.Contains("IPS")) return "IPS";
+            if (up.Contains("VA")) return "VA";
+            if (up.Contains("TN")) return "TN";
+            return rawPanel.Trim();
+        }
+
+        public string OverviewResolution
+        {
+            get
+            {
+                if (_displayWidth > 0 && _displayHeight > 0)
+                {
+                    var parts = new List<string>();
+                    string diagText = FormatDiagonalInches(_displayDiagonalInches);
+                    if (!string.IsNullOrEmpty(diagText))
+                    {
+                        parts.Add(diagText);
+                    }
+
+                    string resClass = LabelPrintService.ClassifyResolution(_displayWidth, _displayHeight);
+                    if (!string.IsNullOrEmpty(resClass))
+                    {
+                        parts.Add(resClass);
+                    }
+
+                    string panelShort = FormatShortPanelType(_displayPanelType);
+                    if (!string.IsNullOrEmpty(panelShort))
+                    {
+                        parts.Add(panelShort);
+                    }
+
+                    string main = string.Join(" ", parts.ToArray());
+                    if (_displayRefreshHz > 0)
+                    {
+                        return string.Format("{0} @ {1} Hz", main, _displayRefreshHz);
+                    }
+                    return main;
+                }
+                if (!string.IsNullOrWhiteSpace(_displaySpec))
+                {
+                    return _displaySpec;
+                }
+                return "Detekcija...";
+            }
+        }
+
+        public string OverviewResolutionTooltip
+        {
+            get
+            {
+                if (_displayWidth > 0 && _displayHeight > 0)
+                {
+                    var parts = new List<string>();
+                    string diagText = FormatDiagonalInches(_displayDiagonalInches);
+                    string resClass = LabelPrintService.ClassifyResolution(_displayWidth, _displayHeight);
+                    string head = string.IsNullOrEmpty(diagText) ? resClass : string.Format("{0} {1}", diagText, resClass);
+                    parts.Add(string.Format("{0} ({1}×{2})", head, _displayWidth, _displayHeight));
+
+                    string panelShort = FormatShortPanelType(_displayPanelType);
+                    if (!string.IsNullOrEmpty(panelShort)) parts.Add(panelShort);
+                    if (_displayRefreshHz > 0) parts.Add(string.Format("{0} Hz", _displayRefreshHz));
+
+                    if (!string.IsNullOrWhiteSpace(_displayModel) &&
+                        !string.Equals(_displayModel, "Standardni panel", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(_displayModel, "Detekcija...", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(_displayModel, "N/A", StringComparison.OrdinalIgnoreCase))
+                    {
+                        parts.Add(_displayModel.Trim());
+                    }
+
+                    return string.Join(" • ", parts.ToArray());
+                }
+                return OverviewResolution;
+            }
+        }
+
+        public string OverviewGpu
+        {
+            get
+            {
+                string mainGpu;
+                string igpu;
+                ResolveOverviewGpus(out mainGpu, out igpu);
+                return mainGpu;
+            }
+        }
+
+        public string OverviewIgpu
+        {
+            get
+            {
+                string mainGpu;
+                string igpu;
+                ResolveOverviewGpus(out mainGpu, out igpu);
+                return igpu;
+            }
+        }
+
+        public bool HasOverviewIgpu
+        {
+            get { return !string.IsNullOrWhiteSpace(OverviewIgpu); }
+        }
+
+        private void NotifyOverviewGpuChanged()
+        {
+            OnPropertyChanged("OverviewGpu");
+            OnPropertyChanged("OverviewIgpu");
+            OnPropertyChanged("HasOverviewIgpu");
+        }
+
+        private void ResolveOverviewGpus(out string mainGpu, out string igpu)
+        {
+            string g1 = (_gpuPrimary ?? "").Trim();
+            string g2 = (_gpuSecondary ?? "").Trim();
+            bool hasValidSecond = _hasDualGpu &&
+                !string.IsNullOrWhiteSpace(g2) &&
+                !g2.StartsWith("Nema", StringComparison.OrdinalIgnoreCase);
+
+            if (hasValidSecond)
+            {
+                if (IsIntegratedGpuName(g1) && !IsIntegratedGpuName(g2))
+                {
+                    mainGpu = FormatGpuWithVram(g2, _gpuSecondaryVram);
+                    igpu = g1;
+                    return;
+                }
+                mainGpu = FormatGpuWithVram(g1, _gpuPrimaryVram);
+                igpu = g2;
+                return;
+            }
+
+            mainGpu = FormatGpuWithVram(g1, _gpuPrimaryVram);
+            igpu = "";
+        }
+
+        private static bool IsIntegratedGpuName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            string s = name.ToUpperInvariant();
+            if (s.Contains("NVIDIA") || s.Contains("GEFORCE") || s.Contains("RTX") || s.Contains("GTX") ||
+                s.Contains("QUADRO") || s.Contains("RX ") || s.Contains("ARC A"))
+            {
+                return false;
+            }
+            return s.Contains("INTEL") || s.Contains("UHD") || s.Contains("IRIS") ||
+                   s.Contains("HD GRAPHICS") || s.Contains("RADEON(TM) GRAPHICS") ||
+                   s.Contains("RADEON GRAPHICS") || s.Contains("VEGA");
+        }
+
+        private static string FormatGpuWithVram(string name, string vram)
+        {
+            string n = (name ?? "").Trim();
+            if (string.IsNullOrEmpty(n)) return "Detekcija...";
+            string v = (vram ?? "").Trim();
+            if (string.IsNullOrEmpty(v) ||
+                string.Equals(v, "N/A", StringComparison.OrdinalIgnoreCase) ||
+                v.IndexOf("Učitavanje", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                v.IndexOf("Detekcija", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                n.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return n;
+            }
+            return string.Format("{0} ({1})", n, v);
+        }
 
         // Audio zvučnici i mikrofon (v2.14.0 - HW-07)
         private string _audioSpeakers = "Detekcija...";
@@ -1148,6 +1656,164 @@ namespace WIS.UI
 
         private string _micDeviceName = "";
         public string MicDeviceName { get { return _micDeviceName; } set { SetProperty(ref _micDeviceName, value); } }
+
+        // Dodatne periferije i Wi-Fi verzija za karticu Pregleda (WIS-TASK-261)
+        private string _wifiAdapterName = "";
+        private string _wifiStandardLabel = "";
+        private bool _hasWifi = false;
+        private bool _hasBluetooth = false;
+        private string _bluetoothInfo = "";
+        private bool _hasWwan = false;
+        private string _wwanInfo = "";
+        private string _wwanAdapterName = "";
+        private bool _hasSmartCard = false;
+        private bool _hasNfc = false;
+        private bool _hasThunderbolt = false;
+        private bool _peripheralsDetectionCompleted = false;
+        private string _overviewPeripheralsEmptyText = "Detekcija periferija...";
+        private readonly ObservableCollection<PeripheralBadgeItem> _overviewPeripherals = new ObservableCollection<PeripheralBadgeItem>();
+
+        public string WifiAdapterName { get { return _wifiAdapterName; } set { SetProperty(ref _wifiAdapterName, value); } }
+        public string WifiStandardLabel
+        {
+            get { return _wifiStandardLabel; }
+            set { if (SetProperty(ref _wifiStandardLabel, value)) RebuildOverviewPeripherals(false); }
+        }
+        public bool HasWifi
+        {
+            get { return _hasWifi; }
+            set { if (SetProperty(ref _hasWifi, value)) RebuildOverviewPeripherals(false); }
+        }
+        public bool HasBluetooth
+        {
+            get { return _hasBluetooth; }
+            set { if (SetProperty(ref _hasBluetooth, value)) RebuildOverviewPeripherals(false); }
+        }
+        public string BluetoothInfo { get { return _bluetoothInfo; } set { SetProperty(ref _bluetoothInfo, value); } }
+        public bool HasWwan
+        {
+            get { return _hasWwan; }
+            set { if (SetProperty(ref _hasWwan, value)) RebuildOverviewPeripherals(false); }
+        }
+        public string WwanInfo
+        {
+            get { return _wwanInfo; }
+            set { if (SetProperty(ref _wwanInfo, value)) RebuildOverviewPeripherals(false); }
+        }
+        public string WwanAdapterName { get { return _wwanAdapterName; } set { SetProperty(ref _wwanAdapterName, value); } }
+        public bool HasSmartCard
+        {
+            get { return _hasSmartCard; }
+            set { if (SetProperty(ref _hasSmartCard, value)) RebuildOverviewPeripherals(false); }
+        }
+        public bool HasNfc
+        {
+            get { return _hasNfc; }
+            set { if (SetProperty(ref _hasNfc, value)) RebuildOverviewPeripherals(false); }
+        }
+        public bool HasThunderbolt
+        {
+            get { return _hasThunderbolt; }
+            set { if (SetProperty(ref _hasThunderbolt, value)) RebuildOverviewPeripherals(false); }
+        }
+
+        public ObservableCollection<PeripheralBadgeItem> OverviewPeripherals { get { return _overviewPeripherals; } }
+        public bool HasOverviewPeripherals { get { return _overviewPeripherals.Count > 0; } }
+        public bool ShowOverviewPeripheralsEmpty { get { return _overviewPeripherals.Count == 0; } }
+        public string OverviewPeripheralsEmptyText
+        {
+            get { return _overviewPeripheralsEmptyText; }
+            private set { SetProperty(ref _overviewPeripheralsEmptyText, value); }
+        }
+
+        public void RebuildOverviewPeripherals(bool detectionCompleted = false)
+        {
+            if (detectionCompleted)
+            {
+                _peripheralsDetectionCompleted = true;
+            }
+
+            _overviewPeripherals.Clear();
+
+            Brush neutralAccent = CreateFrozenBrush(156, 220, 254);
+            Brush neutralBorder = CreateFrozenBrush(62, 62, 66);
+            Brush neutralBg = CreateFrozenBrush(37, 37, 40);
+
+            if (_hasWifi)
+            {
+                string wifiLabel = !string.IsNullOrWhiteSpace(_wifiStandardLabel)
+                    ? _wifiStandardLabel
+                    : (!string.IsNullOrWhiteSpace(_wifiAdapterName) ? _wifiAdapterName : "Wi-Fi");
+                AddPeripheralBadge(wifiLabel, _wifiAdapterName, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasWwan)
+            {
+                string wwanLabel = !string.IsNullOrWhiteSpace(_wwanInfo) ? _wwanInfo : "4G LTE / 5G modem";
+                string wwanDetail = !string.IsNullOrWhiteSpace(_wwanAdapterName) ? _wwanAdapterName : wwanLabel;
+                AddPeripheralBadge(wwanLabel, wwanDetail, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasBluetooth)
+            {
+                AddPeripheralBadge("Bluetooth", _bluetoothInfo, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasBacklitKeyboard)
+            {
+                AddPeripheralBadge("Svetleća tastatura", _backlitKeyboardStatus, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasIrCamera)
+            {
+                AddPeripheralBadge("IR kamera (Hello)", _irCameraStatus, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasFingerprint)
+            {
+                string fpDetail = !string.IsNullOrWhiteSpace(_fingerprintDeviceName) ? _fingerprintDeviceName : _fingerprintSensor;
+                AddPeripheralBadge("Fingerprint reader", fpDetail, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasTouchscreen)
+            {
+                AddPeripheralBadge("Touchscreen", _touchscreenStatus, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasWebcam)
+            {
+                AddPeripheralBadge("Web kamera", _webcamModel, neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasThunderbolt)
+            {
+                AddPeripheralBadge("Thunderbolt / USB4", "Podržan Thunderbolt / USB4 kontroler", neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasSmartCard)
+            {
+                AddPeripheralBadge("SmartCard čitač", "Detektovan čitač pametnih kartica", neutralAccent, neutralBorder, neutralBg);
+            }
+            if (_hasNfc)
+            {
+                AddPeripheralBadge("NFC", "Detektovan NFC / Proximity uređaj", neutralAccent, neutralBorder, neutralBg);
+            }
+
+            if (_peripheralsDetectionCompleted && _overviewPeripherals.Count == 0)
+            {
+                OverviewPeripheralsEmptyText = "Nema detektovanih dodatnih periferija";
+            }
+            else if (_overviewPeripherals.Count == 0)
+            {
+                OverviewPeripheralsEmptyText = "Detekcija periferija...";
+            }
+
+            OnPropertyChanged("HasOverviewPeripherals");
+            OnPropertyChanged("ShowOverviewPeripheralsEmpty");
+        }
+
+        private void AddPeripheralBadge(string label, string detail, Brush accent, Brush border, Brush bg)
+        {
+            _overviewPeripherals.Add(new PeripheralBadgeItem
+            {
+                Label = label,
+                Detail = !string.IsNullOrWhiteSpace(detail) ? detail : label,
+                AccentBrush = accent,
+                BorderBrush = border,
+                BackgroundBrush = bg
+            });
+        }
     }
 
     // =========================================================================
@@ -1690,6 +2356,124 @@ namespace WIS.UI
         }
     }
 
+    public class HwMonitorSensorRow : BaseViewModel
+    {
+        private string _key;
+        private string _name;
+        private bool _isCategoryHeader;
+        private string _currentText = "N/A";
+        private string _minText = "—";
+        private string _maxText = "—";
+        private Brush _valueBrush = CreateFrozenBrush(78, 201, 176);
+        private Brush _rowBackground = Brushes.Transparent;
+        private bool _hasValue = false;
+        private double _minNumeric = 0.0;
+        private double _maxNumeric = 0.0;
+        private double _currentNumeric = 0.0;
+
+        public string Key { get { return _key; } set { SetProperty(ref _key, value); } }
+        public string Name { get { return _name; } set { SetProperty(ref _name, value); } }
+        public bool IsCategoryHeader { get { return _isCategoryHeader; } set { SetProperty(ref _isCategoryHeader, value); } }
+        public string CurrentText { get { return _currentText; } set { SetProperty(ref _currentText, value); } }
+        public string MinText { get { return _minText; } set { SetProperty(ref _minText, value); } }
+        public string MaxText { get { return _maxText; } set { SetProperty(ref _maxText, value); } }
+        public Brush ValueBrush { get { return _valueBrush; } set { SetProperty(ref _valueBrush, value); } }
+        public Brush RowBackground { get { return _rowBackground; } set { SetProperty(ref _rowBackground, value); } }
+        public bool HasValue { get { return _hasValue; } set { SetProperty(ref _hasValue, value); } }
+        public double MinNumeric { get { return _minNumeric; } set { SetProperty(ref _minNumeric, value); } }
+        public double MaxNumeric { get { return _maxNumeric; } set { SetProperty(ref _maxNumeric, value); } }
+        public double CurrentNumeric { get { return _currentNumeric; } set { SetProperty(ref _currentNumeric, value); } }
+
+        public Brush NameForeground
+        {
+            get
+            {
+                return _isCategoryHeader
+                    ? CreateFrozenBrush(78, 201, 176)
+                    : CreateFrozenBrush(224, 224, 224);
+            }
+        }
+
+        public FontWeight NameFontWeight
+        {
+            get { return _isCategoryHeader ? FontWeights.Bold : FontWeights.Normal; }
+        }
+
+        public static HwMonitorSensorRow CreateHeader(string key, string title)
+        {
+            return new HwMonitorSensorRow
+            {
+                Key = key,
+                Name = title,
+                IsCategoryHeader = true,
+                CurrentText = "",
+                MinText = "",
+                MaxText = "",
+                ValueBrush = CreateFrozenBrush(136, 136, 136),
+                RowBackground = CreateFrozenBrush(29, 34, 42)
+            };
+        }
+
+        public static HwMonitorSensorRow CreateSensor(string key, string name, string initialText)
+        {
+            return new HwMonitorSensorRow
+            {
+                Key = key,
+                Name = name,
+                IsCategoryHeader = false,
+                CurrentText = string.IsNullOrEmpty(initialText) ? "N/A" : initialText,
+                MinText = "—",
+                MaxText = "—",
+                ValueBrush = CreateFrozenBrush(150, 150, 150),
+                RowBackground = Brushes.Transparent
+            };
+        }
+
+        public void UpdateSample(double value, string format, Brush valueBrush)
+        {
+            if (_isCategoryHeader || double.IsNaN(value) || double.IsInfinity(value)) return;
+            CurrentNumeric = value;
+            CurrentText = string.Format(format, value);
+            if (valueBrush != null) ValueBrush = valueBrush;
+
+            if (!HasValue)
+            {
+                MinNumeric = value;
+                MaxNumeric = value;
+                HasValue = true;
+            }
+            else
+            {
+                if (value < MinNumeric) MinNumeric = value;
+                if (value > MaxNumeric) MaxNumeric = value;
+            }
+            MinText = string.Format(format, MinNumeric);
+            MaxText = string.Format(format, MaxNumeric);
+        }
+
+        public void SetUnavailable(string label)
+        {
+            if (_isCategoryHeader) return;
+            string txt = string.IsNullOrEmpty(label) ? "N/A" : label;
+            CurrentText = txt;
+            ValueBrush = CreateFrozenBrush(140, 140, 140);
+            if (!HasValue)
+            {
+                MinText = "—";
+                MaxText = "—";
+            }
+        }
+
+        public void ResetExtremes()
+        {
+            if (_isCategoryHeader || !HasValue) return;
+            MinNumeric = CurrentNumeric;
+            MaxNumeric = CurrentNumeric;
+            MinText = CurrentText;
+            MaxText = CurrentText;
+        }
+    }
+
     public class MainViewModel : BaseViewModel
     {
         // ------------------ HEADER ------------------
@@ -1701,21 +2485,208 @@ namespace WIS.UI
         private string _durationString = "00:00:00";
         private TimeSpan _elapsedDuration = TimeSpan.Zero;
         private string _appVersionText = "WIS UI v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
+        private string _wisVersionFooterText = "WIS v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
 
         public string ComputerModel { get { return _computerModel; } set { SetProperty(ref _computerModel, value); } }
-        public string SerialNumber { get { return _serialNumber; } set { SetProperty(ref _serialNumber, value); } }
+        public string SerialNumber
+        {
+            get { return _serialNumber; }
+            set
+            {
+                if (SetProperty(ref _serialNumber, value))
+                {
+                    RefreshDeviceCardQr();
+                }
+            }
+        }
         public string CpuInfo { get { return _cpuInfo; } set { SetProperty(ref _cpuInfo, value); } }
         public string RamInfo { get { return _ramInfo; } set { SetProperty(ref _ramInfo, value); } }
         public string DiskInfo { get { return _diskInfo; } set { SetProperty(ref _diskInfo, value); } }
         public string DurationString { get { return _durationString; } set { SetProperty(ref _durationString, value); } }
         public string AppVersionText { get { return _appVersionText; } set { SetProperty(ref _appVersionText, value); } }
+        public string WisVersionFooterText { get { return _wisVersionFooterText; } set { SetProperty(ref _wisVersionFooterText, value); } }
+
+        // ------------------ SREDNJI PANEL: QR KOD KARTONA UREĐAJA (SERVISHUB) ------------------
+        private string _deviceCardHubUrl = "";
+        private string _deviceCardUrl = "";
+        private string _deviceCardStatusText = "Povezivanje sa ServisHub serverom...";
+        private BitmapSource _deviceCardQrImage;
+        private bool _hasDeviceCardQr = false;
+
+        public string DeviceCardUrl { get { return _deviceCardUrl; } private set { SetProperty(ref _deviceCardUrl, value); } }
+        public string DeviceCardStatusText { get { return _deviceCardStatusText; } private set { SetProperty(ref _deviceCardStatusText, value); } }
+        public BitmapSource DeviceCardQrImage { get { return _deviceCardQrImage; } private set { SetProperty(ref _deviceCardQrImage, value); } }
+        public bool HasDeviceCardQr
+        {
+            get { return _hasDeviceCardQr; }
+            private set
+            {
+                if (SetProperty(ref _hasDeviceCardQr, value))
+                {
+                    OnPropertyChanged("ShowDeviceCardQrPlaceholder");
+                }
+            }
+        }
+        public bool ShowDeviceCardQrPlaceholder { get { return !_hasDeviceCardQr; } }
+
+        public void UpdateDeviceCardHubUrl(string hubUrl)
+        {
+            string normalized = (hubUrl ?? "").Trim().TrimEnd('/');
+            _deviceCardHubUrl = normalized;
+            RefreshDeviceCardQr();
+        }
+
+        public void UpdateServiceHubConnection(string hubUrl, string hubVersion, bool isConnected)
+        {
+            ServiceHubConnected = isConnected;
+            ServiceHubIndicatorBrush = isConnected
+                ? CreateFrozenBrush(46, 204, 113)
+                : CreateFrozenBrush(136, 136, 136);
+
+            if (!string.IsNullOrWhiteSpace(hubVersion))
+            {
+                string cleanVer = hubVersion.Trim();
+                if (!cleanVer.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                {
+                    cleanVer = "v" + cleanVer;
+                }
+                ServiceHubVersion = cleanVer;
+            }
+
+            if (!string.IsNullOrEmpty(ServiceHubVersion))
+            {
+                ServiceHubFooterText = "ServiceHUB " + ServiceHubVersion;
+            }
+            else
+            {
+                ServiceHubFooterText = "ServiceHUB";
+            }
+
+            if (isConnected && !string.IsNullOrEmpty(hubUrl))
+            {
+                UpdateDeviceCardHubUrl(hubUrl);
+            }
+        }
+
+        public void RefreshDeviceCardQr()
+        {
+            if (string.IsNullOrEmpty(_deviceCardHubUrl))
+            {
+                DeviceCardUrl = "";
+                DeviceCardQrImage = null;
+                HasDeviceCardQr = false;
+                DeviceCardStatusText = "Povezivanje sa ServisHub serverom...";
+                return;
+            }
+
+            string deviceId = null;
+            if (!IsPlaceholderSerial(_serialNumber))
+            {
+                deviceId = _serialNumber.Trim();
+            }
+            else if (_hardwareInfo != null && !IsPlaceholderSerial(_hardwareInfo.SerialNumber))
+            {
+                deviceId = _hardwareInfo.SerialNumber.Trim();
+            }
+            else if (Autopilot != null && !IsPlaceholderSerial(Autopilot.HwSerialNumber))
+            {
+                deviceId = Autopilot.HwSerialNumber.Trim();
+            }
+            else
+            {
+                deviceId = Environment.MachineName;
+            }
+
+            string url = _deviceCardHubUrl + "/device/" + Uri.EscapeDataString(deviceId);
+            if (string.Equals(url, _deviceCardUrl, StringComparison.Ordinal) && _deviceCardQrImage != null)
+            {
+                return;
+            }
+
+            BitmapSource bmp = GenerateQrBitmapSafe(url, 320);
+            DeviceCardUrl = url;
+            DeviceCardQrImage = bmp;
+            HasDeviceCardQr = (bmp != null);
+            DeviceCardStatusText = (bmp != null)
+                ? "Skeniraj telefonom za karton uređaja"
+                : "QR generator nedostupan";
+        }
+
+        private static bool IsPlaceholderSerial(string val)
+        {
+            if (string.IsNullOrWhiteSpace(val)) return true;
+            string s = val.Trim();
+            if (s.Length < 2) return true;
+            if (string.Equals(s, "N/A", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "Učitavanje...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "None", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "Default string", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "To be filled by O.E.M.", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "System Serial Number", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "0", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "123456789", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static BitmapSource GenerateQrBitmapSafe(string content, int size)
+        {
+            if (string.IsNullOrEmpty(content)) return null;
+            try
+            {
+                return GenerateQrBitmapWithZxing(content, size);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static BitmapSource GenerateQrBitmapWithZxing(string content, int size)
+        {
+            var writer = new ZXing.QrCode.QRCodeWriter();
+            var hints = new Dictionary<ZXing.EncodeHintType, object>();
+            hints[ZXing.EncodeHintType.ERROR_CORRECTION] = ZXing.QrCode.Internal.ErrorCorrectionLevel.M;
+            hints[ZXing.EncodeHintType.MARGIN] = 2;
+            hints[ZXing.EncodeHintType.CHARACTER_SET] = "UTF-8";
+
+            ZXing.Common.BitMatrix matrix = writer.encode(content, ZXing.BarcodeFormat.QR_CODE, size, size, hints);
+            int w = matrix.Width;
+            int h = matrix.Height;
+            int stride = w * 4;
+            byte[] pixels = new byte[h * stride];
+
+            for (int y = 0; y < h; y++)
+            {
+                int rowOffset = y * stride;
+                for (int x = 0; x < w; x++)
+                {
+                    byte c = matrix[x, y] ? (byte)0 : (byte)255;
+                    int idx = rowOffset + (x * 4);
+                    pixels[idx] = c;
+                    pixels[idx + 1] = c;
+                    pixels[idx + 2] = c;
+                    pixels[idx + 3] = 255;
+                }
+            }
+
+            BitmapSource bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+            bmp.Freeze();
+            return bmp;
+        }
 
         // ------------------ TAB: HARDVER I SISTEM (v2.7.1) ------------------
         private HardwareInfoViewModel _hardwareInfo;
         public HardwareInfoViewModel HardwareInfo
         {
             get { return _hardwareInfo; }
-            set { SetProperty(ref _hardwareInfo, value); }
+            set
+            {
+                if (SetProperty(ref _hardwareInfo, value))
+                {
+                    RefreshDeviceCardQr();
+                }
+            }
         }
 
         // ------------------ TAB: DRAJVERI (v2.7.3) ------------------
@@ -1732,10 +2703,13 @@ namespace WIS.UI
         private string _subPhase = "Inicijalizacija mrežnih servisa...";
         private string _liveStatus = "Sistem priprema konfiguraciju servisa...";
         private int _progress = 0;
+        private int _globalProgress = 0;
+        private string _globalProgressSummary = "0 / 28 koraka";
         private bool _usbFree = false;
         private string _usbBannerText = "✓ USB FLEŠ DISK JE BEZBEDNO ODVOJEN (Možete slobodno izvaditi fleš disk)";
 
         public ObservableCollection<PhaseItem> Phases { get; private set; }
+        public ObservableCollection<ActiveStepProgressItem> ActiveStepBars { get; private set; }
         public ObservableCollection<LogEntry> RecentLogs { get; private set; }
 
         public int CurrentPhase
@@ -1750,10 +2724,405 @@ namespace WIS.UI
             }
         }
 
-        public string PhaseName { get { return _phaseName; } set { SetProperty(ref _phaseName, value); } }
-        public string SubPhase { get { return _subPhase; } set { SetProperty(ref _subPhase, value); } }
-        public string LiveStatus { get { return _liveStatus; } set { SetProperty(ref _liveStatus, value); } }
-        public int Progress { get { return _progress; } set { SetProperty(ref _progress, Math.Max(0, Math.Min(100, value))); } }
+        public string PhaseName
+        {
+            get { return _phaseName; }
+            set
+            {
+                if (SetProperty(ref _phaseName, value))
+                {
+                    RefreshProgressBars();
+                }
+            }
+        }
+
+        public string SubPhase
+        {
+            get { return _subPhase; }
+            set
+            {
+                if (SetProperty(ref _subPhase, value))
+                {
+                    RefreshProgressBars();
+                }
+            }
+        }
+
+        public string LiveStatus
+        {
+            get { return _liveStatus; }
+            set
+            {
+                if (SetProperty(ref _liveStatus, value))
+                {
+                    RefreshProgressBars();
+                }
+            }
+        }
+
+        public int Progress
+        {
+            get { return _progress; }
+            set
+            {
+                if (SetProperty(ref _progress, Math.Max(0, Math.Min(100, value))))
+                {
+                    RefreshProgressBars();
+                }
+            }
+        }
+
+        public int GlobalProgress
+        {
+            get { return _globalProgress; }
+            set { SetProperty(ref _globalProgress, Math.Max(0, Math.Min(100, value))); }
+        }
+
+        public string GlobalProgressSummary
+        {
+            get { return _globalProgressSummary; }
+            set { SetProperty(ref _globalProgressSummary, value); }
+        }
+
+        private string _globalElapsedText = "00:00";
+        private string _globalEtaText = "~24:00";
+        private string _benchmarkSourceTooltip = "Procena ETA: Podrazumevani WIS v3 benchmark";
+        private BenchmarkBaseline _benchmarkBaseline = null;
+        private readonly Dictionary<string, DateTime> _activeBarStartUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+        public string GlobalElapsedText { get { return _globalElapsedText; } set { SetProperty(ref _globalElapsedText, value); } }
+        public string GlobalEtaText { get { return _globalEtaText; } set { SetProperty(ref _globalEtaText, value); } }
+        public string BenchmarkSourceTooltip { get { return _benchmarkSourceTooltip; } set { SetProperty(ref _benchmarkSourceTooltip, value); } }
+
+        private static readonly Dictionary<int, double> DefaultPhaseBaselineSec = new Dictionary<int, double>
+        {
+            { 2, 300.0 },
+            { 3, 60.0 },
+            { 4, 660.0 },
+            { 5, 180.0 },
+            { 6, 240.0 }
+        };
+
+        private static readonly Dictionary<string, double> DefaultStepBaselineSec = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "P2.Identify", 15.0 },
+            { "P2.NasCache", 90.0 },
+            { "P2.Vmd", 20.0 },
+            { "P2.Pnp", 60.0 },
+            { "P2.Diag", 15.0 },
+            { "P2.WuDrivers", 100.0 },
+            { "P3.Debloat", 18.0 },
+            { "P3.Telemetry", 8.0 },
+            { "P3.Oem", 8.0 },
+            { "P3.Scaling", 6.0 },
+            { "P3.VcRedist", 15.0 },
+            { "P3.UsbFree", 5.0 },
+            { "P4.Runtimes", 45.0 },
+            { "P4.WinRAR", 15.0 },
+            { "P4.Chrome", 35.0 },
+            { "P4.Acrobat", 150.0 },
+            { "P4.Office", 320.0 },
+            { "P4.BatteryBar", 15.0 },
+            { "P4.Shortcuts", 10.0 },
+            { "P4.DefaultPdf", 10.0 },
+            { "P4.License", 60.0 },
+            { "P5.AutoDiag", 30.0 },
+            { "P5.Stress", 60.0 },
+            { "P5.Interactive", 90.0 },
+            { "P6.WuSecondPass", 90.0 },
+            { "P6.Report", 30.0 },
+            { "P6.AntiLeak", 30.0 },
+            { "P6.FinalVerify", 90.0 },
+            { "bg_wu", 480.0 },
+            { "drv_batch", 180.0 },
+            { "current", 120.0 }
+        };
+
+        public static string FormatCompactDuration(double seconds)
+        {
+            if (double.IsNaN(seconds) || double.IsInfinity(seconds) || seconds < 0)
+            {
+                return "--:--";
+            }
+            int total = (int)Math.Floor(seconds);
+            int hrs = total / 3600;
+            int mins = (total % 3600) / 60;
+            int secs = total % 60;
+            if (hrs > 0)
+            {
+                return string.Format("{0}:{1:00}:{2:00}", hrs, mins, secs);
+            }
+            return string.Format("{0:00}:{1:00}", mins, secs);
+        }
+
+        public void ApplyBenchmarkBaseline(BenchmarkBaseline baseline)
+        {
+            if (baseline == null) return;
+            Action apply = delegate
+            {
+                _benchmarkBaseline = baseline;
+                UpdateLiveTimersAndEta();
+                RebuildOverviewAlerts();
+            };
+            var app = Application.Current;
+            if (app != null && app.Dispatcher != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(apply);
+            }
+            else
+            {
+                apply();
+            }
+        }
+
+        private double GetModelScaleFactor(out string matchedModelLabel)
+        {
+            matchedModelLabel = null;
+            if (_benchmarkBaseline == null || _benchmarkBaseline.ModelAveragesSeconds == null || _benchmarkBaseline.ModelAveragesSeconds.Count == 0)
+            {
+                return 1.0;
+            }
+            string model = (_computerModel ?? "").Trim();
+            if (string.IsNullOrEmpty(model))
+            {
+                return 1.0;
+            }
+
+            double modelAvg = 0.0;
+            if (_benchmarkBaseline.ModelAveragesSeconds.TryGetValue(model, out modelAvg))
+            {
+                matchedModelLabel = model;
+            }
+            else
+            {
+                foreach (KeyValuePair<string, double> kv in _benchmarkBaseline.ModelAveragesSeconds)
+                {
+                    if (string.IsNullOrEmpty(kv.Key) || kv.Key.Length < 4) continue;
+                    if (model.IndexOf(kv.Key, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        kv.Key.IndexOf(model, StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        matchedModelLabel = kv.Key;
+                        modelAvg = kv.Value;
+                        break;
+                    }
+                }
+            }
+
+            if (matchedModelLabel == null || modelAvg < 120.0 || modelAvg > 5400.0)
+            {
+                matchedModelLabel = null;
+                return 1.0;
+            }
+
+            double baseTotal = _benchmarkBaseline.FleetP50TotalSeconds > 120.0 ? _benchmarkBaseline.FleetP50TotalSeconds : 1440.0;
+            double ratio = modelAvg / baseTotal;
+            if (ratio < 0.45) ratio = 0.45;
+            if (ratio > 2.5) ratio = 2.5;
+            return ratio;
+        }
+
+        private double GetPhaseExpectedSeconds(int phaseNum)
+        {
+            double baseVal = 120.0;
+            double defVal;
+            if (DefaultPhaseBaselineSec.TryGetValue(phaseNum, out defVal))
+            {
+                baseVal = defVal;
+            }
+            if (_benchmarkBaseline != null && _benchmarkBaseline.PhaseAveragesSeconds != null)
+            {
+                double hubVal;
+                if (_benchmarkBaseline.PhaseAveragesSeconds.TryGetValue(phaseNum, out hubVal) && hubVal >= 15.0 && hubVal <= 2400.0)
+                {
+                    baseVal = hubVal;
+                }
+            }
+            string unused;
+            return baseVal * GetModelScaleFactor(out unused);
+        }
+
+        private double EstimateStepExpectedSeconds(string stepId, int phaseNum)
+        {
+            if (string.Equals(stepId, "bg_wu", StringComparison.OrdinalIgnoreCase)) return 480.0;
+            if (string.Equals(stepId, "drv_batch", StringComparison.OrdinalIgnoreCase)) return 180.0;
+            if (!string.IsNullOrEmpty(stepId) && stepId.StartsWith("drv_", StringComparison.OrdinalIgnoreCase)) return 45.0;
+            if (string.Equals(stepId, "current", StringComparison.OrdinalIgnoreCase)) return GetPhaseExpectedSeconds(phaseNum);
+
+            double phaseExpected = GetPhaseExpectedSeconds(phaseNum);
+            double stepDef;
+            if (!string.IsNullOrEmpty(stepId) && DefaultStepBaselineSec.TryGetValue(stepId, out stepDef))
+            {
+                string prefix = string.Format("P{0}.", phaseNum);
+                double sumPhase = 0.0;
+                foreach (KeyValuePair<string, double> kv in DefaultStepBaselineSec)
+                {
+                    if (kv.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        sumPhase += kv.Value;
+                    }
+                }
+                if (sumPhase > 0.0)
+                {
+                    return (stepDef / sumPhase) * phaseExpected;
+                }
+                return stepDef;
+            }
+
+            if (Phases != null)
+            {
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    if (Phases[i] != null && Phases[i].Number == phaseNum && Phases[i].Steps != null && Phases[i].Steps.Count > 0)
+                    {
+                        return phaseExpected / Phases[i].Steps.Count;
+                    }
+                }
+            }
+            return 60.0;
+        }
+
+        private int ComputeStepEtaSeconds(ActiveStepProgressItem bar, int elapsedSec)
+        {
+            if (bar == null) return -1;
+            if (string.Equals(bar.Id, "ready", StringComparison.OrdinalIgnoreCase)) return -1;
+            if (string.Equals(bar.Id, "done", StringComparison.OrdinalIgnoreCase) || bar.Progress >= 100) return 0;
+
+            double expected = EstimateStepExpectedSeconds(bar.Id, bar.PhaseNumber);
+            double benchRem = Math.Max(0.0, expected - elapsedSec);
+            if (!bar.IsIndeterminate && bar.Progress >= 10 && bar.Progress < 100 && elapsedSec >= 5)
+            {
+                double progEta = elapsedSec * (100.0 - bar.Progress) / (double)bar.Progress;
+                double wProg = Math.Min(0.75, bar.Progress / 100.0);
+                return (int)Math.Max(0, Math.Round(wProg * progEta + (1.0 - wProg) * benchRem));
+            }
+
+            if (elapsedSec < expected)
+            {
+                return (int)Math.Round(expected - elapsedSec);
+            }
+            return -2;
+        }
+
+        public void UpdateLiveTimersAndEta()
+        {
+            try
+            {
+                GlobalElapsedText = FormatCompactDuration(_elapsedDuration.TotalSeconds);
+
+                string matchedModel;
+                GetModelScaleFactor(out matchedModel);
+                string baseSource = (_benchmarkBaseline != null && !string.IsNullOrEmpty(_benchmarkBaseline.SourceLabel))
+                    ? _benchmarkBaseline.SourceLabel
+                    : "Podrazumevani WIS v3 benchmark";
+                BenchmarkSourceTooltip = !string.IsNullOrEmpty(matchedModel)
+                    ? string.Format("Procena ETA: {0} • model {1}", baseSource, matchedModel)
+                    : string.Format("Procena ETA: {0}", baseSource);
+
+                DateTime nowUtc = DateTime.UtcNow;
+                double runningStepsRemSum = 0.0;
+
+                if (ActiveStepBars != null)
+                {
+                    for (int i = 0; i < ActiveStepBars.Count; i++)
+                    {
+                        ActiveStepProgressItem bar = ActiveStepBars[i];
+                        if (bar == null) continue;
+                        string barKey = bar.Id ?? ("bar_" + i);
+
+                        if (string.Equals(barKey, "done", StringComparison.OrdinalIgnoreCase))
+                        {
+                            bar.ElapsedText = GlobalElapsedText;
+                            bar.EtaText = "00:00";
+                            bar.TimingTooltip = BenchmarkSourceTooltip;
+                            continue;
+                        }
+                        if (string.Equals(barKey, "ready", StringComparison.OrdinalIgnoreCase))
+                        {
+                            bar.ElapsedText = "00:00";
+                            bar.EtaText = "--:--";
+                            bar.TimingTooltip = BenchmarkSourceTooltip;
+                            continue;
+                        }
+
+                        DateTime startUtc;
+                        if (!_activeBarStartUtc.TryGetValue(barKey, out startUtc))
+                        {
+                            startUtc = nowUtc;
+                            _activeBarStartUtc[barKey] = startUtc;
+                        }
+
+                        int elapsedSec = Math.Max(0, (int)(nowUtc - startUtc).TotalSeconds);
+                        int etaSec = ComputeStepEtaSeconds(bar, elapsedSec);
+
+                        bar.ElapsedText = FormatCompactDuration(elapsedSec);
+                        if (etaSec == -1) bar.EtaText = "--:--";
+                        else if (etaSec == -2) bar.EtaText = "< 00:30";
+                        else if (etaSec == 0) bar.EtaText = "00:00";
+                        else bar.EtaText = "~" + FormatCompactDuration(etaSec);
+                        bar.TimingTooltip = BenchmarkSourceTooltip;
+
+                        bool isBgParallel = string.Equals(barKey, "bg_wu", StringComparison.OrdinalIgnoreCase) ||
+                                            string.Equals(barKey, "drv_batch", StringComparison.OrdinalIgnoreCase) ||
+                                            barKey.StartsWith("drv_", StringComparison.OrdinalIgnoreCase);
+                        if (!isBgParallel && etaSec > 0)
+                        {
+                            runningStepsRemSum += etaSec;
+                        }
+                    }
+                }
+
+                if (_isServiceFinished || _isCompleted)
+                {
+                    GlobalEtaText = "00:00";
+                }
+                else
+                {
+                    double waitRemSum = 0.0;
+                    double totalBenchmarkSum = 0.0;
+                    bool hasRunningPhaseSteps = false;
+                    if (Phases != null)
+                    {
+                        for (int i = 0; i < Phases.Count; i++)
+                        {
+                            PhaseItem ph = Phases[i];
+                            if (ph == null || ph.Steps == null) continue;
+                            for (int j = 0; j < ph.Steps.Count; j++)
+                            {
+                                StepItem st = ph.Steps[j];
+                                if (st == null) continue;
+                                double expSt = EstimateStepExpectedSeconds(st.Id, ph.Number);
+                                totalBenchmarkSum += expSt;
+                                if (st.IsRunning)
+                                {
+                                    hasRunningPhaseSteps = true;
+                                }
+                                else if (!st.IsCompleted && !st.IsSkipped && !st.IsWarning && !st.IsError)
+                                {
+                                    waitRemSum += expSt;
+                                }
+                            }
+                        }
+                    }
+
+                    double globalRemSec = hasRunningPhaseSteps
+                        ? (runningStepsRemSum + waitRemSum)
+                        : (totalBenchmarkSum > 0.0
+                            ? totalBenchmarkSum * (Math.Max(0, 100 - _globalProgress) / 100.0)
+                            : waitRemSum);
+
+                    if (globalRemSec <= 0.0 && _globalProgress < 100)
+                    {
+                        GlobalEtaText = "< 00:30";
+                    }
+                    else
+                    {
+                        GlobalEtaText = "~" + FormatCompactDuration(globalRemSec);
+                    }
+                }
+            }
+            catch { }
+        }
+
         public bool UsbFree { get { return _usbFree; } set { SetProperty(ref _usbFree, value); } }
         public string UsbBannerText { get { return _usbBannerText; } set { SetProperty(ref _usbBannerText, value); } }
 
@@ -1762,6 +3131,7 @@ namespace WIS.UI
         private string _backgroundWuStatus = "IDLE";
         private string _backgroundWuTextSr = "Pozadinski Windows Update: Pokretanje nakon Koraka 2...";
         private string _backgroundWuTextZh = "后台 Windows 更新: 阶段 2 后正在启动...";
+        private int _backgroundWuProgress = -1;
 
         public bool IsBackgroundWuVisible
         {
@@ -1865,10 +3235,16 @@ namespace WIS.UI
 
         public void UpdateBackgroundWuStatus(string status, string textSr, string textZh)
         {
+            UpdateBackgroundWuStatus(status, textSr, textZh, -1);
+        }
+
+        public void UpdateBackgroundWuStatus(string status, string textSr, string textZh, int progressPercent)
+        {
             Action upd = delegate
             {
                 IsBackgroundWuVisible = true;
                 BackgroundWuStatus = string.IsNullOrEmpty(status) ? "SEARCHING" : status;
+                _backgroundWuProgress = progressPercent;
                 if (!string.IsNullOrEmpty(textSr)) _backgroundWuTextSr = textSr;
                 if (!string.IsNullOrEmpty(textZh)) _backgroundWuTextZh = textZh;
                 else if (!string.IsNullOrEmpty(textSr)) _backgroundWuTextZh = textSr;
@@ -1876,6 +3252,7 @@ namespace WIS.UI
                 OnPropertyChanged("BackgroundWuBadgeText");
                 OnPropertyChanged("BackgroundWuBadgeBrush");
                 OnPropertyChanged("BackgroundWuBorderBrush");
+                RefreshProgressBars();
             };
 
             var app = Application.Current;
@@ -1971,6 +3348,218 @@ namespace WIS.UI
         public string RamDetail { get { return _ramDetail; } set { SetProperty(ref _ramDetail, value); } }
         public string RamUsage { get { return _ramUsage; } set { SetProperty(ref _ramUsage, value); } }
 
+        // Pregled — Hardver monitor (CPU/RAM opterećenje, kratke temperature, baterija/punjač uživo)
+        private double _cpuUsagePercent = 0.0;
+        private string _cpuUsageShortText = "0%";
+        private Brush _cpuUsageBrush = CreateFrozenBrush(78, 201, 176);
+        private double _ramUsagePercent = 0.0;
+        private string _ramUsageShortText = "Očitavanje...";
+        private Brush _ramUsageBrush = CreateFrozenBrush(78, 201, 176);
+
+        private string _cpuTempShortText = "N/A";
+        private string _gpuTempShortText = "N/A";
+        private string _ssdTempShortText = "N/A";
+        private string _mbTempShortText = "N/A";
+
+        private bool _hasBatteryLive = false;
+        private bool _isOnAcPower = true;
+        private bool _isBatteryCharging = false;
+        private bool _isBatteryDischarging = false;
+        private int _batteryChargePercent = 0;
+        private double _batteryRateWatts = 0.0;
+        private double _batteryCurrentAmps = 0.0;
+        private string _powerStatusTitle = "Očitavanje napajanja...";
+        private string _powerDrawText = "—";
+        private string _powerMonitorTooltip = "Očitavanje stanja baterije i punjača...";
+        private Brush _powerStatusBrush = CreateFrozenBrush(204, 204, 204);
+        private Brush _powerDrawBrush = CreateFrozenBrush(78, 201, 176);
+        private Brush _batteryLevelBrush = CreateFrozenBrush(46, 204, 113);
+
+        public double CpuUsagePercent { get { return _cpuUsagePercent; } set { SetProperty(ref _cpuUsagePercent, value); } }
+        public string CpuUsageShortText { get { return _cpuUsageShortText; } set { SetProperty(ref _cpuUsageShortText, value); } }
+        public Brush CpuUsageBrush { get { return _cpuUsageBrush; } set { SetProperty(ref _cpuUsageBrush, value); } }
+
+        public double RamUsagePercent { get { return _ramUsagePercent; } set { SetProperty(ref _ramUsagePercent, value); } }
+        public string RamUsageShortText { get { return _ramUsageShortText; } set { SetProperty(ref _ramUsageShortText, value); } }
+        public Brush RamUsageBrush { get { return _ramUsageBrush; } set { SetProperty(ref _ramUsageBrush, value); } }
+
+        public string CpuTempShortText { get { return _cpuTempShortText; } set { SetProperty(ref _cpuTempShortText, value); } }
+        public string GpuTempShortText { get { return _gpuTempShortText; } set { SetProperty(ref _gpuTempShortText, value); } }
+        public string SsdTempShortText { get { return _ssdTempShortText; } set { SetProperty(ref _ssdTempShortText, value); } }
+        public string MbTempShortText { get { return _mbTempShortText; } set { SetProperty(ref _mbTempShortText, value); } }
+
+        public bool HasBatteryLive { get { return _hasBatteryLive; } set { SetProperty(ref _hasBatteryLive, value); } }
+        public bool IsOnAcPower { get { return _isOnAcPower; } set { SetProperty(ref _isOnAcPower, value); } }
+        public bool IsBatteryCharging { get { return _isBatteryCharging; } set { SetProperty(ref _isBatteryCharging, value); } }
+        public bool IsBatteryDischarging { get { return _isBatteryDischarging; } set { SetProperty(ref _isBatteryDischarging, value); } }
+        public int BatteryChargePercent { get { return _batteryChargePercent; } set { SetProperty(ref _batteryChargePercent, value); } }
+        public double BatteryRateWatts { get { return _batteryRateWatts; } set { SetProperty(ref _batteryRateWatts, value); } }
+        public double BatteryCurrentAmps { get { return _batteryCurrentAmps; } set { SetProperty(ref _batteryCurrentAmps, value); } }
+        public string PowerStatusTitle { get { return _powerStatusTitle; } set { SetProperty(ref _powerStatusTitle, value); } }
+        public string PowerDrawText { get { return _powerDrawText; } set { SetProperty(ref _powerDrawText, value); } }
+        public string PowerMonitorTooltip { get { return _powerMonitorTooltip; } set { SetProperty(ref _powerMonitorTooltip, value); } }
+        public Brush PowerStatusBrush { get { return _powerStatusBrush; } set { SetProperty(ref _powerStatusBrush, value); } }
+        public Brush PowerDrawBrush { get { return _powerDrawBrush; } set { SetProperty(ref _powerDrawBrush, value); } }
+        public Brush BatteryLevelBrush { get { return _batteryLevelBrush; } set { SetProperty(ref _batteryLevelBrush, value); } }
+
+        public void UpdateCpuRamMonitor(int cpuPct, double ramUsedGb, double ramTotalGb, int ramPct)
+        {
+            if (cpuPct < 0) cpuPct = 0;
+            if (cpuPct > 100) cpuPct = 100;
+            if (ramPct < 0) ramPct = 0;
+            if (ramPct > 100) ramPct = 100;
+
+            CpuUsagePercent = cpuPct;
+            CpuUsageShortText = string.Format("{0}%", cpuPct);
+            CpuUsageBrush = cpuPct >= 85
+                ? CreateFrozenBrush(231, 76, 60)
+                : (cpuPct >= 65 ? CreateFrozenBrush(241, 196, 15) : CreateFrozenBrush(78, 201, 176));
+
+            RamUsagePercent = ramPct;
+            RamUsageShortText = ramTotalGb > 0.1
+                ? string.Format("{0:0.0} / {1:0.0} GB ({2}%)", ramUsedGb, ramTotalGb, ramPct)
+                : string.Format("{0}%", ramPct);
+            RamUsageBrush = ramPct >= 90
+                ? CreateFrozenBrush(231, 76, 60)
+                : (ramPct >= 75 ? CreateFrozenBrush(241, 196, 15) : CreateFrozenBrush(78, 201, 176));
+        }
+
+        public void UpdatePowerMonitor(
+            bool hasBattery,
+            bool isOnAc,
+            bool isCharging,
+            bool isDischarging,
+            int chargePercent,
+            double watts,
+            double amps,
+            double voltageV,
+            int lifeRemainingSec)
+        {
+            if (chargePercent < 0) chargePercent = 0;
+            if (chargePercent > 100) chargePercent = 100;
+            if (watts < 0.0) watts = 0.0;
+            if (amps < 0.0) amps = 0.0;
+
+            HasBatteryLive = hasBattery;
+            IsOnAcPower = isOnAc;
+            IsBatteryCharging = isCharging;
+            IsBatteryDischarging = isDischarging;
+            BatteryChargePercent = chargePercent;
+            BatteryRateWatts = watts;
+            BatteryCurrentAmps = amps;
+
+            if (!hasBattery)
+            {
+                PowerStatusTitle = "Fiksno AC napajanje";
+                PowerDrawText = "Desktop (AC)";
+                PowerStatusBrush = CreateFrozenBrush(180, 180, 180);
+                PowerDrawBrush = CreateFrozenBrush(78, 201, 176);
+                BatteryLevelBrush = CreateFrozenBrush(100, 100, 100);
+                PowerMonitorTooltip = "Desktop računar bez sistemske baterije (stalno AC napajanje).";
+                return;
+            }
+
+            BatteryLevelBrush = chargePercent <= 20
+                ? CreateFrozenBrush(231, 76, 60)
+                : (chargePercent <= 45 ? CreateFrozenBrush(243, 156, 18) : CreateFrozenBrush(46, 204, 113));
+
+            string remText = "";
+            if (!isOnAc && lifeRemainingSec > 60 && lifeRemainingSec < 86400 * 2)
+            {
+                int remMins = lifeRemainingSec / 60;
+                int remHours = remMins / 60;
+                int remMinPart = remMins % 60;
+                remText = remHours > 0
+                    ? string.Format("~{0}h {1:00}m", remHours, remMinPart)
+                    : string.Format("~{0}m", remMinPart);
+            }
+
+            if (isOnAc)
+            {
+                PowerStatusTitle = string.Format("Punjač priključen • {0}%", chargePercent);
+                PowerStatusBrush = CreateFrozenBrush(78, 201, 176);
+                if (isDischarging && watts >= 1.0)
+                {
+                    PowerDrawText = amps > 0.05
+                        ? string.Format("-{0:0.0} W ({1:0.00} A)", watts, amps)
+                        : string.Format("-{0:0.0} W", watts);
+                    PowerDrawBrush = CreateFrozenBrush(231, 76, 60);
+                }
+                else if (watts >= 0.5)
+                {
+                    PowerDrawText = amps > 0.05
+                        ? string.Format("+{0:0.0} W ({1:0.00} A)", watts, amps)
+                        : string.Format("+{0:0.0} W", watts);
+                    PowerDrawBrush = CreateFrozenBrush(46, 204, 113);
+                }
+                else if (chargePercent >= 98)
+                {
+                    PowerDrawText = "Puna (AC)";
+                    PowerDrawBrush = CreateFrozenBrush(46, 204, 113);
+                }
+                else
+                {
+                    PowerDrawText = isCharging ? "Punjenje (AC)" : "AC napajanje";
+                    PowerDrawBrush = CreateFrozenBrush(78, 201, 176);
+                }
+            }
+            else
+            {
+                PowerStatusTitle = string.Format("Na bateriji • {0}%", chargePercent);
+                PowerStatusBrush = chargePercent <= 20
+                    ? CreateFrozenBrush(231, 76, 60)
+                    : CreateFrozenBrush(243, 156, 18);
+
+                if (watts >= 0.5)
+                {
+                    if (!string.IsNullOrEmpty(remText))
+                    {
+                        PowerDrawText = string.Format("-{0:0.0} W • {1}", watts, remText);
+                    }
+                    else if (amps > 0.05)
+                    {
+                        PowerDrawText = string.Format("-{0:0.0} W ({1:0.00} A)", watts, amps);
+                    }
+                    else
+                    {
+                        PowerDrawText = string.Format("-{0:0.0} W", watts);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(remText))
+                {
+                    PowerDrawText = remText;
+                }
+                else
+                {
+                    PowerDrawText = "Pražnjenje (DC)";
+                }
+
+                PowerDrawBrush = chargePercent <= 20
+                    ? CreateFrozenBrush(231, 76, 60)
+                    : CreateFrozenBrush(243, 156, 18);
+            }
+
+            var tt = new System.Text.StringBuilder();
+            tt.Append(PowerStatusTitle);
+            if (watts >= 0.5)
+            {
+                tt.AppendFormat(" | Snaga: {0:0.0} W", watts);
+            }
+            if (amps > 0.05)
+            {
+                tt.AppendFormat(" | Struja: {0:0.00} A", amps);
+            }
+            if (voltageV > 1.0)
+            {
+                tt.AppendFormat(" | Napon baterije: {0:0.00} V", voltageV);
+            }
+            if (!string.IsNullOrEmpty(remText))
+            {
+                tt.AppendFormat(" | Preostalo: {0}", remText);
+            }
+            PowerMonitorTooltip = tt.ToString();
+        }
+
         // Grafička karta & Ekran
         private string _gpuName = "Detekcija GPU-a...";
         private string _gpuVram = "N/A";
@@ -2023,6 +3612,7 @@ namespace WIS.UI
                 PnpSummaryText = "✓ Svi sistemski drajveri su ispravno instalirani (0 problema)";
                 PnpStatusBrush = CreateFrozenBrush(46, 204, 113);
             }
+            RebuildOverviewAlerts();
         }
 
         // Termalna telemetrija, 5-minutni grafikon i taktovi jezgara (v2.15.0 - WIS-TASK-131)
@@ -2058,16 +3648,31 @@ namespace WIS.UI
         private PointCollection _mbGraphPoints = new PointCollection();
         private PointCollection _ssdGraphPoints = new PointCollection();
         private PointCollection _throttleGraphPoints = new PointCollection();
+        private PointCollection _cpuLoadGraphPoints = new PointCollection();
 
         private string _legendCpuText = "● CPU: N/A";
         private string _legendGpuText = "● GPU: N/A";
         private string _legendMbText = "● MB: N/A";
         private string _legendSsdText = "● SSD: N/A";
         private string _legendThrottleText = "● Throttling: Nije dostupno";
+        private string _legendCpuLoadText = "● CPU Load: 0%";
+
+        private string _hwCpuAvgClockText = "—";
+        private string _hwCpuKpiSubText = "Temp: Očitavanje...";
+        private string _hwRamAvailableText = "Slobodno: N/A";
+        private string _hwRamCommitText = "Commit: N/A";
+        private string _hwGpuKpiSubText = "VRAM / Senzor: N/A";
+        private string _hwDiskIoText = "R/W: Očitavanje...";
+        private double _hwDiskActivePercent = 0.0;
+        private string _hwPowerVoltageText = "Napon: Očitavanje...";
+        private string _hwPowerSubText = "Zdravlje baterije";
+        private string _hwSystemStatsText = "Procesi: -- • Uptime: 00:00:00";
+        private string _hwNetRateText = "RX 0.0 MB/s • TX 0.0 MB/s";
 
         private ICommand _resetCoreClocksCommand;
 
         public ObservableCollection<CoreClockItem> CoreClocks { get; private set; }
+        public ObservableCollection<HwMonitorSensorRow> HwMonitorSensors { get; private set; }
 
         public float CpuTemp { get { return _cpuTemp; } set { SetProperty(ref _cpuTemp, value); } }
         public string CpuTempText { get { return _cpuTempText; } set { SetProperty(ref _cpuTempText, value); } }
@@ -2101,12 +3706,118 @@ namespace WIS.UI
         public PointCollection MbGraphPoints { get { return _mbGraphPoints; } set { SetProperty(ref _mbGraphPoints, value); } }
         public PointCollection SsdGraphPoints { get { return _ssdGraphPoints; } set { SetProperty(ref _ssdGraphPoints, value); } }
         public PointCollection ThrottleGraphPoints { get { return _throttleGraphPoints; } set { SetProperty(ref _throttleGraphPoints, value); } }
+        public PointCollection CpuLoadGraphPoints { get { return _cpuLoadGraphPoints; } set { SetProperty(ref _cpuLoadGraphPoints, value); } }
 
         public string LegendCpuText { get { return _legendCpuText; } set { SetProperty(ref _legendCpuText, value); } }
         public string LegendGpuText { get { return _legendGpuText; } set { SetProperty(ref _legendGpuText, value); } }
         public string LegendMbText { get { return _legendMbText; } set { SetProperty(ref _legendMbText, value); } }
         public string LegendSsdText { get { return _legendSsdText; } set { SetProperty(ref _legendSsdText, value); } }
         public string LegendThrottleText { get { return _legendThrottleText; } set { SetProperty(ref _legendThrottleText, value); } }
+        public string LegendCpuLoadText { get { return _legendCpuLoadText; } set { SetProperty(ref _legendCpuLoadText, value); } }
+
+        public string HwCpuAvgClockText { get { return _hwCpuAvgClockText; } set { SetProperty(ref _hwCpuAvgClockText, value); } }
+        public string HwCpuKpiSubText { get { return _hwCpuKpiSubText; } set { SetProperty(ref _hwCpuKpiSubText, value); } }
+        public string HwRamAvailableText { get { return _hwRamAvailableText; } set { SetProperty(ref _hwRamAvailableText, value); } }
+        public string HwRamCommitText { get { return _hwRamCommitText; } set { SetProperty(ref _hwRamCommitText, value); } }
+        public string HwGpuKpiSubText { get { return _hwGpuKpiSubText; } set { SetProperty(ref _hwGpuKpiSubText, value); } }
+        public string HwDiskIoText { get { return _hwDiskIoText; } set { SetProperty(ref _hwDiskIoText, value); } }
+        public double HwDiskActivePercent { get { return _hwDiskActivePercent; } set { SetProperty(ref _hwDiskActivePercent, Math.Max(0.0, Math.Min(100.0, value))); } }
+        public string HwPowerVoltageText { get { return _hwPowerVoltageText; } set { SetProperty(ref _hwPowerVoltageText, value); } }
+        public string HwPowerSubText { get { return _hwPowerSubText; } set { SetProperty(ref _hwPowerSubText, value); } }
+        public string HwSystemStatsText { get { return _hwSystemStatsText; } set { SetProperty(ref _hwSystemStatsText, value); } }
+        public string HwNetRateText { get { return _hwNetRateText; } set { SetProperty(ref _hwNetRateText, value); } }
+
+        private void InitializeHwMonitorSensors()
+        {
+            if (HwMonitorSensors == null) return;
+            HwMonitorSensors.Clear();
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_temp", "TEMPERATURA"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_cpu", "CPU Package / ACPI", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_gpu", "GPU Jezgro", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_mb", "Matična ploča (MB)", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_ssd", "NVMe / SSD Disk", "N/A"));
+
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_load", "OPTEREĆENJE I STABILNOST"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_cpu", "CPU Ukupno opterećenje", "0 %"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_ram", "RAM Zauzeće memorije", "0 %"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_throttle", "CPU Thermal Throttling", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_disk", "Disk I/O aktivnost", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_net", "Mrežni protok (RX + TX)", "0.0 MB/s"));
+
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_power", "HLAĐENJE I NAPAJANJE"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("fan_rpm", "Ventilator (Fan RPM)", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_watts", "Snaga baterije / punjača", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_amps", "Struja (A)", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_volts", "Napon baterije (V)", "N/A"));
+        }
+
+        private HwMonitorSensorRow FindHwSensorRow(string key)
+        {
+            if (HwMonitorSensors == null || string.IsNullOrEmpty(key)) return null;
+            for (int i = 0; i < HwMonitorSensors.Count; i++)
+            {
+                if (string.Equals(HwMonitorSensors[i].Key, key, StringComparison.Ordinal))
+                {
+                    return HwMonitorSensors[i];
+                }
+            }
+            return null;
+        }
+
+        public void UpdateHwMonitorSensor(string key, double value, string format, Brush valueBrush)
+        {
+            HwMonitorSensorRow row = FindHwSensorRow(key);
+            if (row != null)
+            {
+                row.UpdateSample(value, format, valueBrush);
+            }
+        }
+
+        public void SetHwMonitorSensorUnavailable(string key, string label)
+        {
+            HwMonitorSensorRow row = FindHwSensorRow(key);
+            if (row != null)
+            {
+                row.SetUnavailable(label);
+            }
+        }
+
+        public void ResetAllHwMonitorExtremes()
+        {
+            if (HwMonitorSensors == null) return;
+            for (int i = 0; i < HwMonitorSensors.Count; i++)
+            {
+                HwMonitorSensors[i].ResetExtremes();
+            }
+        }
+
+        public void RefreshHwMonitorKpiSummaries()
+        {
+            HwMonitorSensorRow cpuRow = FindHwSensorRow("temp_cpu");
+            if (cpuRow != null && cpuRow.HasValue)
+            {
+                HwCpuKpiSubText = string.Format("Temp {0:0}°C • Min {1:0}° / Max {2:0}°", cpuRow.CurrentNumeric, cpuRow.MinNumeric, cpuRow.MaxNumeric);
+            }
+            else
+            {
+                HwCpuKpiSubText = "Temp: " + CpuTempShortText;
+            }
+
+            HwMonitorSensorRow gpuRow = FindHwSensorRow("temp_gpu");
+            string vramLabel = (HardwareInfo != null && !string.IsNullOrWhiteSpace(HardwareInfo.GpuPrimaryVram))
+                ? HardwareInfo.GpuPrimaryVram
+                : (!string.IsNullOrWhiteSpace(GpuVram) ? GpuVram : "Shared");
+            if (gpuRow != null && gpuRow.HasValue)
+            {
+                HwGpuKpiSubText = string.Format("VRAM {0} • Max {1:0}°C", vramLabel, gpuRow.MaxNumeric);
+            }
+            else
+            {
+                HwGpuKpiSubText = string.Format("VRAM {0} • Driver {1}", vramLabel, GpuDriverVersion);
+            }
+
+            HwPowerSubText = string.Format("Zdravlje {0} • Ciklusi: {1}", BatteryHealthText, BatteryCycles);
+        }
 
         public ICommand ResetCoreClocksCommand
         {
@@ -2218,7 +3929,13 @@ namespace WIS.UI
         public bool IsServiceReadyVisible
         {
             get { return _isServiceReadyVisible; }
-            set { SetProperty(ref _isServiceReadyVisible, value); }
+            set
+            {
+                if (SetProperty(ref _isServiceReadyVisible, value))
+                {
+                    RefreshProgressBars();
+                }
+            }
         }
 
         public string AutoStartMessage
@@ -2278,6 +3995,16 @@ namespace WIS.UI
         public bool IpcConnected { get { return _ipcConnected; } set { SetProperty(ref _ipcConnected, value); } }
         public string IpcStatusText { get { return _ipcStatusText; } set { SetProperty(ref _ipcStatusText, value); } }
 
+        private bool _serviceHubConnected = false;
+        private string _serviceHubVersion = "";
+        private string _serviceHubFooterText = "ServiceHUB";
+        private SolidColorBrush _serviceHubIndicatorBrush = CreateFrozenBrush(136, 136, 136);
+
+        public bool ServiceHubConnected { get { return _serviceHubConnected; } set { SetProperty(ref _serviceHubConnected, value); } }
+        public string ServiceHubVersion { get { return _serviceHubVersion; } set { SetProperty(ref _serviceHubVersion, value); } }
+        public string ServiceHubFooterText { get { return _serviceHubFooterText; } set { SetProperty(ref _serviceHubFooterText, value); } }
+        public SolidColorBrush ServiceHubIndicatorBrush { get { return _serviceHubIndicatorBrush; } set { SetProperty(ref _serviceHubIndicatorBrush, value); } }
+
         // ------------------ COMMANDS ------------------
         public ICommand PauseCommand { get; set; }
         public ICommand SkipCommand { get; set; }
@@ -2288,9 +4015,46 @@ namespace WIS.UI
         public ICommand ExitWithoutCleanCommand { get; set; }
         public ICommand ShowCompletionSummaryCommand { get; set; }
         public ICommand RerunPhase4Command { get; set; }
+        public ICommand RetryAppCommand { get; set; }
         public ICommand RefreshHardwareCommand { get; set; }
         public ICommand SwitchLanguageCommand { get; set; }
         public ICommand RunHwTestCommand { get; set; }
+        public ICommand TogglePhasesExpandedCommand { get; set; }
+
+        // ------------------ SKUPLJANJE / ŠIRENJE KARTICE FAZA ------------------
+        private bool _isPhasesExpanded = true;
+        public bool IsPhasesExpanded
+        {
+            get { return _isPhasesExpanded; }
+            set
+            {
+                if (SetProperty(ref _isPhasesExpanded, value))
+                {
+                    if (Phases != null)
+                    {
+                        for (int i = 0; i < Phases.Count; i++)
+                        {
+                            if (Phases[i] != null)
+                            {
+                                Phases[i].ShowStepsInOverview = value;
+                            }
+                        }
+                    }
+                    OnPropertyChanged("PhasesToggleGlyph");
+                    OnPropertyChanged("PhasesToggleToolTip");
+                }
+            }
+        }
+
+        public string PhasesToggleGlyph
+        {
+            get { return _isPhasesExpanded ? "\u25B2" : "\u25BC"; }
+        }
+
+        public string PhasesToggleToolTip
+        {
+            get { return _isPhasesExpanded ? "Skupi prikaz koraka faza" : "Prikaži sve korake faza"; }
+        }
 
         // ------------------ HARDWARE TEST (WIS-TASK-189) ------------------
         private bool _isHwTestFinished = false;
@@ -2391,7 +4155,12 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _isCompleted, value))
                 {
+                    if (value)
+                    {
+                        RebuildOverviewAlerts();
+                    }
                     _shutdownTimerActive = false;
+                    RefreshProgressBars();
                 }
             }
         }
@@ -2474,6 +4243,14 @@ namespace WIS.UI
                 if (SetProperty(ref _isServiceFinished, value))
                 {
                     OnPropertyChanged("IsNotServiceFinished");
+                    if (value)
+                    {
+                        UpdatePhases();
+                    }
+                    else
+                    {
+                        RefreshProgressBars();
+                    }
                 }
             }
         }
@@ -2514,14 +4291,45 @@ namespace WIS.UI
         public MainViewModel()
         {
             Phases = new ObservableCollection<PhaseItem>();
+            ActiveStepBars = new ObservableCollection<ActiveStepProgressItem>();
+            OverviewAlerts = new ObservableCollection<OverviewAlertItem>();
             RecentLogs = new ObservableCollection<LogEntry>();
             Apps = new ObservableCollection<AppItem>();
             AllLogs = new ObservableCollection<LogEntry>();
             PnpProblemDevices = new ObservableCollection<PnpProblemDevice>();
             CoreClocks = new ObservableCollection<CoreClockItem>();
+            HwMonitorSensors = new ObservableCollection<HwMonitorSensorRow>();
+            InitializeHwMonitorSensors();
             Autopilot = new AutopilotViewModel();
+            Autopilot.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == "IsAlertActive" ||
+                    e.PropertyName == "IsLocked" ||
+                    e.PropertyName == "IsRegistered" ||
+                    e.PropertyName == "TenantDomain" ||
+                    e.PropertyName == "ProfileTenantDomain" ||
+                    e.PropertyName == "StatusTitle" ||
+                    e.PropertyName == "StatusLevel")
+                {
+                    RebuildOverviewAlerts();
+                }
+            };
             HardwareInfo = new HardwareInfoViewModel();
             Drivers = new DriversTabViewModel();
+            Drivers.PropertyChanged += (s, e) =>
+            {
+                if (e.PropertyName == "IsBatchResolving" ||
+                    e.PropertyName == "BatchProgressPercent" ||
+                    e.PropertyName == "BatchStatusText")
+                {
+                    RefreshProgressBars();
+                }
+                else if (e.PropertyName == "HasMissingDevices" ||
+                         e.PropertyName == "MissingDevicesCount")
+                {
+                    RebuildOverviewAlerts();
+                }
+            };
 
             SwitchLanguageCommand = new RelayCommand(p =>
             {
@@ -2530,22 +4338,82 @@ namespace WIS.UI
                 RefreshLocalization();
             });
 
+            TogglePhasesExpandedCommand = new RelayCommand(p =>
+            {
+                IsPhasesExpanded = !IsPhasesExpanded;
+            });
+
             LocalizationService.Instance.PropertyChanged += (s, e) =>
             {
                 RefreshLocalization();
             };
 
-            // Inicijalizacija 6 faza
-            Phases.Add(new PhaseItem { Number = 1, Title = "1. Mreža", Subtitle = "Wi-Fi i ruting", Status = "Active" });
-            Phases.Add(new PhaseItem { Number = 2, Title = "2. Update", Subtitle = "Drajveri i zakrpe", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 3, Title = "3. Optimizacija", Subtitle = "Debloat i brendiranje", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 4, Title = "4. Programi", Subtitle = "Paketi i OEM licenca", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 5, Title = "5. Hardverski test", Subtitle = "Stres + Periferije", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 6, Title = "6. Završetak", Subtitle = "Dijagnostika i rezime", Status = "Pending" });
+            // Inicijalizacija 5 vidljivih faza (interni Number 2..6 ostaje nepromenjen zbog IPC/PS faza)
+            Phases.Add(new PhaseItem { Number = 2, DisplayNumber = 1, Title = "1. Update", Subtitle = "Drajveri i zakrpe", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 3, DisplayNumber = 2, Title = "2. Optimizacija", Subtitle = "Debloat i brendiranje", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 4, DisplayNumber = 3, Title = "3. Programi", Subtitle = "Paketi i OEM licenca", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 5, DisplayNumber = 4, Title = "4. Hardverski test", Subtitle = "Stres + Periferije", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 6, DisplayNumber = 5, Title = "5. Završetak", Subtitle = "Dijagnostika i rezime", Status = "Pending" });
+            InitializeDefaultPhaseSteps();
 
             // Inicijalizacija standardnih WIS aplikacija
             InitializeDefaultApps();
             UpdatePhases();
+            RefreshProgressBars();
+            RebuildOverviewAlerts();
+        }
+
+        private void InitializeDefaultPhaseSteps()
+        {
+            for (int i = 0; i < Phases.Count; i++)
+            {
+                PhaseItem phase = Phases[i];
+                if (phase == null || phase.Steps == null) continue;
+                phase.IsExpanded = true;
+                phase.ShowStepsInOverview = _isPhasesExpanded;
+
+                switch (phase.Number)
+                {
+                    case 2:
+                        phase.Steps.Add(new StepItem { Id = "P2.Identify", Title = "Identifikacija računara i hardvera", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.NasCache", Title = "TrueNAS model drajveri i pre-patch zakrpe", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Vmd", Title = "Intel VMD / RST skladišni drajveri", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Pnp", Title = "PnP instalacija lokalnih drajvera", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Diag", Title = "Dijagnostika preostalih uređaja", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.WuDrivers", Title = "Hardverski drajveri preko Windows Update-a", Status = "WAIT" });
+                        break;
+                    case 3:
+                        phase.Steps.Add(new StepItem { Id = "P3.Debloat", Title = "Debloat neželjenih aplikacija", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Telemetry", Title = "Gašenje telemetrije i praćenja", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Oem", Title = "OEM brending i regionalna podešavanja", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Scaling", Title = "Optimalno DPI skaliranje ekrana", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.VcRedist", Title = "Visual C++ Runtime biblioteke", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.UsbFree", Title = "Signal za oslobađanje USB medijuma", Status = "WAIT" });
+                        break;
+                    case 4:
+                        phase.Steps.Add(new StepItem { Id = "P4.Runtimes", Title = "Sistemski runtime paketi (VC++ / .NET)", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.WinRAR", Title = "WinRAR arhiver", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Chrome", Title = "Google Chrome pregledač", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Acrobat", Title = "Adobe Acrobat Pro", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Office", Title = "Microsoft Office 2024", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.BatteryBar", Title = "BatteryBar indikator baterije", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Shortcuts", Title = "Radne prečice na radnoj površini", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.PdfDefault", Title = "Podrazumevani PDF pregledač", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Activation", Title = "Aktivacija Windows i Office paketa", Status = "WAIT" });
+                        break;
+                    case 5:
+                        phase.Steps.Add(new StepItem { Id = "P5.AutoDiag", Title = "Automatska provera sistema", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P5.Stress", Title = "Stres test (Disk, RAM, CPU 30s, GPU 3D)", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P5.Peripherals", Title = "Interaktivni testovi periferija", Status = "WAIT" });
+                        break;
+                    case 6:
+                        phase.Steps.Add(new StepItem { Id = "P6.WuSecondPass", Title = "Dvoprolazni Update i WU barijera", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Report", Title = "Servisni karton i flotni izveštaj", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Security", Title = "Vraćanje bezbednosnih polisa i Anti-Leak", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Finalize", Title = "Završna verifikacija za isporuku", Status = "WAIT" });
+                        break;
+                }
+            }
         }
 
         public void RefreshLocalization()
@@ -2602,6 +4470,8 @@ namespace WIS.UI
             {
                 CompletionSummary = LocalizationService.Instance["CompletionDefaultSummary"];
             }
+            OnPropertyChanged("CompletionStatusBadgeText");
+            OnPropertyChanged("CompletionAlertsSummaryText");
 
             if (_shutdownCountdown > 0)
             {
@@ -2667,35 +4537,42 @@ namespace WIS.UI
                     int pNum = Phases[i].Number;
                     switch (pNum)
                     {
-                        case 1:
-                            Phases[i].Title = isZh ? "1. 网络" : "1. Mreža";
-                            Phases[i].Subtitle = isZh ? "Wi-Fi 与路由" : "Wi-Fi i ruting";
-                            break;
                         case 2:
-                            Phases[i].Title = isZh ? "2. 驱动更新" : "2. Update";
+                            Phases[i].Title = isZh ? "1. 驱动更新" : "1. Update";
                             Phases[i].Subtitle = isZh ? "驱动与补丁" : "Drajveri i zakrpe";
                             break;
                         case 3:
-                            Phases[i].Title = isZh ? "3. 系统优化" : "3. Optimizacija";
+                            Phases[i].Title = isZh ? "2. 系统优化" : "2. Optimizacija";
                             Phases[i].Subtitle = isZh ? "精简与个性化" : "Debloat i brendiranje";
                             break;
                         case 4:
-                            Phases[i].Title = isZh ? "4. 软件安装" : "4. Programi";
+                            Phases[i].Title = isZh ? "3. 软件安装" : "3. Programi";
                             Phases[i].Subtitle = isZh ? "软件包与 OEM 授权" : "Paketi i OEM licenca";
                             break;
                         case 5:
-                            Phases[i].Title = isZh ? "5. 硬件测试" : "5. Hardverski test";
+                            Phases[i].Title = isZh ? "4. 硬件测试" : "4. Hardverski test";
                             Phases[i].Subtitle = isZh ? "压力与外设" : "Stres + Periferije";
                             break;
                         case 6:
-                            Phases[i].Title = isZh ? "6. 完成交付" : "6. Završetak";
+                            Phases[i].Title = isZh ? "5. 完成交付" : "5. Završetak";
                             Phases[i].Subtitle = isZh ? "诊断与总览" : "Dijagnostika i rezime";
                             break;
                     }
 
-                    if (pNum < _currentPhase)
+                    if (pNum < _currentPhase || (_isServiceFinished && pNum == 6))
                     {
                         Phases[i].Status = "Completed";
+                        if (Phases[i].Steps != null)
+                        {
+                            for (int sIdx = 0; sIdx < Phases[i].Steps.Count; sIdx++)
+                            {
+                                StepItem st = Phases[i].Steps[sIdx];
+                                if (st != null && string.Equals(st.Status, "WAIT", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    st.Status = "OK";
+                                }
+                            }
+                        }
                     }
                     else if (pNum == _currentPhase)
                     {
@@ -2706,6 +4583,7 @@ namespace WIS.UI
                         Phases[i].Status = "Pending";
                     }
                 }
+                RefreshProgressBars();
             };
 
             var app = Application.Current;
@@ -2716,6 +4594,280 @@ namespace WIS.UI
             else
             {
                 updateAction();
+            }
+        }
+
+        public void RefreshProgressBars()
+        {
+            Action refreshAction = delegate
+            {
+                if (Phases == null || ActiveStepBars == null) return;
+
+                int totalSteps = 0;
+                int doneSteps = 0;
+                int runningSteps = 0;
+
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    PhaseItem ph = Phases[i];
+                    if (ph == null || ph.Steps == null) continue;
+                    for (int j = 0; j < ph.Steps.Count; j++)
+                    {
+                        StepItem st = ph.Steps[j];
+                        if (st == null) continue;
+                        totalSteps++;
+                        if (st.IsCompleted || st.IsSkipped || st.IsWarning || st.IsError)
+                        {
+                            doneSteps++;
+                        }
+                        else if (st.IsRunning)
+                        {
+                            runningSteps++;
+                        }
+                    }
+                }
+
+                if (_isServiceFinished || _isCompleted)
+                {
+                    GlobalProgress = 100;
+                    GlobalProgressSummary = totalSteps > 0
+                        ? string.Format("{0} / {0} koraka • Završeno", totalSteps)
+                        : "100% • Završeno";
+                }
+                else if (_isServiceReadyVisible)
+                {
+                    GlobalProgress = 0;
+                    GlobalProgressSummary = string.Format("0 / {0} koraka • Spremno", totalSteps);
+                }
+                else
+                {
+                    double stepRatio = (_progress > 0 && _progress < 100) ? (_progress / 100.0) : 0.45;
+                    double weight = doneSteps + (runningSteps * stepRatio);
+                    int computed = totalSteps > 0
+                        ? Math.Min(99, (int)Math.Round((weight / totalSteps) * 100.0))
+                        : _progress;
+                    if (computed == 0 && _progress > 0)
+                    {
+                        computed = Math.Min(99, Math.Max(1, _progress / Math.Max(1, Phases.Count)));
+                    }
+                    GlobalProgress = computed;
+                    GlobalProgressSummary = string.Format("{0} / {1} koraka • {2}", doneSteps, totalSteps, _phaseName);
+                }
+
+                List<ActiveStepProgressItem> nextBars = new List<ActiveStepProgressItem>();
+                if (_isServiceReadyVisible)
+                {
+                    nextBars.Add(new ActiveStepProgressItem
+                    {
+                        Id = "ready",
+                        PhaseNumber = 0,
+                        PhaseLabel = "SPREMNO",
+                        Title = "Čekanje na početak instalacije",
+                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : "Kliknite 'ZAPOČNI INSTALACIJU' ili sačekajte automatski start.",
+                        Progress = 0,
+                        IsIndeterminate = false,
+                        BarBrush = CreateFrozenBrush(0, 122, 204),
+                        BadgeBrush = CreateFrozenBrush(62, 62, 66)
+                    });
+                }
+                else if (_isServiceFinished || _isCompleted)
+                {
+                    nextBars.Add(new ActiveStepProgressItem
+                    {
+                        Id = "done",
+                        PhaseNumber = 6,
+                        PhaseLabel = "ZAVRŠENO",
+                        Title = "Svi koraci su uspešno završeni",
+                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : "Računar je pripremljen i spreman za predaju.",
+                        Progress = 100,
+                        IsIndeterminate = false,
+                        BarBrush = CreateFrozenBrush(46, 204, 113),
+                        BadgeBrush = CreateFrozenBrush(35, 134, 54)
+                    });
+                }
+                else
+                {
+                    int runIdx = 0;
+                    for (int i = 0; i < Phases.Count; i++)
+                    {
+                        PhaseItem ph = Phases[i];
+                        if (ph == null || ph.Steps == null) continue;
+                        for (int j = 0; j < ph.Steps.Count; j++)
+                        {
+                            StepItem st = ph.Steps[j];
+                            if (st == null || !st.IsRunning) continue;
+
+                            bool isPrimary = (runIdx == 0);
+                            int stepPct = (isPrimary && _progress > 0 && _progress < 100) ? _progress : 0;
+                            bool indet = !(isPrimary && _progress > 0 && _progress < 100);
+                            string detailTxt = !string.IsNullOrWhiteSpace(st.Reason)
+                                ? st.Reason
+                                : (isPrimary ? _liveStatus : "Izvršavanje koraka u toku...");
+
+                            nextBars.Add(new ActiveStepProgressItem
+                            {
+                                Id = !string.IsNullOrEmpty(st.Id) ? st.Id : ("run_" + runIdx),
+                                PhaseNumber = ph.Number,
+                                PhaseLabel = !string.IsNullOrEmpty(ph.Title) ? ph.Title.ToUpperInvariant() : "FAZA",
+                                Title = !string.IsNullOrEmpty(st.Title) ? st.Title : st.Id,
+                                Detail = detailTxt,
+                                Progress = stepPct,
+                                IsIndeterminate = indet,
+                                BarBrush = CreateFrozenBrush(78, 201, 176),
+                                BadgeBrush = CreateFrozenBrush(0, 122, 204)
+                            });
+                            runIdx++;
+                        }
+                    }
+
+                    if (nextBars.Count == 0)
+                    {
+                        nextBars.Add(new ActiveStepProgressItem
+                        {
+                            Id = "current",
+                            PhaseNumber = _currentPhase,
+                            PhaseLabel = !string.IsNullOrWhiteSpace(_phaseName) ? _phaseName.ToUpperInvariant() : "U TOKU",
+                            Title = !string.IsNullOrWhiteSpace(_subPhase) ? _subPhase : _phaseName,
+                            Detail = _liveStatus,
+                            Progress = _progress,
+                            IsIndeterminate = (_progress <= 0),
+                            BarBrush = CreateFrozenBrush(78, 201, 176),
+                            BadgeBrush = CreateFrozenBrush(0, 122, 204)
+                        });
+                    }
+
+                    string wuNorm = (_backgroundWuStatus ?? "").Trim().ToUpperInvariant();
+                    bool wuActive = _isBackgroundWuVisible && (
+                        wuNorm == "STARTING" || wuNorm == "SEARCHING" || wuNorm == "DOWNLOADING" ||
+                        wuNorm == "WAITING_MSI" || wuNorm == "INSTALLING" || wuNorm == "HARVESTING");
+                    if (wuActive)
+                    {
+                        nextBars.Add(new ActiveStepProgressItem
+                        {
+                            Id = "bg_wu",
+                            PhaseNumber = 0,
+                            PhaseLabel = "POZADINSKI WU",
+                            Title = "Pozadinski Windows Update",
+                            Detail = BackgroundWuDisplayText,
+                            Progress = _backgroundWuProgress >= 0 ? _backgroundWuProgress : 0,
+                            IsIndeterminate = (_backgroundWuProgress < 0),
+                            BarBrush = CreateFrozenBrush(56, 189, 248),
+                            BadgeBrush = BackgroundWuBadgeBrush
+                        });
+                    }
+
+                    if (Drivers != null && Drivers.IsBatchResolving)
+                    {
+                        nextBars.Add(new ActiveStepProgressItem
+                        {
+                            Id = "drv_batch",
+                            PhaseNumber = 0,
+                            PhaseLabel = "DRAJVERI",
+                            Title = "Grupna instalacija drajvera",
+                            Detail = Drivers.BatchStatusText,
+                            Progress = Drivers.BatchProgressPercent,
+                            IsIndeterminate = (Drivers.BatchProgressPercent <= 0),
+                            BarBrush = CreateFrozenBrush(163, 113, 247),
+                            BadgeBrush = CreateFrozenBrush(137, 87, 229)
+                        });
+                    }
+
+                    if (Drivers != null && Drivers.MissingDevices != null)
+                    {
+                        for (int d = 0; d < Drivers.MissingDevices.Count; d++)
+                        {
+                            DriverItemViewModel dev = Drivers.MissingDevices[d];
+                            if (dev == null || !dev.IsInstalling) continue;
+                            nextBars.Add(new ActiveStepProgressItem
+                            {
+                                Id = "drv_" + d,
+                                PhaseNumber = 0,
+                                PhaseLabel = "DRAJVER",
+                                Title = !string.IsNullOrWhiteSpace(dev.Name) ? dev.Name : "Instalacija drajvera",
+                                Detail = dev.InstallStatusText,
+                                Progress = dev.InstallProgressPercent,
+                                IsIndeterminate = (dev.InstallProgressPercent <= 0),
+                                BarBrush = CreateFrozenBrush(163, 113, 247),
+                                BadgeBrush = CreateFrozenBrush(137, 87, 229)
+                            });
+                        }
+                    }
+                }
+
+                var activeIdsSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                DateTime syncUtc = DateTime.UtcNow;
+                for (int k = 0; k < nextBars.Count; k++)
+                {
+                    string barId = nextBars[k].Id ?? ("bar_" + k);
+                    activeIdsSet.Add(barId);
+                    if (!_activeBarStartUtc.ContainsKey(barId))
+                    {
+                        _activeBarStartUtc[barId] = syncUtc;
+                    }
+                }
+                var staleIds = new List<string>();
+                foreach (string existingId in _activeBarStartUtc.Keys)
+                {
+                    if (!activeIdsSet.Contains(existingId))
+                    {
+                        staleIds.Add(existingId);
+                    }
+                }
+                for (int sIdx = 0; sIdx < staleIds.Count; sIdx++)
+                {
+                    _activeBarStartUtc.Remove(staleIds[sIdx]);
+                }
+
+                bool sameIds = (ActiveStepBars.Count == nextBars.Count);
+                if (sameIds)
+                {
+                    for (int k = 0; k < nextBars.Count; k++)
+                    {
+                        if (!string.Equals(ActiveStepBars[k].Id, nextBars[k].Id, StringComparison.Ordinal))
+                        {
+                            sameIds = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (sameIds)
+                {
+                    for (int k = 0; k < nextBars.Count; k++)
+                    {
+                        ActiveStepProgressItem cur = ActiveStepBars[k];
+                        ActiveStepProgressItem nxt = nextBars[k];
+                        cur.PhaseNumber = nxt.PhaseNumber;
+                        cur.PhaseLabel = nxt.PhaseLabel;
+                        cur.Title = nxt.Title;
+                        cur.Detail = nxt.Detail;
+                        cur.Progress = nxt.Progress;
+                        cur.IsIndeterminate = nxt.IsIndeterminate;
+                        cur.BarBrush = nxt.BarBrush;
+                        cur.BadgeBrush = nxt.BadgeBrush;
+                    }
+                }
+                else
+                {
+                    ActiveStepBars.Clear();
+                    for (int k = 0; k < nextBars.Count; k++)
+                    {
+                        ActiveStepBars.Add(nextBars[k]);
+                    }
+                }
+
+                UpdateLiveTimersAndEta();
+                RebuildOverviewAlerts();
+            };
+
+            var app = Application.Current;
+            if (app != null && app.Dispatcher != null && !app.Dispatcher.CheckAccess())
+            {
+                app.Dispatcher.BeginInvoke(refreshAction);
+            }
+            else
+            {
+                refreshAction();
             }
         }
 
@@ -2800,6 +4952,7 @@ namespace WIS.UI
                         {
                             if (app.Status == "OK") app.Detail = "Instalacija uspešno verifikovana";
                             else if (app.Status == "RUNNING") app.Detail = "Instalacija paketa u toku...";
+                            else if (app.Status == "WARN") app.Detail = "Instalacija nije potvrđena";
                             else if (app.Status == "ERROR") app.Detail = "Greška tokom instalacije";
                         }
                         break;
@@ -2838,6 +4991,7 @@ namespace WIS.UI
                     case "SKIPPED_DONE":
                     case "SKIPPED_USER":
                         skipped++; break;
+                    case "WARN":
                     case "ERROR": error++; break;
                     default: waiting++; break;
                 }
@@ -2857,6 +5011,470 @@ namespace WIS.UI
             {
                 AppsSummaryText = string.Format("{0} od {1} instalirano • {2} u toku • {3} preskočeno • {4} grešaka", completed, total, running, skipped, error);
             }
+            RebuildOverviewAlerts();
+        }
+
+        // ------------------ PREGLED — AKTIVNA UPOZORENJA ------------------
+        public ObservableCollection<OverviewAlertItem> OverviewAlerts { get; private set; }
+        private Brush _overviewAlertsBadgeBrush = CreateFrozenBrush(35, 134, 54);
+        private Brush _completionCardBorderBrush = CreateFrozenBrush(46, 204, 113);
+        private Brush _completionStatusBadgeBrush = CreateFrozenBrush(46, 204, 113);
+        private Brush _completionStatusBadgeForeground = CreateFrozenBrush(18, 18, 20);
+        private bool _hasCriticalOverviewAlerts = false;
+        private string _lastOverviewAlertsSignature = null;
+
+        public Brush CompletionCardBorderBrush
+        {
+            get { return _completionCardBorderBrush; }
+            set { SetProperty(ref _completionCardBorderBrush, value); }
+        }
+
+        public Brush CompletionStatusBadgeBrush
+        {
+            get { return _completionStatusBadgeBrush; }
+            set { SetProperty(ref _completionStatusBadgeBrush, value); }
+        }
+
+        public Brush CompletionStatusBadgeForeground
+        {
+            get { return _completionStatusBadgeForeground; }
+            set { SetProperty(ref _completionStatusBadgeForeground, value); }
+        }
+
+        public string CompletionStatusBadgeText
+        {
+            get
+            {
+                bool isZh = LocalizationService.Instance.IsChinese;
+                if (OverviewAlerts == null || OverviewAlerts.Count == 0)
+                {
+                    return isZh ? "✓ 服务已完成" : "✓ SERVIS USPEŠNO ZAVRŠEN";
+                }
+                if (_hasCriticalOverviewAlerts)
+                {
+                    return isZh ? "⚠ 完成（存在严重警告）" : "⚠ SERVIS ZAVRŠEN SA KRITIČNIM UPOZORENJIMA";
+                }
+                return isZh ? "⚠ 完成（存在警告）" : "⚠ SERVIS ZAVRŠEN SA UPOZORENJIMA";
+            }
+        }
+
+        public string CompletionAlertsSummaryText
+        {
+            get
+            {
+                bool isZh = LocalizationService.Instance.IsChinese;
+                int count = OverviewAlerts != null ? OverviewAlerts.Count : 0;
+                if (count == 0)
+                {
+                    return isZh
+                        ? "所有硬件、驱动与软件验证通过 — 设备已可交付客户。"
+                        : "Proces je završen čisto — uređaj je spreman za predaju klijentu.";
+                }
+                if (_hasCriticalOverviewAlerts)
+                {
+                    return isZh
+                        ? string.Format("完成时发现 {0} 项警告（含严重警告）— 点击条目可查看详情。", count)
+                        : string.Format("Završeno sa {0} aktivnih upozorenja (uključujući kritična) — kliknite na stavku za pregled.", count);
+                }
+                return isZh
+                    ? string.Format("完成时发现 {0} 项警告 — 交付前请检查。", count)
+                    : string.Format("Završeno sa {0} upozorenja — proverite stavke pre predaje klijentu.", count);
+            }
+        }
+
+        public bool HasOverviewAlerts
+        {
+            get { return OverviewAlerts != null && OverviewAlerts.Count > 0; }
+        }
+
+        public bool ShowNoOverviewAlerts
+        {
+            get { return OverviewAlerts == null || OverviewAlerts.Count == 0; }
+        }
+
+        public string OverviewAlertsCountText
+        {
+            get { return OverviewAlerts != null ? OverviewAlerts.Count.ToString() : "0"; }
+        }
+
+        public Brush OverviewAlertsBadgeBrush
+        {
+            get { return _overviewAlertsBadgeBrush; }
+            set { SetProperty(ref _overviewAlertsBadgeBrush, value); }
+        }
+
+        private static string FormatCompactNamesList(List<string> names, int maxShow)
+        {
+            if (names == null || names.Count == 0) return "";
+            int take = Math.Min(maxShow, names.Count);
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < take; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(names[i]);
+            }
+            if (names.Count > take)
+            {
+                sb.AppendFormat(" (+{0})", names.Count - take);
+            }
+            return sb.ToString();
+        }
+
+        public void RebuildOverviewAlerts()
+        {
+            if (OverviewAlerts == null) return;
+
+            var items = new List<OverviewAlertItem>();
+
+            // 1. Termalno upozorenje / pregrevanje i trotlovanje
+            if (_emergencyAbortTriggered || _cpuTemp >= 88.0f || _gpuTemp >= 88.0f || _ssdTemp >= 72.0f)
+            {
+                var parts = new List<string>();
+                if (_cpuTemp > 0.5f) parts.Add(string.Format("CPU {0:F0}°C", _cpuTemp));
+                if (_gpuTemp > 0.5f) parts.Add(string.Format("GPU {0:F0}°C", _gpuTemp));
+                if (_ssdTemp > 0.5f) parts.Add(string.Format("SSD {0:F0}°C", _ssdTemp));
+                if (_throttlingPercent >= 15.0f) parts.Add(string.Format("Throttling {0:F0}%", _throttlingPercent));
+                if (_emergencyAbortTriggered) parts.Add("Emergency Abort aktiviran");
+                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : "Detektovana kritična temperatura hardvera";
+                items.Add(OverviewAlertItem.Create("thermal", "CRITICAL", "Računar se pregrejava", detail, "diagnostics"));
+            }
+            else if (_cpuTemp >= 80.0f || _gpuTemp >= 82.0f || _ssdTemp >= 62.0f || _throttlingPercent >= 15.0f)
+            {
+                var parts = new List<string>();
+                if (_cpuTemp >= 80.0f) parts.Add(string.Format("CPU {0:F0}°C", _cpuTemp));
+                if (_gpuTemp >= 82.0f) parts.Add(string.Format("GPU {0:F0}°C", _gpuTemp));
+                if (_ssdTemp >= 62.0f) parts.Add(string.Format("SSD {0:F0}°C", _ssdTemp));
+                if (_throttlingPercent >= 15.0f) parts.Add(string.Format("Throttling {0:F0}%", _throttlingPercent));
+                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : "Povišena radna temperatura";
+                items.Add(OverviewAlertItem.Create("thermal", "WARNING", "Povišena temperatura / trotlovanje", detail, "diagnostics"));
+            }
+
+            // 2. Windows Autopilot / MDM
+            if (Autopilot != null && (Autopilot.IsAlertActive || Autopilot.IsLocked || Autopilot.IsRegistered))
+            {
+                string sev = (Autopilot.IsLocked ||
+                    string.Equals(Autopilot.StatusLevel, "CRITICAL", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(Autopilot.StatusLevel, "ERROR", StringComparison.OrdinalIgnoreCase))
+                    ? "CRITICAL"
+                    : "WARNING";
+                string title = Autopilot.IsLocked ? "Detektovan Windows Autopilot" : "Detektovan Autopilot / MDM";
+                string tenant = !string.IsNullOrWhiteSpace(Autopilot.ProfileTenantDomain)
+                    ? Autopilot.ProfileTenantDomain
+                    : Autopilot.TenantDomain;
+                if (string.IsNullOrWhiteSpace(tenant) ||
+                    tenant.StartsWith("Nema", StringComparison.OrdinalIgnoreCase) ||
+                    tenant == "N/A")
+                {
+                    tenant = !string.IsNullOrWhiteSpace(Autopilot.StatusTitle)
+                        ? Autopilot.StatusTitle
+                        : "Proverite Autopilot karticu za detalje";
+                }
+                else
+                {
+                    tenant = "Tenant: " + tenant;
+                }
+                items.Add(OverviewAlertItem.Create("autopilot", sev, title, tenant, "autopilot"));
+            }
+
+            // 3. Nedostajući ili problematični drajveri
+            int drvMissing = 0;
+            if (Drivers != null)
+            {
+                int listCount = Drivers.MissingDevices != null ? Drivers.MissingDevices.Count : 0;
+                drvMissing = Math.Max(Drivers.MissingDevicesCount, listCount);
+            }
+            int pnpCount = PnpProblemDevices != null ? PnpProblemDevices.Count : 0;
+            int totalDrvProblems = Math.Max(drvMissing, pnpCount);
+
+            bool phase2Done = false;
+            bool phase2StepProblem = false;
+            if (Phases != null)
+            {
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    PhaseItem ph = Phases[i];
+                    if (ph == null || ph.Number != 2) continue;
+                    string stNorm = (ph.Status ?? "").Trim().ToUpperInvariant();
+                    if (stNorm == "COMPLETED" || stNorm == "OK") phase2Done = true;
+                    if (ph.Steps != null)
+                    {
+                        for (int j = 0; j < ph.Steps.Count; j++)
+                        {
+                            StepItem st = ph.Steps[j];
+                            if (st != null && (st.IsError || st.IsWarning))
+                            {
+                                if (string.Equals(st.Id, "P2.Pnp", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(st.Id, "P2.Diag", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(st.Id, "P2.Vmd", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    phase2StepProblem = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (totalDrvProblems > 0 || phase2StepProblem)
+            {
+                var devNames = new List<string>();
+                if (Drivers != null && Drivers.MissingDevices != null)
+                {
+                    for (int i = 0; i < Drivers.MissingDevices.Count; i++)
+                    {
+                        DriverItemViewModel dev = Drivers.MissingDevices[i];
+                        if (dev != null && !string.IsNullOrWhiteSpace(dev.Name) && !devNames.Contains(dev.Name))
+                        {
+                            devNames.Add(dev.Name);
+                        }
+                    }
+                }
+                if (devNames.Count == 0 && PnpProblemDevices != null)
+                {
+                    for (int i = 0; i < PnpProblemDevices.Count; i++)
+                    {
+                        PnpProblemDevice pnp = PnpProblemDevices[i];
+                        if (pnp != null && !string.IsNullOrWhiteSpace(pnp.Name) && !devNames.Contains(pnp.Name))
+                        {
+                            devNames.Add(pnp.Name);
+                        }
+                    }
+                }
+
+                string sev = phase2Done ? "CRITICAL" : "WARNING";
+                string detail;
+                if (totalDrvProblems > 0)
+                {
+                    string prefix = totalDrvProblems == 1 ? "1 uređaj bez drajvera" : string.Format("{0} uređaja sa greškom", totalDrvProblems);
+                    string namesText = FormatCompactNamesList(devNames, 2);
+                    detail = !string.IsNullOrEmpty(namesText) ? string.Format("{0} ({1})", prefix, namesText) : prefix;
+                }
+                else
+                {
+                    detail = "Korak instalacije drajvera prijavio je grešku ili upozorenje.";
+                }
+                items.Add(OverviewAlertItem.Create("drivers", sev, "Nisu instalirani svi drajveri", detail, "drivers"));
+            }
+
+            // 4. Neinstalirani ili neuspeli programi (Apps ERROR/WARN + Phase 4 ERROR/WARN koraci)
+            var failedAppNames = new List<string>();
+            bool hasAppCritical = false;
+            if (Apps != null)
+            {
+                for (int i = 0; i < Apps.Count; i++)
+                {
+                    AppItem appItem = Apps[i];
+                    if (appItem == null) continue;
+                    string appSt = (appItem.Status ?? "").Trim().ToUpperInvariant();
+                    if (appSt == "ERROR" || appSt == "FAILED" || appSt == "WARN" || appSt == "WARNING")
+                    {
+                        if (appSt == "ERROR" || appSt == "FAILED") hasAppCritical = true;
+                        string n = !string.IsNullOrWhiteSpace(appItem.Name) ? appItem.Name : appItem.Id;
+                        if (!string.IsNullOrWhiteSpace(n) && !failedAppNames.Contains(n))
+                        {
+                            failedAppNames.Add(n);
+                        }
+                    }
+                }
+            }
+            if (Phases != null)
+            {
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    PhaseItem ph = Phases[i];
+                    if (ph == null || ph.Number != 4 || ph.Steps == null) continue;
+                    for (int j = 0; j < ph.Steps.Count; j++)
+                    {
+                        StepItem st = ph.Steps[j];
+                        if (st == null || (!st.IsError && !st.IsWarning)) continue;
+                        if (st.IsError) hasAppCritical = true;
+                        string n = !string.IsNullOrWhiteSpace(st.Title) ? st.Title : st.Id;
+                        if (!string.IsNullOrWhiteSpace(n) && !failedAppNames.Contains(n))
+                        {
+                            failedAppNames.Add(n);
+                        }
+                    }
+                }
+            }
+
+            if (failedAppNames.Count > 0)
+            {
+                string detail = "Neuspelo: " + FormatCompactNamesList(failedAppNames, 3);
+                items.Add(OverviewAlertItem.Create("apps", hasAppCritical ? "CRITICAL" : "WARNING", "Neki program nije instaliran", detail, "apps"));
+            }
+
+            // 5. Hardverski testovi (HwTest) i Stres test
+            bool hwTestAlert = _criticalStressFailure;
+            bool hwTestCrit = _criticalStressFailure;
+            if (_isHwTestFinished && !string.IsNullOrWhiteSpace(_hwTestOverallStatus))
+            {
+                if (_hwTestOverallStatus.IndexOf("FAIL", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    hwTestAlert = true;
+                    hwTestCrit = true;
+                }
+                else if (_hwTestOverallStatus.IndexOf("WARN", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    hwTestAlert = true;
+                }
+            }
+            if (hwTestAlert)
+            {
+                string detail = !string.IsNullOrWhiteSpace(_hwTestSummaryText)
+                    ? _hwTestSummaryText
+                    : (!string.IsNullOrWhiteSpace(_thermalVerdictTitle) ? _thermalVerdictTitle : "Proverite rezultate hardverskih testova.");
+                items.Add(OverviewAlertItem.Create("hwtest", hwTestCrit ? "CRITICAL" : "WARNING", "Hardverski test prijavio problem", detail, "hwtest"));
+            }
+
+            // 6. Baterija i punjač
+            if (_hasBatteryLive && _isOnAcPower && _isBatteryDischarging && _batteryRateWatts >= 3.0)
+            {
+                items.Add(OverviewAlertItem.Create(
+                    "weak_charger",
+                    "WARNING",
+                    "Slab punjač — baterija se prazni",
+                    string.Format("Punjač priključen, a baterija gubi -{0:0.0} W ({1}%)", _batteryRateWatts, _batteryChargePercent),
+                    "hardware"));
+            }
+            if (_hasBatteryLive && !_isOnAcPower && _batteryChargePercent > 0 && _batteryChargePercent <= 20)
+            {
+                items.Add(OverviewAlertItem.Create(
+                    "low_battery",
+                    "CRITICAL",
+                    "Nizak nivo baterije",
+                    string.Format("Preostalo samo {0}% — priključite punjač!", _batteryChargePercent),
+                    "hardware"));
+            }
+            if (_isLaptop && _batteryHealth > 0 && _batteryHealth < 55)
+            {
+                string detail = (HardwareInfo != null && !string.IsNullOrWhiteSpace(HardwareInfo.BatteryWear))
+                    ? HardwareInfo.BatteryWear
+                    : _batteryHealthText;
+                items.Add(OverviewAlertItem.Create("battery_wear", "WARNING", "Visoka istrošenost baterije", detail, "hardware"));
+            }
+
+            // 7. SMART diska
+            if ((_diskWear > 0 && _diskWear < 70) || _reallocatedSectors > 0 || _criticalWarnings > 0)
+            {
+                string sev = ((_diskWear > 0 && _diskWear < 50) || _criticalWarnings > 0) ? "CRITICAL" : "WARNING";
+                string detail = string.Format("Zdravlje: {0}% • SMART: {1}", _diskWear, _smartStatus);
+                items.Add(OverviewAlertItem.Create("smart_disk", sev, "Upozorenje za zdravlje diska (SMART)", detail, "hardware"));
+            }
+
+            // 8. Ostale greške/upozorenja u koracima faza
+            var otherStepNames = new List<string>();
+            bool hasOtherStepCrit = false;
+            if (Phases != null)
+            {
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    PhaseItem ph = Phases[i];
+                    if (ph == null || ph.Steps == null) continue;
+                    if (ph.Number == 4) continue; // već obuhvaćeno pod stavkom 4
+                    for (int j = 0; j < ph.Steps.Count; j++)
+                    {
+                        StepItem st = ph.Steps[j];
+                        if (st == null || (!st.IsError && !st.IsWarning)) continue;
+                        if (ph.Number == 2 && (
+                            string.Equals(st.Id, "P2.Pnp", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(st.Id, "P2.Diag", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(st.Id, "P2.Vmd", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            continue;
+                        }
+                        if (st.IsError) hasOtherStepCrit = true;
+                        string n = !string.IsNullOrWhiteSpace(st.Title) ? st.Title : st.Id;
+                        if (!string.IsNullOrWhiteSpace(n) && !otherStepNames.Contains(n))
+                        {
+                            otherStepNames.Add(n);
+                        }
+                    }
+                }
+            }
+            if (otherStepNames.Count > 0)
+            {
+                items.Add(OverviewAlertItem.Create(
+                    "other_steps",
+                    hasOtherStepCrit ? "CRITICAL" : "WARNING",
+                    "Upozorenje u koracima instalacije",
+                    FormatCompactNamesList(otherStepNames, 2),
+                    "logs"));
+            }
+
+            // Sortiranje: CRITICAL uvek pre WARNING/INFO uz očuvan redosled unutar istog nivoa
+            var sorted = new List<OverviewAlertItem>(items.Count);
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (items[i].Severity == "CRITICAL") sorted.Add(items[i]);
+            }
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (items[i].Severity != "CRITICAL") sorted.Add(items[i]);
+            }
+
+            var sigSb = new System.Text.StringBuilder();
+            bool anyCritical = false;
+            for (int i = 0; i < sorted.Count; i++)
+            {
+                OverviewAlertItem it = sorted[i];
+                if (it.Severity == "CRITICAL") anyCritical = true;
+                sigSb.Append(it.Key).Append('|').Append(it.Severity).Append('|').Append(it.Title).Append('|').Append(it.Detail).Append(';');
+            }
+            string sig = sigSb.ToString();
+            if (string.Equals(sig, _lastOverviewAlertsSignature, StringComparison.Ordinal))
+            {
+                return;
+            }
+            _lastOverviewAlertsSignature = sig;
+
+            Action applyAction = delegate
+            {
+                OverviewAlerts.Clear();
+                for (int i = 0; i < sorted.Count; i++)
+                {
+                    OverviewAlerts.Add(sorted[i]);
+                }
+
+                _hasCriticalOverviewAlerts = anyCritical;
+
+                if (sorted.Count == 0)
+                {
+                    OverviewAlertsBadgeBrush = CreateFrozenBrush(35, 134, 54);
+                    CompletionCardBorderBrush = CreateFrozenBrush(46, 204, 113);
+                    CompletionStatusBadgeBrush = CreateFrozenBrush(46, 204, 113);
+                    CompletionStatusBadgeForeground = CreateFrozenBrush(18, 18, 20);
+                }
+                else if (anyCritical)
+                {
+                    OverviewAlertsBadgeBrush = CreateFrozenBrush(218, 54, 51);
+                    CompletionCardBorderBrush = CreateFrozenBrush(231, 76, 60);
+                    CompletionStatusBadgeBrush = CreateFrozenBrush(218, 54, 51);
+                    CompletionStatusBadgeForeground = Brushes.White;
+                }
+                else
+                {
+                    OverviewAlertsBadgeBrush = CreateFrozenBrush(210, 153, 34);
+                    CompletionCardBorderBrush = CreateFrozenBrush(210, 153, 34);
+                    CompletionStatusBadgeBrush = CreateFrozenBrush(210, 153, 34);
+                    CompletionStatusBadgeForeground = CreateFrozenBrush(18, 18, 20);
+                }
+
+                OnPropertyChanged("HasOverviewAlerts");
+                OnPropertyChanged("ShowNoOverviewAlerts");
+                OnPropertyChanged("OverviewAlertsCountText");
+                OnPropertyChanged("CompletionStatusBadgeText");
+                OnPropertyChanged("CompletionAlertsSummaryText");
+            };
+
+            var appInst = Application.Current;
+            if (appInst != null && appInst.Dispatcher != null && !appInst.Dispatcher.CheckAccess())
+            {
+                appInst.Dispatcher.BeginInvoke(applyAction);
+            }
+            else
+            {
+                applyAction();
+            }
         }
 
         public void SetInitialElapsedDuration(TimeSpan elapsed)
@@ -2867,12 +5485,15 @@ namespace WIS.UI
             }
             _elapsedDuration = elapsed;
             DurationString = string.Format("{0:00}:{1:00}:{2:00}", (int)_elapsedDuration.TotalHours, _elapsedDuration.Minutes, _elapsedDuration.Seconds);
+            UpdateLiveTimersAndEta();
         }
 
         public void TickDuration()
         {
             _elapsedDuration = _elapsedDuration.Add(TimeSpan.FromSeconds(1));
             DurationString = string.Format("{0:00}:{1:00}:{2:00}", (int)_elapsedDuration.TotalHours, _elapsedDuration.Minutes, _elapsedDuration.Seconds);
+            UpdateLiveTimersAndEta();
+            RebuildOverviewAlerts();
         }
     }
 

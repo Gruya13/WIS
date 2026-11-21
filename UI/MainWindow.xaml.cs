@@ -37,6 +37,7 @@ namespace WIS.UI
         private readonly float[] _mbHistory = new float[GraphHistoryLength];
         private readonly float[] _ssdHistory = new float[GraphHistoryLength];
         private readonly float[] _throttleHistory = new float[GraphHistoryLength];
+        private readonly float[] _cpuLoadHistory = new float[GraphHistoryLength];
         private bool _graphBuffersInitialized = false;
         private readonly object _graphLock = new object();
         private string _initialStartTimeIso = null;
@@ -47,10 +48,18 @@ namespace WIS.UI
         private ulong _prevUserTime = 0;
         private bool _hasPrevCpuTimes = false;
         private long _prevNetBytes = -1;
+        private long _prevNetSentBytes = -1;
         private long _accumulatedNetBytes = 0;
         private int _diagNetCounter = 2;
+        private int _diagPowerCounter = 2;
+        private int _diagSysCounter = 4;
+        private int _diagMetricsGuard = 0;
         private int _nasPingCounter = 0;
         private bool _isNasPingRunning = false;
+        private bool _diskCountersInitAttempted = false;
+        private System.Diagnostics.PerformanceCounter _diskReadCounter = null;
+        private System.Diagnostics.PerformanceCounter _diskWriteCounter = null;
+        private System.Diagnostics.PerformanceCounter _diskTimeCounter = null;
 
         public RelayCommand PauseCommand { get; private set; }
         public RelayCommand SkipCommand { get; private set; }
@@ -62,6 +71,7 @@ namespace WIS.UI
         public RelayCommand ExitWithoutCleanCommand { get; private set; }
         public RelayCommand ShowCompletionSummaryCommand { get; private set; }
         public RelayCommand RerunPhase4Command { get; private set; }
+        public RelayCommand RetryAppCommand { get; private set; }
 
         private bool _isMasterMode = false;
         private DispatcherTimer _autoStartTimer;
@@ -96,6 +106,8 @@ namespace WIS.UI
         private DateTime _lastBgWuFileWriteUtc = DateTime.MinValue;
         private DeviceChangeMonitor _deviceMonitor = null;
         private bool _autopilotRetriedAfterNetwork = false;
+        private readonly object _appRetryLock = new object();
+        private bool _isSingleAppRetryRunning = false;
 
         public MainWindow()
         {
@@ -114,6 +126,7 @@ namespace WIS.UI
             ExitWithoutCleanCommand = new RelayCommand(ExecuteExitWithoutClean);
             ShowCompletionSummaryCommand = new RelayCommand(ExecuteShowCompletionSummary);
             RerunPhase4Command = new RelayCommand(ExecuteRerunPhase4);
+            RetryAppCommand = new RelayCommand(ExecuteRetryApp);
 
             ViewModel.PauseCommand = PauseCommand;
             ViewModel.SkipCommand = SkipCommand;
@@ -125,6 +138,7 @@ namespace WIS.UI
             ViewModel.ExitWithoutCleanCommand = ExitWithoutCleanCommand;
             ViewModel.ShowCompletionSummaryCommand = ShowCompletionSummaryCommand;
             ViewModel.RerunPhase4Command = RerunPhase4Command;
+            ViewModel.RetryAppCommand = RetryAppCommand;
             ViewModel.Autopilot.RescanCommand = new RelayCommand(ExecuteAutopilotRescan);
             ViewModel.Drivers.RefreshDriversCommand = new RelayCommand(ExecuteRefreshDrivers);
             ViewModel.Drivers.OpenDeviceManagerCommand = new RelayCommand(ExecuteOpenDeviceManager);
@@ -167,6 +181,10 @@ namespace WIS.UI
             // Inicijalizacija i pokretanje ServisHub Telemetrije
             _telemetryService = new TelemetryService(ViewModel, Dispatcher);
             _telemetryService.Start();
+            if (!string.IsNullOrEmpty(_telemetryService.HubUrl))
+            {
+                ViewModel.UpdateDeviceCardHubUrl(_telemetryService.HubUrl);
+            }
 
             Closing += Window_Closing;
             Closed += (s, e) =>
@@ -295,32 +313,9 @@ namespace WIS.UI
                 }
                 else
                 {
-                    ViewModel.IsServiceReadyVisible = true;
-                    string initialMsg = string.Format("Automatski start za {0}s... (Kliknite za trenutni start ili prebacite tab za pauzu)", _autoStartCountdown);
-                    ViewModel.AutoStartMessage = initialMsg;
-                    ViewModel.LiveStatus = initialMsg;
-
-                    _autoStartTimer = new DispatcherTimer
-                    {
-                        Interval = TimeSpan.FromSeconds(1)
-                    };
-                    _autoStartTimer.Tick += (s, e) =>
-                    {
-                        _autoStartCountdown--;
-                        if (_autoStartCountdown > 0)
-                        {
-                            string tickMsg = string.Format("Automatski start za {0}s... (Kliknite za trenutni start ili prebacite tab za pauzu)", _autoStartCountdown);
-                            ViewModel.AutoStartMessage = tickMsg;
-                            ViewModel.LiveStatus = tickMsg;
-                        }
-                        else
-                        {
-                            _autoStartTimer.Stop();
-                            ViewModel.IsServiceReadyVisible = false;
-                            StartPhaseExecution(2);
-                        }
-                    };
-                    _autoStartTimer.Start();
+                    ViewModel.IsServiceReadyVisible = false;
+                    ViewModel.AddLog("INFO", "Sistem", "Pokrećem automatsko izvršavanje Faze 2...");
+                    StartPhaseExecution(2);
                 }
             }
             else
@@ -488,6 +483,24 @@ namespace WIS.UI
             out FILETIME lpKernelTime,
             out FILETIME lpUserTime);
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SYSTEM_POWER_STATUS
+        {
+            public byte ACLineStatus;
+            public byte BatteryFlag;
+            public byte BatteryLifePercent;
+            public byte SystemStatusFlag;
+            public int BatteryLifeTime;
+            public int BatteryFullLifeTime;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetSystemPowerStatus(out SYSTEM_POWER_STATUS lpSystemPowerStatus);
+
+        [DllImport("kernel32.dll")]
+        public static extern ulong GetTickCount64();
+
         #endregion
 
         private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
@@ -579,38 +592,46 @@ namespace WIS.UI
                 int installedCount = root.ContainsKey("installed_count") ? root["installed_count"].AsInt(0) : 0;
 
                 string normStatus = (status ?? "RUNNING").Trim().ToUpperInvariant();
+                int wuPct = -1;
                 if (normStatus == "STARTING")
                 {
                     textSr = "Pozadinski WU: Pokretanje i priprema kataloga...";
                     textZh = "后台更新: 正在启动并准备更新目录...";
+                    wuPct = 5;
                 }
                 else if (normStatus == "SEARCHING")
                 {
                     textSr = "Pozadinski WU: Pretraga kataloga...";
                     textZh = "后台更新: 正在搜索更新目录...";
+                    wuPct = -1;
                 }
                 else if (normStatus == "DOWNLOADING")
                 {
                     textSr = string.Format("Pozadinski WU: Preuzimanje ({0}/{1})...", downloadedCount, foundCount);
                     textZh = string.Format("后台更新: 正在下载 ({0}/{1})...", downloadedCount, foundCount);
+                    if (foundCount > 0) wuPct = Math.Max(5, (downloadedCount * 50) / foundCount);
                 }
                 else if (normStatus == "WAITING_MSI")
                 {
                     textSr = string.Format("Pozadinski WU: Preuzeto ({0}/{1}) — čeka MSI instalator...", downloadedCount, foundCount);
                     textZh = string.Format("后台更新: 已下载 ({0}/{1}) — 等待 MSI 安装程序...", downloadedCount, foundCount);
+                    wuPct = 50;
                 }
                 else if (normStatus == "INSTALLING")
                 {
                     textSr = string.Format("Pozadinski WU: Instalacija ({0}/{1})...", installedCount, foundCount);
                     textZh = string.Format("后台更新: 正在安装 ({0}/{1})...", installedCount, foundCount);
+                    if (foundCount > 0) wuPct = Math.Min(95, 50 + (installedCount * 45) / foundCount);
                 }
                 else if (normStatus == "HARVESTING")
                 {
                     textSr = "Pozadinski WU: Arhiviranje novih zakrpa na NAS...";
                     textZh = "后台更新: 正在将新补丁归档到 NAS...";
+                    wuPct = 95;
                 }
                 else if (normStatus == "COMPLETED")
                 {
+                    wuPct = 100;
                     if (foundCount <= 0)
                     {
                         textSr = "Pozadinski WU: Sistem je ažuran (0 zakrpa)";
@@ -626,11 +647,12 @@ namespace WIS.UI
                 {
                     textSr = "Pozadinski WU: Preskočeno (nema internet veze)";
                     textZh = "后台更新: 已跳过 (无网络连接)";
+                    wuPct = 100;
                 }
 
                 if (ViewModel != null)
                 {
-                    ViewModel.UpdateBackgroundWuStatus(status, textSr, textZh);
+                    ViewModel.UpdateBackgroundWuStatus(status, textSr, textZh, wuPct);
                 }
             }
             catch { }
@@ -955,9 +977,7 @@ namespace WIS.UI
         {
             try
             {
-                var boolToVis = new System.Windows.Controls.BooleanToVisibilityConverter();
-
-                // 1. Header bedž za pozadinski Windows Update (Grid.Row=0 -> Header Border -> Header Grid -> Column 1)
+                // 1. Uklanjanje suvišnih elemenata iz headera (verzija/brend red i BgWuHeaderBadge) — kompatibilno i sa postojećim BAML-om
                 System.Windows.Controls.Grid rootGrid = this.Content as System.Windows.Controls.Grid;
                 if (rootGrid != null && rootGrid.Children.Count > 0)
                 {
@@ -967,179 +987,3109 @@ namespace WIS.UI
                         System.Windows.Controls.Grid headerGrid = headerBorder.Child as System.Windows.Controls.Grid;
                         if (headerGrid != null)
                         {
-                            bool hasHeaderBadge = false;
-                            for (int i = 0; i < headerGrid.Children.Count; i++)
+                            for (int i = headerGrid.Children.Count - 1; i >= 0; i--)
                             {
                                 FrameworkElement fe = headerGrid.Children[i] as FrameworkElement;
-                                if (fe != null && string.Equals( Convert.ToString(fe.Tag), "BgWuHeaderBadge", StringComparison.Ordinal))
+                                if (fe == null) continue;
+
+                                if (string.Equals(Convert.ToString(fe.Tag), "BgWuHeaderBadge", StringComparison.Ordinal))
                                 {
-                                    hasHeaderBadge = true;
-                                    break;
+                                    headerGrid.Children.RemoveAt(i);
+                                    continue;
                                 }
-                            }
 
-                            if (!hasHeaderBadge)
-                            {
-                                var headerBadgeBorder = new System.Windows.Controls.Border
+                                if (System.Windows.Controls.Grid.GetColumn(fe) == 0 && fe is System.Windows.Controls.StackPanel)
                                 {
-                                    Tag = "BgWuHeaderBadge",
-                                    HorizontalAlignment = HorizontalAlignment.Right,
-                                    VerticalAlignment = VerticalAlignment.Center,
-                                    Margin = new Thickness(0, 0, 12, 0),
-                                    Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
-                                    BorderThickness = new Thickness(1),
-                                    CornerRadius = new CornerRadius(4),
-                                    Padding = new Thickness(10, 5, 10, 5)
-                                };
-                                System.Windows.Controls.Grid.SetColumn(headerBadgeBorder, 1);
-                                headerBadgeBorder.SetBinding(System.Windows.Controls.Border.BorderBrushProperty, new System.Windows.Data.Binding("BackgroundWuBorderBrush"));
-                                headerBadgeBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("IsBackgroundWuVisible") { Converter = boolToVis });
-
-                                var hStack = new System.Windows.Controls.StackPanel
-                                {
-                                    Orientation = System.Windows.Controls.Orientation.Horizontal,
-                                    VerticalAlignment = VerticalAlignment.Center
-                                };
-
-                                var pillBorder = new System.Windows.Controls.Border
-                                {
-                                    CornerRadius = new CornerRadius(3),
-                                    Padding = new Thickness(6, 2, 6, 2),
-                                    Margin = new Thickness(0, 0, 8, 0),
-                                    VerticalAlignment = VerticalAlignment.Center
-                                };
-                                pillBorder.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("BackgroundWuBadgeBrush"));
-
-                                var pillText = new System.Windows.Controls.TextBlock
-                                {
-                                    FontSize = 10,
-                                    FontWeight = FontWeights.Bold,
-                                    Foreground = Brushes.White
-                                };
-                                pillText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("BackgroundWuBadgeText"));
-                                pillBorder.Child = pillText;
-
-                                var descText = new System.Windows.Controls.TextBlock
-                                {
-                                    FontSize = 11,
-                                    FontWeight = FontWeights.SemiBold,
-                                    Foreground = MainViewModel.CreateFrozenBrush(224, 224, 224),
-                                    VerticalAlignment = VerticalAlignment.Center,
-                                    MaxWidth = 320,
-                                    TextTrimming = TextTrimming.CharacterEllipsis
-                                };
-                                descText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("BackgroundWuDisplayText"));
-
-                                hStack.Children.Add(pillBorder);
-                                hStack.Children.Add(descText);
-                                headerBadgeBorder.Child = hStack;
-                                headerGrid.Children.Add(headerBadgeBorder);
+                                    System.Windows.Controls.StackPanel idStack = (System.Windows.Controls.StackPanel)fe;
+                                    if (idStack.Children.Count > 0 && idStack.Children[0] is System.Windows.Controls.StackPanel)
+                                    {
+                                        System.Windows.Controls.StackPanel brandRow = (System.Windows.Controls.StackPanel)idStack.Children[0];
+                                        if (brandRow.Orientation == System.Windows.Controls.Orientation.Horizontal)
+                                        {
+                                            idStack.Children.RemoveAt(0);
+                                        }
+                                    }
+                                    if (idStack.Children.Count > 0 && idStack.Children[0] is System.Windows.Controls.TextBlock)
+                                    {
+                                        System.Windows.Controls.TextBlock modelTb = (System.Windows.Controls.TextBlock)idStack.Children[0];
+                                        modelTb.Margin = new Thickness(0, 0, 0, 2);
+                                    }
+                                }
                             }
                         }
                     }
                 }
 
-                // 2. Kartica u Tabu 1 (Pregled) ispod glavnog Progress Bar-a
+                // 2. Kartica u Tabu 1 (Pregled) ispod glavnog Progress Bar-a i globalni watermark kroz sve kartice
+                System.Windows.Controls.TabItem tab0 = null;
                 if (MainTabControl != null && MainTabControl.Items.Count > 0)
                 {
-                    System.Windows.Controls.TabItem tab0 = MainTabControl.Items[0] as System.Windows.Controls.TabItem;
+                    MainTabControl.Margin = new Thickness(14, 10, 14, 6);
+                    MainTabControl.Background = Brushes.Transparent;
+                    tab0 = MainTabControl.Items[0] as System.Windows.Controls.TabItem;
                     if (tab0 != null)
                     {
                         System.Windows.Controls.ScrollViewer sv = tab0.Content as System.Windows.Controls.ScrollViewer;
+                        if (sv == null)
+                        {
+                            System.Windows.Controls.Grid tabGrid = tab0.Content as System.Windows.Controls.Grid;
+                            if (tabGrid != null)
+                            {
+                                for (int c = 0; c < tabGrid.Children.Count; c++)
+                                {
+                                    sv = tabGrid.Children[c] as System.Windows.Controls.ScrollViewer;
+                                    if (sv != null) break;
+                                }
+                            }
+                        }
                         if (sv != null)
                         {
                             System.Windows.Controls.StackPanel overviewStack = sv.Content as System.Windows.Controls.StackPanel;
                             if (overviewStack != null)
                             {
-                                bool hasOverviewCard = false;
-                                for (int i = 0; i < overviewStack.Children.Count; i++)
+                                // Uklanjanje SERVIS SPREMAN kartice, USB FREE banera, BgWuOverviewCard trake i kartice POSLEDNJE ZABELEŽENE AKTIVNOSTI iz Pregleda i kada se koristi stari BAML
+                                for (int i = overviewStack.Children.Count - 1; i >= 0; i--)
                                 {
                                     FrameworkElement fe = overviewStack.Children[i] as FrameworkElement;
-                                    if (fe != null && string.Equals(Convert.ToString(fe.Tag), "BgWuOverviewCard", StringComparison.Ordinal))
+                                    if (fe == null) continue;
+                                    System.Windows.Data.Binding visBind = System.Windows.Data.BindingOperations.GetBinding(fe, UIElement.VisibilityProperty);
+                                    bool isReadyCard = visBind != null && visBind.Path != null && string.Equals(visBind.Path.Path, "IsServiceReadyVisible", StringComparison.Ordinal);
+                                    bool isUsbBanner = visBind != null && visBind.Path != null && string.Equals(visBind.Path.Path, "UsbFree", StringComparison.Ordinal);
+                                    bool isBgWuCard = string.Equals(Convert.ToString(fe.Tag), "BgWuOverviewCard", StringComparison.Ordinal) ||
+                                                      (visBind != null && visBind.Path != null && string.Equals(visBind.Path.Path, "IsBackgroundWuVisible", StringComparison.Ordinal));
+                                    bool isRecentLogsCard = ContainsItemsSourceBinding(fe, "RecentLogs");
+                                    if (isReadyCard || isUsbBanner || isBgWuCard || isRecentLogsCard)
                                     {
-                                        hasOverviewCard = true;
-                                        break;
+                                        overviewStack.Children.RemoveAt(i);
                                     }
                                 }
 
-                                if (!hasOverviewCard)
+                                // Prilagođavanje Phase tracker mreže na 5 kolona (uklonjena kartica 1. Mreža) — kompatibilno sa postojećim BAML-om
+                                System.Windows.Controls.ItemsControl phasesControl = FindPhasesItemsControl(overviewStack);
+                                if (phasesControl != null)
                                 {
-                                    var cardBorder = new System.Windows.Controls.Border
+                                    var ugFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Primitives.UniformGrid));
+                                    ugFactory.SetValue(System.Windows.Controls.Primitives.UniformGrid.RowsProperty, 1);
+                                    ugFactory.SetValue(System.Windows.Controls.Primitives.UniformGrid.ColumnsProperty, 5);
+                                    phasesControl.ItemsPanel = new System.Windows.Controls.ItemsPanelTemplate(ugFactory);
+
+                                    // Uklanjanje Expander zaglavlja i zaključavanje uvek vidljivih koraka i kada se koristi stari BAML
+                                    phasesControl.Loaded += delegate
                                     {
-                                        Tag = "BgWuOverviewCard",
-                                        Background = MainViewModel.CreateFrozenBrush(30, 38, 44),
-                                        BorderThickness = new Thickness(1),
-                                        CornerRadius = new CornerRadius(6),
-                                        Padding = new Thickness(16, 10, 16, 10),
-                                        Margin = new Thickness(0, 0, 0, 12)
+                                        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)delegate
+                                        {
+                                            ApplyAlwaysVisiblePhaseStepsVisual(phasesControl);
+                                        });
                                     };
-                                    cardBorder.SetBinding(System.Windows.Controls.Border.BorderBrushProperty, new System.Windows.Data.Binding("BackgroundWuBorderBrush"));
-                                    cardBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("IsBackgroundWuVisible") { Converter = boolToVis });
-
-                                    var cardGrid = new System.Windows.Controls.Grid();
-                                    cardGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
-                                    cardGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-
-                                    var leftBadge = new System.Windows.Controls.Border
+                                    phasesControl.ItemContainerGenerator.StatusChanged += delegate
                                     {
-                                        CornerRadius = new CornerRadius(4),
-                                        Padding = new Thickness(8, 4, 8, 4),
-                                        Margin = new Thickness(0, 0, 12, 0),
-                                        VerticalAlignment = VerticalAlignment.Center
+                                        if (phasesControl.ItemContainerGenerator.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated)
+                                        {
+                                            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)delegate
+                                            {
+                                                ApplyAlwaysVisiblePhaseStepsVisual(phasesControl);
+                                            });
+                                        }
                                     };
-                                    System.Windows.Controls.Grid.SetColumn(leftBadge, 0);
-                                    leftBadge.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("BackgroundWuBadgeBrush"));
 
-                                    var leftBadgeText = new System.Windows.Controls.TextBlock
-                                    {
-                                        FontWeight = FontWeights.Bold,
-                                        FontSize = 11,
-                                        Foreground = Brushes.White,
-                                        HorizontalAlignment = HorizontalAlignment.Center,
-                                        VerticalAlignment = VerticalAlignment.Center
-                                    };
-                                    leftBadgeText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("BackgroundWuBadgeText"));
-                                    leftBadge.Child = leftBadgeText;
-
-                                    var rightStack = new System.Windows.Controls.StackPanel
-                                    {
-                                        VerticalAlignment = VerticalAlignment.Center
-                                    };
-                                    System.Windows.Controls.Grid.SetColumn(rightStack, 1);
-
-                                    var titleText = new System.Windows.Controls.TextBlock
-                                    {
-                                        FontSize = 11,
-                                        FontWeight = FontWeights.Bold,
-                                        Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176)
-                                    };
-                                    titleText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Loc[BgWuTitle]"));
-
-                                    var statusText = new System.Windows.Controls.TextBlock
-                                    {
-                                        FontSize = 12,
-                                        FontWeight = FontWeights.SemiBold,
-                                        Foreground = Brushes.White,
-                                        TextTrimming = TextTrimming.CharacterEllipsis
-                                    };
-                                    statusText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("BackgroundWuDisplayText"));
-
-                                    rightStack.Children.Add(titleText);
-                                    rightStack.Children.Add(statusText);
-
-                                    cardGrid.Children.Add(leftBadge);
-                                    cardGrid.Children.Add(rightStack);
-                                    cardBorder.Child = cardGrid;
-
-                                    int insertIdx = Math.Min(3, overviewStack.Children.Count);
-                                    overviewStack.Children.Insert(insertIdx, cardBorder);
+                                    EnsurePhasesCollapseToggleButton(phasesControl);
                                 }
+
+                                // Srednji 2-kolonski panel na Tabu 1 (Prazne Informacije o uređaju levo + QR kod kartona uređaja desno)
+                                EnsureOverviewMiddlePanel(tab0, sv, overviewStack);
+
+                                // Premeštanje progres kartice na dno (odmah iznad footera) i prelazak na Globalni + Paralelni koraci prikaz za stari BAML
+                                EnsureBottomDualProgressCard(tab0, sv, overviewStack);
                             }
+                        }
+                    }
+
+                    EnsureAutopilotTabAlertVisual(MainTabControl);
+                    RemoveTabByHeaderBinding(MainTabControl, "TabNetworkHeader");
+                    EnsureAppsTabRetryButtons(MainTabControl);
+                    EnsureHwMonitorTabLayout(MainTabControl);
+                }
+
+                // Globalni transparentni WIS watermark vidljiv u pozadini svih kartica (i za postojeći BAML)
+                EnsureGlobalTabsWatermark(rootGrid, tab0);
+                if (LogListView != null)
+                {
+                    var logBg = new SolidColorBrush(Color.FromArgb(204, 24, 24, 24));
+                    logBg.Freeze();
+                    LogListView.Background = logBg;
+                }
+
+                // 3. Uklanjanje dugmadi Pauza, Preskoči i Odloži restart iz donje trake (footera) i za postojeći BAML
+                if (rootGrid != null)
+                {
+                    for (int i = 0; i < rootGrid.Children.Count; i++)
+                    {
+                        FrameworkElement fe = rootGrid.Children[i] as FrameworkElement;
+                        if (fe != null && System.Windows.Controls.Grid.GetRow(fe) == 2)
+                        {
+                            RemoveElementsByVisibilityBinding(fe, "IsNotServiceFinished");
+                            EnsureFooterServiceHubIndicator(fe);
+                            EnsureFooterBrandingAndVersion(fe);
                         }
                     }
                 }
             }
             catch { }
+        }
+
+        private void EnsureOverviewMiddlePanel(
+            System.Windows.Controls.TabItem tab0,
+            System.Windows.Controls.ScrollViewer sv,
+            System.Windows.Controls.StackPanel overviewStack)
+        {
+            if (tab0 == null || sv == null || overviewStack == null) return;
+            if (HasTaggedElement(tab0.Content as DependencyObject, "OverviewMiddleGrid")) return;
+            if (!object.ReferenceEquals(sv.Content, overviewStack)) return;
+
+            var boolToVis = new System.Windows.Controls.BooleanToVisibilityConverter();
+
+            sv.Content = null;
+            overviewStack.Margin = new Thickness(0);
+
+            var wrapperBorder = new System.Windows.Controls.Border
+            {
+                Padding = new Thickness(6, 10, 6, 6)
+            };
+
+            var contentGrid = new System.Windows.Controls.Grid();
+            contentGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            contentGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto, MinHeight = 320 });
+
+            System.Windows.Controls.Grid.SetRow(overviewStack, 0);
+            contentGrid.Children.Add(overviewStack);
+
+            var middleGrid = new System.Windows.Controls.Grid
+            {
+                Tag = "OverviewMiddleGrid",
+                Margin = new Thickness(0, 12, 0, 0)
+            };
+            middleGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(2.2, GridUnitType.Star) });
+            middleGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(12) });
+            middleGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star), MinWidth = 290 });
+
+            // Levo: Informacije o uređaju (Plavi baner model + Crveni boks specifikacije + Žuti prazni boks)
+            var infoCard = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewDeviceInfoCard",
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(16, 12, 16, 12)
+            };
+            var infoGrid = new System.Windows.Controls.Grid();
+            infoGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            infoGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            infoGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var infoHeader = new System.Windows.Controls.TextBlock
+            {
+                Text = "INFORMACIJE O UREĐAJU",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            System.Windows.Controls.Grid.SetRow(infoHeader, 0);
+            infoGrid.Children.Add(infoHeader);
+
+            var modelBanner = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewDeviceModelBanner",
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            var modelBannerGrid = new System.Windows.Controls.Grid();
+            modelBannerGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+            modelBannerGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var modelLabelTb = new System.Windows.Controls.TextBlock
+            {
+                Text = "PROIZVOĐAČ / MODEL",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 12, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.Grid.SetColumn(modelLabelTb, 0);
+            modelBannerGrid.Children.Add(modelLabelTb);
+
+            var modelValTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 14,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            modelValTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ComputerModel"));
+            modelValTb.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("ComputerModel"));
+            System.Windows.Controls.Grid.SetColumn(modelValTb, 1);
+            modelBannerGrid.Children.Add(modelValTb);
+
+            modelBanner.Child = modelBannerGrid;
+            System.Windows.Controls.Grid.SetRow(modelBanner, 1);
+            infoGrid.Children.Add(modelBanner);
+
+            var infoSubGrid = new System.Windows.Controls.Grid();
+            infoSubGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            infoSubGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(10) });
+            infoSubGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var specsCard = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewDeviceSpecsCard",
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(12, 8, 12, 8)
+            };
+            var specsCardGrid = new System.Windows.Controls.Grid();
+            specsCardGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            specsCardGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var specsStack = new System.Windows.Controls.StackPanel();
+            specsStack.Children.Add(CreateOverviewSpecRow("CPU", "CpuInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("RAM", "RamInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Disk", "DiskInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Rezolucija ekrana", "HardwareInfo.OverviewResolution", null, null, boolToVis, false, "HardwareInfo.OverviewResolutionTooltip"));
+            specsStack.Children.Add(CreateOverviewSpecRow("GPU", "HardwareInfo.OverviewGpu", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("iGPU", "HardwareInfo.OverviewIgpu", null, "HardwareInfo.HasOverviewIgpu", boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Battery wear", "HardwareInfo.BatteryWear", "HardwareInfo.BatteryHealthBrush", null, boolToVis, true));
+            System.Windows.Controls.Grid.SetRow(specsStack, 0);
+            specsCardGrid.Children.Add(specsStack);
+
+            var periphSection = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewPeripheralsSection",
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Margin = new Thickness(0, 8, 0, 0),
+                Padding = new Thickness(0, 8, 0, 0)
+            };
+            var periphStack = new System.Windows.Controls.StackPanel();
+            periphStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "DODATNE PERIFERIJE",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+
+            var periphWrap = new System.Windows.Controls.WrapPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal
+            };
+            periphStack.Children.Add(periphWrap);
+
+            var periphEmptyTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(119, 119, 119)
+            };
+            periphEmptyTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("HardwareInfo.OverviewPeripheralsEmptyText"));
+            periphEmptyTb.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HardwareInfo.ShowOverviewPeripheralsEmpty") { Converter = boolToVis });
+            periphStack.Children.Add(periphEmptyTb);
+
+            periphSection.Child = periphStack;
+            System.Windows.Controls.Grid.SetRow(periphSection, 1);
+            specsCardGrid.Children.Add(periphSection);
+
+            specsCard.Child = specsCardGrid;
+            System.Windows.Controls.Grid.SetColumn(specsCard, 0);
+            infoSubGrid.Children.Add(specsCard);
+
+            RebuildOverviewPeripheralsHost(periphWrap);
+            if (ViewModel != null && ViewModel.HardwareInfo != null && ViewModel.HardwareInfo.OverviewPeripherals != null)
+            {
+                ViewModel.HardwareInfo.OverviewPeripherals.CollectionChanged += delegate
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        RebuildOverviewPeripheralsHost(periphWrap);
+                    });
+                };
+            }
+
+            var extraGrid = new System.Windows.Controls.Grid
+            {
+                Tag = "OverviewDeviceExtraCard"
+            };
+            extraGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            extraGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(10) });
+            extraGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            // Gornji blok: HARDVER MONITOR
+            var hwMonCard = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewHardwareMonitorCard",
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(12, 9, 12, 9)
+            };
+            var hwMonStack = new System.Windows.Controls.StackPanel();
+
+            var hwMonHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 8) };
+            hwMonHdr.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "HARDVER MONITOR",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hwMonHdr.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "● Uživo",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            hwMonStack.Children.Add(hwMonHdr);
+
+            // Opterećenje CPU i RAM
+            var usageGrid = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 8) };
+            usageGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            usageGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(10) });
+            usageGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var cpuStack = new System.Windows.Controls.StackPanel();
+            var cpuHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
+            cpuHdr.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "CPU opterećenje",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
+            });
+            var cpuValTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                FontFamily = new FontFamily("Consolas")
+            };
+            cpuValTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("CpuUsageShortText"));
+            cpuValTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("CpuUsageBrush"));
+            cpuHdr.Children.Add(cpuValTb);
+            cpuStack.Children.Add(cpuHdr);
+
+            var cpuBar = new System.Windows.Controls.ProgressBar
+            {
+                Maximum = 100,
+                Height = 5,
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                BorderThickness = new Thickness(0)
+            };
+            cpuBar.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty, new System.Windows.Data.Binding("CpuUsagePercent"));
+            cpuBar.SetBinding(System.Windows.Controls.Control.ForegroundProperty, new System.Windows.Data.Binding("CpuUsageBrush"));
+            cpuStack.Children.Add(cpuBar);
+            System.Windows.Controls.Grid.SetColumn(cpuStack, 0);
+            usageGrid.Children.Add(cpuStack);
+
+            var ramStack = new System.Windows.Controls.StackPanel();
+            var ramHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
+            ramHdr.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "RAM zauzeće",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
+            });
+            var ramValTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                FontFamily = new FontFamily("Consolas"),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            ramValTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("RamUsageShortText"));
+            ramValTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("RamUsageBrush"));
+            ramValTb.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("RamUsage"));
+            ramHdr.Children.Add(ramValTb);
+            ramStack.Children.Add(ramHdr);
+
+            var ramBar = new System.Windows.Controls.ProgressBar
+            {
+                Maximum = 100,
+                Height = 5,
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                BorderThickness = new Thickness(0)
+            };
+            ramBar.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty, new System.Windows.Data.Binding("RamUsagePercent"));
+            ramBar.SetBinding(System.Windows.Controls.Control.ForegroundProperty, new System.Windows.Data.Binding("RamUsageBrush"));
+            ramStack.Children.Add(ramBar);
+            System.Windows.Controls.Grid.SetColumn(ramStack, 2);
+            usageGrid.Children.Add(ramStack);
+
+            hwMonStack.Children.Add(usageGrid);
+
+            // 4 kompaktne ćelije za temperature
+            var tempGrid = new System.Windows.Controls.Primitives.UniformGrid
+            {
+                Columns = 4,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            tempGrid.Children.Add(CreateMonitorTempCell("CPU TEMP", "CpuTempShortText", "CpuTempBrush", "CpuTempText", false));
+            tempGrid.Children.Add(CreateMonitorTempCell("GPU TEMP", "GpuTempShortText", "GpuTempBrush", "GpuTempText", false));
+            tempGrid.Children.Add(CreateMonitorTempCell("SSD TEMP", "SsdTempShortText", "SsdTempBrush", "SsdTempText", false));
+            tempGrid.Children.Add(CreateMonitorTempCell("MB TEMP", "MbTempShortText", "MbTempBrush", "MbTempText", true));
+            hwMonStack.Children.Add(tempGrid);
+
+            // Stanje baterije / punjač
+            var powerBox = new System.Windows.Controls.Border
+            {
+                BorderBrush = MainViewModel.CreateFrozenBrush(42, 42, 46),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Padding = new Thickness(0, 8, 0, 0)
+            };
+            powerBox.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("PowerMonitorTooltip"));
+            var powerStack = new System.Windows.Controls.StackPanel();
+            var powerTop = new System.Windows.Controls.Grid();
+            powerTop.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            powerTop.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var powerStatusTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            powerStatusTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("PowerStatusTitle"));
+            powerStatusTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("PowerStatusBrush"));
+            System.Windows.Controls.Grid.SetColumn(powerStatusTb, 0);
+            powerTop.Children.Add(powerStatusTb);
+
+            var powerDrawTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                FontFamily = new FontFamily("Consolas"),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            powerDrawTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("PowerDrawText"));
+            powerDrawTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("PowerDrawBrush"));
+            System.Windows.Controls.Grid.SetColumn(powerDrawTb, 1);
+            powerTop.Children.Add(powerDrawTb);
+            powerStack.Children.Add(powerTop);
+
+            var battBar = new System.Windows.Controls.ProgressBar
+            {
+                Maximum = 100,
+                Height = 4,
+                Margin = new Thickness(0, 5, 0, 0),
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                BorderThickness = new Thickness(0)
+            };
+            battBar.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty, new System.Windows.Data.Binding("BatteryChargePercent"));
+            battBar.SetBinding(System.Windows.Controls.Control.ForegroundProperty, new System.Windows.Data.Binding("BatteryLevelBrush"));
+            battBar.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HasBatteryLive") { Converter = boolToVis });
+            powerStack.Children.Add(battBar);
+
+            powerBox.Child = powerStack;
+            hwMonStack.Children.Add(powerBox);
+
+            hwMonCard.Child = hwMonStack;
+            System.Windows.Controls.Grid.SetRow(hwMonCard, 0);
+            extraGrid.Children.Add(hwMonCard);
+
+            // Donji blok: UPOZORENJA
+            var alertsCard = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewAlertsCard",
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(12, 9, 12, 9)
+            };
+            var alertsGrid = new System.Windows.Controls.Grid();
+            alertsGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            alertsGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var alertsHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 8) };
+            alertsHdr.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "UPOZORENJA",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var alertsBadge = new System.Windows.Controls.Border
+            {
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(7, 1, 7, 1),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            alertsBadge.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("OverviewAlertsBadgeBrush"));
+            var alertsBadgeTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            alertsBadgeTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("OverviewAlertsCountText"));
+            alertsBadge.Child = alertsBadgeTb;
+            alertsHdr.Children.Add(alertsBadge);
+            System.Windows.Controls.Grid.SetRow(alertsHdr, 0);
+            alertsGrid.Children.Add(alertsHdr);
+
+            var alertsBodyHost = new System.Windows.Controls.Grid();
+            System.Windows.Controls.Grid.SetRow(alertsBodyHost, 1);
+
+            var alertsScroll = new System.Windows.Controls.ScrollViewer
+            {
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled,
+                MaxHeight = 145
+            };
+            alertsScroll.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HasOverviewAlerts") { Converter = boolToVis });
+            var alertsHost = new System.Windows.Controls.StackPanel();
+            alertsScroll.Content = alertsHost;
+            alertsBodyHost.Children.Add(alertsScroll);
+
+            RebuildOverviewAlertsHost(alertsHost);
+            if (ViewModel != null && ViewModel.OverviewAlerts != null)
+            {
+                ViewModel.OverviewAlerts.CollectionChanged += delegate
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        RebuildOverviewAlertsHost(alertsHost);
+                    });
+                };
+            }
+
+            var noAlertsBorder = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(27, 42, 33),
+                BorderBrush = MainViewModel.CreateFrozenBrush(45, 90, 63),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 8, 10, 8),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            noAlertsBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowNoOverviewAlerts") { Converter = boolToVis });
+            var noAlertsStack = new System.Windows.Controls.StackPanel();
+            noAlertsStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "✓ Nema aktivnih upozorenja",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(46, 204, 113)
+            });
+            noAlertsStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "Temperature, Autopilot, drajveri i programi su u normalnom stanju.",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(168, 197, 180),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            noAlertsBorder.Child = noAlertsStack;
+            alertsBodyHost.Children.Add(noAlertsBorder);
+
+            alertsGrid.Children.Add(alertsBodyHost);
+            alertsCard.Child = alertsGrid;
+            System.Windows.Controls.Grid.SetRow(alertsCard, 2);
+            extraGrid.Children.Add(alertsCard);
+
+            System.Windows.Controls.Grid.SetColumn(extraGrid, 2);
+            infoSubGrid.Children.Add(extraGrid);
+
+            System.Windows.Controls.Grid.SetRow(infoSubGrid, 2);
+            infoGrid.Children.Add(infoSubGrid);
+
+            infoCard.Child = infoGrid;
+            System.Windows.Controls.Grid.SetColumn(infoCard, 0);
+            middleGrid.Children.Add(infoCard);
+
+            // Desno: QR kod kartona uređaja na ServisHub-u
+            var qrCard = new System.Windows.Controls.Border
+            {
+                Tag = "OverviewDeviceQrCard",
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 12, 14, 12)
+            };
+            var qrCardGrid = new System.Windows.Controls.Grid();
+            qrCardGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            qrCardGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            qrCardGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+
+            var qrTitle = new System.Windows.Controls.TextBlock
+            {
+                Text = "KARTON UREĐAJA (SERVISHUB)",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            System.Windows.Controls.Grid.SetRow(qrTitle, 0);
+            qrCardGrid.Children.Add(qrTitle);
+
+            var qrViewbox = new System.Windows.Controls.Viewbox
+            {
+                StretchDirection = System.Windows.Controls.StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.Grid.SetRow(qrViewbox, 1);
+
+            var qrHost = new System.Windows.Controls.Grid();
+
+            var qrWhiteBorder = new System.Windows.Controls.Border
+            {
+                Background = Brushes.White,
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(12)
+            };
+            qrWhiteBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HasDeviceCardQr") { Converter = boolToVis });
+
+            var qrImg = new System.Windows.Controls.Image
+            {
+                Width = 260,
+                Height = 260,
+                Stretch = Stretch.Uniform
+            };
+            RenderOptions.SetBitmapScalingMode(qrImg, BitmapScalingMode.NearestNeighbor);
+            qrImg.SetBinding(System.Windows.Controls.Image.SourceProperty, new System.Windows.Data.Binding("DeviceCardQrImage"));
+            qrWhiteBorder.Child = qrImg;
+            qrHost.Children.Add(qrWhiteBorder);
+
+            var qrPlaceholder = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Width = 260,
+                Height = 260,
+                Padding = new Thickness(16)
+            };
+            qrPlaceholder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowDeviceCardQrPlaceholder") { Converter = boolToVis });
+            qrPlaceholder.Child = new System.Windows.Controls.TextBlock
+            {
+                Text = "QR kod će se pojaviti kada se otkrije ServisHub...",
+                FontSize = 12,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            qrHost.Children.Add(qrPlaceholder);
+            qrViewbox.Child = qrHost;
+            qrCardGrid.Children.Add(qrViewbox);
+
+            var qrFooter = new System.Windows.Controls.StackPanel
+            {
+                Margin = new Thickness(0, 8, 0, 0)
+            };
+            System.Windows.Controls.Grid.SetRow(qrFooter, 2);
+
+            var qrStatusTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(170, 170, 170),
+                TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            qrStatusTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("DeviceCardStatusText"));
+            qrFooter.Children.Add(qrStatusTb);
+
+            var qrUrlTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            qrUrlTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("DeviceCardUrl"));
+            qrUrlTb.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("DeviceCardUrl"));
+            qrFooter.Children.Add(qrUrlTb);
+
+            qrCardGrid.Children.Add(qrFooter);
+            qrCard.Child = qrCardGrid;
+            System.Windows.Controls.Grid.SetColumn(qrCard, 2);
+            middleGrid.Children.Add(qrCard);
+
+            System.Windows.Controls.Grid.SetRow(middleGrid, 1);
+            contentGrid.Children.Add(middleGrid);
+
+            wrapperBorder.Child = contentGrid;
+            sv.Content = wrapperBorder;
+        }
+
+        private static System.Windows.Controls.Border CreateOverviewSpecRow(
+            string label,
+            string bindingPath,
+            string foregroundBindingPath,
+            string visibilityBindingPath,
+            System.Windows.Controls.BooleanToVisibilityConverter boolToVis,
+            bool isLast,
+            string tooltipBindingPath = null)
+        {
+            var rowBorder = new System.Windows.Controls.Border
+            {
+                Padding = new Thickness(0, 6, 0, 6)
+            };
+            if (!isLast)
+            {
+                rowBorder.BorderBrush = MainViewModel.CreateFrozenBrush(42, 42, 46);
+                rowBorder.BorderThickness = new Thickness(0, 0, 0, 1);
+            }
+            if (!string.IsNullOrEmpty(visibilityBindingPath) && boolToVis != null)
+            {
+                rowBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding(visibilityBindingPath) { Converter = boolToVis });
+            }
+
+            var rowGrid = new System.Windows.Controls.Grid();
+            rowGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(125) });
+            rowGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var labelTb = new System.Windows.Controls.TextBlock
+            {
+                Text = label,
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.Grid.SetColumn(labelTb, 0);
+            rowGrid.Children.Add(labelTb);
+
+            var valTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            valTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(bindingPath));
+            string resolvedTooltipPath = !string.IsNullOrEmpty(tooltipBindingPath) ? tooltipBindingPath : bindingPath;
+            valTb.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding(resolvedTooltipPath));
+            if (!string.IsNullOrEmpty(foregroundBindingPath))
+            {
+                valTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding(foregroundBindingPath));
+            }
+            System.Windows.Controls.Grid.SetColumn(valTb, 1);
+            rowGrid.Children.Add(valTb);
+
+            rowBorder.Child = rowGrid;
+            return rowBorder;
+        }
+
+        private void RebuildOverviewPeripheralsHost(System.Windows.Controls.WrapPanel host)
+        {
+            if (host == null || ViewModel == null || ViewModel.HardwareInfo == null || ViewModel.HardwareInfo.OverviewPeripherals == null)
+            {
+                return;
+            }
+            host.Children.Clear();
+            for (int i = 0; i < ViewModel.HardwareInfo.OverviewPeripherals.Count; i++)
+            {
+                host.Children.Add(CreatePeripheralBadgeBorder(ViewModel.HardwareInfo.OverviewPeripherals[i]));
+            }
+        }
+
+        private static System.Windows.Controls.Border CreatePeripheralBadgeBorder(PeripheralBadgeItem item)
+        {
+            var b = new System.Windows.Controls.Border
+            {
+                DataContext = item,
+                Background = item.BackgroundBrush,
+                BorderBrush = item.BorderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(0, 0, 6, 6),
+                ToolTip = item.Detail
+            };
+
+            var stack = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var dot = new System.Windows.Controls.Border
+            {
+                Width = 6,
+                Height = 6,
+                CornerRadius = new CornerRadius(3),
+                Background = item.AccentBrush,
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var lbl = new System.Windows.Controls.TextBlock
+            {
+                Text = item.Label,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(230, 230, 230),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            stack.Children.Add(dot);
+            stack.Children.Add(lbl);
+            b.Child = stack;
+            return b;
+        }
+
+        private static System.Windows.Controls.Border CreateMonitorTempCell(
+            string label,
+            string shortTempBinding,
+            string brushBinding,
+            string fullTooltipBinding,
+            bool isLast)
+        {
+            var cell = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 40),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(6, 4, 6, 4),
+                Margin = isLast ? new Thickness(0) : new Thickness(0, 0, 4, 0)
+            };
+            cell.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding(fullTooltipBinding));
+
+            var stack = new System.Windows.Controls.StackPanel();
+            stack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = label,
+                FontSize = 8.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
+            });
+
+            var valTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                FontFamily = new FontFamily("Consolas"),
+                Margin = new Thickness(0, 1, 0, 0)
+            };
+            valTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(shortTempBinding));
+            valTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding(brushBinding));
+            stack.Children.Add(valTb);
+
+            cell.Child = stack;
+            return cell;
+        }
+
+        private void RebuildOverviewAlertsHost(System.Windows.Controls.StackPanel host)
+        {
+            if (host == null || ViewModel == null || ViewModel.OverviewAlerts == null) return;
+            host.Children.Clear();
+            for (int i = 0; i < ViewModel.OverviewAlerts.Count; i++)
+            {
+                host.Children.Add(CreateOverviewAlertBorder(ViewModel.OverviewAlerts[i]));
+            }
+        }
+
+        private System.Windows.Controls.Border CreateOverviewAlertBorder(OverviewAlertItem item)
+        {
+            var b = new System.Windows.Controls.Border
+            {
+                DataContext = item,
+                Background = item.BackgroundBrush,
+                BorderBrush = item.BorderBrush,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(0, 0, 0, 5),
+                Cursor = Cursors.Hand
+            };
+            b.MouseLeftButtonUp += OverviewAlertItem_MouseLeftButtonUp;
+
+            var grid = new System.Windows.Controls.Grid();
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(3) });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(8) });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var stripe = new System.Windows.Controls.Border
+            {
+                Background = item.AccentBrush,
+                CornerRadius = new CornerRadius(1.5)
+            };
+            System.Windows.Controls.Grid.SetColumn(stripe, 0);
+            grid.Children.Add(stripe);
+
+            var textStack = new System.Windows.Controls.StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            textStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = item.Title,
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = item.TitleBrush,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            });
+            textStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = item.Detail,
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(189, 189, 189),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                ToolTip = item.Detail,
+                Margin = new Thickness(0, 1, 0, 0)
+            });
+            System.Windows.Controls.Grid.SetColumn(textStack, 2);
+            grid.Children.Add(textStack);
+
+            var pill = new System.Windows.Controls.Border
+            {
+                Background = item.AccentBrush,
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(5, 1, 5, 1),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(6, 0, 0, 0)
+            };
+            pill.Child = new System.Windows.Controls.TextBlock
+            {
+                Text = item.BadgeText,
+                FontSize = 8.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            System.Windows.Controls.Grid.SetColumn(pill, 3);
+            grid.Children.Add(pill);
+
+            b.Child = grid;
+            return b;
+        }
+
+        private void OverviewAlertItem_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            OverviewAlertItem item = fe != null ? fe.DataContext as OverviewAlertItem : null;
+            if (item != null)
+            {
+                NavigateToAlertTab(item.TargetTab);
+            }
+        }
+
+        private void NavigateToAlertTab(string targetTab)
+        {
+            if (MainTabControl == null || string.IsNullOrEmpty(targetTab)) return;
+
+            if (ViewModel != null && ViewModel.IsCompleted)
+            {
+                ViewModel.IsServiceFinished = true;
+                ViewModel.IsCompleted = false;
+            }
+
+            if (string.Equals(targetTab, "hwtest", StringComparison.OrdinalIgnoreCase))
+            {
+                if (_hwTestTabItem != null)
+                {
+                    MainTabControl.SelectedItem = _hwTestTabItem;
+                    return;
+                }
+                for (int i = 0; i < MainTabControl.Items.Count; i++)
+                {
+                    var ti = MainTabControl.Items[i] as System.Windows.Controls.TabItem;
+                    if (ti != null && string.Equals(Convert.ToString(ti.Tag), HwTestTabTag, StringComparison.Ordinal))
+                    {
+                        MainTabControl.SelectedItem = ti;
+                        return;
+                    }
+                }
+            }
+
+            string bindingPath = null;
+            if (string.Equals(targetTab, "diagnostics", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabDiagnosticsHeader";
+            else if (string.Equals(targetTab, "autopilot", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabAutopilotHeader";
+            else if (string.Equals(targetTab, "drivers", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabDriversHeader";
+            else if (string.Equals(targetTab, "apps", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabAppsHeader";
+            else if (string.Equals(targetTab, "hardware", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabHardwareHeader";
+            else if (string.Equals(targetTab, "logs", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabLogsHeader";
+            else if (string.Equals(targetTab, "overview", StringComparison.OrdinalIgnoreCase)) bindingPath = "TabOverviewHeader";
+
+            if (string.IsNullOrEmpty(bindingPath)) return;
+
+            for (int i = 0; i < MainTabControl.Items.Count; i++)
+            {
+                var ti = MainTabControl.Items[i] as System.Windows.Controls.TabItem;
+                if (ti == null) continue;
+
+                var bindingExpr = System.Windows.Data.BindingOperations.GetBinding(
+                    ti, System.Windows.Controls.HeaderedContentControl.HeaderProperty);
+                if (bindingExpr != null && bindingExpr.Path != null &&
+                    string.Equals(bindingExpr.Path.Path, bindingPath, StringComparison.Ordinal))
+                {
+                    MainTabControl.SelectedItem = ti;
+                    return;
+                }
+
+                if (string.Equals(bindingPath, "TabAutopilotHeader", StringComparison.Ordinal) &&
+                    (string.Equals(Convert.ToString(ti.Tag), "AutopilotTabItem", StringComparison.Ordinal) || IsAutopilotTabItem(ti)))
+                {
+                    MainTabControl.SelectedItem = ti;
+                    return;
+                }
+            }
+        }
+
+        private static void RemoveElementsByVisibilityBinding(DependencyObject root, string bindingPath)
+        {
+            if (root == null || string.IsNullOrEmpty(bindingPath)) return;
+
+            System.Windows.Controls.Panel panel = root as System.Windows.Controls.Panel;
+            if (panel != null)
+            {
+                for (int i = panel.Children.Count - 1; i >= 0; i--)
+                {
+                    FrameworkElement childFe = panel.Children[i] as FrameworkElement;
+                    if (childFe == null) continue;
+                    System.Windows.Data.Binding b = System.Windows.Data.BindingOperations.GetBinding(childFe, UIElement.VisibilityProperty);
+                    if (b != null && b.Path != null && string.Equals(b.Path.Path, bindingPath, StringComparison.Ordinal))
+                    {
+                        panel.Children.RemoveAt(i);
+                    }
+                    else
+                    {
+                        RemoveElementsByVisibilityBinding(childFe, bindingPath);
+                    }
+                }
+                return;
+            }
+
+            foreach (object child in LogicalTreeHelper.GetChildren(root))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null)
+                {
+                    RemoveElementsByVisibilityBinding(dep, bindingPath);
+                }
+            }
+        }
+
+        private static bool HasTaggedElement(DependencyObject node, string tagValue)
+        {
+            if (node == null) return false;
+            FrameworkElement selfFe = node as FrameworkElement;
+            if (selfFe != null && string.Equals(Convert.ToString(selfFe.Tag), tagValue, StringComparison.Ordinal))
+            {
+                return true;
+            }
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null && HasTaggedElement(dep, tagValue)) return true;
+            }
+            return false;
+        }
+
+        private void EnsureBottomDualProgressCard(
+            System.Windows.Controls.TabItem tab0,
+            System.Windows.Controls.ScrollViewer sv,
+            System.Windows.Controls.StackPanel overviewStack)
+        {
+            if (tab0 == null || sv == null || overviewStack == null) return;
+
+            if (HasTaggedElement(tab0.Content as DependencyObject, "GlobalProgressCard"))
+            {
+                return;
+            }
+
+            // Ukloni staru srednju karticu sa ProgressBar-om
+            for (int i = overviewStack.Children.Count - 1; i >= 0; i--)
+            {
+                FrameworkElement fe = overviewStack.Children[i] as FrameworkElement;
+                if (fe == null) continue;
+                if (ContainsProgressBar(fe))
+                {
+                    overviewStack.Children.RemoveAt(i);
+                }
+            }
+
+            var cardBorder = new System.Windows.Controls.Border
+            {
+                Tag = "GlobalProgressCard",
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 10, 14, 10),
+                Margin = new Thickness(6, 6, 6, 0)
+            };
+
+            var rootStack = new System.Windows.Controls.StackPanel();
+
+            var topGrid = new System.Windows.Controls.Grid();
+            topGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            topGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var leftTopGrid = new System.Windows.Controls.Grid
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 10, 0)
+            };
+            leftTopGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+            leftTopGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var leftLabelTb = new System.Windows.Controls.TextBlock
+            {
+                Text = "UKUPAN NAPREDAK PROCESA",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 10, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.Grid.SetColumn(leftLabelTb, 0);
+            leftTopGrid.Children.Add(leftLabelTb);
+
+            var summaryTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            summaryTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("GlobalProgressSummary"));
+            System.Windows.Controls.Grid.SetColumn(summaryTb, 1);
+            leftTopGrid.Children.Add(summaryTb);
+
+            System.Windows.Controls.Grid.SetColumn(leftTopGrid, 0);
+            topGrid.Children.Add(leftTopGrid);
+
+            var pctTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 14,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(0, 122, 204),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var pctBind = new System.Windows.Data.Binding("GlobalProgress");
+            pctBind.StringFormat = "{0}%";
+            pctTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, pctBind);
+            System.Windows.Controls.Grid.SetColumn(pctTb, 1);
+            topGrid.Children.Add(pctTb);
+
+            rootStack.Children.Add(topGrid);
+
+            var globalBarGrid = new System.Windows.Controls.Grid
+            {
+                Margin = new Thickness(0, 5, 0, 8)
+            };
+            globalBarGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            globalBarGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var globalPb = new System.Windows.Controls.ProgressBar
+            {
+                Height = 18,
+                Maximum = 100,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Style pbStyle = TryFindResource("DetailedProgressBarStyle") as Style;
+            if (pbStyle != null)
+            {
+                globalPb.Style = pbStyle;
+            }
+            globalPb.SetBinding(System.Windows.Controls.ProgressBar.ValueProperty, new System.Windows.Data.Binding("GlobalProgress"));
+            System.Windows.Controls.Grid.SetColumn(globalPb, 0);
+            globalBarGrid.Children.Add(globalPb);
+
+            var globalTimingStack = new System.Windows.Controls.StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(10, 0, 0, 0),
+                MinWidth = 178
+            };
+            globalTimingStack.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("BenchmarkSourceTooltip"));
+            var consolasFont = new FontFamily("Consolas");
+            globalTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "Traje ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var globalElapsedTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontFamily = consolasFont,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(224, 224, 224),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            globalElapsedTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("GlobalElapsedText"));
+            globalTimingStack.Children.Add(globalElapsedTb);
+            globalTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "  |  ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(78, 78, 86),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            globalTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "ETA ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var globalEtaTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontFamily = consolasFont,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            globalEtaTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("GlobalEtaText"));
+            globalTimingStack.Children.Add(globalEtaTb);
+
+            System.Windows.Controls.Grid.SetColumn(globalTimingStack, 1);
+            globalBarGrid.Children.Add(globalTimingStack);
+            rootStack.Children.Add(globalBarGrid);
+
+            rootStack.Children.Add(new System.Windows.Controls.Border
+            {
+                Height = 1,
+                Background = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                Margin = new Thickness(0, 0, 0, 7)
+            });
+
+            rootStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "AKTIVNI KORACI",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 0, 5)
+            });
+
+            var activeStepsHost = new System.Windows.Controls.StackPanel();
+            var activeStepsScroll = new System.Windows.Controls.ScrollViewer
+            {
+                MaxHeight = 160,
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled,
+                Content = activeStepsHost
+            };
+            rootStack.Children.Add(activeStepsScroll);
+
+            cardBorder.Child = rootStack;
+
+            if (object.ReferenceEquals(tab0.Content, sv))
+            {
+                if (object.ReferenceEquals(sv.Content, overviewStack))
+                {
+                    overviewStack.Margin = new Thickness(6, 10, 6, 6);
+                }
+                tab0.Content = null;
+                var dockGrid = new System.Windows.Controls.Grid();
+                dockGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                dockGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+                System.Windows.Controls.Grid.SetRow(sv, 0);
+                System.Windows.Controls.Grid.SetRow(cardBorder, 1);
+                dockGrid.Children.Add(sv);
+                dockGrid.Children.Add(cardBorder);
+                tab0.Content = dockGrid;
+            }
+            else
+            {
+                overviewStack.Children.Add(cardBorder);
+            }
+
+            RebuildActiveStepsHost(activeStepsHost);
+            if (ViewModel != null && ViewModel.ActiveStepBars != null)
+            {
+                ViewModel.ActiveStepBars.CollectionChanged += delegate
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        RebuildActiveStepsHost(activeStepsHost);
+                    });
+                };
+            }
+        }
+
+        private void EnsureGlobalTabsWatermark(System.Windows.Controls.Grid rootGrid, System.Windows.Controls.TabItem tab0)
+        {
+            try
+            {
+                // Ukloni eventualni stari watermark iz prvog taba da se ne bi duplirao
+                if (tab0 != null)
+                {
+                    System.Windows.Controls.Grid tab0Grid = tab0.Content as System.Windows.Controls.Grid;
+                    if (tab0Grid != null)
+                    {
+                        for (int i = tab0Grid.Children.Count - 1; i >= 0; i--)
+                        {
+                            FrameworkElement fe = tab0Grid.Children[i] as FrameworkElement;
+                            if (fe != null && string.Equals(Convert.ToString(fe.Tag), "OverviewWatermarkWis", StringComparison.Ordinal))
+                            {
+                                tab0Grid.Children.RemoveAt(i);
+                            }
+                        }
+                    }
+                }
+
+                if (rootGrid == null || HasTaggedElement(rootGrid, "GlobalWatermarkWis")) return;
+
+                var watermarkHost = new System.Windows.Controls.Grid
+                {
+                    Tag = "GlobalWatermarkWis",
+                    ClipToBounds = true,
+                    IsHitTestVisible = false
+                };
+                var watermark = new System.Windows.Controls.TextBlock
+                {
+                    Text = "WIS",
+                    FontFamily = new FontFamily("Segoe UI Black, Arial Black, Segoe UI"),
+                    FontSize = 330,
+                    FontWeight = FontWeights.Black,
+                    Foreground = Brushes.White,
+                    Opacity = 0.065,
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 40, 90),
+                    RenderTransformOrigin = new Point(0.5, 0.5),
+                    RenderTransform = new RotateTransform(-15),
+                    IsHitTestVisible = false
+                };
+                watermarkHost.Children.Add(watermark);
+                System.Windows.Controls.Grid.SetRow(watermarkHost, 1);
+
+                int insertIdx = MainTabControl != null ? rootGrid.Children.IndexOf(MainTabControl) : -1;
+                rootGrid.Children.Insert(insertIdx >= 0 ? insertIdx : rootGrid.Children.Count, watermarkHost);
+            }
+            catch { }
+        }
+
+        private void EnsureAutopilotTabAlertVisual(System.Windows.Controls.TabControl tabControl)
+        {
+            if (tabControl == null || tabControl.Items == null) return;
+            try
+            {
+                System.Windows.Controls.TabItem autopilotTab = null;
+                for (int i = 0; i < tabControl.Items.Count; i++)
+                {
+                    System.Windows.Controls.TabItem candidate = tabControl.Items[i] as System.Windows.Controls.TabItem;
+                    if (candidate != null && IsAutopilotTabItem(candidate))
+                    {
+                        autopilotTab = candidate;
+                        break;
+                    }
+                }
+                if (autopilotTab == null) return;
+
+                string tagStr = Convert.ToString(autopilotTab.Tag);
+                if (string.Equals(tagStr, "AutopilotTabItem", StringComparison.Ordinal) ||
+                    string.Equals(tagStr, "AutopilotTabAlertFramed", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                autopilotTab.Tag = "AutopilotTabAlertFramed";
+                autopilotTab.SetBinding(
+                    System.Windows.Controls.HeaderedContentControl.HeaderProperty,
+                    new System.Windows.Data.Binding("TabAutopilotHeader"));
+
+                var tpl = new System.Windows.Controls.ControlTemplate(typeof(System.Windows.Controls.TabItem));
+                var rootFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Grid));
+
+                var tabBorderFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Border), "tabBorder");
+                tabBorderFactory.SetValue(System.Windows.Controls.Border.BackgroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BackgroundProperty));
+                tabBorderFactory.SetValue(System.Windows.Controls.Border.BorderBrushProperty, Brushes.Transparent);
+                tabBorderFactory.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new Thickness(0, 0, 0, 2));
+                tabBorderFactory.SetValue(System.Windows.Controls.Border.PaddingProperty, new TemplateBindingExtension(System.Windows.Controls.Control.PaddingProperty));
+
+                var cpFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.ContentPresenter));
+                cpFactory.SetValue(System.Windows.Controls.ContentPresenter.ContentProperty, new TemplateBindingExtension(System.Windows.Controls.HeaderedContentControl.HeaderProperty));
+                cpFactory.SetValue(System.Windows.Controls.ContentPresenter.ContentTemplateProperty, new TemplateBindingExtension(System.Windows.Controls.HeaderedContentControl.HeaderTemplateProperty));
+                cpFactory.SetValue(System.Windows.Controls.ContentPresenter.ContentStringFormatProperty, new TemplateBindingExtension(System.Windows.Controls.HeaderedContentControl.HeaderStringFormatProperty));
+                cpFactory.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+                cpFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+                tabBorderFactory.AppendChild(cpFactory);
+                rootFactory.AppendChild(tabBorderFactory);
+
+                var alertFrameFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Border), "alertFrame");
+                alertFrameFactory.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(4));
+                alertFrameFactory.SetValue(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(231, 76, 60));
+                alertFrameFactory.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new Thickness(2));
+                var alertBgBrush = new SolidColorBrush(Color.FromArgb(34, 218, 54, 51));
+                alertBgBrush.Freeze();
+                alertFrameFactory.SetValue(System.Windows.Controls.Border.BackgroundProperty, alertBgBrush);
+                alertFrameFactory.SetValue(UIElement.IsHitTestVisibleProperty, false);
+                alertFrameFactory.SetValue(UIElement.VisibilityProperty, Visibility.Collapsed);
+                alertFrameFactory.SetValue(UIElement.OpacityProperty, 1.0);
+                rootFactory.AppendChild(alertFrameFactory);
+
+                tpl.VisualTree = rootFactory;
+
+                var hoverTrigger = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+                hoverTrigger.Setters.Add(new Setter(System.Windows.Controls.Border.BackgroundProperty, MainViewModel.CreateFrozenBrush(37, 37, 38), "tabBorder"));
+                hoverTrigger.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, Brushes.White));
+                tpl.Triggers.Add(hoverTrigger);
+
+                var selectedTrigger = new Trigger { Property = System.Windows.Controls.TabItem.IsSelectedProperty, Value = true };
+                selectedTrigger.Setters.Add(new Setter(System.Windows.Controls.Border.BackgroundProperty, MainViewModel.CreateFrozenBrush(37, 37, 38), "tabBorder"));
+                selectedTrigger.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(0, 122, 204), "tabBorder"));
+                selectedTrigger.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, MainViewModel.CreateFrozenBrush(0, 122, 204)));
+                tpl.Triggers.Add(selectedTrigger);
+
+                var alertTrigger = new DataTrigger
+                {
+                    Binding = new System.Windows.Data.Binding("Autopilot.IsAlertActive"),
+                    Value = true
+                };
+                alertTrigger.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Visible, "alertFrame"));
+                alertTrigger.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, Brushes.Transparent, "tabBorder"));
+                alertTrigger.Setters.Add(new Setter(System.Windows.Controls.Control.ForegroundProperty, MainViewModel.CreateFrozenBrush(255, 138, 128)));
+                tpl.Triggers.Add(alertTrigger);
+
+                autopilotTab.Template = tpl;
+
+                autopilotTab.Loaded += delegate
+                {
+                    SyncAutopilotTabAlertPulse(autopilotTab);
+                };
+
+                if (ViewModel != null && ViewModel.Autopilot != null)
+                {
+                    ViewModel.Autopilot.PropertyChanged += (s, e) =>
+                    {
+                        if (e != null && string.Equals(e.PropertyName, "IsAlertActive", StringComparison.Ordinal))
+                        {
+                            Dispatcher.BeginInvoke((Action)delegate
+                            {
+                                SyncAutopilotTabAlertPulse(autopilotTab);
+                            });
+                        }
+                    };
+                }
+
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, (Action)delegate
+                {
+                    SyncAutopilotTabAlertPulse(autopilotTab);
+                });
+            }
+            catch { }
+        }
+
+        private static void RemoveTabByHeaderBinding(System.Windows.Controls.TabControl tabControl, string headerBindingPath)
+        {
+            if (tabControl == null || string.IsNullOrEmpty(headerBindingPath)) return;
+            try
+            {
+                for (int i = tabControl.Items.Count - 1; i >= 0; i--)
+                {
+                    var ti = tabControl.Items[i] as System.Windows.Controls.TabItem;
+                    if (ti == null) continue;
+                    var bindingExpr = System.Windows.Data.BindingOperations.GetBinding(
+                        ti, System.Windows.Controls.HeaderedContentControl.HeaderProperty);
+                    if (bindingExpr != null && bindingExpr.Path != null &&
+                        string.Equals(bindingExpr.Path.Path, headerBindingPath, StringComparison.Ordinal))
+                    {
+                        tabControl.Items.RemoveAt(i);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void EnsureAppsTabRetryButtons(System.Windows.Controls.TabControl tabControl)
+        {
+            if (tabControl == null) return;
+            try
+            {
+                System.Windows.Controls.TabItem appsTab = null;
+                for (int i = 0; i < tabControl.Items.Count; i++)
+                {
+                    var ti = tabControl.Items[i] as System.Windows.Controls.TabItem;
+                    if (ti == null) continue;
+                    var hdrBind = System.Windows.Data.BindingOperations.GetBinding(
+                        ti, System.Windows.Controls.HeaderedContentControl.HeaderProperty);
+                    if (hdrBind != null && hdrBind.Path != null &&
+                        string.Equals(hdrBind.Path.Path, "TabAppsHeader", StringComparison.Ordinal))
+                    {
+                        appsTab = ti;
+                        break;
+                    }
+                }
+                if (appsTab == null) return;
+
+                DependencyObject tabContent = appsTab.Content as DependencyObject;
+                object expectedSource = ViewModel != null ? ViewModel.Apps : null;
+                System.Windows.Controls.ItemsControl appsControl = FindItemsControlBySourceBinding(tabContent, "Apps", expectedSource);
+                if (appsControl == null) return;
+                if (string.Equals(Convert.ToString(appsControl.Tag), "AppsItemsControlRetryPatched", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                appsControl.ItemTemplate = CreateAppsCardRetryDataTemplate();
+                appsControl.Tag = "AppsItemsControlRetryPatched";
+            }
+            catch { }
+        }
+
+        private static DataTemplate CreateAppsCardRetryDataTemplate()
+        {
+            var boolToVis = new System.Windows.Controls.BooleanToVisibilityConverter();
+
+            var cardBorder = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+            cardBorder.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new Thickness(1.5));
+            cardBorder.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(6));
+            cardBorder.SetValue(System.Windows.Controls.Border.PaddingProperty, new Thickness(12));
+            cardBorder.SetValue(FrameworkElement.MarginProperty, new Thickness(4));
+
+            var cardStyle = new Style(typeof(System.Windows.Controls.Border));
+            cardStyle.Setters.Add(new Setter(System.Windows.Controls.Border.BackgroundProperty, MainViewModel.CreateFrozenBrush(30, 30, 30)));
+            cardStyle.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(45, 45, 48)));
+
+            var dtRunning = new DataTrigger { Binding = new System.Windows.Data.Binding("IsRunning"), Value = true };
+            dtRunning.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(0, 122, 204)));
+            dtRunning.Setters.Add(new Setter(System.Windows.Controls.Border.BackgroundProperty, MainViewModel.CreateFrozenBrush(37, 42, 48)));
+            cardStyle.Triggers.Add(dtRunning);
+
+            var dtCompleted = new DataTrigger { Binding = new System.Windows.Data.Binding("IsCompleted"), Value = true };
+            dtCompleted.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(39, 174, 96)));
+            cardStyle.Triggers.Add(dtCompleted);
+
+            var dtWarning = new DataTrigger { Binding = new System.Windows.Data.Binding("IsWarning"), Value = true };
+            dtWarning.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(210, 153, 34)));
+            cardStyle.Triggers.Add(dtWarning);
+
+            var dtError = new DataTrigger { Binding = new System.Windows.Data.Binding("IsError"), Value = true };
+            dtError.Setters.Add(new Setter(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(231, 76, 60)));
+            cardStyle.Triggers.Add(dtError);
+
+            cardBorder.SetValue(FrameworkElement.StyleProperty, cardStyle);
+
+            var dockFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.DockPanel));
+            dockFactory.SetValue(System.Windows.Controls.DockPanel.LastChildFillProperty, true);
+
+            // Levo: Ikona programa
+            var iconFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            iconFactory.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Left);
+            iconFactory.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("IconGlyph"));
+            iconFactory.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 24.0);
+            iconFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            iconFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 0, 12, 0));
+            dockFactory.AppendChild(iconFactory);
+
+            // Desno: Statusni bedz + Retry dugme
+            var actionsStack = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
+            actionsStack.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            actionsStack.SetValue(System.Windows.Controls.StackPanel.OrientationProperty, System.Windows.Controls.Orientation.Horizontal);
+            actionsStack.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+            var badgeBorder = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+            badgeBorder.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("BadgeBackground"));
+            badgeBorder.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(4));
+            badgeBorder.SetValue(System.Windows.Controls.Border.PaddingProperty, new Thickness(9, 5, 9, 5));
+            badgeBorder.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+
+            var badgeText = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            badgeText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("IconText"));
+            badgeText.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            badgeText.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
+            badgeText.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("BadgeForeground"));
+            badgeBorder.AppendChild(badgeText);
+            actionsStack.AppendChild(badgeBorder);
+
+            var retryTemplate = new System.Windows.Controls.ControlTemplate(typeof(Button));
+            var retryBorderFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+            retryBorderFactory.SetValue(System.Windows.Controls.Border.BackgroundProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BackgroundProperty));
+            retryBorderFactory.SetValue(System.Windows.Controls.Border.BorderBrushProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderBrushProperty));
+            retryBorderFactory.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new TemplateBindingExtension(System.Windows.Controls.Control.BorderThicknessProperty));
+            retryBorderFactory.SetValue(System.Windows.Controls.Border.CornerRadiusProperty, new CornerRadius(4));
+            retryBorderFactory.SetValue(System.Windows.Controls.Border.PaddingProperty, new TemplateBindingExtension(System.Windows.Controls.Control.PaddingProperty));
+            var retryContentFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.ContentPresenter));
+            retryContentFactory.SetValue(FrameworkElement.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+            retryContentFactory.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            retryBorderFactory.AppendChild(retryContentFactory);
+            retryTemplate.VisualTree = retryBorderFactory;
+
+            var retryBtnStyle = new Style(typeof(Button));
+            retryBtnStyle.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty, MainViewModel.CreateFrozenBrush(59, 30, 32)));
+            retryBtnStyle.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, MainViewModel.CreateFrozenBrush(231, 76, 60)));
+            retryBtnStyle.Setters.Add(new Setter(System.Windows.Controls.Control.TemplateProperty, retryTemplate));
+
+            var dtWarnBtn = new DataTrigger { Binding = new System.Windows.Data.Binding("IsWarning"), Value = true };
+            dtWarnBtn.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty, MainViewModel.CreateFrozenBrush(56, 45, 24)));
+            dtWarnBtn.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, MainViewModel.CreateFrozenBrush(210, 153, 34)));
+            retryBtnStyle.Triggers.Add(dtWarnBtn);
+
+            var trHoverBtn = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+            trHoverBtn.Setters.Add(new Setter(System.Windows.Controls.Control.BackgroundProperty, MainViewModel.CreateFrozenBrush(0, 122, 204)));
+            trHoverBtn.Setters.Add(new Setter(System.Windows.Controls.Control.BorderBrushProperty, MainViewModel.CreateFrozenBrush(56, 189, 248)));
+            retryBtnStyle.Triggers.Add(trHoverBtn);
+
+            var retryBtn = new FrameworkElementFactory(typeof(Button));
+            retryBtn.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowRetryButton") { Converter = boolToVis });
+            retryBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("RetryButtonText"));
+            retryBtn.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("RetryButtonTooltip"));
+            retryBtn.SetBinding(UIElement.IsEnabledProperty, new System.Windows.Data.Binding("CanRetry"));
+            retryBtn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandProperty, new System.Windows.Data.Binding("DataContext.RetryAppCommand")
+            {
+                RelativeSource = new System.Windows.Data.RelativeSource(
+                    System.Windows.Data.RelativeSourceMode.FindAncestor,
+                    typeof(System.Windows.Controls.ItemsControl),
+                    1)
+            });
+            retryBtn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandParameterProperty, new System.Windows.Data.Binding());
+            retryBtn.SetValue(FrameworkElement.MarginProperty, new Thickness(6, 0, 0, 0));
+            retryBtn.SetValue(System.Windows.Controls.Control.PaddingProperty, new Thickness(9, 4, 9, 4));
+            retryBtn.SetValue(System.Windows.Controls.Control.FontSizeProperty, 11.0);
+            retryBtn.SetValue(System.Windows.Controls.Control.FontWeightProperty, FontWeights.SemiBold);
+            retryBtn.SetValue(System.Windows.Controls.Control.ForegroundProperty, Brushes.White);
+            retryBtn.SetValue(System.Windows.Controls.Control.BorderThicknessProperty, new Thickness(1));
+            retryBtn.SetValue(FrameworkElement.CursorProperty, Cursors.Hand);
+            retryBtn.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            retryBtn.SetValue(FrameworkElement.StyleProperty, retryBtnStyle);
+            actionsStack.AppendChild(retryBtn);
+            dockFactory.AppendChild(actionsStack);
+
+            // Sredina (poslednje dete DockPanela): Naziv, detalj i mini ProgressBar
+            var infoStack = new FrameworkElementFactory(typeof(System.Windows.Controls.StackPanel));
+            infoStack.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            infoStack.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 0, 8, 0));
+
+            var nameText = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            nameText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Name"));
+            nameText.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 13.0);
+            nameText.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
+            nameText.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, Brushes.White);
+            nameText.SetValue(System.Windows.Controls.TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+            infoStack.AppendChild(nameText);
+
+            var detailText = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            detailText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Detail"));
+            detailText.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            detailText.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(170, 170, 170));
+            detailText.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 2, 0, 0));
+            detailText.SetValue(System.Windows.Controls.TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+            infoStack.AppendChild(detailText);
+
+            var pbStyle = new Style(typeof(System.Windows.Controls.ProgressBar));
+            pbStyle.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Collapsed));
+            var dtPbRun = new DataTrigger { Binding = new System.Windows.Data.Binding("IsRunning"), Value = true };
+            dtPbRun.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Visible));
+            pbStyle.Triggers.Add(dtPbRun);
+
+            var pbFactory = new FrameworkElementFactory(typeof(System.Windows.Controls.ProgressBar));
+            pbFactory.SetValue(FrameworkElement.HeightProperty, 4.0);
+            pbFactory.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 6, 0, 0));
+            pbFactory.SetValue(System.Windows.Controls.ProgressBar.IsIndeterminateProperty, true);
+            pbFactory.SetValue(System.Windows.Controls.Control.ForegroundProperty, MainViewModel.CreateFrozenBrush(0, 122, 204));
+            pbFactory.SetValue(System.Windows.Controls.Control.BackgroundProperty, MainViewModel.CreateFrozenBrush(45, 45, 48));
+            pbFactory.SetValue(System.Windows.Controls.Control.BorderThicknessProperty, new Thickness(0));
+            pbFactory.SetValue(FrameworkElement.StyleProperty, pbStyle);
+            infoStack.AppendChild(pbFactory);
+
+            dockFactory.AppendChild(infoStack);
+            cardBorder.AppendChild(dockFactory);
+
+            var tpl = new DataTemplate();
+            tpl.VisualTree = cardBorder;
+            return tpl;
+        }
+
+        private void EnsureHwMonitorTabLayout(System.Windows.Controls.TabControl tabControl)
+        {
+            if (tabControl == null) return;
+            System.Windows.Controls.TabItem diagTab = null;
+            foreach (object obj in tabControl.Items)
+            {
+                System.Windows.Controls.TabItem ti = obj as System.Windows.Controls.TabItem;
+                if (ti == null) continue;
+                string tag = Convert.ToString(ti.Tag);
+                if (string.Equals(tag, "HwMonitorTabRedesignedV1", StringComparison.Ordinal))
+                {
+                    return;
+                }
+                System.Windows.Data.Binding hdrBind = System.Windows.Data.BindingOperations.GetBinding(
+                    ti,
+                    System.Windows.Controls.HeaderedContentControl.HeaderProperty);
+                if (hdrBind != null && hdrBind.Path != null &&
+                    string.Equals(hdrBind.Path.Path, "TabDiagnosticsHeader", StringComparison.Ordinal))
+                {
+                    diagTab = ti;
+                    break;
+                }
+            }
+            if (diagTab == null) return;
+
+            diagTab.Content = BuildDetailedHwMonitorContent();
+            diagTab.Tag = "HwMonitorTabRedesignedV1";
+        }
+
+        private UIElement BuildDetailedHwMonitorContent()
+        {
+            var rootGrid = new System.Windows.Controls.Grid { Margin = new Thickness(14) };
+            rootGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            rootGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            rootGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            rootGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            // 1. Gornja kontrolna traka
+            var topCard = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(26, 26, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            var topDock = new System.Windows.Controls.DockPanel { LastChildFill = true };
+
+            var rightStatsStack = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.DockPanel.SetDock(rightStatsStack, System.Windows.Controls.Dock.Right);
+
+            var sysStatsBorder = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(36, 36, 42),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 72),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            var sysStatsText = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(200, 210, 224),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            sysStatsText.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("HwSystemStatsText"));
+            sysStatsBorder.Child = sysStatsText;
+            rightStatsStack.Children.Add(sysStatsBorder);
+
+            var sensorBadge = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(24, 34, 46),
+                BorderBrush = MainViewModel.CreateFrozenBrush(56, 100, 140),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 4, 8, 4),
+                Margin = new Thickness(8, 0, 0, 0)
+            };
+            var sensorStatusTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            sensorStatusTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ThermalSensorStatus"));
+            sensorStatusTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("ThermalSensorStatusBrush"));
+            sensorBadge.Child = sensorStatusTb;
+            rightStatsStack.Children.Add(sensorBadge);
+
+            topDock.Children.Add(rightStatsStack);
+
+            var leftActions = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var titleTb = new System.Windows.Controls.TextBlock
+            {
+                Text = "HW MONITOR  •  SISTEMSKA TELEMETRIJA UŽIVO",
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(56, 189, 248),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 14, 0)
+            };
+            leftActions.Children.Add(titleTb);
+
+            var btnReset = CreateHwActionButton(
+                "↺ Reset Min/Max",
+                "ResetCoreClocksCommand",
+                MainViewModel.CreateFrozenBrush(45, 45, 52),
+                MainViewModel.CreateFrozenBrush(82, 82, 92),
+                Brushes.White);
+            btnReset.Margin = new Thickness(0, 0, 8, 0);
+            leftActions.Children.Add(btnReset);
+
+            var btnStartStress = CreateHwActionButton(
+                "▶ Start Stres",
+                "RunThermalStressCommand",
+                MainViewModel.CreateFrozenBrush(18, 66, 48),
+                MainViewModel.CreateFrozenBrush(16, 185, 129),
+                MainViewModel.CreateFrozenBrush(220, 252, 231));
+            btnStartStress.Margin = new Thickness(0, 0, 8, 0);
+            var startVisStyle = new Style(typeof(System.Windows.Controls.Button), btnStartStress.Style);
+            var dtHideStart = new DataTrigger { Binding = new System.Windows.Data.Binding("IsStressTestRunning"), Value = true };
+            dtHideStart.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Collapsed));
+            startVisStyle.Triggers.Add(dtHideStart);
+            btnStartStress.Style = startVisStyle;
+            leftActions.Children.Add(btnStartStress);
+
+            var btnStopStress = CreateHwActionButton(
+                "⏹ Stop Stres",
+                "CancelThermalStressCommand",
+                MainViewModel.CreateFrozenBrush(72, 26, 28),
+                MainViewModel.CreateFrozenBrush(239, 68, 68),
+                MainViewModel.CreateFrozenBrush(254, 226, 226));
+            btnStopStress.Margin = new Thickness(0, 0, 8, 0);
+            var stopVisStyle = new Style(typeof(System.Windows.Controls.Button), btnStopStress.Style);
+            stopVisStyle.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Collapsed));
+            var dtShowStop = new DataTrigger { Binding = new System.Windows.Data.Binding("IsStressTestRunning"), Value = true };
+            dtShowStop.Setters.Add(new Setter(UIElement.VisibilityProperty, Visibility.Visible));
+            stopVisStyle.Triggers.Add(dtShowStop);
+            btnStopStress.Style = stopVisStyle;
+            leftActions.Children.Add(btnStopStress);
+
+            var stressStatusTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11.5,
+                Foreground = MainViewModel.CreateFrozenBrush(203, 213, 225),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            stressStatusTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("StressTestStatusText"));
+            leftActions.Children.Add(stressStatusTb);
+
+            topDock.Children.Add(leftActions);
+            topCard.Child = topDock;
+            System.Windows.Controls.Grid.SetRow(topCard, 0);
+            rootGrid.Children.Add(topCard);
+
+            // 2. 5 živih KPI kartica
+            var kpiGrid = new System.Windows.Controls.Primitives.UniformGrid
+            {
+                Columns = 5,
+                Rows = 1,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+
+            kpiGrid.Children.Add(CreateHwKpiCard(
+                "CPU / PROCESOR",
+                "CpuTempText", "CpuTempBrush",
+                "CpuUsageShortText", "HwCpuAvgClockText", "HwCpuKpiSubText",
+                "CpuUsagePercent", MainViewModel.CreateFrozenBrush(56, 189, 248),
+                new Thickness(0, 0, 6, 0)));
+
+            kpiGrid.Children.Add(CreateHwKpiCard(
+                "RAM MEMORIJA",
+                "RamUsageShortText", "RamUsageBrush",
+                "HwRamAvailableText", "HwRamCommitText", "HardwareInfo.RamSummary",
+                "RamUsagePercent", MainViewModel.CreateFrozenBrush(96, 165, 250),
+                new Thickness(3, 0, 3, 0)));
+
+            kpiGrid.Children.Add(CreateHwKpiCard(
+                "GRAFIKA (GPU)",
+                "GpuTempText", "GpuTempBrush",
+                "FanSpeedText", "HardwareInfo.GpuPrimary", "HwGpuKpiSubText",
+                "GpuTemp", MainViewModel.CreateFrozenBrush(192, 132, 252),
+                new Thickness(3, 0, 3, 0)));
+
+            kpiGrid.Children.Add(CreateHwKpiCard(
+                "DISK / SSD I/O",
+                "SsdTempText", "SsdTempBrush",
+                "HwDiskIoText", "MbTempText", "ThrottlingText",
+                "HwDiskActivePercent", MainViewModel.CreateFrozenBrush(16, 185, 129),
+                new Thickness(3, 0, 3, 0)));
+
+            kpiGrid.Children.Add(CreateHwKpiCard(
+                "NAPAJANJE / BATERIJA",
+                "PowerDrawText", "PowerDrawBrush",
+                "HwPowerVoltageText", "PowerStatusTitle", "HwPowerSubText",
+                "BatteryChargePercent", MainViewModel.CreateFrozenBrush(245, 158, 11),
+                new Thickness(6, 0, 0, 0)));
+
+            System.Windows.Controls.Grid.SetRow(kpiGrid, 1);
+            rootGrid.Children.Add(kpiGrid);
+
+            // 3. 6-kanalni 5-minutni grafikon
+            var graphCard = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(24, 24, 28),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 8, 12, 8),
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            var graphStack = new System.Windows.Controls.StackPanel();
+
+            var legendDock = new System.Windows.Controls.DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
+            var graphTitle = new System.Windows.Controls.TextBlock
+            {
+                Text = "TERMALNA KRIVA & CPU OPTEREĆENJE (5 MIN / 1 Hz)",
+                FontSize = 11.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            System.Windows.Controls.DockPanel.SetDock(graphTitle, System.Windows.Controls.Dock.Left);
+            legendDock.Children.Add(graphTitle);
+
+            var legendItems = new System.Windows.Controls.WrapPanel
+            {
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(56, 189, 248), "LegendCpuText"));
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(96, 165, 250), "LegendCpuLoadText"));
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(192, 132, 252), "LegendGpuText"));
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(245, 158, 11), "LegendMbText"));
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(16, 185, 129), "LegendSsdText"));
+            legendItems.Children.Add(CreateGraphLegendPill(MainViewModel.CreateFrozenBrush(239, 68, 68), "LegendThrottleText"));
+            legendDock.Children.Add(legendItems);
+            graphStack.Children.Add(legendDock);
+
+            var graphHost = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(18, 18, 22),
+                BorderBrush = MainViewModel.CreateFrozenBrush(42, 42, 48),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Height = 148,
+                Padding = new Thickness(4)
+            };
+            var viewBox = new System.Windows.Controls.Viewbox { Stretch = Stretch.Fill };
+            var canvas = new System.Windows.Controls.Canvas { Width = 900, Height = 200, ClipToBounds = true };
+
+            Brush gridStroke = MainViewModel.CreateFrozenBrush(42, 46, 56);
+            double[] yTicks = new double[] { 50, 100, 150 };
+            foreach (double yVal in yTicks)
+            {
+                var hLine = new System.Windows.Shapes.Line
+                {
+                    X1 = 0,
+                    X2 = 900,
+                    Y1 = yVal,
+                    Y2 = yVal,
+                    Stroke = gridStroke,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new System.Windows.Media.DoubleCollection { 4, 4 }
+                };
+                canvas.Children.Add(hLine);
+            }
+
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("CpuLoadGraphPoints", MainViewModel.CreateFrozenBrush(96, 165, 250), 1.6, true));
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("MbGraphPoints", MainViewModel.CreateFrozenBrush(245, 158, 11), 1.8, false));
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("SsdGraphPoints", MainViewModel.CreateFrozenBrush(16, 185, 129), 1.8, false));
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("GpuGraphPoints", MainViewModel.CreateFrozenBrush(192, 132, 252), 2.0, false));
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("ThrottleGraphPoints", MainViewModel.CreateFrozenBrush(239, 68, 68), 1.8, false));
+            canvas.Children.Add(CreateHwMonitorGraphPolyline("CpuGraphPoints", MainViewModel.CreateFrozenBrush(56, 189, 248), 2.4, false));
+
+            viewBox.Child = canvas;
+            graphHost.Child = viewBox;
+            graphStack.Children.Add(graphHost);
+            graphCard.Child = graphStack;
+            System.Windows.Controls.Grid.SetRow(graphCard, 2);
+            rootGrid.Children.Add(graphCard);
+
+            // 4. Donji 2-kolonski panel (levo senzori MIN/TRENUTNO/MAX, desno taktovi jezgara + podsistemi)
+            var bottomGrid = new System.Windows.Controls.Grid();
+            bottomGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1.25, GridUnitType.Star) });
+            bottomGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(10) });
+            bottomGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star) });
+
+            // Leva kartica: tabela senzora
+            var sensorsCard = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(24, 24, 28),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 10, 12, 10)
+            };
+            var sensorsLayout = new System.Windows.Controls.Grid();
+            sensorsLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            sensorsLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            sensorsLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var sensorsTitle = new System.Windows.Controls.TextBlock
+            {
+                Text = "DETALJNI SENZORI (MIN / TRENUTNO / MAX)",
+                FontSize = 11.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+            System.Windows.Controls.Grid.SetRow(sensorsTitle, 0);
+            sensorsLayout.Children.Add(sensorsTitle);
+
+            var sensorHeaderRow = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(36, 36, 42),
+                BorderBrush = MainViewModel.CreateFrozenBrush(58, 58, 68),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(8, 5, 8, 5)
+            };
+            var shDock = new System.Windows.Controls.DockPanel { LastChildFill = true };
+            shDock.Children.Add(CreateFixedHeaderCol("MAX", 76));
+            shDock.Children.Add(CreateFixedHeaderCol("MIN", 76));
+            shDock.Children.Add(CreateFixedHeaderCol("TRENUTNO", 82));
+            shDock.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "SENZOR",
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184)
+            });
+            sensorHeaderRow.Child = shDock;
+            System.Windows.Controls.Grid.SetRow(sensorHeaderRow, 1);
+            sensorsLayout.Children.Add(sensorHeaderRow);
+
+            var sensorsScroll = new System.Windows.Controls.ScrollViewer
+            {
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled
+            };
+            var sensorsList = new System.Windows.Controls.ItemsControl
+            {
+                ItemTemplate = CreateHwMonitorSensorsTemplate()
+            };
+            sensorsList.SetBinding(System.Windows.Controls.ItemsControl.ItemsSourceProperty, new System.Windows.Data.Binding("HwMonitorSensors"));
+            sensorsScroll.Content = sensorsList;
+            System.Windows.Controls.Grid.SetRow(sensorsScroll, 2);
+            sensorsLayout.Children.Add(sensorsScroll);
+
+            sensorsCard.Child = sensorsLayout;
+            System.Windows.Controls.Grid.SetColumn(sensorsCard, 0);
+            bottomGrid.Children.Add(sensorsCard);
+
+            // Desna kolona: Taktovi jezgara + Podsistemi
+            var rightCol = new System.Windows.Controls.Grid();
+            rightCol.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            rightCol.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(10) });
+            rightCol.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+
+            var clocksCard = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(24, 24, 28),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 10, 12, 10)
+            };
+            var clocksLayout = new System.Windows.Controls.Grid();
+            clocksLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            clocksLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+            clocksLayout.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var clocksTitleDock = new System.Windows.Controls.DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
+            var avgClockTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11.5,
+                FontFamily = new FontFamily("Consolas"),
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(56, 189, 248)
+            };
+            avgClockTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("HwCpuAvgClockText"));
+            System.Windows.Controls.DockPanel.SetDock(avgClockTb, System.Windows.Controls.Dock.Right);
+            clocksTitleDock.Children.Add(avgClockTb);
+            clocksTitleDock.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "TAKTOVI PROCESORSKIH JEZGARA",
+                FontSize = 11.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240)
+            });
+            System.Windows.Controls.Grid.SetRow(clocksTitleDock, 0);
+            clocksLayout.Children.Add(clocksTitleDock);
+
+            var clockHeaderRow = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(36, 36, 42),
+                BorderBrush = MainViewModel.CreateFrozenBrush(58, 58, 68),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(8, 5, 8, 5)
+            };
+            var chDock = new System.Windows.Controls.DockPanel { LastChildFill = true };
+            chDock.Children.Add(CreateFixedHeaderCol("MAX", 68));
+            chDock.Children.Add(CreateFixedHeaderCol("MIN", 68));
+            chDock.Children.Add(CreateFixedHeaderCol("TRENUTNO", 74));
+            chDock.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "JEZGRO",
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184)
+            });
+            clockHeaderRow.Child = chDock;
+            System.Windows.Controls.Grid.SetRow(clockHeaderRow, 1);
+            clocksLayout.Children.Add(clockHeaderRow);
+
+            var clocksScroll = new System.Windows.Controls.ScrollViewer
+            {
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled
+            };
+            var clocksList = new System.Windows.Controls.ItemsControl
+            {
+                ItemTemplate = CreateCoreClocksTemplate()
+            };
+            clocksList.SetBinding(System.Windows.Controls.ItemsControl.ItemsSourceProperty, new System.Windows.Data.Binding("CoreClocks"));
+            clocksScroll.Content = clocksList;
+            System.Windows.Controls.Grid.SetRow(clocksScroll, 2);
+            clocksLayout.Children.Add(clocksScroll);
+
+            clocksCard.Child = clocksLayout;
+            System.Windows.Controls.Grid.SetRow(clocksCard, 0);
+            rightCol.Children.Add(clocksCard);
+
+            // Kartica: Podsistemi i napajanje
+            var subsysCard = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(24, 24, 28),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 10, 12, 10)
+            };
+            var subsysStack = new System.Windows.Controls.StackPanel();
+            subsysStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "PODSISTEMI & DIJAGNOSTIKA",
+                FontSize = 11.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
+                Margin = new Thickness(0, 0, 0, 6)
+            });
+            subsysStack.Children.Add(CreateHwSubsystemRow("Mreža (RX / TX)", "HwNetRateText", MainViewModel.CreateFrozenBrush(56, 189, 248)));
+            subsysStack.Children.Add(CreateHwSubsystemRow("Disk I/O", "HwDiskIoText", MainViewModel.CreateFrozenBrush(16, 185, 129)));
+            subsysStack.Children.Add(CreateHwSubsystemRow("Napajanje", "PowerDrawText", MainViewModel.CreateFrozenBrush(245, 158, 11)));
+            subsysStack.Children.Add(CreateHwSubsystemRow("Režim / Napon", "HwPowerVoltageText", MainViewModel.CreateFrozenBrush(203, 213, 225)));
+            subsysStack.Children.Add(CreateHwSubsystemRow("Term. ocena", "ThermalVerdictTitle", null, "ThermalVerdictBrush"));
+            subsysCard.Child = subsysStack;
+            System.Windows.Controls.Grid.SetRow(subsysCard, 2);
+            rightCol.Children.Add(subsysCard);
+
+            System.Windows.Controls.Grid.SetColumn(rightCol, 2);
+            bottomGrid.Children.Add(rightCol);
+
+            System.Windows.Controls.Grid.SetRow(bottomGrid, 3);
+            rootGrid.Children.Add(bottomGrid);
+
+            return rootGrid;
+        }
+
+        private System.Windows.Controls.Button CreateHwActionButton(string text, string commandBindingPath, Brush bgBrush, Brush borderBrush, Brush fgBrush)
+        {
+            var btn = new System.Windows.Controls.Button
+            {
+                Content = text,
+                Foreground = fgBrush,
+                Background = bgBrush,
+                BorderBrush = borderBrush,
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(10, 5, 10, 5),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandProperty, new System.Windows.Data.Binding(commandBindingPath));
+            return btn;
+        }
+
+        private System.Windows.Controls.Border CreateHwKpiCard(
+            string title,
+            string mainPath,
+            string mainBrushPath,
+            string line2Path,
+            string line3Path,
+            string line4Path,
+            string barValuePath,
+            Brush barBrush,
+            Thickness margin)
+        {
+            var card = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(26, 26, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(54, 54, 62),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = margin
+            };
+            var st = new System.Windows.Controls.StackPanel();
+
+            st.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = title,
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184)
+            });
+
+            var mainTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 18,
+                FontWeight = FontWeights.Bold,
+                FontFamily = new FontFamily("Consolas"),
+                Margin = new Thickness(0, 2, 0, 2),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            mainTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(mainPath));
+            mainTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding(mainBrushPath));
+            st.Children.Add(mainTb);
+
+            var l2 = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            l2.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(line2Path));
+            st.Children.Add(l2);
+
+            var l3 = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10.5,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            l3.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(line3Path));
+            st.Children.Add(l3);
+
+            var l4 = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10.5,
+                Foreground = MainViewModel.CreateFrozenBrush(130, 145, 165),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 0, 5)
+            };
+            l4.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(line4Path));
+            st.Children.Add(l4);
+
+            var pb = new System.Windows.Controls.ProgressBar
+            {
+                Minimum = 0,
+                Maximum = 100,
+                Height = 4,
+                Foreground = barBrush,
+                Background = MainViewModel.CreateFrozenBrush(42, 42, 48),
+                BorderThickness = new Thickness(0)
+            };
+            pb.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty, new System.Windows.Data.Binding(barValuePath));
+            st.Children.Add(pb);
+
+            card.Child = st;
+            return card;
+        }
+
+        private System.Windows.Controls.StackPanel CreateGraphLegendPill(Brush dotBrush, string textBindingPath)
+        {
+            var pill = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                Margin = new Thickness(10, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            pill.Children.Add(new System.Windows.Controls.Border
+            {
+                Width = 9,
+                Height = 9,
+                CornerRadius = new CornerRadius(2),
+                Background = dotBrush,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 4, 0)
+            });
+            var tb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(203, 213, 225),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            tb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(textBindingPath));
+            pill.Children.Add(tb);
+            return pill;
+        }
+
+        private System.Windows.Shapes.Polyline CreateHwMonitorGraphPolyline(string pointsBindingPath, Brush strokeBrush, double thickness, bool dashed)
+        {
+            var poly = new System.Windows.Shapes.Polyline
+            {
+                Stroke = strokeBrush,
+                StrokeThickness = thickness,
+                StrokeLineJoin = System.Windows.Media.PenLineJoin.Round
+            };
+            if (dashed)
+            {
+                poly.StrokeDashArray = new System.Windows.Media.DoubleCollection { 4, 3 };
+            }
+            poly.SetBinding(System.Windows.Shapes.Polyline.PointsProperty, new System.Windows.Data.Binding(pointsBindingPath));
+            return poly;
+        }
+
+        private System.Windows.Controls.TextBlock CreateFixedHeaderCol(string label, double width)
+        {
+            var tb = new System.Windows.Controls.TextBlock
+            {
+                Text = label,
+                Width = width,
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184),
+                TextAlignment = TextAlignment.Right
+            };
+            System.Windows.Controls.DockPanel.SetDock(tb, System.Windows.Controls.Dock.Right);
+            return tb;
+        }
+
+        private DataTemplate CreateHwMonitorSensorsTemplate()
+        {
+            var rowBorder = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+            rowBorder.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("RowBackground"));
+            rowBorder.SetValue(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(38, 38, 45));
+            rowBorder.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new Thickness(0, 0, 0, 1));
+            rowBorder.SetValue(System.Windows.Controls.Border.PaddingProperty, new Thickness(8, 4, 8, 4));
+
+            var dock = new FrameworkElementFactory(typeof(System.Windows.Controls.DockPanel));
+            dock.SetValue(System.Windows.Controls.DockPanel.LastChildFillProperty, true);
+
+            var maxTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            maxTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            maxTb.SetValue(FrameworkElement.WidthProperty, 76.0);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.5);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            maxTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(248, 113, 113));
+            maxTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("MaxText"));
+            dock.AppendChild(maxTb);
+
+            var minTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            minTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            minTb.SetValue(FrameworkElement.WidthProperty, 76.0);
+            minTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.5);
+            minTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            minTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            minTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(148, 163, 184));
+            minTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("MinText"));
+            dock.AppendChild(minTb);
+
+            var curTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            curTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            curTb.SetValue(FrameworkElement.WidthProperty, 82.0);
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.5);
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
+            curTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            curTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("ValueBrush"));
+            curTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("CurrentText"));
+            dock.AppendChild(curTb);
+
+            var nameTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            nameTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.5);
+            nameTb.SetValue(System.Windows.Controls.TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+            nameTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("NameForeground"));
+            nameTb.SetBinding(System.Windows.Controls.TextBlock.FontWeightProperty, new System.Windows.Data.Binding("NameFontWeight"));
+            nameTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Name"));
+            dock.AppendChild(nameTb);
+
+            rowBorder.AppendChild(dock);
+            var tpl = new DataTemplate();
+            tpl.VisualTree = rowBorder;
+            return tpl;
+        }
+
+        private DataTemplate CreateCoreClocksTemplate()
+        {
+            var rowBorder = new FrameworkElementFactory(typeof(System.Windows.Controls.Border));
+            rowBorder.SetValue(System.Windows.Controls.Border.BorderBrushProperty, MainViewModel.CreateFrozenBrush(38, 38, 45));
+            rowBorder.SetValue(System.Windows.Controls.Border.BorderThicknessProperty, new Thickness(0, 0, 0, 1));
+            rowBorder.SetValue(System.Windows.Controls.Border.PaddingProperty, new Thickness(8, 4, 8, 4));
+
+            var dock = new FrameworkElementFactory(typeof(System.Windows.Controls.DockPanel));
+            dock.SetValue(System.Windows.Controls.DockPanel.LastChildFillProperty, true);
+
+            var maxTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            maxTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            maxTb.SetValue(FrameworkElement.WidthProperty, 68.0);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            maxTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            maxTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(248, 113, 113));
+            maxTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("MaxClockText"));
+            dock.AppendChild(maxTb);
+
+            var minTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            minTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            minTb.SetValue(FrameworkElement.WidthProperty, 68.0);
+            minTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            minTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            minTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            minTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(148, 163, 184));
+            minTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("MinClockText"));
+            dock.AppendChild(minTb);
+
+            var curTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            curTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Right);
+            curTb.SetValue(FrameworkElement.WidthProperty, 74.0);
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontFamilyProperty, new FontFamily("Consolas"));
+            curTb.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.Bold);
+            curTb.SetValue(System.Windows.Controls.TextBlock.TextAlignmentProperty, TextAlignment.Right);
+            curTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(56, 189, 248));
+            curTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("CurrentClockText"));
+            dock.AppendChild(curTb);
+
+            var leftDock = new FrameworkElementFactory(typeof(System.Windows.Controls.DockPanel));
+            leftDock.SetValue(System.Windows.Controls.DockPanel.LastChildFillProperty, true);
+            leftDock.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 0, 8, 0));
+
+            var nameTb = new FrameworkElementFactory(typeof(System.Windows.Controls.TextBlock));
+            nameTb.SetValue(System.Windows.Controls.DockPanel.DockProperty, System.Windows.Controls.Dock.Left);
+            nameTb.SetValue(FrameworkElement.WidthProperty, 68.0);
+            nameTb.SetValue(System.Windows.Controls.TextBlock.FontSizeProperty, 11.0);
+            nameTb.SetValue(System.Windows.Controls.TextBlock.FontWeightProperty, FontWeights.SemiBold);
+            nameTb.SetValue(System.Windows.Controls.TextBlock.ForegroundProperty, MainViewModel.CreateFrozenBrush(226, 232, 240));
+            nameTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("CoreName"));
+            leftDock.AppendChild(nameTb);
+
+            var bar = new FrameworkElementFactory(typeof(System.Windows.Controls.ProgressBar));
+            bar.SetValue(System.Windows.Controls.Primitives.RangeBase.MinimumProperty, 0.0);
+            bar.SetValue(System.Windows.Controls.Primitives.RangeBase.MaximumProperty, 100.0);
+            bar.SetValue(FrameworkElement.HeightProperty, 6.0);
+            bar.SetValue(FrameworkElement.VerticalAlignmentProperty, VerticalAlignment.Center);
+            bar.SetValue(System.Windows.Controls.Control.ForegroundProperty, MainViewModel.CreateFrozenBrush(56, 189, 248));
+            bar.SetValue(System.Windows.Controls.Control.BackgroundProperty, MainViewModel.CreateFrozenBrush(42, 42, 48));
+            bar.SetValue(System.Windows.Controls.Control.BorderThicknessProperty, new Thickness(0));
+            bar.SetBinding(System.Windows.Controls.Primitives.RangeBase.ValueProperty, new System.Windows.Data.Binding("ClockRatioPercent"));
+            leftDock.AppendChild(bar);
+
+            dock.AppendChild(leftDock);
+            rowBorder.AppendChild(dock);
+
+            var tpl = new DataTemplate();
+            tpl.VisualTree = rowBorder;
+            return tpl;
+        }
+
+        private System.Windows.Controls.Border CreateHwSubsystemRow(string label, string valueBindingPath, Brush staticBrush, string brushBindingPath = null)
+        {
+            var row = new System.Windows.Controls.Border
+            {
+                BorderBrush = MainViewModel.CreateFrozenBrush(38, 38, 45),
+                BorderThickness = new Thickness(0, 0, 0, 1),
+                Padding = new Thickness(0, 4, 0, 4)
+            };
+            var dock = new System.Windows.Controls.DockPanel { LastChildFill = true };
+            var valTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11.5,
+                FontFamily = new FontFamily("Consolas"),
+                FontWeight = FontWeights.SemiBold,
+                TextAlignment = TextAlignment.Right,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            if (!string.IsNullOrEmpty(brushBindingPath))
+            {
+                valTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding(brushBindingPath));
+            }
+            else if (staticBrush != null)
+            {
+                valTb.Foreground = staticBrush;
+            }
+            valTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding(valueBindingPath));
+            System.Windows.Controls.DockPanel.SetDock(valTb, System.Windows.Controls.Dock.Right);
+            dock.Children.Add(valTb);
+
+            dock.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = label,
+                FontSize = 11.5,
+                Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184),
+                Margin = new Thickness(0, 0, 8, 0)
+            });
+            row.Child = dock;
+            return row;
+        }
+
+        private static bool IsAutopilotTabItem(System.Windows.Controls.TabItem ti)
+        {
+            if (ti == null) return false;
+            string tag = Convert.ToString(ti.Tag);
+            if (string.Equals(tag, "AutopilotTabItem", StringComparison.Ordinal) ||
+                string.Equals(tag, "AutopilotTabAlertFramed", StringComparison.Ordinal))
+            {
+                return true;
+            }
+            System.Windows.Data.Binding hdrBind = System.Windows.Data.BindingOperations.GetBinding(
+                ti,
+                System.Windows.Controls.HeaderedContentControl.HeaderProperty);
+            if (hdrBind != null && hdrBind.Path != null &&
+                string.Equals(hdrBind.Path.Path, "TabAutopilotHeader", StringComparison.Ordinal))
+            {
+                return true;
+            }
+            DependencyObject headerDep = ti.Header as DependencyObject;
+            return ContainsAutopilotHeaderElement(headerDep);
+        }
+
+        private static bool ContainsAutopilotHeaderElement(DependencyObject node)
+        {
+            if (node == null) return false;
+            FrameworkElement fe = node as FrameworkElement;
+            if (fe != null && string.Equals(fe.Name, "AlertBadge", StringComparison.Ordinal))
+            {
+                return true;
+            }
+            System.Windows.Controls.TextBlock tb = node as System.Windows.Controls.TextBlock;
+            if (tb != null)
+            {
+                System.Windows.Data.Binding tbBind = System.Windows.Data.BindingOperations.GetBinding(tb, System.Windows.Controls.TextBlock.TextProperty);
+                if (tbBind != null && tbBind.Path != null &&
+                    string.Equals(tbBind.Path.Path, "TabAutopilotHeader", StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null && ContainsAutopilotHeaderElement(dep))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void SyncAutopilotTabAlertPulse(System.Windows.Controls.TabItem autopilotTab)
+        {
+            if (autopilotTab == null) return;
+            try
+            {
+                autopilotTab.ApplyTemplate();
+                if (autopilotTab.Template == null) return;
+                System.Windows.Controls.Border alertFrame = autopilotTab.Template.FindName("alertFrame", autopilotTab) as System.Windows.Controls.Border;
+                if (alertFrame == null) return;
+
+                bool active = ViewModel != null && ViewModel.Autopilot != null && ViewModel.Autopilot.IsAlertActive;
+                if (active)
+                {
+                    var pulseAnim = new System.Windows.Media.Animation.DoubleAnimation(
+                        1.0,
+                        0.18,
+                        new Duration(TimeSpan.FromMilliseconds(850)))
+                    {
+                        AutoReverse = true,
+                        RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever
+                    };
+                    alertFrame.BeginAnimation(UIElement.OpacityProperty, pulseAnim);
+                }
+                else
+                {
+                    alertFrame.BeginAnimation(UIElement.OpacityProperty, null);
+                    alertFrame.Opacity = 1.0;
+                }
+            }
+            catch { }
+        }
+
+        private void EnsureFooterServiceHubIndicator(DependencyObject footerRoot)
+        {
+            if (footerRoot == null || HasTaggedElement(footerRoot, "FooterServiceHubStatus")) return;
+            try
+            {
+                System.Windows.Controls.TextBlock tb = FindTextBlockByTextBinding(footerRoot, "IpcStatusText");
+                if (tb == null) return;
+
+                tb.SetBinding(
+                    System.Windows.Controls.TextBlock.TextProperty,
+                    new System.Windows.Data.Binding("ServiceHubFooterText"));
+                tb.FontWeight = FontWeights.SemiBold;
+                tb.Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204);
+
+                System.Windows.Controls.StackPanel sp = LogicalTreeHelper.GetParent(tb) as System.Windows.Controls.StackPanel;
+                if (sp != null)
+                {
+                    sp.Tag = "FooterServiceHubStatus";
+                    for (int i = 0; i < sp.Children.Count; i++)
+                    {
+                        System.Windows.Shapes.Ellipse ell = sp.Children[i] as System.Windows.Shapes.Ellipse;
+                        if (ell != null)
+                        {
+                            ell.SetBinding(
+                                System.Windows.Shapes.Shape.FillProperty,
+                                new System.Windows.Data.Binding("ServiceHubIndicatorBrush"));
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void EnsureFooterBrandingAndVersion(DependencyObject footerRoot)
+        {
+            if (footerRoot == null) return;
+            try
+            {
+                System.Windows.Controls.Grid footerGrid = null;
+                System.Windows.Controls.Border borderRoot = footerRoot as System.Windows.Controls.Border;
+                if (borderRoot != null)
+                {
+                    footerGrid = borderRoot.Child as System.Windows.Controls.Grid;
+                }
+                if (footerGrid == null)
+                {
+                    footerGrid = footerRoot as System.Windows.Controls.Grid;
+                }
+                if (footerGrid == null) return;
+
+                if (!HasTaggedElement(footerGrid, "FooterCopyrightText"))
+                {
+                    var copyrightTb = new System.Windows.Controls.TextBlock
+                    {
+                        Tag = "FooterCopyrightText",
+                        Text = "Razvija i održava IG-Systems. Sva prava zadržana",
+                        FontSize = 11,
+                        Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                        HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center,
+                        IsHitTestVisible = false
+                    };
+                    copyrightTb.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("IsNotServiceFinished")
+                    {
+                        Converter = new System.Windows.Controls.BooleanToVisibilityConverter()
+                    });
+                    System.Windows.Controls.Grid.SetColumn(copyrightTb, 0);
+                    System.Windows.Controls.Grid.SetColumnSpan(copyrightTb, Math.Max(1, footerGrid.ColumnDefinitions.Count));
+                    footerGrid.Children.Add(copyrightTb);
+                }
+
+                if (!HasTaggedElement(footerGrid, "FooterWisVersionText"))
+                {
+                    System.Windows.Controls.StackPanel rightPanel = null;
+                    for (int i = 0; i < footerGrid.Children.Count; i++)
+                    {
+                        UIElement child = footerGrid.Children[i];
+                        if (System.Windows.Controls.Grid.GetColumn(child) == 1 && child is System.Windows.Controls.StackPanel)
+                        {
+                            rightPanel = (System.Windows.Controls.StackPanel)child;
+                            break;
+                        }
+                    }
+                    if (rightPanel != null)
+                    {
+                        var verTb = new System.Windows.Controls.TextBlock
+                        {
+                            Tag = "FooterWisVersionText",
+                            FontSize = 12,
+                            FontWeight = FontWeights.SemiBold,
+                            Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
+                            VerticalAlignment = VerticalAlignment.Center,
+                            Margin = new Thickness(8, 0, 0, 0)
+                        };
+                        verTb.SetBinding(
+                            System.Windows.Controls.TextBlock.TextProperty,
+                            new System.Windows.Data.Binding("WisVersionFooterText"));
+                        rightPanel.Children.Add(verTb);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static System.Windows.Controls.TextBlock FindTextBlockByTextBinding(DependencyObject node, string bindingPath)
+        {
+            if (node == null || string.IsNullOrEmpty(bindingPath)) return null;
+            System.Windows.Controls.TextBlock tb = node as System.Windows.Controls.TextBlock;
+            if (tb != null)
+            {
+                System.Windows.Data.Binding b = System.Windows.Data.BindingOperations.GetBinding(tb, System.Windows.Controls.TextBlock.TextProperty);
+                if (b != null && b.Path != null && string.Equals(b.Path.Path, bindingPath, StringComparison.Ordinal))
+                {
+                    return tb;
+                }
+            }
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null)
+                {
+                    System.Windows.Controls.TextBlock found = FindTextBlockByTextBinding(dep, bindingPath);
+                    if (found != null) return found;
+                }
+            }
+            return null;
+        }
+
+        private void RebuildActiveStepsHost(System.Windows.Controls.StackPanel host)
+        {
+            if (host == null || ViewModel == null || ViewModel.ActiveStepBars == null) return;
+            host.Children.Clear();
+            for (int i = 0; i < ViewModel.ActiveStepBars.Count; i++)
+            {
+                host.Children.Add(CreateActiveStepBarBorder(ViewModel.ActiveStepBars[i]));
+            }
+        }
+
+        private static System.Windows.Controls.Border CreateActiveStepBarBorder(ActiveStepProgressItem item)
+        {
+            var b = new System.Windows.Controls.Border
+            {
+                DataContext = item,
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(8, 5, 8, 5),
+                Margin = new Thickness(0, 0, 0, 4)
+            };
+
+            var stack = new System.Windows.Controls.StackPanel();
+            var grid = new System.Windows.Controls.Grid();
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var badge = new System.Windows.Controls.Border
+            {
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(5, 1, 5, 1),
+                Margin = new Thickness(0, 0, 6, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            badge.SetBinding(System.Windows.Controls.Border.BackgroundProperty, new System.Windows.Data.Binding("BadgeBrush"));
+
+            var badgeTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 9,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            badgeTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("PhaseLabel"));
+            badge.Child = badgeTb;
+            System.Windows.Controls.Grid.SetColumn(badge, 0);
+            grid.Children.Add(badge);
+
+            var titleTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            titleTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("Title"));
+            System.Windows.Controls.Grid.SetColumn(titleTb, 1);
+            grid.Children.Add(titleTb);
+
+            var detailTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(170, 170, 170),
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 0, 10, 0)
+            };
+            detailTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("DetailSuffix"));
+            System.Windows.Controls.Grid.SetColumn(detailTb, 2);
+            grid.Children.Add(detailTb);
+
+            var pctTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            pctTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("PercentText"));
+            pctTb.SetBinding(System.Windows.Controls.TextBlock.ForegroundProperty, new System.Windows.Data.Binding("BarBrush"));
+            System.Windows.Controls.Grid.SetColumn(pctTb, 3);
+            grid.Children.Add(pctTb);
+
+            stack.Children.Add(grid);
+
+            var stepBarGrid = new System.Windows.Controls.Grid
+            {
+                Margin = new Thickness(0, 5, 0, 0)
+            };
+            stepBarGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            stepBarGrid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var pb = new System.Windows.Controls.ProgressBar
+            {
+                Maximum = 100,
+                Height = 8,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1)
+            };
+            pb.SetBinding(System.Windows.Controls.ProgressBar.ValueProperty, new System.Windows.Data.Binding("Progress"));
+            pb.SetBinding(System.Windows.Controls.ProgressBar.IsIndeterminateProperty, new System.Windows.Data.Binding("IsIndeterminate"));
+            pb.SetBinding(System.Windows.Controls.ProgressBar.ForegroundProperty, new System.Windows.Data.Binding("BarBrush"));
+            System.Windows.Controls.Grid.SetColumn(pb, 0);
+            stepBarGrid.Children.Add(pb);
+
+            var stepTimingStack = new System.Windows.Controls.StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(10, 0, 0, 0),
+                MinWidth = 178
+            };
+            stepTimingStack.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("TimingTooltip"));
+            var stepMonoFont = new FontFamily("Consolas");
+            stepTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "Traje ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var stepElapsedTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                FontFamily = stepMonoFont,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stepElapsedTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("ElapsedText"));
+            stepTimingStack.Children.Add(stepElapsedTb);
+            stepTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "  |  ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(78, 78, 86),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            stepTimingStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Text = "ETA ",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var stepEtaTb = new System.Windows.Controls.TextBlock
+            {
+                FontSize = 10,
+                FontFamily = stepMonoFont,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            stepEtaTb.SetBinding(System.Windows.Controls.TextBlock.TextProperty, new System.Windows.Data.Binding("EtaText"));
+            stepTimingStack.Children.Add(stepEtaTb);
+
+            System.Windows.Controls.Grid.SetColumn(stepTimingStack, 1);
+            stepBarGrid.Children.Add(stepTimingStack);
+            stack.Children.Add(stepBarGrid);
+
+            b.Child = stack;
+            return b;
+        }
+
+        private static bool ContainsProgressBar(DependencyObject node)
+        {
+            if (node == null) return false;
+            if (node is System.Windows.Controls.ProgressBar) return true;
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null && ContainsProgressBar(dep)) return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsItemsSourceBinding(DependencyObject node, string bindingPath)
+        {
+            if (node == null || string.IsNullOrEmpty(bindingPath)) return false;
+            System.Windows.Controls.ItemsControl ic = node as System.Windows.Controls.ItemsControl;
+            if (ic != null)
+            {
+                System.Windows.Data.Binding b = System.Windows.Data.BindingOperations.GetBinding(ic, System.Windows.Controls.ItemsControl.ItemsSourceProperty);
+                if (b != null && b.Path != null && string.Equals(b.Path.Path, bindingPath, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null && ContainsItemsSourceBinding(dep, bindingPath)) return true;
+            }
+            return false;
+        }
+
+        private void ApplyAlwaysVisiblePhaseStepsVisual(DependencyObject root)
+        {
+            if (root == null) return;
+            try
+            {
+                int count = VisualTreeHelper.GetChildrenCount(root);
+                for (int i = 0; i < count; i++)
+                {
+                    DependencyObject child = VisualTreeHelper.GetChild(root, i);
+                    System.Windows.Controls.Border cardBorder = child as System.Windows.Controls.Border;
+                    if (cardBorder != null && cardBorder.DataContext is PhaseItem)
+                    {
+                        cardBorder.VerticalAlignment = VerticalAlignment.Stretch;
+                    }
+
+                    System.Windows.Controls.Expander exp = child as System.Windows.Controls.Expander;
+                    if (exp != null)
+                    {
+                        exp.IsExpanded = true;
+                        exp.Margin = new Thickness(0, 8, 0, 0);
+                        if (!string.Equals(Convert.ToString(exp.Tag), "AlwaysVisibleSteps", StringComparison.Ordinal))
+                        {
+                            exp.Tag = "AlwaysVisibleSteps";
+                            var tpl = new System.Windows.Controls.ControlTemplate(typeof(System.Windows.Controls.Expander));
+                            tpl.VisualTree = new FrameworkElementFactory(typeof(System.Windows.Controls.ContentPresenter));
+                            exp.Template = tpl;
+                            exp.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowStepsInOverview")
+                            {
+                                Converter = new System.Windows.Controls.BooleanToVisibilityConverter()
+                            });
+                        }
+                        continue;
+                    }
+
+                    ApplyAlwaysVisiblePhaseStepsVisual(child);
+                }
+            }
+            catch { }
+        }
+
+        private void EnsurePhasesCollapseToggleButton(System.Windows.Controls.ItemsControl phasesControl)
+        {
+            if (phasesControl == null) return;
+            try
+            {
+                System.Windows.Controls.Border cardBorder = null;
+                DependencyObject curr = LogicalTreeHelper.GetParent(phasesControl);
+                while (curr != null)
+                {
+                    System.Windows.Controls.Border b = curr as System.Windows.Controls.Border;
+                    if (b != null)
+                    {
+                        cardBorder = b;
+                        break;
+                    }
+                    curr = LogicalTreeHelper.GetParent(curr);
+                }
+                if (cardBorder == null || HasTaggedElement(cardBorder, "PhasesCollapseToggleBtn")) return;
+
+                Button toggleBtn = new Button
+                {
+                    Tag = "PhasesCollapseToggleBtn",
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Width = 28,
+                    Height = 22,
+                    Margin = new Thickness(0, 0, 7, 8),
+                    Padding = new Thickness(0),
+                    Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
+                    Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
+                    BorderBrush = MainViewModel.CreateFrozenBrush(78, 78, 86),
+                    BorderThickness = new Thickness(1),
+                    FontSize = 10,
+                    FontWeight = FontWeights.Bold,
+                    Cursor = Cursors.Hand
+                };
+                Style actionStyle = TryFindResource("ActionButtonStyle") as Style;
+                if (actionStyle != null)
+                {
+                    toggleBtn.Style = actionStyle;
+                }
+                System.Windows.Controls.Panel.SetZIndex(toggleBtn, 10);
+                toggleBtn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandProperty, new System.Windows.Data.Binding("TogglePhasesExpandedCommand"));
+                toggleBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("PhasesToggleGlyph"));
+                toggleBtn.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("PhasesToggleToolTip"));
+
+                System.Windows.Controls.Grid existingGrid = cardBorder.Child as System.Windows.Controls.Grid;
+                if (existingGrid != null)
+                {
+                    existingGrid.Children.Add(toggleBtn);
+                    return;
+                }
+
+                UIElement existingChild = cardBorder.Child;
+                cardBorder.Child = null;
+                System.Windows.Controls.Grid wrapperGrid = new System.Windows.Controls.Grid();
+                if (existingChild != null)
+                {
+                    wrapperGrid.Children.Add(existingChild);
+                }
+                wrapperGrid.Children.Add(toggleBtn);
+                cardBorder.Child = wrapperGrid;
+            }
+            catch { }
+        }
+
+        private System.Windows.Controls.ItemsControl FindPhasesItemsControl(DependencyObject node)
+        {
+            object expectedSource = ViewModel != null ? ViewModel.Phases : null;
+            return FindItemsControlBySourceBinding(node, "Phases", expectedSource);
+        }
+
+        private static System.Windows.Controls.ItemsControl FindItemsControlBySourceBinding(DependencyObject node, string bindingPath, object expectedSource)
+        {
+            if (node == null) return null;
+
+            System.Windows.Controls.ItemsControl ic = node as System.Windows.Controls.ItemsControl;
+            if (ic != null)
+            {
+                if (expectedSource != null && object.ReferenceEquals(ic.ItemsSource, expectedSource))
+                {
+                    return ic;
+                }
+                System.Windows.Data.Binding b = System.Windows.Data.BindingOperations.GetBinding(ic, System.Windows.Controls.ItemsControl.ItemsSourceProperty);
+                if (b != null && b.Path != null && string.Equals(b.Path.Path, bindingPath, StringComparison.Ordinal))
+                {
+                    return ic;
+                }
+            }
+
+            foreach (object child in LogicalTreeHelper.GetChildren(node))
+            {
+                DependencyObject dep = child as DependencyObject;
+                if (dep != null)
+                {
+                    System.Windows.Controls.ItemsControl found = FindItemsControlBySourceBinding(dep, bindingPath, expectedSource);
+                    if (found != null) return found;
+                }
+            }
+
+            return null;
         }
 
         private void InitializeCumulativeTimer()
@@ -3436,6 +6386,11 @@ namespace WIS.UI
                 {
                     TryRetryAutopilotOnNetworkReady();
                 }
+
+                if (ViewModel != null)
+                {
+                    ViewModel.RefreshProgressBars();
+                }
             });
         }
 
@@ -3895,6 +6850,18 @@ namespace WIS.UI
 
         public void RerunPhase4()
         {
+            lock (_appRetryLock)
+            {
+                if (_isSingleAppRetryRunning)
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        ViewModel.AddLog("WARN", "TaskRunner", "Pojedinačni Retry programa je već u toku. Sačekajte završetak pre ponovnog pokretanja cele Faze 4.");
+                    });
+                    return;
+                }
+            }
+
             try
             {
                 string setupDir = @"C:\setup";
@@ -3934,6 +6901,250 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)delegate
                     {
                         ViewModel.AddLog("ERROR", "TaskRunner", "Greška pri ponovnoj instalaciji programa: " + ex.Message);
+                    });
+                }
+            });
+        }
+
+        private void ExecuteRetryApp(object param)
+        {
+            AppItem targetApp = param as AppItem;
+            if (targetApp == null && param is string && ViewModel != null && ViewModel.Apps != null)
+            {
+                string key = (string)param;
+                foreach (var item in ViewModel.Apps)
+                {
+                    if (item != null && (string.Equals(item.Id, key, StringComparison.OrdinalIgnoreCase) ||
+                                         string.Equals(item.Name, key, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        targetApp = item;
+                        break;
+                    }
+                }
+            }
+            if (targetApp != null)
+            {
+                RetrySingleApp(targetApp);
+            }
+        }
+
+        private static string ResolveSafeRetryAppId(string rawId)
+        {
+            if (string.IsNullOrWhiteSpace(rawId)) return null;
+            string trimmed = rawId.Trim();
+            switch (trimmed.ToLowerInvariant())
+            {
+                case "dotnet":
+                case "runtimes":
+                    return "DotNet";
+                case "chrome":
+                case "google chrome":
+                    return "Chrome";
+                case "winrar":
+                    return "WinRAR";
+                case "acrobat":
+                case "adobe acrobat":
+                case "adobe acrobat pro":
+                    return "Acrobat";
+                case "office":
+                case "microsoft office":
+                case "ms office":
+                    return "Office";
+                case "batterybar":
+                    return "BatteryBar";
+                case "license":
+                case "activation":
+                    return "License";
+                case "shortcuts":
+                    return "Shortcuts";
+                default:
+                    return null;
+            }
+        }
+
+        public void RetrySingleApp(AppItem targetApp)
+        {
+            if (targetApp == null || string.IsNullOrWhiteSpace(targetApp.Id) || targetApp.IsRunning) return;
+
+            string safeAppId = ResolveSafeRetryAppId(targetApp.Id);
+            if (string.IsNullOrEmpty(safeAppId))
+            {
+                ViewModel.AddLog("ERROR", "AppsRetry", "Nepoznat identifikator aplikacije za Retry: " + targetApp.Id);
+                return;
+            }
+
+            Process activePhaseProc = _currentPhaseProcess;
+            bool phase4Active = activePhaseProc != null && !activePhaseProc.HasExited && ViewModel != null && ViewModel.CurrentPhase == 4;
+            if (phase4Active)
+            {
+                ViewModel.AddLog("WARN", "AppsRetry", "Faza 4 (instalacija programa) je već aktivna. Sačekajte završetak pre pojedinačnog Retry-a za " + targetApp.Name + ".");
+                return;
+            }
+
+            lock (_appRetryLock)
+            {
+                if (_isSingleAppRetryRunning)
+                {
+                    ViewModel.AddLog("WARN", "AppsRetry", "Drugi pojedinačni Retry je već u toku. Sačekajte završetak.");
+                    return;
+                }
+                _isSingleAppRetryRunning = true;
+            }
+
+            Dispatcher.BeginInvoke((Action)delegate
+            {
+                targetApp.Status = "RUNNING";
+                targetApp.Detail = "Ponovna instalacija u toku...";
+                ViewModel.UpdateAppsSummary();
+                ViewModel.AddLog("INFO", "AppsRetry", string.Format("Pokrećem pojedinačni Retry za program: {0} ({1})", targetApp.Name, safeAppId));
+            });
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool exited = false;
+                int exitCode = -1;
+                try
+                {
+                    string scriptPath = FindPhaseScriptPath(AppDomain.CurrentDomain.BaseDirectory, "Phase4-Apps.ps1");
+                    if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath))
+                    {
+                        Dispatcher.BeginInvoke((Action)delegate
+                        {
+                            targetApp.Status = "ERROR";
+                            targetApp.Detail = "Phase4-Apps.ps1 nije pronađena";
+                            ViewModel.UpdateAppsSummary();
+                            ViewModel.AddLog("ERROR", "AppsRetry", "Phase4-Apps.ps1 nije pronađena na disku za Retry.");
+                        });
+                        return;
+                    }
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -OnlyApp \"{1}\"", scriptPath, safeAppId),
+                        WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        StandardOutputEncoding = Encoding.UTF8,
+                        StandardErrorEncoding = Encoding.UTF8
+                    };
+
+                    using (var proc = Process.Start(psi))
+                    {
+                        if (proc == null)
+                        {
+                            Dispatcher.BeginInvoke((Action)delegate
+                            {
+                                targetApp.Status = "ERROR";
+                                targetApp.Detail = "Nije moguće pokrenuti powershell.exe";
+                                ViewModel.UpdateAppsSummary();
+                            });
+                            return;
+                        }
+
+                        proc.OutputDataReceived += (s, e) =>
+                        {
+                            if (string.IsNullOrEmpty(e.Data)) return;
+                            string line = e.Data.Trim();
+                            Dispatcher.BeginInvoke((Action)delegate
+                            {
+                                if (line.StartsWith("{") && line.EndsWith("}"))
+                                {
+                                    ProcessIncomingJson(line);
+                                }
+                                else
+                                {
+                                    ParseAndAddRawLogLine(line);
+                                }
+                            });
+                            if (_telemetryService != null)
+                            {
+                                _telemetryService.PushLog(line);
+                            }
+                        };
+
+                        proc.ErrorDataReceived += (s, e) =>
+                        {
+                            if (string.IsNullOrEmpty(e.Data)) return;
+                            string errLine = e.Data.Trim();
+                            Dispatcher.BeginInvoke((Action)delegate
+                            {
+                                ViewModel.AddLog("WARN", "AppsRetry", errLine);
+                            });
+                            if (_telemetryService != null)
+                            {
+                                _telemetryService.PushLog(errLine);
+                            }
+                        };
+
+                        proc.BeginOutputReadLine();
+                        proc.BeginErrorReadLine();
+
+                        exited = proc.WaitForExit(900000);
+                        if (!exited)
+                        {
+                            try
+                            {
+                                var tkPsi = new ProcessStartInfo("taskkill.exe", string.Format("/PID {0} /T /F", proc.Id))
+                                {
+                                    CreateNoWindow = true,
+                                    UseShellExecute = false,
+                                    WindowStyle = ProcessWindowStyle.Hidden
+                                };
+                                using (Process tk = Process.Start(tkPsi))
+                                {
+                                    if (tk != null) tk.WaitForExit(5000);
+                                }
+                            }
+                            catch { }
+                            try { proc.Kill(); } catch { }
+                        }
+                        else
+                        {
+                            try { proc.WaitForExit(); } catch { }
+                            exitCode = proc.ExitCode;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        targetApp.Status = "ERROR";
+                        targetApp.Detail = "Greška pri pokretanju: " + ex.Message;
+                        ViewModel.UpdateAppsSummary();
+                        ViewModel.AddLog("ERROR", "AppsRetry", string.Format("Izuzetak pri Retry-u za {0}: {1}", safeAppId, ex.Message));
+                    });
+                }
+                finally
+                {
+                    lock (_appRetryLock)
+                    {
+                        _isSingleAppRetryRunning = false;
+                    }
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        if (targetApp.Status == "RUNNING")
+                        {
+                            if (exited && exitCode == 0)
+                            {
+                                targetApp.Status = "OK";
+                                targetApp.Detail = "Instalacija uspešno verifikovana";
+                                ViewModel.AddLog("SUCCESS", "AppsRetry", string.Format("Program {0} uspešno instaliran nakon Retry-a.", targetApp.Name));
+                            }
+                            else
+                            {
+                                targetApp.Status = "ERROR";
+                                targetApp.Detail = exited
+                                    ? string.Format("Ponovna instalacija nije uspela (ExitCode {0})", exitCode)
+                                    : "Ponovna instalacija prekoračila timeout od 15 min";
+                                ViewModel.AddLog("ERROR", "AppsRetry", string.Format("Retry za {0} nije uspeo: {1}", targetApp.Name, targetApp.Detail));
+                            }
+                        }
+                        ViewModel.UpdateAppsSummary();
                     });
                 }
             });
@@ -4877,10 +8088,13 @@ namespace WIS.UI
 
         private void UpdateDiagMetrics()
         {
+            if (Interlocked.CompareExchange(ref _diagMetricsGuard, 1, 0) != 0) return;
+
             try
             {
                 // 1. CPU Zauzeće (DIAG-01: GetSystemTimes delta %)
                 string cpuUsageStr = null;
+                int? finalCpuPct = null;
                 try
                 {
                     FILETIME idleFt, kernelFt, userFt;
@@ -4904,6 +8118,7 @@ namespace WIS.UI
                                 if (load < 0.0) load = 0.0;
                                 if (load > 100.0) load = 100.0;
                                 int cpuPct = (int)Math.Round(load);
+                                finalCpuPct = cpuPct;
                                 cpuUsageStr = string.Format("{0}%", cpuPct);
                             }
                         }
@@ -4918,6 +8133,12 @@ namespace WIS.UI
 
                 // 2. RAM Zauzeće (DIAG-01: GlobalMemoryStatusEx)
                 string ramUsageStr = null;
+                int? finalRamPct = null;
+                double finalRamUsedGb = 0.0;
+                double finalRamTotalGb = 0.0;
+                double finalRamAvailGb = 0.0;
+                double finalRamCommitUsedGb = 0.0;
+                double finalRamCommitTotalGb = 0.0;
                 try
                 {
                     MEMORYSTATUSEX memStatus = new MEMORYSTATUSEX();
@@ -4928,17 +8149,30 @@ namespace WIS.UI
                         ulong usedBytes = totalPhys > availPhys ? totalPhys - availPhys : 0;
                         double usedGb = usedBytes / (1024.0 * 1024.0 * 1024.0);
                         double totalGb = totalPhys / (1024.0 * 1024.0 * 1024.0);
+                        double availGb = availPhys / (1024.0 * 1024.0 * 1024.0);
+                        ulong totalPage = memStatus.ullTotalPageFile;
+                        ulong availPage = memStatus.ullAvailPageFile;
+                        ulong commitBytes = totalPage > availPage ? totalPage - availPage : 0;
                         uint memLoad = memStatus.dwMemoryLoad;
+                        finalRamPct = (int)memLoad;
+                        finalRamUsedGb = usedGb;
+                        finalRamTotalGb = totalGb;
+                        finalRamAvailGb = availGb;
+                        finalRamCommitUsedGb = commitBytes / (1024.0 * 1024.0 * 1024.0);
+                        finalRamCommitTotalGb = totalPage / (1024.0 * 1024.0 * 1024.0);
                         ramUsageStr = string.Format("{0:0.0} GB / {1:0.0} GB ({2}%)", usedGb, totalGb, memLoad);
                     }
                 }
                 catch { }
 
-                // 3. Mreža: Protok i Preuzeti Paketi (NET-03)
+                // 3. Mreža: Protok RX/TX i Preuzeti Paketi (NET-03)
                 string downloadedMbStr = null;
+                string netRateStr = null;
+                double? netTotalMbPerSec = null;
                 try
                 {
                     long currentTotalBytes = 0;
+                    long currentTotalSentBytes = 0;
                     NetworkInterface[] nics = NetworkInterface.GetAllNetworkInterfaces();
                     foreach (NetworkInterface nic in nics)
                     {
@@ -4951,6 +8185,7 @@ namespace WIS.UI
                                 if (stats != null)
                                 {
                                     currentTotalBytes += stats.BytesReceived;
+                                    currentTotalSentBytes += stats.BytesSent;
                                 }
                             }
                             catch { }
@@ -4959,18 +8194,85 @@ namespace WIS.UI
 
                     if (_prevNetBytes >= 0)
                     {
+                        double rxMb = 0.0;
+                        double txMb = 0.0;
                         if (currentTotalBytes >= _prevNetBytes)
                         {
                             long deltaBytes = currentTotalBytes - _prevNetBytes;
                             _accumulatedNetBytes += deltaBytes;
-                            double speedMb = deltaBytes / (1024.0 * 1024.0);
+                            rxMb = deltaBytes / (1024.0 * 1024.0);
                             double totalMbReceived = _accumulatedNetBytes / (1024.0 * 1024.0);
-                            downloadedMbStr = string.Format("{0:0.0} MB/s ({1:N0} MB ukupno)", speedMb, totalMbReceived);
+                            downloadedMbStr = string.Format("{0:0.0} MB/s ({1:N0} MB ukupno)", rxMb, totalMbReceived);
                         }
+                        if (_prevNetSentBytes >= 0 && currentTotalSentBytes >= _prevNetSentBytes)
+                        {
+                            long deltaSent = currentTotalSentBytes - _prevNetSentBytes;
+                            txMb = deltaSent / (1024.0 * 1024.0);
+                        }
+                        netTotalMbPerSec = rxMb + txMb;
+                        netRateStr = string.Format("RX {0:0.0} MB/s • TX {1:0.0} MB/s", rxMb, txMb);
                     }
                     _prevNetBytes = currentTotalBytes;
+                    _prevNetSentBytes = currentTotalSentBytes;
                 }
                 catch { }
+
+                // 3b. Disk / SSD I/O (PhysicalDisk _Total)
+                string diskIoStr = null;
+                double? diskTotalMbSec = null;
+                double? diskActivePct = null;
+                try
+                {
+                    if (!_diskCountersInitAttempted)
+                    {
+                        _diskCountersInitAttempted = true;
+                        try
+                        {
+                            _diskReadCounter = new System.Diagnostics.PerformanceCounter("PhysicalDisk", "Disk Read Bytes/sec", "_Total");
+                            _diskWriteCounter = new System.Diagnostics.PerformanceCounter("PhysicalDisk", "Disk Write Bytes/sec", "_Total");
+                            _diskTimeCounter = new System.Diagnostics.PerformanceCounter("PhysicalDisk", "% Disk Time", "_Total");
+                            _diskReadCounter.NextValue();
+                            _diskWriteCounter.NextValue();
+                            _diskTimeCounter.NextValue();
+                        }
+                        catch
+                        {
+                            if (_diskReadCounter != null) { try { _diskReadCounter.Dispose(); } catch { } _diskReadCounter = null; }
+                            if (_diskWriteCounter != null) { try { _diskWriteCounter.Dispose(); } catch { } _diskWriteCounter = null; }
+                            if (_diskTimeCounter != null) { try { _diskTimeCounter.Dispose(); } catch { } _diskTimeCounter = null; }
+                        }
+                    }
+
+                    if (_diskReadCounter != null && _diskWriteCounter != null)
+                    {
+                        double rMb = _diskReadCounter.NextValue() / (1024.0 * 1024.0);
+                        double wMb = _diskWriteCounter.NextValue() / (1024.0 * 1024.0);
+                        double dPct = _diskTimeCounter != null ? _diskTimeCounter.NextValue() : 0.0;
+                        if (dPct < 0.0) dPct = 0.0;
+                        if (dPct > 100.0) dPct = 100.0;
+                        diskTotalMbSec = rMb + wMb;
+                        diskActivePct = dPct;
+                        diskIoStr = string.Format("R {0:0.0} MB/s • W {1:0.0} MB/s ({2:0}%)", rMb, wMb, dPct);
+                    }
+                }
+                catch { }
+
+                // 3c. Sistemska statistika: broj procesa i Uptime (svake ~4 sekunde)
+                string sysStatsStr = null;
+                _diagSysCounter++;
+                if (_diagSysCounter >= 4)
+                {
+                    _diagSysCounter = 0;
+                    try
+                    {
+                        int procCount = System.Diagnostics.Process.GetProcesses().Length;
+                        ulong upMs = GetTickCount64();
+                        TimeSpan ts = TimeSpan.FromMilliseconds((double)upMs);
+                        int totalHours = (ts.Days * 24) + ts.Hours;
+                        sysStatsStr = string.Format("Procesi: {0} | Uptime: {1:D2}:{2:D2}:{3:D2}", procCount, totalHours, ts.Minutes, ts.Seconds);
+                    }
+                    catch { }
+                }
 
                 // 4. Mreža: IP Adresa Dodeljena od Rutera (NET-01 - provera na svake 2 sekunde)
                 string detectedIp = null;
@@ -5044,10 +8346,62 @@ namespace WIS.UI
                     catch { }
                 }
 
+                // 4b. Napajanje, Baterija i trenutna potrošnja u W / A (na svake 2 sekunde)
+                bool powerUpdated = false;
+                bool liveHasBattery = false;
+                bool liveIsOnAc = true;
+                bool liveIsCharging = false;
+                bool liveIsDischarging = false;
+                int liveChargePct = 0;
+                double liveWatts = 0.0;
+                double liveAmps = 0.0;
+                double liveVoltageV = 0.0;
+                int liveRemainingSec = -1;
+
+                _diagPowerCounter++;
+                if (_diagPowerCounter >= 2)
+                {
+                    _diagPowerCounter = 0;
+                    powerUpdated = ReadLivePowerTelemetry(
+                        out liveHasBattery,
+                        out liveIsOnAc,
+                        out liveIsCharging,
+                        out liveIsDischarging,
+                        out liveChargePct,
+                        out liveWatts,
+                        out liveAmps,
+                        out liveVoltageV,
+                        out liveRemainingSec);
+                }
+
                 // Ažuriranje UI-ja preko Dispatcher-a
                 string finalCpu = cpuUsageStr;
                 string finalRam = ramUsageStr;
+                int? dispatchCpuPct = finalCpuPct;
+                int? dispatchRamPct = finalRamPct;
+                double dispatchRamUsedGb = finalRamUsedGb;
+                double dispatchRamTotalGb = finalRamTotalGb;
+                double dispatchRamAvailGb = finalRamAvailGb;
+                double dispatchRamCommitUsedGb = finalRamCommitUsedGb;
+                double dispatchRamCommitTotalGb = finalRamCommitTotalGb;
+                bool dispatchPowerUpdated = powerUpdated;
+                bool dispatchHasBatt = liveHasBattery;
+                bool dispatchOnAc = liveIsOnAc;
+                bool dispatchCharging = liveIsCharging;
+                bool dispatchDischarging = liveIsDischarging;
+                int dispatchChargePct = liveChargePct;
+                double dispatchWatts = liveWatts;
+                double dispatchAmps = liveAmps;
+                double dispatchVoltageV = liveVoltageV;
+                int dispatchRemainingSec = liveRemainingSec;
+
                 string finalDl = downloadedMbStr;
+                string finalNetRate = netRateStr;
+                double? dispatchNetTotalMb = netTotalMbPerSec;
+                string finalDiskIo = diskIoStr;
+                double? dispatchDiskTotalMb = diskTotalMbSec;
+                double? dispatchDiskActivePct = diskActivePct;
+                string finalSysStats = sysStatsStr;
                 string finalIp = detectedIp;
                 string finalConn = detectedConnType;
                 string finalConnStatus = detectedConnStatus;
@@ -5057,6 +8411,114 @@ namespace WIS.UI
                 {
                     if (!string.IsNullOrEmpty(finalCpu)) ViewModel.CpuUsage = finalCpu;
                     if (!string.IsNullOrEmpty(finalRam)) ViewModel.RamUsage = finalRam;
+
+                    if (dispatchCpuPct.HasValue || dispatchRamPct.HasValue)
+                    {
+                        int curCpu = dispatchCpuPct.HasValue ? dispatchCpuPct.Value : (int)Math.Round(ViewModel.CpuUsagePercent);
+                        int curRam = dispatchRamPct.HasValue ? dispatchRamPct.Value : (int)Math.Round(ViewModel.RamUsagePercent);
+                        ViewModel.UpdateCpuRamMonitor(curCpu, dispatchRamUsedGb, dispatchRamTotalGb, curRam);
+
+                        if (dispatchCpuPct.HasValue)
+                        {
+                            Brush cpuLoadBrush = curCpu >= 85
+                                ? MainViewModel.CreateFrozenBrush(239, 68, 68)
+                                : (curCpu >= 60 ? MainViewModel.CreateFrozenBrush(245, 158, 11) : MainViewModel.CreateFrozenBrush(56, 189, 248));
+                            ViewModel.UpdateHwMonitorSensor("load_cpu", curCpu, "{0:0} %", cpuLoadBrush);
+                            ViewModel.LegendCpuLoadText = string.Format("CPU Load ({0}%)", curCpu);
+                        }
+                        if (dispatchRamPct.HasValue)
+                        {
+                            Brush ramBrush = curRam >= 85
+                                ? MainViewModel.CreateFrozenBrush(239, 68, 68)
+                                : (curRam >= 65 ? MainViewModel.CreateFrozenBrush(245, 158, 11) : MainViewModel.CreateFrozenBrush(96, 165, 250));
+                            ViewModel.UpdateHwMonitorSensor("load_ram", curRam, "{0:0} %", ramBrush);
+                            ViewModel.HwRamAvailableText = string.Format("Slobodno: {0:0.0} GB / {1:0.0} GB", dispatchRamAvailGb, dispatchRamTotalGb);
+                            ViewModel.HwRamCommitText = string.Format("Commit: {0:0.0} / {1:0.0} GB", dispatchRamCommitUsedGb, dispatchRamCommitTotalGb);
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(finalDiskIo))
+                    {
+                        ViewModel.HwDiskIoText = finalDiskIo;
+                    }
+                    if (dispatchDiskActivePct.HasValue)
+                    {
+                        ViewModel.HwDiskActivePercent = dispatchDiskActivePct.Value;
+                    }
+                    if (dispatchDiskTotalMb.HasValue)
+                    {
+                        ViewModel.UpdateHwMonitorSensor("io_disk", dispatchDiskTotalMb.Value, "{0:0.0} MB/s", MainViewModel.CreateFrozenBrush(16, 185, 129));
+                    }
+
+                    if (!string.IsNullOrEmpty(finalNetRate))
+                    {
+                        ViewModel.HwNetRateText = finalNetRate;
+                    }
+                    if (dispatchNetTotalMb.HasValue)
+                    {
+                        ViewModel.UpdateHwMonitorSensor("io_net", dispatchNetTotalMb.Value, "{0:0.00} MB/s", MainViewModel.CreateFrozenBrush(56, 189, 248));
+                    }
+
+                    if (!string.IsNullOrEmpty(finalSysStats))
+                    {
+                        ViewModel.HwSystemStatsText = finalSysStats;
+                    }
+
+                    if (dispatchPowerUpdated)
+                    {
+                        ViewModel.UpdatePowerMonitor(
+                            dispatchHasBatt,
+                            dispatchOnAc,
+                            dispatchCharging,
+                            dispatchDischarging,
+                            dispatchChargePct,
+                            dispatchWatts,
+                            dispatchAmps,
+                            dispatchVoltageV,
+                            dispatchRemainingSec);
+
+                        if (dispatchVoltageV > 0.1 || dispatchAmps > 0.01)
+                        {
+                            ViewModel.HwPowerVoltageText = string.Format("{0:0.00} V  |  {1:0.00} A", dispatchVoltageV, dispatchAmps);
+                        }
+                        else
+                        {
+                            ViewModel.HwPowerVoltageText = dispatchOnAc ? "AC Adapter (Napon N/A)" : "Baterija (Napon N/A)";
+                        }
+                        ViewModel.HwPowerSubText = dispatchHasBatt
+                            ? string.Format("Baterija: {0}% ({1})", dispatchChargePct, dispatchOnAc ? (dispatchCharging ? "Punjenje" : "AC mreža") : "Pražnjenje")
+                            : "Desktop / AC napajanje";
+
+                        if (dispatchWatts > 0.05)
+                        {
+                            ViewModel.UpdateHwMonitorSensor("pwr_watts", dispatchWatts, "{0:0.0} W", MainViewModel.CreateFrozenBrush(245, 158, 11));
+                        }
+                        else
+                        {
+                            ViewModel.SetHwMonitorSensorUnavailable("pwr_watts", "N/A");
+                        }
+                        if (dispatchAmps > 0.01)
+                        {
+                            ViewModel.UpdateHwMonitorSensor("pwr_amps", dispatchAmps, "{0:0.00} A", MainViewModel.CreateFrozenBrush(245, 158, 11));
+                        }
+                        else
+                        {
+                            ViewModel.SetHwMonitorSensorUnavailable("pwr_amps", "N/A");
+                        }
+                        if (dispatchVoltageV > 0.1)
+                        {
+                            ViewModel.UpdateHwMonitorSensor("pwr_volts", dispatchVoltageV, "{0:0.00} V", MainViewModel.CreateFrozenBrush(226, 232, 240));
+                        }
+                        else
+                        {
+                            ViewModel.SetHwMonitorSensorUnavailable("pwr_volts", "N/A");
+                        }
+
+                        ViewModel.RebuildOverviewAlerts();
+                    }
+
+                    ViewModel.RefreshHwMonitorKpiSummaries();
+
                     if (!string.IsNullOrEmpty(finalDl)) ViewModel.DownloadedMb = finalDl;
                     if (!string.IsNullOrEmpty(finalIp)) ViewModel.IpAddress = finalIp;
                     if (!string.IsNullOrEmpty(finalConn)) ViewModel.ConnectionType = finalConn;
@@ -5114,6 +8576,168 @@ namespace WIS.UI
                 }
             }
             catch { }
+            finally
+            {
+                Interlocked.Exchange(ref _diagMetricsGuard, 0);
+            }
+        }
+
+        private static bool ReadLivePowerTelemetry(
+            out bool hasBattery,
+            out bool isOnAc,
+            out bool isCharging,
+            out bool isDischarging,
+            out int chargePercent,
+            out double watts,
+            out double amps,
+            out double voltageV,
+            out int lifeRemainingSec)
+        {
+            hasBattery = false;
+            isOnAc = true;
+            isCharging = false;
+            isDischarging = false;
+            chargePercent = -1;
+            watts = 0.0;
+            amps = 0.0;
+            voltageV = 0.0;
+            lifeRemainingSec = -1;
+
+            try
+            {
+                SYSTEM_POWER_STATUS sps;
+                if (GetSystemPowerStatus(out sps))
+                {
+                    hasBattery = (sps.BatteryFlag & 128) == 0 && sps.BatteryFlag != 255;
+                    if (sps.ACLineStatus == 0) isOnAc = false;
+                    else if (sps.ACLineStatus == 1) isOnAc = true;
+
+                    isCharging = (sps.BatteryFlag & 8) != 0;
+                    isDischarging = !isOnAc && hasBattery;
+                    if (sps.BatteryLifePercent <= 100)
+                    {
+                        chargePercent = sps.BatteryLifePercent;
+                        hasBattery = true;
+                    }
+                    lifeRemainingSec = sps.BatteryLifeTime;
+                }
+
+                if (hasBattery)
+                {
+                    double totalChargeMw = 0.0;
+                    double totalDischargeMw = 0.0;
+                    double sumVoltageMv = 0.0;
+                    int voltageCount = 0;
+                    bool wmiSawOnline = false;
+                    bool wmiOnlineVal = false;
+                    bool wmiSawCharging = false;
+                    bool wmiSawDischarging = false;
+
+                    try
+                    {
+                        var scope = new ManagementScope(@"\\.\root\wmi");
+                        scope.Connect();
+                        using (var searcher = new ManagementObjectSearcher(scope,
+                            new ObjectQuery("SELECT PowerOnline, Charging, Discharging, ChargeRate, DischargeRate, Voltage FROM BatteryStatus")))
+                        {
+                            foreach (ManagementObject obj in searcher.Get())
+                            {
+                                if (obj["PowerOnline"] != null)
+                                {
+                                    wmiSawOnline = true;
+                                    if (Convert.ToBoolean(obj["PowerOnline"])) wmiOnlineVal = true;
+                                }
+                                if (obj["Charging"] != null && Convert.ToBoolean(obj["Charging"])) wmiSawCharging = true;
+                                if (obj["Discharging"] != null && Convert.ToBoolean(obj["Discharging"])) wmiSawDischarging = true;
+
+                                uint cRate = 0;
+                                if (obj["ChargeRate"] != null && uint.TryParse(obj["ChargeRate"].ToString(), out cRate) && cRate > 0 && cRate < 500000)
+                                {
+                                    totalChargeMw += cRate;
+                                }
+                                uint dRate = 0;
+                                if (obj["DischargeRate"] != null && uint.TryParse(obj["DischargeRate"].ToString(), out dRate) && dRate > 0 && dRate < 500000)
+                                {
+                                    totalDischargeMw += dRate;
+                                }
+                                uint voltMv = 0;
+                                if (obj["Voltage"] != null && uint.TryParse(obj["Voltage"].ToString(), out voltMv) && voltMv >= 5000 && voltMv <= 30000)
+                                {
+                                    sumVoltageMv += voltMv;
+                                    voltageCount++;
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    if (wmiSawOnline) isOnAc = wmiOnlineVal;
+                    if (wmiSawCharging) isCharging = true;
+                    if (wmiSawDischarging) isDischarging = true;
+
+                    if (totalChargeMw > 0.0)
+                    {
+                        watts = totalChargeMw / 1000.0;
+                        isCharging = true;
+                        isDischarging = false;
+                    }
+                    else if (totalDischargeMw > 0.0)
+                    {
+                        watts = totalDischargeMw / 1000.0;
+                        isDischarging = true;
+                        if (!isOnAc) isCharging = false;
+                    }
+
+                    if (voltageCount > 0)
+                    {
+                        double avgMv = sumVoltageMv / (double)voltageCount;
+                        voltageV = avgMv / 1000.0;
+                        if (watts > 0.0)
+                        {
+                            amps = (watts * 1000.0) / avgMv;
+                        }
+                    }
+
+                    if (chargePercent < 0)
+                    {
+                        try
+                        {
+                            using (var win32Bat = new ManagementObjectSearcher("SELECT EstimatedChargeRemaining, BatteryStatus FROM Win32_Battery"))
+                            {
+                                foreach (ManagementObject obj in win32Bat.Get())
+                                {
+                                    if (obj["EstimatedChargeRemaining"] != null)
+                                    {
+                                        int pct = 0;
+                                        if (int.TryParse(obj["EstimatedChargeRemaining"].ToString(), out pct) && pct >= 0 && pct <= 100)
+                                        {
+                                            chargePercent = pct;
+                                        }
+                                    }
+                                    if (obj["BatteryStatus"] != null)
+                                    {
+                                        uint bs = 0;
+                                        if (uint.TryParse(obj["BatteryStatus"].ToString(), out bs))
+                                        {
+                                            if (bs == 1) { isOnAc = false; isDischarging = true; isCharging = false; }
+                                            else if (bs == 2) { isOnAc = true; isCharging = true; isDischarging = false; }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (chargePercent < 0) chargePercent = 0;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         #endregion
@@ -6450,6 +10074,21 @@ namespace WIS.UI
                 _thermalEngine.Dispose();
                 _thermalEngine = null;
             }
+            if (_diskReadCounter != null)
+            {
+                try { _diskReadCounter.Dispose(); } catch { }
+                _diskReadCounter = null;
+            }
+            if (_diskWriteCounter != null)
+            {
+                try { _diskWriteCounter.Dispose(); } catch { }
+                _diskWriteCounter = null;
+            }
+            if (_diskTimeCounter != null)
+            {
+                try { _diskTimeCounter.Dispose(); } catch { }
+                _diskTimeCounter = null;
+            }
         }
 
         private void ResetCoreClockExtremes()
@@ -6461,6 +10100,11 @@ namespace WIS.UI
                     _thermalEngine.ResetCoreClockExtremes();
                 }
                 catch { }
+            }
+            if (ViewModel != null)
+            {
+                ViewModel.ResetAllHwMonitorExtremes();
+                ViewModel.RefreshHwMonitorKpiSummaries();
             }
             UpdateThermalTelemetry();
         }
@@ -6489,13 +10133,14 @@ namespace WIS.UI
             return pts;
         }
 
-        private void PushThermalGraphSample(float cpu, float gpu, float mb, float ssd, float throttling)
+        private void PushThermalGraphSample(float cpu, float gpu, float mb, float ssd, float throttling, float cpuLoad)
         {
             PointCollection cpuPts;
             PointCollection gpuPts;
             PointCollection mbPts;
             PointCollection ssdPts;
             PointCollection throtPts;
+            PointCollection cpuLoadPts;
 
             lock (_graphLock)
             {
@@ -6508,6 +10153,7 @@ namespace WIS.UI
                         _mbHistory[i] = mb > 0f ? mb : 0f;
                         _ssdHistory[i] = ssd > 0f ? ssd : 0f;
                         _throttleHistory[i] = throttling > 0f ? throttling : 0f;
+                        _cpuLoadHistory[i] = cpuLoad > 0f ? cpuLoad : 0f;
                     }
                     _graphBuffersInitialized = true;
                 }
@@ -6519,12 +10165,14 @@ namespace WIS.UI
                     Array.Copy(_mbHistory, 1, _mbHistory, 0, last);
                     Array.Copy(_ssdHistory, 1, _ssdHistory, 0, last);
                     Array.Copy(_throttleHistory, 1, _throttleHistory, 0, last);
+                    Array.Copy(_cpuLoadHistory, 1, _cpuLoadHistory, 0, last);
 
                     _cpuHistory[last] = cpu > 0f ? cpu : 0f;
                     _gpuHistory[last] = gpu > 0f ? gpu : 0f;
                     _mbHistory[last] = mb > 0f ? mb : 0f;
                     _ssdHistory[last] = ssd > 0f ? ssd : 0f;
                     _throttleHistory[last] = throttling > 0f ? throttling : 0f;
+                    _cpuLoadHistory[last] = cpuLoad > 0f ? cpuLoad : 0f;
                 }
 
                 cpuPts = BuildGraphPoints(_cpuHistory);
@@ -6532,6 +10180,7 @@ namespace WIS.UI
                 mbPts = BuildGraphPoints(_mbHistory);
                 ssdPts = BuildGraphPoints(_ssdHistory);
                 throtPts = BuildGraphPoints(_throttleHistory);
+                cpuLoadPts = BuildGraphPoints(_cpuLoadHistory);
             }
 
             ViewModel.CpuGraphPoints = cpuPts;
@@ -6539,6 +10188,7 @@ namespace WIS.UI
             ViewModel.MbGraphPoints = mbPts;
             ViewModel.SsdGraphPoints = ssdPts;
             ViewModel.ThrottleGraphPoints = throtPts;
+            ViewModel.CpuLoadGraphPoints = cpuLoadPts;
         }
 
         private void UpdateCoreClocksTable()
@@ -6548,12 +10198,16 @@ namespace WIS.UI
             List<CoreClockSensorInfo> snapshot = _thermalEngine.GetCoreClocksSnapshot();
             if (snapshot == null) return;
 
+            double sumMhz = 0.0;
+            int validCount = 0;
+
             if (ViewModel.CoreClocks.Count != snapshot.Count)
             {
                 ViewModel.CoreClocks.Clear();
                 for (int i = 0; i < snapshot.Count; i++)
                 {
                     CoreClockSensorInfo info = snapshot[i];
+                    if (info.CurrentMHz > 0.0f) { sumMhz += info.CurrentMHz; validCount++; }
                     CoreClockItem item = new CoreClockItem();
                     item.CoreIndex = info.CoreIndex;
                     item.CoreName = info.CoreName;
@@ -6570,6 +10224,7 @@ namespace WIS.UI
                 for (int i = 0; i < snapshot.Count; i++)
                 {
                     CoreClockSensorInfo info = snapshot[i];
+                    if (info.CurrentMHz > 0.0f) { sumMhz += info.CurrentMHz; validCount++; }
                     CoreClockItem item = ViewModel.CoreClocks[i];
                     item.CoreIndex = info.CoreIndex;
                     item.CoreName = info.CoreName;
@@ -6579,6 +10234,11 @@ namespace WIS.UI
                     item.RatioText = string.Format("x {0:F1}", info.CurrentMHz / 100.0f);
                     item.ClockRatioPercent = (info.MaxMHz > 0.0f) ? ((double)info.CurrentMHz / (double)info.MaxMHz) * 100.0 : 0.0;
                 }
+            }
+
+            if (validCount > 0)
+            {
+                ViewModel.HwCpuAvgClockText = string.Format("Ø {0:F2} GHz", (sumMhz / validCount) / 1000.0);
             }
         }
 
@@ -6605,14 +10265,18 @@ namespace WIS.UI
                 if (cpu > 0f)
                 {
                     ViewModel.CpuTempText = string.Format("{0:F1} °C", cpu);
+                    ViewModel.CpuTempShortText = string.Format("{0:F0}°C", cpu);
                     ViewModel.CpuTempBrush = MainViewModel.GetThermalBrush(cpu, 65.0f, 80.0f);
                     ViewModel.LegendCpuText = string.Format("CPU Temp ({0:F0}°C)", cpu);
+                    ViewModel.UpdateHwMonitorSensor("temp_cpu", cpu, "{0:F1} °C", ViewModel.CpuTempBrush);
                 }
                 else
                 {
                     ViewModel.CpuTempText = "N/A (WMI/ACPI nedostupan)";
+                    ViewModel.CpuTempShortText = "N/A";
                     ViewModel.CpuTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendCpuText = "CPU Temp (N/A)";
+                    ViewModel.SetHwMonitorSensorUnavailable("temp_cpu", "N/A");
                 }
 
                 // 2. GPU Temperatura
@@ -6621,14 +10285,18 @@ namespace WIS.UI
                 if (gpu > 0f)
                 {
                     ViewModel.GpuTempText = string.Format("{0:F1} °C", gpu);
+                    ViewModel.GpuTempShortText = string.Format("{0:F0}°C", gpu);
                     ViewModel.GpuTempBrush = MainViewModel.GetThermalBrush(gpu, 75.0f, 85.0f);
                     ViewModel.LegendGpuText = string.Format("GPU Temp ({0:F0}°C)", gpu);
+                    ViewModel.UpdateHwMonitorSensor("temp_gpu", gpu, "{0:F1} °C", ViewModel.GpuTempBrush);
                 }
                 else
                 {
                     ViewModel.GpuTempText = "N/A (Integrisana / Idle)";
+                    ViewModel.GpuTempShortText = "N/A";
                     ViewModel.GpuTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendGpuText = "GPU Temp (N/A)";
+                    ViewModel.SetHwMonitorSensorUnavailable("temp_gpu", "N/A");
                 }
 
                 // 3. Matična ploča (MB) Temperatura
@@ -6637,14 +10305,18 @@ namespace WIS.UI
                 if (mb > 0f)
                 {
                     ViewModel.MbTempText = string.Format("{0:F1} °C", mb);
+                    ViewModel.MbTempShortText = string.Format("{0:F0}°C", mb);
                     ViewModel.MbTempBrush = MainViewModel.GetThermalBrush(mb, 60.0f, 75.0f);
                     ViewModel.LegendMbText = string.Format("MB Temp ({0:F0}°C)", mb);
+                    ViewModel.UpdateHwMonitorSensor("temp_mb", mb, "{0:F1} °C", ViewModel.MbTempBrush);
                 }
                 else
                 {
                     ViewModel.MbTempText = "N/A";
+                    ViewModel.MbTempShortText = "N/A";
                     ViewModel.MbTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendMbText = "MB Temp (N/A)";
+                    ViewModel.SetHwMonitorSensorUnavailable("temp_mb", "N/A");
                 }
 
                 // 4. SSD Temperatura
@@ -6653,8 +10325,10 @@ namespace WIS.UI
                 if (ssd > 0f)
                 {
                     ViewModel.SsdTempText = string.Format("{0:F1} °C", ssd);
+                    ViewModel.SsdTempShortText = string.Format("{0:F0}°C", ssd);
                     ViewModel.SsdTempBrush = MainViewModel.GetThermalBrush(ssd, 55.0f, 70.0f);
                     ViewModel.LegendSsdText = string.Format("SSD Temp ({0:F0}°C)", ssd);
+                    ViewModel.UpdateHwMonitorSensor("temp_ssd", ssd, "{0:F1} °C", ViewModel.SsdTempBrush);
                     if (ViewModel.HardwareInfo != null)
                     {
                         ViewModel.HardwareInfo.StorageTemp = string.Format("{0:F1} °C", ssd);
@@ -6663,8 +10337,10 @@ namespace WIS.UI
                 else
                 {
                     ViewModel.SsdTempText = "N/A (SMART Passthrough)";
+                    ViewModel.SsdTempShortText = "N/A";
                     ViewModel.SsdTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendSsdText = "SSD Temp (N/A)";
+                    ViewModel.SetHwMonitorSensorUnavailable("temp_ssd", "N/A");
                     if (ViewModel.HardwareInfo != null)
                     {
                         ViewModel.HardwareInfo.StorageTemp = "N/A (Senzor nedostupan)";
@@ -6681,6 +10357,7 @@ namespace WIS.UI
                         ? MainViewModel.CreateFrozenBrush(231, 76, 60)
                         : MainViewModel.CreateFrozenBrush(78, 201, 176);
                     ViewModel.LegendThrottleText = string.Format("Throttling ({0:F0}%)", throt);
+                    ViewModel.UpdateHwMonitorSensor("load_throttle", throt, "{0:F0} %", ViewModel.ThrottlingBrush);
                 }
                 else
                 {
@@ -6688,6 +10365,7 @@ namespace WIS.UI
                     ViewModel.ThrottlingText = isZh ? "不可用" : "Nije dostupno";
                     ViewModel.ThrottlingBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendThrottleText = isZh ? "Throttling (不可用)" : "Throttling (Nije dostupno)";
+                    ViewModel.SetHwMonitorSensorUnavailable("load_throttle", "N/A");
                 }
 
                 // 6. Ventilator (Fan)
@@ -6697,11 +10375,13 @@ namespace WIS.UI
                 {
                     ViewModel.FanSpeedText = string.Format("{0} RPM", fan);
                     ViewModel.FanSpeedBrush = MainViewModel.CreateFrozenBrush(78, 201, 176);
+                    ViewModel.UpdateHwMonitorSensor("fan_rpm", fan, "{0:F0} RPM", ViewModel.FanSpeedBrush);
                 }
                 else
                 {
                     ViewModel.FanSpeedText = _thermalEngine.HasFanData ? "0 RPM (Ugašen/Tihi rad)" : "Pasivno / BIOS kontrola";
                     ViewModel.FanSpeedBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
+                    ViewModel.SetHwMonitorSensorUnavailable("fan_rpm", _thermalEngine.HasFanData ? "0 RPM" : "BIOS/N/A");
                 }
 
                 // 7. Sensor Status
@@ -6717,8 +10397,10 @@ namespace WIS.UI
                 }
 
                 // 8. Ažuriranje 5-minutnog (300s) višekanalnog grafikona i tabele taktova jezgara
-                PushThermalGraphSample(cpu, gpu, mb, ssd, throt);
+                PushThermalGraphSample(cpu, gpu, mb, ssd, throt, (float)ViewModel.CpuUsagePercent);
                 UpdateCoreClocksTable();
+                ViewModel.RefreshHwMonitorKpiSummaries();
+                ViewModel.RebuildOverviewAlerts();
             }
             catch { }
         }

@@ -272,9 +272,7 @@ namespace WIS.HwTest.Tests
                 Padding = new Thickness(25, 12, 25, 12)
             };
             Grid fgFooter = new Grid();
-            fgFooter.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             fgFooter.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            fgFooter.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             Button btnFooterFail = new Button
             {
@@ -282,22 +280,12 @@ namespace WIS.HwTest.Tests
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
-                Padding = new Thickness(15, 8, 15, 8)
+                Padding = new Thickness(15, 8, 15, 8),
+                HorizontalAlignment = HorizontalAlignment.Left
             };
             btnFooterFail.Click += (s, e) => FinishFail("Tehničar označio neispravne/krčeće zvučnike.");
             Grid.SetColumn(btnFooterFail, 0);
             fgFooter.Children.Add(btnFooterFail);
-
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test zvuka",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            Grid.SetColumn(btnSkip, 2);
-            fgFooter.Children.Add(btnSkip);
 
             footer.Child = fgFooter;
             Grid.SetRow(footer, 2);
@@ -308,6 +296,7 @@ namespace WIS.HwTest.Tests
             KeyDown += OnWindowKeyDown;
             Closed += (s, e) =>
             {
+                _isClosingOrDone = true;
                 StopActivePlayback();
                 RestoreAudioVolume();
             };
@@ -948,16 +937,6 @@ namespace WIS.HwTest.Tests
             StopActivePlayback();
             Result.Status = TestStatus.Fail;
             Result.Reason = reason;
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            StopActivePlayback();
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test zvuka";
             SafeCloseDialog(false);
         }
     }

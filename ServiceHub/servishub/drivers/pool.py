@@ -412,6 +412,7 @@ class DriverPoolManager:
             "packages": {},
             "hwid_winners": {},
             "rejected_packages": [],
+            "ingested_archives": {},
             "stats": {
                 "dedup_hits": 0,
                 "dedup_saved_bytes": 0,
@@ -429,6 +430,7 @@ class DriverPoolManager:
                     if isinstance(data, dict) and isinstance(data.get("packages"), dict):
                         data.setdefault("hwid_winners", {})
                         data.setdefault("rejected_packages", [])
+                        data.setdefault("ingested_archives", {})
                         st = data.setdefault("stats", {})
                         st.setdefault("dedup_hits", 0)
                         st.setdefault("dedup_saved_bytes", 0)
@@ -1092,6 +1094,7 @@ class DriverPoolManager:
                 bundle_sha = None
 
         if not bundle_sha:
+            os.makedirs(self.bundles_dir, exist_ok=True)
             tmp_tar = f"{bundle_path}.{uuid.uuid4().hex[:6]}.tmp"
             try:
                 with tarfile.open(tmp_tar, "w") as tf:
@@ -1375,4 +1378,132 @@ class DriverPoolManager:
             "source_counts": source_counts,
             "oem_catalogs": self.catalog_mgr.get_catalog_status(),
             "jobs": jobs_list,
+        }
+
+    def scan_and_ingest_archives(
+        self,
+        archives_dir: Optional[str],
+        target_archive: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Skenira direktorijum sa Harvest arhivama (.tar/.tar.gz/.tgz/.zip) i automatski
+        ingestuje nove ili izmenjene modele u CAS Driver Pool.
+        """
+        if not archives_dir or not os.path.isdir(archives_dir):
+            return {
+                "status": "ok",
+                "archives_dir": archives_dir,
+                "scanned": 0,
+                "ingested": 0,
+                "skipped": 0,
+                "errors": [],
+                "details": [],
+            }
+
+        target_name = os.path.basename(str(target_archive or "").strip()) if target_archive else None
+        supported_exts = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+
+        scanned = 0
+        ingested = 0
+        skipped = 0
+        errors: List[Dict[str, Any]] = []
+        details: List[Dict[str, Any]] = []
+
+        try:
+            entries = sorted(os.listdir(archives_dir))
+        except OSError as ex:
+            return {
+                "status": "error",
+                "archives_dir": archives_dir,
+                "scanned": 0,
+                "ingested": 0,
+                "skipped": 0,
+                "errors": [{"file": archives_dir, "error": str(ex)}],
+                "details": [],
+            }
+
+        for fn in entries:
+            if not fn or fn.startswith("."):
+                continue
+            if target_name and fn.lower() != target_name.lower():
+                continue
+            lower_fn = fn.lower()
+            if ".tmp" in lower_fn or lower_fn.endswith((".part", ".lock")):
+                continue
+            if not lower_fn.endswith(supported_exts):
+                continue
+
+            full_path = os.path.join(archives_dir, fn)
+            if not os.path.isfile(full_path):
+                continue
+
+            scanned += 1
+            try:
+                file_size = os.path.getsize(full_path)
+            except OSError:
+                skipped += 1
+                continue
+            if file_size <= 0:
+                skipped += 1
+                continue
+
+            base_name = fn
+            for ext in supported_exts:
+                if lower_fn.endswith(ext):
+                    base_name = fn[: -len(ext)]
+                    break
+            clean_model = sanitize_model_pack_name(base_name)
+            is_generic = is_generic_model_pack_name(clean_model)
+
+            try:
+                file_sha = _file_sha256(full_path)
+            except OSError as ex:
+                errors.append({"file": fn, "error": str(ex)})
+                continue
+
+            already_done = False
+            with self.lock:
+                idx = self._ensure_index_loaded()
+                rec = idx.get("ingested_archives", {}).get(fn)
+                if isinstance(rec, dict) and rec.get("sha256") == file_sha:
+                    if is_generic or self.has_model_manifest(clean_model):
+                        already_done = True
+
+            if already_done:
+                skipped += 1
+                continue
+
+            try:
+                res = self.ingest_archive(
+                    full_path,
+                    source="harvest",
+                    model=None if is_generic else clean_model,
+                )
+                with self.lock:
+                    idx = self._ensure_index_loaded()
+                    idx.setdefault("ingested_archives", {})[fn] = {
+                        "sha256": file_sha,
+                        "model": None if is_generic else clean_model,
+                        "size_bytes": file_size,
+                        "ingested_at": datetime.now().isoformat(),
+                    }
+                    self._save_index_locked(idx)
+                ingested += 1
+                details.append({
+                    "file": fn,
+                    "model": None if is_generic else clean_model,
+                    "ingested_count": res.get("ingested_count", 0),
+                    "total_units": res.get("total_units", 0),
+                })
+            except Exception as ex:
+                errors.append({"file": fn, "error": str(ex)})
+
+        return {
+            "status": "ok",
+            "archives_dir": archives_dir,
+            "scanned": scanned,
+            "ingested": ingested,
+            "skipped": skipped,
+            "errors": errors,
+            "details": details,
         }

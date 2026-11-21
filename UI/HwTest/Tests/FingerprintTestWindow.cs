@@ -24,6 +24,9 @@ namespace WIS.HwTest.Tests
         private readonly Button _btnFail;
         private readonly Button _btnRetry;
         private readonly Button _btnSwitchMode;
+        private readonly Button _btnBiosReboot;
+        private readonly Border _biosHintPanel;
+        private bool _showBiosRebootHint;
 
         private readonly object _sessionLock = new object();
         private uint _sessionHandle = 0;
@@ -39,15 +42,32 @@ namespace WIS.HwTest.Tests
         private bool _isClosingOrDone = false;
 
         public TestItemResult Result { get; private set; }
+        public Action<string> OnRequestUefiBiosReboot { get; set; }
 
-        public FingerprintTestWindow(HardwareProbeResult hwInfo)
-            : this(hwInfo != null ? hwInfo.FingerprintName : "", hwInfo != null ? hwInfo.FingerprintUnitId : 0)
+        public bool ShowBiosRebootHint
         {
-            _hwInfo = hwInfo;
+            get { return _showBiosRebootHint; }
+            set
+            {
+                _showBiosRebootHint = value;
+                UpdateBiosRebootHintUi();
+            }
+        }
+
+        public FingerprintTestWindow(HardwareProbeResult hwInfo, Action<string> onRequestUefiBiosReboot = null)
+            : this(hwInfo != null ? hwInfo.FingerprintName : "", hwInfo != null ? hwInfo.FingerprintUnitId : 0, hwInfo, onRequestUefiBiosReboot)
+        {
         }
 
         public FingerprintTestWindow(string sensorName, uint unitId)
+            : this(sensorName, unitId, null, null)
         {
+        }
+
+        private FingerprintTestWindow(string sensorName, uint unitId, HardwareProbeResult hwInfo, Action<string> onRequestUefiBiosReboot)
+        {
+            _hwInfo = hwInfo;
+            OnRequestUefiBiosReboot = onRequestUefiBiosReboot;
             _sensorName = string.IsNullOrEmpty(sensorName) ? "Biometrijski čitač otiska prsta" : sensorName;
             _initialUnitId = unitId;
 
@@ -62,7 +82,6 @@ namespace WIS.HwTest.Tests
             Grid root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(80) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(70) });
 
             // Header
             Border header = new Border
@@ -205,39 +224,99 @@ namespace WIS.HwTest.Tests
             spBtns.Children.Add(_btnSwitchMode);
 
             spC.Children.Add(spBtns);
+
+            // Uslovno UEFI BIOS upozorenje i dugme za restart u BIOS (HWT-04)
+            _biosHintPanel = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(48, 217, 119, 6)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(245, 158, 11)),
+                BorderThickness = new Thickness(1.5),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(18, 12, 18, 12),
+                Margin = new Thickness(0, 22, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            StackPanel spBios = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
+            spBios.Children.Add(new TextBlock
+            {
+                Text = "⚠️ Čitač otiska prsta je onemogućen u BIOS-u ili nedostaje u Windowsu uprkos fabričkom BOM-u.\n" +
+                       "Uđite u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2), omogućite čitač i sačuvajte — WIS nastavlja gde je stao.",
+                FontSize = 12.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(253, 230, 138)),
+                TextAlignment = TextAlignment.Center,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 10)
+            });
+            _btnBiosReboot = new Button
+            {
+                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(18, 9, 18, 9),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            _btnBiosReboot.Click += (s, e) => RequestUefiBiosRebootFromWindow();
+            spBios.Children.Add(_btnBiosReboot);
+            _biosHintPanel.Child = spBios;
+            spC.Children.Add(_biosHintPanel);
+
             centerBorder.Child = spC;
             Grid.SetRow(centerBorder, 1);
             root.Children.Add(centerBorder);
 
-            // Footer
-            Border footer = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
-                Padding = new Thickness(25, 12, 25, 12)
-            };
-            StackPanel spF = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test otiska prsta",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            spF.Children.Add(btnSkip);
-            footer.Child = spF;
-            Grid.SetRow(footer, 2);
-            root.Children.Add(footer);
-
             Content = root;
+            UpdateBiosRebootHintUi();
 
             Loaded += (s, e) =>
             {
+                UpdateBiosRebootHintUi();
                 ForceWindowFocus();
                 StartListener();
             };
             ContentRendered += (s, e) => ForceWindowFocus();
             Closed += (s, e) => StopListener();
+        }
+
+        private bool ShouldShowBiosRebootHint()
+        {
+            if (_showBiosRebootHint) return true;
+            if (_hwInfo != null && (_hwInfo.FingerprintDisabledInBios || (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private void UpdateBiosRebootHintUi()
+        {
+            if (_biosHintPanel != null)
+            {
+                _biosHintPanel.Visibility = ShouldShowBiosRebootHint() ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void RequestUefiBiosRebootFromWindow()
+        {
+            if (_isClosingOrDone) return;
+            _isClosingOrDone = true;
+            StopAutoPassTimer();
+            StopListener();
+            Result.Status = TestStatus.Pending;
+
+            if (OnRequestUefiBiosReboot == null)
+            {
+                MessageBox.Show(
+                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili čitač otiska prsta.",
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                SafeCloseDialog(false);
+                return;
+            }
+
+            SafeCloseDialog(false);
+            OnRequestUefiBiosReboot("fingerprint");
         }
 
         private void ForceWindowFocus()
@@ -496,17 +575,23 @@ namespace WIS.HwTest.Tests
                             _detailText.Text = string.Format(
                                 "BIOS postavka: {0}.\nUđite u BIOS (HP: F10, Lenovo: F1, Dell: F2), omogućite čitač otiska prsta (Enable) i sačuvajte podešavanja.",
                                 _hwInfo.FingerprintBiosStatus);
+                            ShowBiosRebootHint = true;
                         }));
                         return;
                     }
 
                     string extraDiag = "";
+                    bool hasBomOrBiosWarning = _showBiosRebootHint;
                     if (_hwInfo != null)
                     {
                         if (!string.IsNullOrEmpty(_hwInfo.FingerprintBiosStatus))
                             extraDiag += " | BIOS: " + _hwInfo.FingerprintBiosStatus;
-                        if (_hwInfo.FactoryFingerprint == true && !string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence))
-                            extraDiag += " | Fabrički OEM BOM: " + _hwInfo.FactoryFingerprintEvidence;
+                        if (_hwInfo.FactoryFingerprint == true)
+                        {
+                            hasBomOrBiosWarning = true;
+                            if (!string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence))
+                                extraDiag += " | Fabrički OEM BOM: " + _hwInfo.FactoryFingerprintEvidence;
+                        }
                         if (_hwInfo.FingerprintPnpError != 0)
                             extraDiag += string.Format(" | PnP Err={0} (verovatno nedostaje drajver)", _hwInfo.FingerprintPnpError);
                         if (!string.IsNullOrEmpty(_hwInfo.WbioServiceState))
@@ -518,8 +603,12 @@ namespace WIS.HwTest.Tests
                         _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                         _statusText.Text = "Windows Biometric Service (WBF) ne vidi aktivan senzor";
                         _detailText.Text = string.Format(
-                            "PnP: '{0}'{1}. Proverite Device Manager (nedostaje WBDI drajver) ili BIOS podešavanje za Fingerprint.",
+                            "PnP: '{0}'{1}. Proverite Device Manager (nedostaje WBDI drajver) ili BIOS podešavanje za Fingerprint (HP: F10, Lenovo: F1, Dell: F2).",
                             _sensorName, extraDiag);
+                        if (hasBomOrBiosWarning)
+                        {
+                            ShowBiosRebootHint = true;
+                        }
                     }));
                     return;
                 }
@@ -946,18 +1035,6 @@ namespace WIS.HwTest.Tests
             Result.Reason = reason;
             Result.Details["sensor_name"] = _sensorName;
             Result.Details["touch_detected"] = _touchDetected;
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            StopAutoPassTimer();
-            StopListener();
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test otiska prsta";
-            Result.Details["sensor_name"] = _sensorName;
             SafeCloseDialog(false);
         }
     }

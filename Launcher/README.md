@@ -1,6 +1,6 @@
 # WIS Launcher — razvoj (`IG-Systems`)
 
-Komponentna razvojna verzija: **3.2.0** (minimalni kompatibilni bootstrap protokol **3.1.0** uz anti-downgrade zaštitu), u WIS paketu **3.2.0** (vlasnik sistema: **IG-Systems**). Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
+Komponentna razvojna verzija: **3.4.0** (minimalni kompatibilni bootstrap protokol **3.1.0** uz anti-downgrade zaštitu), u WIS paketu **3.4.0** (vlasnik sistema: **IG-Systems**). Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
 
 C# izvor Launcher-a nalazi se u ovom direktorijumu (C# 5.0 / .NET Framework 4.0; obuhvata `Program.cs`, `SplashForm.cs`, `WifiHelper.cs`, `HubDiscovery.cs`, `PayloadManager.cs`). Objedinjeni Linux i Windows testovi su u `Tests/`. Iz root-a repozitorijuma pokrenuti `python3 Launcher/Tests/run_tests.py`; Windows runner je `Launcher/Tests/Run-LauncherTests.ps1`. Zajednički build je `ISO/Skripte/Build-WIS.ps1` (ili `python3 Launcher/Build-Launcher.py` na Linuxu).
 

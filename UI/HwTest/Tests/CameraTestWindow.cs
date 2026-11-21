@@ -7,6 +7,7 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
@@ -19,11 +20,19 @@ using WIS.HwTest.Interop;
 
 namespace WIS.HwTest.Tests
 {
+    public enum CameraTestMode
+    {
+        RgbOnly,
+        IrOnly
+    }
+
     public class CameraTestWindow : Window
     {
+        private readonly CameraTestMode _mode;
         private readonly bool _hasIrCamera;
         private readonly string _webcamName;
         private readonly string _irCameraName;
+        private bool _showBiosRebootHint;
 
         private System.Windows.Controls.Image _videoImage;
         private Grid _videoStageGrid;
@@ -34,6 +43,7 @@ namespace WIS.HwTest.Tests
 
         private TextBlock _statusText;
         private TextBlock _subTitleText;
+        private TextBlock _biosHintBanner;
         private TextBlock _qrDetectionBanner;
         private Border _irScanBanner;
         private TextBlock _irScanText;
@@ -41,17 +51,14 @@ namespace WIS.HwTest.Tests
         private Button _btnConfirmIr;
         private Button _btnFailIr;
         private Button _btnFailRgb;
-        private Button _btnSkip;
-        private Button _btnSwitchIr;
+        private Button _btnBiosReboot;
         private Border _qrGuideBox;
         private TextBlock _qrGuideLabel;
         private DispatcherTimer _autoPassTimer;
-        private DispatcherTimer _autoSwitchIrTimer;
         private bool _isClosingOrDone = false;
 
         private Thread _workerThread;
         private volatile bool _isRunning = false;
-        private volatile bool _switchToIrRequested = false;
         private int _frameCounter = 0;
         private bool _qrPassed = false;
         private bool _irPassed = false;
@@ -69,6 +76,17 @@ namespace WIS.HwTest.Tests
 
         public bool InIrMode { get; private set; }
         public TestItemResult Result { get; private set; }
+        public Action<string> OnRequestUefiBiosReboot { get; set; }
+
+        public bool ShowBiosRebootHint
+        {
+            get { return _showBiosRebootHint; }
+            set
+            {
+                _showBiosRebootHint = value;
+                UpdateBiosRebootHintUi();
+            }
+        }
 
         private struct PixelBox
         {
@@ -111,21 +129,44 @@ namespace WIS.HwTest.Tests
         }
 
         public CameraTestWindow(bool hasIrCamera, string webcamName, string irCameraName)
+            : this(CameraTestMode.RgbOnly, webcamName, null, false)
         {
-            _hasIrCamera = hasIrCamera;
-            _webcamName = webcamName ?? "Web Kamera";
-            _irCameraName = irCameraName ?? "IR Kamera";
+        }
 
-            Result = new TestItemResult("camera", "Kamera (QR kod i IR)", "Ispitivanje RGB web kamere očitavanjem QR koda i proverom IR senzora lica");
+        public CameraTestWindow(
+            CameraTestMode mode,
+            string cameraName,
+            Action<string> onRequestUefiBiosReboot = null,
+            bool showBiosRebootHint = false)
+        {
+            _mode = mode;
+            _hasIrCamera = (_mode == CameraTestMode.IrOnly);
+            InIrMode = (_mode == CameraTestMode.IrOnly);
+            OnRequestUefiBiosReboot = onRequestUefiBiosReboot;
+            _showBiosRebootHint = showBiosRebootHint;
 
-            Title = "WIS — Test Kamere";
+            if (_mode == CameraTestMode.IrOnly)
+            {
+                _webcamName = "";
+                _irCameraName = string.IsNullOrEmpty(cameraName) ? "IR Kamera" : cameraName;
+                Result = new TestItemResult("ir_camera", "IR kamera (Windows Hello)", "Ispitivanje IR senzora kamere (Windows Hello / prepoznavanje lica)");
+                Title = "WIS — Test IR Kamere";
+            }
+            else
+            {
+                _webcamName = string.IsNullOrEmpty(cameraName) ? "Web Kamera" : cameraName;
+                _irCameraName = "";
+                Result = new TestItemResult("camera", "Web kamera (QR kod)", "Ispitivanje RGB web kamere očitavanjem QR koda");
+                Title = "WIS — Test Web Kamere";
+            }
+
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(24, 24, 28));
             Topmost = true;
 
             Grid root = new Grid();
-            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(80) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto, MinHeight = 80 });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(70) });
 
@@ -142,7 +183,9 @@ namespace WIS.HwTest.Tests
             StackPanel spH = new StackPanel();
             _statusText = new TextBlock
             {
-                Text = "📷 Usmerite odštampani QR kod (WIS-CAMTEST-v1) ispred kamere...",
+                Text = (_mode == CameraTestMode.IrOnly)
+                    ? "👁️ TEST IR KAMERE (WINDOWS HELLO / LICE)"
+                    : "📷 Usmerite odštampani QR kod (WIS-CAMTEST-v1) ispred kamere...",
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176))
@@ -151,18 +194,32 @@ namespace WIS.HwTest.Tests
 
             _subTitleText = new TextBlock
             {
-                Text = string.Format("Uređaj: {0}{1}", _webcamName, _hasIrCamera ? (" | IR kamera: " + _irCameraName) : ""),
+                Text = (_mode == CameraTestMode.IrOnly)
+                    ? ("IR senzor: " + _irCameraName)
+                    : string.Format("Uređaj: {0}", _webcamName),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 160, 170)),
                 Margin = new Thickness(0, 4, 0, 0)
             };
             spH.Children.Add(_subTitleText);
+
+            _biosHintBanner = new TextBlock
+            {
+                Text = "⚠️ Kamera je onemogućena u BIOS podešavanjima ili nije aktivna u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                FontSize = 12.5,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 193, 7)),
+                Margin = new Thickness(0, 4, 0, 0),
+                Visibility = Visibility.Collapsed
+            };
+            spH.Children.Add(_biosHintBanner);
+
             hg.Children.Add(spH);
             header.Child = hg;
             Grid.SetRow(header, 0);
             root.Children.Add(header);
 
-            // Center Video Area: Viewbox drzi sliku i Canvas sa crtama lica 1:1 poravnate u svakoj rezoluciji
+            // Centralni video prikaz: Viewbox drži sliku i Canvas sa crtama lica 1:1 poravnate u svakoj rezoluciji
             Grid centerGrid = new Grid();
             Viewbox stageViewbox = new Viewbox
             {
@@ -196,95 +253,100 @@ namespace WIS.HwTest.Tests
             stageViewbox.Child = _videoStageGrid;
             centerGrid.Children.Add(stageViewbox);
 
-            // Vidljiv kvadrat / nišan na ekranu za pozicioniranje QR koda
-            double guideSize = SystemParameters.PrimaryScreenHeight <= 820 ? 390.0 : 480.0;
-            Border qrGuideBox = new Border
+            if (_mode == CameraTestMode.RgbOnly)
             {
-                Name = "QrGuideBox",
-                Width = guideSize,
-                Height = guideSize,
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176)),
-                BorderThickness = new Thickness(5),
-                CornerRadius = new CornerRadius(14),
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(20, 78, 201, 176)),
-                IsHitTestVisible = false
-            };
-            StackPanel spGuide = new StackPanel
-            {
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Margin = new Thickness(0, 0, 0, 14)
-            };
-            TextBlock tbGuide = new TextBlock
-            {
-                Text = "Postavite QR kod ovde",
-                FontSize = 17,
-                FontWeight = FontWeights.Bold,
-                Foreground = System.Windows.Media.Brushes.White,
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(175, 20, 22, 26)),
-                Padding = new Thickness(14, 6, 14, 6),
-                TextAlignment = TextAlignment.Center
-            };
-            spGuide.Children.Add(tbGuide);
-            qrGuideBox.Child = spGuide;
-            _qrGuideBox = qrGuideBox;
-            _qrGuideLabel = tbGuide;
-            centerGrid.Children.Add(qrGuideBox);
+                // Vidljiv kvadrat / nišan na ekranu za pozicioniranje QR koda
+                double guideSize = SystemParameters.PrimaryScreenHeight <= 820 ? 390.0 : 480.0;
+                Border qrGuideBox = new Border
+                {
+                    Name = "QrGuideBox",
+                    Width = guideSize,
+                    Height = guideSize,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176)),
+                    BorderThickness = new Thickness(5),
+                    CornerRadius = new CornerRadius(14),
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(20, 78, 201, 176)),
+                    IsHitTestVisible = false
+                };
+                StackPanel spGuide = new StackPanel
+                {
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 0, 14)
+                };
+                TextBlock tbGuide = new TextBlock
+                {
+                    Text = "Postavite QR kod ovde",
+                    FontSize = 17,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(175, 20, 22, 26)),
+                    Padding = new Thickness(14, 6, 14, 6),
+                    TextAlignment = TextAlignment.Center
+                };
+                spGuide.Children.Add(tbGuide);
+                qrGuideBox.Child = spGuide;
+                _qrGuideBox = qrGuideBox;
+                _qrGuideLabel = tbGuide;
+                centerGrid.Children.Add(qrGuideBox);
 
-            // Banner za detekciju QR koda
-            _qrDetectionBanner = new TextBlock
+                // Banner za detekciju QR koda
+                _qrDetectionBanner = new TextBlock
+                {
+                    Text = "✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1",
+                    FontSize = 22,
+                    FontWeight = FontWeights.ExtraBold,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(220, 40, 167, 69)),
+                    Padding = new Thickness(25, 12, 25, 12),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 0, 40),
+                    Visibility = Visibility.Collapsed
+                };
+                centerGrid.Children.Add(_qrDetectionBanner);
+            }
+            else
             {
-                Text = "✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1",
-                FontSize = 22,
-                FontWeight = FontWeights.ExtraBold,
-                Foreground = System.Windows.Media.Brushes.White,
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(220, 40, 167, 69)),
-                Padding = new Thickness(25, 12, 25, 12),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Margin = new Thickness(0, 0, 0, 40),
-                Visibility = Visibility.Collapsed
-            };
-            centerGrid.Children.Add(_qrDetectionBanner);
-
-            // Banner za očitavanje lica u IR fazi
-            _irScanBanner = new Border
-            {
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(210, 18, 24, 34)),
-                BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176)),
-                BorderThickness = new Thickness(2),
-                CornerRadius = new CornerRadius(10),
-                Padding = new Thickness(22, 12, 22, 12),
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                Margin = new Thickness(0, 0, 0, 26),
-                Visibility = Visibility.Collapsed
-            };
-            StackPanel spIr = new StackPanel { MinWidth = 420 };
-            _irScanText = new TextBlock
-            {
-                Text = "👁️ IR SKENIRANJE LICA: Pogledajte pravo u kameru...",
-                FontSize = 16,
-                FontWeight = FontWeights.Bold,
-                Foreground = System.Windows.Media.Brushes.White,
-                TextAlignment = TextAlignment.Center,
-                Margin = new Thickness(0, 0, 0, 8)
-            };
-            spIr.Children.Add(_irScanText);
-            _irScanProgress = new ProgressBar
-            {
-                Height = 14,
-                Minimum = 0,
-                Maximum = RequiredIrFaceFrames,
-                Value = 0,
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 205, 65)),
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(45, 50, 60))
-            };
-            spIr.Children.Add(_irScanProgress);
-            _irScanBanner.Child = spIr;
-            centerGrid.Children.Add(_irScanBanner);
+                // Banner za očitavanje lica u IR režimu
+                _irScanBanner = new Border
+                {
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromArgb(210, 18, 24, 34)),
+                    BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176)),
+                    BorderThickness = new Thickness(2),
+                    CornerRadius = new CornerRadius(10),
+                    Padding = new Thickness(22, 12, 22, 12),
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 0, 26),
+                    Visibility = Visibility.Visible
+                };
+                StackPanel spIr = new StackPanel { MinWidth = 420 };
+                _irScanText = new TextBlock
+                {
+                    Text = "👁️ IR SKENIRANJE LICA: Pogledajte pravo u kameru...",
+                    FontSize = 16,
+                    FontWeight = FontWeights.Bold,
+                    Foreground = System.Windows.Media.Brushes.White,
+                    TextAlignment = TextAlignment.Center,
+                    Margin = new Thickness(0, 0, 0, 8)
+                };
+                spIr.Children.Add(_irScanText);
+                _irScanProgress = new ProgressBar
+                {
+                    Height = 14,
+                    Minimum = 0,
+                    Maximum = RequiredIrFaceFrames,
+                    Value = 0,
+                    Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 205, 65)),
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(45, 50, 60))
+                };
+                spIr.Children.Add(_irScanProgress);
+                _irScanBanner.Child = spIr;
+                centerGrid.Children.Add(_irScanBanner);
+            }
 
             Grid.SetRow(centerGrid, 1);
             root.Children.Add(centerGrid);
@@ -297,20 +359,21 @@ namespace WIS.HwTest.Tests
             };
             StackPanel spF = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
 
-            if (_hasIrCamera)
+            _btnBiosReboot = new Button
             {
-                _btnSwitchIr = new Button
-                {
-                    Content = "👁️ Prebaci na test IR kamere",
-                    Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(0, 122, 204)),
-                    Foreground = System.Windows.Media.Brushes.White,
-                    Padding = new Thickness(15, 8, 15, 8),
-                    Margin = new Thickness(0, 0, 12, 0),
-                    IsEnabled = false
-                };
-                _btnSwitchIr.Click += (s, e) => SwitchToIrMode();
-                spF.Children.Add(_btnSwitchIr);
+                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(217, 119, 6)),
+                Foreground = System.Windows.Media.Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(15, 8, 15, 8),
+                Margin = new Thickness(0, 0, 12, 0),
+                Visibility = Visibility.Collapsed
+            };
+            _btnBiosReboot.Click += (s, e) => RequestUefiBiosRebootFromWindow();
+            spF.Children.Add(_btnBiosReboot);
 
+            if (_mode == CameraTestMode.IrOnly)
+            {
                 _btnConfirmIr = new Button
                 {
                     Content = "✓ Potvrdi IR kameru (PASS)",
@@ -319,8 +382,8 @@ namespace WIS.HwTest.Tests
                     FontWeight = FontWeights.Bold,
                     Padding = new Thickness(18, 8, 18, 8),
                     Margin = new Thickness(0, 0, 12, 0),
-                    IsEnabled = false,
-                    Visibility = Visibility.Collapsed
+                    IsEnabled = true,
+                    Visibility = Visibility.Visible
                 };
                 _btnConfirmIr.Click += (s, e) =>
                 {
@@ -337,47 +400,77 @@ namespace WIS.HwTest.Tests
                     Foreground = System.Windows.Media.Brushes.White,
                     FontWeight = FontWeights.Bold,
                     Padding = new Thickness(16, 8, 16, 8),
-                    Margin = new Thickness(0, 0, 12, 0),
-                    Visibility = Visibility.Collapsed
+                    Visibility = Visibility.Visible
                 };
                 _btnFailIr.Click += (s, e) => FinishFail("IR kamera ne očitava lice ili ne daje sliku (prijavio serviser)");
                 spF.Children.Add(_btnFailIr);
             }
-
-            _btnFailRgb = new Button
+            else
             {
-                Content = "✗ Kamera ne radi / loša slika (FAIL)",
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 50, 62)),
-                Foreground = System.Windows.Media.Brushes.White,
-                FontWeight = FontWeights.Bold,
-                Padding = new Thickness(16, 8, 16, 8),
-                Margin = new Thickness(0, 0, 12, 0)
-            };
-            _btnFailRgb.Click += (s, e) => FinishFail("Kamera ne daje ispravnu sliku ili ne radi (prijavio serviser)");
-            spF.Children.Add(_btnFailRgb);
-
-            _btnSkip = new Button
-            {
-                Content = "Preskoči test kamere",
-                Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(80, 85, 95)),
-                Foreground = System.Windows.Media.Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            _btnSkip.Click += (s, e) => FinishSkip();
-            spF.Children.Add(_btnSkip);
+                _btnFailRgb = new Button
+                {
+                    Content = "✗ Kamera ne radi / loša slika (FAIL)",
+                    Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 50, 62)),
+                    Foreground = System.Windows.Media.Brushes.White,
+                    FontWeight = FontWeights.Bold,
+                    Padding = new Thickness(16, 8, 16, 8)
+                };
+                _btnFailRgb.Click += (s, e) => FinishFail("Kamera ne daje ispravnu sliku ili ne radi (prijavio serviser)");
+                spF.Children.Add(_btnFailRgb);
+            }
 
             footer.Child = spF;
             Grid.SetRow(footer, 2);
             root.Children.Add(footer);
 
             Content = root;
+            UpdateBiosRebootHintUi();
 
-            Loaded += (s, e) => StartCameraWorker();
+            Loaded += (s, e) =>
+            {
+                UpdateBiosRebootHintUi();
+                StartCameraWorker();
+            };
             Closed += (s, e) =>
             {
                 StopTimers();
                 StopCameraWorker();
             };
+        }
+
+        private void UpdateBiosRebootHintUi()
+        {
+            if (_btnBiosReboot != null)
+            {
+                _btnBiosReboot.Visibility = _showBiosRebootHint ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (_biosHintBanner != null)
+            {
+                _biosHintBanner.Visibility = _showBiosRebootHint ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void RequestUefiBiosRebootFromWindow()
+        {
+            if (_isClosingOrDone) return;
+            _isClosingOrDone = true;
+            StopTimers();
+            Result.Status = TestStatus.Pending;
+
+            string testId = (_mode == CameraTestMode.IrOnly) ? "ir_camera" : "camera";
+            if (OnRequestUefiBiosReboot == null)
+            {
+                MessageBox.Show(
+                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili kameru.",
+                    "Restart u UEFI BIOS",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                SafeCloseDialog(false);
+                return;
+            }
+
+            SafeCloseDialog(false);
+            OnRequestUefiBiosReboot(testId);
         }
 
         private void StartCameraWorker()
@@ -424,10 +517,15 @@ namespace WIS.HwTest.Tests
         private static bool IsIrDeviceName(string name)
         {
             if (string.IsNullOrEmpty(name)) return false;
-            return name.IndexOf("IR", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   name.IndexOf("Infrared", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   name.IndexOf("Hello", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   name.IndexOf("Biometric", StringComparison.OrdinalIgnoreCase) >= 0;
+            string upper = name.ToUpperInvariant();
+            if (Regex.IsMatch(name, @"\bIR\b", RegexOptions.IgnoreCase)) return true;
+            return upper.IndexOf("IR CAMERA") >= 0 ||
+                   upper.IndexOf("IR SENSOR") >= 0 ||
+                   upper.IndexOf("IR_CAMERA") >= 0 ||
+                   upper.IndexOf("INFRARED") >= 0 ||
+                   upper.IndexOf("HELLO") >= 0 ||
+                   upper.IndexOf("BIOMETRIC") >= 0 ||
+                   upper.IndexOf("DEPTH CAMERA") >= 0;
         }
 
         private static List<KeyValuePair<NativeMethods.IMFActivate, string>> EnumerateMfDevices(bool sensorCategoryOnly)
@@ -574,22 +672,19 @@ namespace WIS.HwTest.Tests
 
                 WinRtFaceDetectorProxy winRtFace = null;
 
-                // Spoljna petlja omogucava cisto prebacivanje iz RGB kamere na IR kameru bez gasenja niti
-                while (_isRunning)
+                bool wantIr = (_mode == CameraTestMode.IrOnly);
+                if (_isRunning)
                 {
-                    bool wantIr = InIrMode;
-                    _switchToIrRequested = false;
-
                     if (wantIr)
                     {
-                        // Eksplicitno oslobađanje COM RCW referenci i kratak predah da kompozitna UVC RGB+IR kamera oslobodi interfejs
+                        // Eksplicitno oslobađanje COM RCW referenci pre pokretanja IR senzora
                         try
                         {
                             GC.Collect();
                             GC.WaitForPendingFinalizers();
                         }
                         catch { }
-                        Thread.Sleep(250);
+                        Thread.Sleep(150);
                     }
 
                     NativeMethods.IMFAttributes readerAttrs = null;
@@ -600,7 +695,9 @@ namespace WIS.HwTest.Tests
 
                     try
                     {
-                        HwTestLogger.Info("CAMERA", wantIr ? "Pokrećem IR kamera sesiju za očitavanje lica..." : ("Pokrećem RGB kamera sesiju za: " + _webcamName));
+                        HwTestLogger.Info("CAMERA", wantIr
+                            ? ("Pokrećem IR kamera sesiju za očitavanje lica: " + _irCameraName)
+                            : ("Pokrećem RGB kamera sesiju za: " + _webcamName));
 
                         var vidCapList = EnumerateMfDevices(false);
                         var sensorList = wantIr ? EnumerateMfDevices(true) : new List<KeyValuePair<NativeMethods.IMFActivate, string>>();
@@ -615,14 +712,27 @@ namespace WIS.HwTest.Tests
 
                         if (wantIr)
                         {
-                            // 1. Traži IR uređaj u standardnim VidCap kamerama
+                            // 1. Traži IR uređaj u standardnim VidCap kamerama (prednost ima poklapanje po nazivu)
                             int irIdx = -1;
                             for (int i = 0; i < vidCapList.Count; i++)
                             {
-                                if (IsIrDeviceName(vidCapList[i].Value))
+                                if (!string.IsNullOrEmpty(_irCameraName) &&
+                                    !_irCameraName.Equals("IR Kamera", StringComparison.OrdinalIgnoreCase) &&
+                                    vidCapList[i].Value.IndexOf(_irCameraName, StringComparison.OrdinalIgnoreCase) >= 0)
                                 {
                                     irIdx = i;
                                     break;
+                                }
+                            }
+                            if (irIdx < 0)
+                            {
+                                for (int i = 0; i < vidCapList.Count; i++)
+                                {
+                                    if (IsIrDeviceName(vidCapList[i].Value))
+                                    {
+                                        irIdx = i;
+                                        break;
+                                    }
                                 }
                             }
                             if (irIdx >= 0)
@@ -655,13 +765,28 @@ namespace WIS.HwTest.Tests
                         {
                             if (vidCapList.Count > 0)
                             {
-                                int rgbIdx = 0;
+                                int rgbIdx = -1;
                                 for (int i = 0; i < vidCapList.Count; i++)
                                 {
-                                    if (!IsIrDeviceName(vidCapList[i].Value))
+                                    if (!IsIrDeviceName(vidCapList[i].Value) &&
+                                        !string.IsNullOrEmpty(_webcamName) &&
+                                        !_webcamName.Equals("Web Kamera", StringComparison.OrdinalIgnoreCase) &&
+                                        vidCapList[i].Value.IndexOf(_webcamName, StringComparison.OrdinalIgnoreCase) >= 0)
                                     {
                                         rgbIdx = i;
                                         break;
+                                    }
+                                }
+                                if (rgbIdx < 0)
+                                {
+                                    rgbIdx = 0;
+                                    for (int i = 0; i < vidCapList.Count; i++)
+                                    {
+                                        if (!IsIrDeviceName(vidCapList[i].Value))
+                                        {
+                                            rgbIdx = i;
+                                            break;
+                                        }
                                     }
                                 }
                                 selectedActivate = vidCapList[rgbIdx].Key;
@@ -783,7 +908,8 @@ namespace WIS.HwTest.Tests
                                         reader.SetStreamSelection(0, false);
                                         reader.SetStreamSelection(1, true);
                                         usedIrHardwareDevice = true;
-                                        activeName = _webcamName + " (IR Stream #1)";
+                                        string irBase = !string.IsNullOrEmpty(_irCameraName) ? _irCameraName : _webcamName;
+                                        activeName = irBase + " (IR Stream #1)";
                                         HwTestLogger.Info("CAMERA", "Pronađen sekundarni IR video stream #1 na istoj kameri (" + k1 + ")");
                                     }
                                 }
@@ -878,8 +1004,9 @@ namespace WIS.HwTest.Tests
                         HwTestLogger.Info("CAMERA", string.Format("Video stream aktivan [{0}]: {1} ({2}x{3}, {4})",
                             wantIr ? "IR" : "RGB", activeName, width, height, fmtLabel));
 
-                        UpdateSubTitleUi(string.Format("Aktivan uređaj ({0}): {1} [{2}x{3} {4}]",
-                            wantIr ? "IR režim" : "RGB režim", activeName, width, height, fmtLabel));
+                        UpdateSubTitleUi(wantIr
+                            ? string.Format("IR senzor: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel)
+                            : string.Format("Uređaj: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel));
 
                         Dispatcher.BeginInvoke(new Action(() => {
                             _currentVideoWidth = width;
@@ -915,7 +1042,7 @@ namespace WIS.HwTest.Tests
                         int consecutiveReadErrors = 0;
                         int validFrames = 0;
 
-                        while (_isRunning && !_switchToIrRequested)
+                        while (_isRunning)
                         {
                             uint actualIndex, streamFlags;
                             ulong timestamp;
@@ -1099,12 +1226,6 @@ namespace WIS.HwTest.Tests
                             try { Marshal.ReleaseComObject(selectedActivate); } catch { }
                         }
                         if (readerAttrs != null) { try { Marshal.ReleaseComObject(readerAttrs); } catch { } }
-                    }
-
-                    // Ako nismo u prebacivanju ka IR modu, izlazimo iz spoljne petlje
-                    if (!_switchToIrRequested)
-                    {
-                        break;
                     }
                 }
             }
@@ -1553,7 +1674,13 @@ namespace WIS.HwTest.Tests
 
         private void OnQrCodeDetected(string text)
         {
-            _qrDetectionBanner.Visibility = Visibility.Visible;
+            if (_isClosingOrDone || _mode != CameraTestMode.RgbOnly) return;
+
+            if (_qrDetectionBanner != null)
+            {
+                _qrDetectionBanner.Text = "✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1";
+                _qrDetectionBanner.Visibility = Visibility.Visible;
+            }
             if (_qrGuideBox != null)
             {
                 _qrGuideBox.BorderBrush = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 205, 65));
@@ -1564,42 +1691,9 @@ namespace WIS.HwTest.Tests
                 _qrGuideLabel.Text = "✓ QR VERIFIKOVAN";
                 _qrGuideLabel.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 244, 197));
             }
-            _statusText.Text = "✓ Odlično! QR kod verifikovan.";
+            _statusText.Text = "✓ Odlično! QR kod verifikovan. Automatski završetak testa...";
             _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 167, 69));
-
-            if (_hasIrCamera)
-            {
-                if (_btnSwitchIr != null)
-                {
-                    _btnSwitchIr.IsEnabled = true;
-                }
-                _qrDetectionBanner.Text = "✓ QR VERIFIKOVAN — PRELAZIM AUTOMATSKI NA IR KAMERU...";
-                _statusText.Text += " Prelazim automatski na test IR kamere...";
-                StartAutoSwitchToIrTimer();
-            }
-            else
-            {
-                _statusText.Text += " Automatski završetak testa...";
-                StartAutoPassTimer();
-            }
-        }
-
-        private void StartAutoSwitchToIrTimer()
-        {
-            StopTimers();
-            _autoSwitchIrTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromMilliseconds(500)
-            };
-            _autoSwitchIrTimer.Tick += (s, e) =>
-            {
-                if (_autoSwitchIrTimer != null) _autoSwitchIrTimer.Stop();
-                if (!InIrMode)
-                {
-                    SwitchToIrMode();
-                }
-            };
-            _autoSwitchIrTimer.Start();
+            StartAutoPassTimer();
         }
 
         private void StartAutoPassTimer()
@@ -1607,7 +1701,7 @@ namespace WIS.HwTest.Tests
             StopTimers();
             _autoPassTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(1100)
+                Interval = TimeSpan.FromMilliseconds(500)
             };
             _autoPassTimer.Tick += (s, e) =>
             {
@@ -1624,47 +1718,6 @@ namespace WIS.HwTest.Tests
                 _autoPassTimer.Stop();
                 _autoPassTimer = null;
             }
-            if (_autoSwitchIrTimer != null)
-            {
-                _autoSwitchIrTimer.Stop();
-                _autoSwitchIrTimer = null;
-            }
-        }
-
-        private void SwitchToIrMode()
-        {
-            if (InIrMode) return;
-            if (_autoSwitchIrTimer != null) _autoSwitchIrTimer.Stop();
-
-            InIrMode = true;
-            _irFaceConfirmFrames = 0;
-            _irFaceMissStreak = 0;
-            _irFaceConfirmed = false;
-
-            if (_qrGuideBox != null) _qrGuideBox.Visibility = Visibility.Collapsed;
-            if (_qrDetectionBanner != null) _qrDetectionBanner.Visibility = Visibility.Collapsed;
-            if (_btnSwitchIr != null) _btnSwitchIr.Visibility = Visibility.Collapsed;
-
-            if (_btnConfirmIr != null)
-            {
-                _btnConfirmIr.Visibility = Visibility.Visible;
-                _btnConfirmIr.IsEnabled = true;
-            }
-            if (_btnFailIr != null)
-            {
-                _btnFailIr.Visibility = Visibility.Visible;
-                if (_btnFailRgb != null) _btnFailRgb.Visibility = Visibility.Collapsed;
-            }
-            if (_irScanBanner != null)
-            {
-                _irScanBanner.Visibility = Visibility.Visible;
-            }
-
-            _statusText.Text = "👁️ TEST IR KAMERE: Pogledajte pravo u kameru — očitavam crte lica...";
-            _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176));
-
-            // Signalizira CameraCaptureLoop-u da cisto zatvori RGB uredjaj i aktivira IR kameru
-            _switchToIrRequested = true;
         }
 
         private void OnIrFaceScanUpdate(FaceLandmarksData lm, int confirmCount, bool confirmed)
@@ -1680,7 +1733,7 @@ namespace WIS.HwTest.Tests
 
             if (confirmed)
             {
-                _statusText.Text = "✓ IR LICE USPEŠNO OČITANO! Automatski PASS testa kamere...";
+                _statusText.Text = "✓ IR LICE USPEŠNO OČITANO! Automatski PASS IR kamere...";
                 _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 205, 65));
                 if (_irScanBanner != null)
                 {
@@ -1692,7 +1745,10 @@ namespace WIS.HwTest.Tests
                     _irScanText.Text = string.Format("✓ CRTE LICA POTVRĐENE ({0}/{1}) — AUTOMATSKI PASS!", confirmCount, RequiredIrFaceFrames);
                     _irScanText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 244, 197));
                 }
-                StartAutoPassTimer();
+                if (_autoPassTimer == null)
+                {
+                    StartAutoPassTimer();
+                }
             }
             else if (lm != null)
             {
@@ -1866,6 +1922,27 @@ namespace WIS.HwTest.Tests
             try { Close(); } catch { }
         }
 
+        private void PopulateCameraResultDetails(bool passed)
+        {
+            if (_mode == CameraTestMode.IrOnly)
+            {
+                Result.Details["camera_mode"] = "IR";
+                Result.Details["ir_camera_name"] = !string.IsNullOrEmpty(_activeCameraFriendlyName) ? _activeCameraFriendlyName : _irCameraName;
+                Result.Details["ir_passed"] = passed ? _irPassed : false;
+                Result.Details["ir_method"] = _irMethodNote ?? "";
+                Result.Details["ir_peak_frame_mean"] = Math.Round(_irPeakFrameMean, 1);
+                Result.Details["camera_format"] = _activeCameraFormat ?? "";
+                Result.Details["ir_auto_face_read"] = _irFaceConfirmed;
+            }
+            else
+            {
+                Result.Details["camera_mode"] = "RGB";
+                Result.Details["webcam_name"] = !string.IsNullOrEmpty(_activeCameraFriendlyName) ? _activeCameraFriendlyName : _webcamName;
+                Result.Details["qr_passed"] = _qrPassed;
+                Result.Details["camera_format"] = _activeCameraFormat ?? "";
+            }
+        }
+
         private void FinishPass()
         {
             if (_isClosingOrDone) return;
@@ -1874,13 +1951,7 @@ namespace WIS.HwTest.Tests
 
             Result.Status = TestStatus.Pass;
             Result.Attempts = 1;
-            Result.Details["qr_verified"] = _qrPassed;
-            Result.Details["ir_verified"] = _hasIrCamera ? _irPassed : false;
-            Result.Details["ir_auto_face_read"] = _irFaceConfirmed;
-            if (!string.IsNullOrEmpty(_irMethodNote))
-            {
-                Result.Details["ir_method"] = _irMethodNote;
-            }
+            PopulateCameraResultDetails(true);
             SafeCloseDialog(true);
         }
 
@@ -1893,19 +1964,7 @@ namespace WIS.HwTest.Tests
             Result.Status = TestStatus.Fail;
             Result.Attempts = 1;
             Result.Reason = reason;
-            Result.Details["qr_verified"] = _qrPassed;
-            Result.Details["ir_verified"] = false;
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            StopTimers();
-
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test kamere";
+            PopulateCameraResultDetails(false);
             SafeCloseDialog(false);
         }
 

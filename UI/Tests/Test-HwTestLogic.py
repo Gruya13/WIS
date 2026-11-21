@@ -253,7 +253,9 @@ class TestHwTestComponents(unittest.TestCase):
 
         self.assertIn("KSCATEGORY_SENSOR_CAMERA", nat_src)
         self.assertIn("MFVideoFormat_L8", nat_src)
-        self.assertIn("StartAutoSwitchToIrTimer", cam_src)
+        self.assertNotIn("StartAutoSwitchToIrTimer", cam_src)
+        self.assertIn("CameraTestMode.RgbOnly", cam_src)
+        self.assertIn("CameraTestMode.IrOnly", cam_src)
         self.assertIn("WinRtFaceDetectorProxy", cam_src)
         self.assertIn("ExtractFacialLandmarks", cam_src)
         self.assertIn("DrawFaceLandmarksOverlay", cam_src)
@@ -489,7 +491,9 @@ class TestHwTestComponents(unittest.TestCase):
 
         # 2. HwTestShell + AutoTestDetailsWindow: PROBE polja, kartice, srpske labele
         self.assertIn("TrackPoint={14}", shell_src)
-        self.assertIn('"Touchpad / TrackPoint"', shell_src)
+        self.assertNotIn('"Touchpad / TrackPoint"', shell_src)
+        self.assertIn('"Touchpad"', shell_src)
+        self.assertIn('"TrackPoint"', shell_src)
         self.assertIn('"Touchscreen + Olovka (Stylus)"', shell_src)
         self.assertIn("BIOS/TPM/PnP", shell_src)
         for key_name in (
@@ -567,15 +571,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.2.1 u root version.json i komponentama
+        # 1. Verzije v3.4.0 / ServiceHub v3.6.0 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.2.1")
-        self.assertEqual(root_ver["release_package"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.2.1")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.5.0")
+        self.assertEqual(root_ver["version"], "3.4.0")
+        self.assertEqual(root_ver["release_package"]["version"], "3.4.0")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.0")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.0")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.0")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.0")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.0")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -837,7 +841,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.2.1";', result_src)
+        self.assertIn('AppVersion = "3.4.0";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -906,6 +910,239 @@ class TestHwTestComponents(unittest.TestCase):
             self.assertIn("ig-systems", low, f"Nedostaje IG-Systems u {path}")
         for doc_md in (ROOT / "docs").rglob("*.md"):
             self.assertNotIn(forbidden_brand, doc_md.read_text(encoding="utf-8").lower(), f"Zaostali brend u {doc_md}")
+
+    def test_wis_task_262_v330_hwtest_improvements(self):
+        """Proverava IMP-10 (timeout 6000ms + WMI_ACPI_STATIC) i IMP-14 (4000ms senzor guard + TEST_START log)."""
+        mpc_src = (HWTEST_DIR / "Core" / "ModelProfileClient.cs").read_text(encoding="utf-8")
+        kb_part = mpc_src.split("/api/keyboard-layout", 1)[1].split("public bool PostKeyboardOverride", 1)[0]
+        self.assertIn("req.Timeout = 6000;", kb_part)
+        self.assertIn("req.ReadWriteTimeout = 6000;", kb_part)
+
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        self.assertGreaterEqual(shell_src.count('HwTestLogger.Info("TEST_START", string.Format("Pokrenut automatski test'), 2)
+
+        autodiag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        self.assertIn("private bool _sensorTimedOut;", autodiag_src)
+        self.assertIn("Monitor.Wait(waitSync, 4000);", autodiag_src)
+        self.assertIn("WMI_ACPI_STATIC", autodiag_src)
+        self.assertIn('"sensor_static_acpi"', autodiag_src)
+        self.assertIn('"raw_acpi_temp_c"', autodiag_src)
+
+    def test_wis_task_263_hwtest_usb_noskip_gpu_guard(self):
+        """Proverava WIS-TASK-263 (HWT-01..HWT-07) i security gate ugovore za v3.4.0."""
+        native_src = (HWTEST_DIR / "Interop" / "NativeMethods.cs").read_text(encoding="utf-8")
+        probe_src = (HWTEST_DIR / "Core" / "HardwareProbe.cs").read_text(encoding="utf-8")
+        diag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        ui_hw_src = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+        usb_src = (HWTEST_DIR / "Tests" / "UsbPortTestWindow.cs").read_text(encoding="utf-8")
+        disp_src = (HWTEST_DIR / "Tests" / "DisplayTestWindow.cs").read_text(encoding="utf-8")
+        gpu_src = (HWTEST_DIR / "Tests" / "GpuStressWindow.cs").read_text(encoding="utf-8")
+        fp_win_src = (HWTEST_DIR / "Tests" / "FingerprintTestWindow.cs").read_text(encoding="utf-8")
+        tp_win_src = (HWTEST_DIR / "Tests" / "TouchpadTestWindow.cs").read_text(encoding="utf-8")
+        cam_win_src = (HWTEST_DIR / "Tests" / "CameraTestWindow.cs").read_text(encoding="utf-8")
+        handlers_src = (ROOT / "ServiceHub" / "servishub" / "handlers.py").read_text(encoding="utf-8")
+        upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
+
+        # HWT-01: CfgMgr32 live-devnode provera, kanonski RawPortKey, !newlyAttached i Unplug debounce/cooldown
+        for tok in (
+            "CM_Get_DevNode_Status",
+            "DN_STARTED",
+            "DN_HAS_PROBLEM",
+            "DN_WILL_BE_REMOVED",
+            "IsUsbDevNodeLiveAndStarted",
+            "ResolveUsbPhysicalPortLocation(string pnpDeviceId, out string debugInfo, out string displayLocationInfo)",
+        ):
+            self.assertIn(tok, native_src)
+
+        for tok in (
+            "NativeMethods.IsUsbDevNodeLiveAndStarted",
+            "_debounceTimer",
+            "ScheduleDebouncedUsbScan",
+            "_lastUnplugUtc",
+            "_lastAnyUnplugUtc",
+            "< 500.0",
+            "bool newlyAttached = !_currentlyAttachedDevices.ContainsKey(cand.DeviceId);",
+            "processedPortKeysThisScan",
+            "IsPortCurrentlyOccupiedByOtherDevice",
+        ):
+            self.assertIn(tok, usb_src)
+        attach_guard = usb_src.split("if (newlyAttached)", 1)[1].split("if (string.IsNullOrEmpty(cand.RawPortKey))", 1)[0]
+        self.assertIn("continue;", attach_guard.split("else", 1)[1])
+
+        # HWT-02: Zabrana rucnog preskakanja u svih 9 perifernih prozora i HwTestShell-u
+        interactive_windows = (
+            "DisplayTestWindow.cs",
+            "KeyboardTestWindow.cs",
+            "TouchpadTestWindow.cs",
+            "TouchscreenMazeWindow.cs",
+            "AudioTestWindow.cs",
+            "MicTestWindow.cs",
+            "CameraTestWindow.cs",
+            "UsbPortTestWindow.cs",
+            "FingerprintTestWindow.cs",
+        )
+        for fname in interactive_windows:
+            wsrc = (HWTEST_DIR / "Tests" / fname).read_text(encoding="utf-8")
+            self.assertNotIn("FinishSkip(", wsrc, f"{fname} ne sme imati FinishSkip(")
+            self.assertNotIn("Preskoči test", wsrc, f"{fname} ne sme nuditi 'Preskoči test'")
+            self.assertNotIn("btnSkip", wsrc, f"{fname} ne sme imati btnSkip")
+
+        self.assertNotIn("ESC = preskoči", disp_src)
+        self.assertIn("ESC = pregled rezultata", disp_src)
+
+        self.assertNotIn("PromptSkipReason", shell_src)
+        self.assertNotIn("Preskoči test uz obrazloženje", shell_src)
+        self.assertNotIn("btnSkip", shell_src)
+        self.assertNotIn("Zaustavi", shell_src)
+        self.assertIn("⏳ Stres u toku...", shell_src)
+        self.assertIn("bool canFinish = !_autoStressRunning && (pending == 0) && (running == 0);", shell_src)
+        self.assertIn("_btnFinish.IsEnabled = canFinish;", shell_src)
+
+        finish_block = shell_src.split("private void FinishAndSave()", 1)[1].split("private void SaveCurrentReport(", 1)[0]
+        self.assertIn("Nije moguće sačuvati izveštaj dok svi primenljivi testovi nisu završeni (PASS ili FAIL)", finish_block)
+        self.assertNotIn("SaveCurrentReport(true", finish_block)
+
+        save_block = shell_src.split("private void SaveCurrentReport(", 1)[1].split("private string GetCheckpointFilePath(", 1)[0]
+        self.assertNotIn("promptIfPending && pending > 0", save_block)
+        self.assertIn("if (pending > 0 && autoMarkPendingAsSkip)", save_block)
+
+        # HWT-03: GPU 3D test bez prekida i obavezna TryValidateGpuDriverForStress pre-flight blokada
+        self.assertNotIn("btnAbort", gpu_src)
+        self.assertNotIn("Prekini", gpu_src)
+        self.assertNotIn("TestStatus.Skip", gpu_src)
+        self.assertIn("if (!_completedNormally && !_isClosingOrDone)", gpu_src)
+        self.assertIn("gpu_test_blocked_no_driver", gpu_src)
+
+        self.assertIn("public static bool TryValidateGpuDriverForStress(out TestItemResult blockedResult)", diag_src)
+        self.assertIn('blockedResult.Details["gpu_test_blocked_no_driver"] = true;', diag_src)
+
+        run_gpu_block = shell_src.split("private void RunGpuStressTest(TestItemResult t)", 1)[1].split("private void ApplyResult(", 1)[0]
+        val_idx = run_gpu_block.find("AutoDiagnosticsEngine.TryValidateGpuDriverForStress(out blockedResult)")
+        win_idx = run_gpu_block.find("new GpuStressWindow(_autoEngine)")
+        self.assertGreater(val_idx, 0)
+        self.assertGreater(win_idx, val_idx)
+        self.assertIn('HwTestLogger.Warn("GPU_BLOCKED", blockReason);', run_gpu_block)
+        self.assertIn("return;", run_gpu_block[:win_idx])
+
+        # HWT-04: Otisak prsta bez !FactoryBomLoaded, strogi filter i UEFI BIOS checkpoint/restart
+        fp_block = shell_src.split("bool fpExpected =", 1)[1].split("_testItems.Add(fp);", 1)[0]
+        self.assertNotIn("!_hwInfo.FactoryBomLoaded", fp_block)
+        self.assertNotIn("FactoryBomLoaded", fp_block)
+        self.assertIn("(_hwInfo.HasFingerprint || _hwInfo.FactoryFingerprint == true)", fp_block)
+
+        for tok in (
+            "SaveCheckpoint(",
+            "TryRestoreCheckpoint(",
+            "hwtest-checkpoint.json",
+            "wis.hwtest.checkpoint.v1",
+            "/r /fw /t 0",
+            "_uefiBiosPromptOpen",
+            "_uefiBiosRebootRequested",
+            "RequestUefiBiosReboot(",
+        ):
+            self.assertIn(tok, shell_src)
+
+        for tok in (
+            "_phase5UefiRebootInProgress",
+            "HandlePhase5UefiBiosRebootRequest",
+            "SetUefiBiosRebootHandler(HandlePhase5UefiBiosRebootRequest)",
+            "/r /fw /t 0",
+            "if (_phase5UefiRebootInProgress) break;",
+        ):
+            self.assertIn(tok, ui_hw_src)
+        phase5_post_wait = ui_hw_src.split("waitEvent.WaitOne(5000);", 1)[1].split("ExecutePhase(6);", 1)[0]
+        self.assertIn("if (_phase5UefiRebootInProgress)", phase5_post_wait)
+
+        self.assertIn("public static bool IsFingerprintPnpCandidate(", probe_src)
+        self.assertIn("TryWakeWbioService(", probe_src)
+        fp_filter_fn = probe_src.split("public static bool IsFingerprintPnpCandidate(", 1)[1].split("private static void TryWakeWbioService(", 1)[0]
+        for tok in ("TOUCHSCREEN", "TOUCHPAD", "DIGITIZER", "POINTING", r"USB\\VID_04F3", r"USB\\VID_06CB", r"USB\\VID_27C6", "GOODIX"):
+            self.assertIn(tok, fp_filter_fn)
+
+        self.assertIn("✓ Potvrdi (PASS)", fp_win_src)
+        self.assertIn("✗ Senzor ne radi (FAIL)", fp_win_src)
+        self.assertIn("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", fp_win_src)
+        self.assertIn("OnRequestUefiBiosReboot", fp_win_src)
+        self.assertNotIn("FinishSkip(", fp_win_src)
+        self.assertNotIn("Model nema čitač", fp_win_src)
+
+        # HWT-05: Razdvojeni Touchpad i TrackPoint
+        self.assertIn('new TestItemResult("trackpoint", "TrackPoint"', shell_src)
+        self.assertIn("PointingTestMode.TrackPointOnly", shell_src)
+        self.assertIn("public enum PointingTestMode", tp_win_src)
+        self.assertIn("TouchpadOnly", tp_win_src)
+        self.assertIn("TrackPointOnly", tp_win_src)
+        self.assertIn('new TestItemResult("touchpad", "Touchpad"', tp_win_src)
+        self.assertIn('new TestItemResult("trackpoint", "TrackPoint"', tp_win_src)
+        self.assertIn("Koristite crveni TrackPoint džojstik, ne touchpad!", tp_win_src)
+        self.assertIn("public bool TrackPointDisabledInBios { get; set; }", probe_src)
+        self.assertIn("public bool TrackPointBiosPresent { get; set; }", probe_src)
+        self.assertIn("public bool? FactoryTrackPoint { get; set; }", probe_src)
+
+        # HWT-06: Razdvojene Web RGB i IR kamere
+        self.assertIn('new TestItemResult("ir_camera", "IR kamera (Windows Hello)"', shell_src)
+        self.assertIn("CameraTestMode.RgbOnly", shell_src)
+        self.assertIn("CameraTestMode.IrOnly", shell_src)
+        self.assertIn("public enum CameraTestMode", cam_win_src)
+        self.assertIn("RgbOnly", cam_win_src)
+        self.assertIn("IrOnly", cam_win_src)
+        self.assertIn("public bool InIrMode { get; private set; }", cam_win_src)
+        self.assertIn('new TestItemResult("ir_camera"', cam_win_src)
+        self.assertIn("public static bool IsIrCameraEntry(", probe_src)
+        self.assertIn("public static bool IsNonPhysicalCameraImageDevice(", probe_src)
+        self.assertNotIn('IndexOf("IR"', probe_src)
+        self.assertIn(r'@"\bIR\b"', probe_src)
+
+        # HWT-07: Pasivni RF Wi-Fi test, Native WLAN API i Anti-Leak / anti-konekciona garancija
+        for tok in (
+            "QueryWifiRadioState",
+            "WlanQueryInterface",
+            "wlan_intf_opcode_radio_state = 4u",
+            "GetWlanBssScanSummary",
+            "WlanGetNetworkBssList",
+            "WlanFreeMemory",
+        ):
+            self.assertIn(tok, native_src)
+
+        for tok in (
+            "TryReadServiceWifiSsid",
+            "WlanSvc",
+            "wifiSupports5Ghz",
+            "wifi_hw_radio_off",
+            "wifi_sw_radio_off",
+            "wifi_bssid_count",
+            "wifi_24ghz_count",
+            "wifi_5ghz_count",
+            "wifi_6ghz_count",
+            "wifi_max_rssi_dbm",
+            "wifi_max_24ghz_pct",
+            "wifi_max_5ghz_pct",
+            "wifi_supports_5ghz",
+            "wifi_service_ssid",
+            "wifi_service_ssid_found",
+            "wifi_service_signal_pct",
+            "wifi_service_rssi_dbm",
+            "noWifiSignalAtAll",
+            "radioOff",
+            "res.Status = TestStatus.Fail;",
+        ):
+            self.assertIn(tok, diag_src)
+
+        self.assertNotIn("WlanSetProfile", diag_src)
+        self.assertNotIn("WlanConnect", diag_src)
+        ssid_fn = diag_src.split("public static string TryReadServiceWifiSsid()", 1)[1].split("private static bool EnsureWlanServiceRunning", 1)[0]
+        self.assertNotIn("Password", ssid_fn)
+        self.assertIn('key.Equals("SSID"', ssid_fn)
+        self.assertIn("YOUR_SERVICE_WIFI_SSID", ssid_fn)
+
+        # Security gate ugovori: fail-closed /api/drivers/pool/notify-harvest i X-ServisHub-Client-Token
+        notify_block = handlers_src.split('if path == "/api/drivers/pool/notify-harvest":', 1)[1].split("if sync_mode:", 1)[0]
+        self.assertIn("self._require_client_upload_token()", notify_block)
+
+        harvest_notify_fn = upd_src.split("function Send-ServisHubHarvestNotify", 1)[1].split("function Copy-FileWithHeartbeat", 1)[0]
+        self.assertIn("Get-ServisHubClientToken", harvest_notify_fn)
+        self.assertIn("X-ServisHub-Client-Token", harvest_notify_fn)
 
 
 if __name__ == "__main__":

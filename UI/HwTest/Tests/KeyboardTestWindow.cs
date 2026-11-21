@@ -1316,21 +1316,10 @@ namespace WIS.HwTest.Tests
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
                 Padding = new Thickness(15, 8, 15, 8),
-                Margin = new Thickness(0, 0, 14, 0),
                 Focusable = false
             };
             btnKeyboardFail.Click += (s, e) => ReportBrokenKeysFail();
             spFoot.Children.Add(btnKeyboardFail);
-
-            Button btnSkip = new Button
-            {
-                Content = "Preskoči test tastature",
-                Background = new SolidColorBrush(Color.FromRgb(80, 85, 95)),
-                Foreground = Brushes.White,
-                Padding = new Thickness(15, 8, 15, 8)
-            };
-            btnSkip.Click += (s, e) => FinishSkip();
-            spFoot.Children.Add(btnSkip);
 
             Grid.SetColumn(spFoot, 1);
             fg.Children.Add(spFoot);
@@ -3124,6 +3113,12 @@ namespace WIS.HwTest.Tests
 
         protected override void OnClosed(EventArgs e)
         {
+            _isClosingOrDone = true;
+            if (_restTimer != null)
+            {
+                try { _restTimer.Stop(); } catch { }
+                _restTimer = null;
+            }
             StopOptionalGraceTimer();
             StopBacklightPhase(true);
             UninstallHook();
@@ -3140,6 +3135,10 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
+            if (_restTimer != null)
+            {
+                try { _restTimer.Stop(); } catch { }
+            }
             StopOptionalGraceTimer();
             StopBacklightPhase(true);
             UninstallHook();
@@ -3207,6 +3206,10 @@ namespace WIS.HwTest.Tests
         {
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
+            if (_restTimer != null)
+            {
+                try { _restTimer.Stop(); } catch { }
+            }
             StopOptionalGraceTimer();
             StopBacklightPhase(true);
             UninstallHook();
@@ -3222,18 +3225,6 @@ namespace WIS.HwTest.Tests
             Result.Details["backlight_tested"] = (_backlightTestPassed.HasValue || !string.IsNullOrEmpty(_backlightReason));
             Result.Details["backlight_passed"] = _backlightTestPassed.HasValue ? (_backlightTestPassed.Value ? "true" : "false") : "n/a";
             Result.Details["backlight_method"] = _backlightMode;
-            SafeCloseDialog(false);
-        }
-
-        private void FinishSkip()
-        {
-            if (_isClosingOrDone) return;
-            _isClosingOrDone = true;
-            StopOptionalGraceTimer();
-            StopBacklightPhase(true);
-            UninstallHook();
-            Result.Status = TestStatus.Skip;
-            Result.Reason = "Korisnik preskočio test tastature";
             SafeCloseDialog(false);
         }
     }

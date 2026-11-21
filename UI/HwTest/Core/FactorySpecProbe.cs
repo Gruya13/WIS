@@ -155,6 +155,8 @@ namespace WIS.HwTest.Core
                 hw.FactoryIrCamera = ReadNullableBoolProp(dict, "has_ir_camera");
                 hw.FactoryIrCameraEvidence = ReadStrProp(dict, "ir_camera_evidence") ?? "";
                 hw.FactoryTouchpad = ReadNullableBoolProp(dict, "has_touchpad");
+                hw.FactoryTrackPoint = ReadNullableBoolProp(dict, "has_trackpoint");
+                hw.FactoryTrackPointEvidence = ReadStrProp(dict, "trackpoint_evidence") ?? "";
                 hw.FactorySpeakers = ReadNullableBoolProp(dict, "has_speakers");
                 hw.FactoryMicrophone = ReadNullableBoolProp(dict, "has_microphone");
                 hw.FactoryKeyboardIso = ReadNullableBoolProp(dict, "has_keyboard_iso");
@@ -194,6 +196,8 @@ namespace WIS.HwTest.Core
                     { "has_ir_camera", hw.FactoryIrCamera },
                     { "ir_camera_evidence", hw.FactoryIrCameraEvidence ?? "" },
                     { "has_touchpad", hw.FactoryTouchpad },
+                    { "has_trackpoint", hw.FactoryTrackPoint },
+                    { "trackpoint_evidence", hw.FactoryTrackPointEvidence ?? "" },
                     { "has_speakers", hw.FactorySpeakers },
                     { "has_microphone", hw.FactoryMicrophone },
                     { "has_keyboard_iso", hw.FactoryKeyboardIso },
@@ -246,6 +250,8 @@ namespace WIS.HwTest.Core
                 hw.FactoryIrCamera = ReadNullableBoolProp(dict, "has_ir_camera");
                 hw.FactoryIrCameraEvidence = ReadStrProp(dict, "ir_camera_evidence") ?? "";
                 hw.FactoryTouchpad = ReadNullableBoolProp(dict, "has_touchpad");
+                hw.FactoryTrackPoint = ReadNullableBoolProp(dict, "has_trackpoint");
+                hw.FactoryTrackPointEvidence = ReadStrProp(dict, "trackpoint_evidence") ?? "";
                 hw.FactorySpeakers = ReadNullableBoolProp(dict, "has_speakers");
                 hw.FactoryMicrophone = ReadNullableBoolProp(dict, "has_microphone");
                 hw.FactoryKeyboardBacklight = ReadNullableBoolProp(dict, "has_keyboard_backlight");
@@ -735,7 +741,9 @@ namespace WIS.HwTest.Core
                 hw.FactoryIrCamera = false;
             }
 
-            // 4. Touchpad, Zvučnici, Mikrofon
+            // 4. Touchpad, TrackPoint, Zvučnici, Mikrofon
+            bool? bomTrackPoint = null;
+            string trackPointEv = "";
             foreach (OemPartEntry e in allEntries)
             {
                 string txt = (e.Category + " " + e.Description).ToUpperInvariant();
@@ -745,6 +753,37 @@ namespace WIS.HwTest.Core
                     hw.FactorySpeakers = true;
                 if (txt.Contains("MICROPHONE") || Regex.IsMatch(txt, @"\bDMIC\b") || Regex.IsMatch(txt, @"\bMIC\b"))
                     hw.FactoryMicrophone = true;
+
+                if (txt.Contains("SCREW") || txt.Contains("BRACKET"))
+                    continue;
+
+                if (txt.Contains("NO TRACKPOINT") || txt.Contains("W/O TRACKPOINT") ||
+                    txt.Contains("WO/TRACKPOINT") || txt.Contains("WITHOUT TRACKPOINT") ||
+                    txt.Contains("NO POINTING STICK") || txt.Contains("W/O POINTING STICK") ||
+                    txt.Contains("WITHOUT POINTING STICK") || txt.Contains("NO POINTSTICK") ||
+                    txt.Contains("NO DUALPOINT") || txt.Contains("W/O DUALPOINT") ||
+                    txt.Contains("SINGLE POINTING"))
+                {
+                    if (!bomTrackPoint.HasValue)
+                    {
+                        bomTrackPoint = false;
+                        trackPointEv = (!string.IsNullOrEmpty(e.PartNumber) ? e.PartNumber + " " : "") + e.Description;
+                    }
+                    continue;
+                }
+
+                if (txt.Contains("TRACKPOINT") || txt.Contains("POINTING STICK") ||
+                    txt.Contains("POINTSTICK") || txt.Contains("DUALPOINT") ||
+                    txt.Contains("DUAL POINT") || txt.Contains("POINTINGSTICK"))
+                {
+                    bomTrackPoint = true;
+                    trackPointEv = (!string.IsNullOrEmpty(e.PartNumber) ? e.PartNumber + " " : "") + e.Description;
+                }
+            }
+            if (bomTrackPoint.HasValue)
+            {
+                hw.FactoryTrackPoint = bomTrackPoint.Value;
+                hw.FactoryTrackPointEvidence = trackPointEv;
             }
             if (hw.FactoryWebcam == true && !hw.FactoryMicrophone.HasValue && hw.IsLaptop)
             {
@@ -955,6 +994,7 @@ namespace WIS.HwTest.Core
             if (!hw.IsLaptop)
             {
                 if (!hw.FactoryTouchpad.HasValue) hw.FactoryTouchpad = false;
+                if (!hw.FactoryTrackPoint.HasValue) hw.FactoryTrackPoint = false;
                 if (!hw.FactoryFingerprint.HasValue) hw.FactoryFingerprint = false;
                 if (!hw.FactoryWebcam.HasValue) hw.FactoryWebcam = false;
                 if (!hw.FactoryMicrophone.HasValue) hw.FactoryMicrophone = false;
@@ -987,6 +1027,12 @@ namespace WIS.HwTest.Core
             }
 
             HardwareProbe.RecomputeRecommendedLayout(hw);
+
+            // Eksplicitno BOM negiranje za TrackPoint ima prednost nakon merge-a
+            if (hw.FactoryTrackPoint == false)
+            {
+                hw.HasTrackPoint = false;
+            }
         }
 
         private static bool? ParseHpSkuKeyboardIso(string sku)
@@ -1019,7 +1065,7 @@ namespace WIS.HwTest.Core
         private static void LogSummary(HardwareProbeResult hw)
         {
             HwTestLogger.Info("FACTORY_BOM", string.Format(
-                "Loaded={0} | Src='{1}' | Summary='{2}' | Touch={3} ({4}) | FP={5} ({6}) | Cam={7} ({8}) | IR={9} | Pad={10} | Mic={11} | Spk={12} | KbdIso={13} | KbdNum={14} | KbdBL={15} | NavCol={16} | Kbd='{17}'",
+                "Loaded={0} | Src='{1}' | Summary='{2}' | Touch={3} ({4}) | FP={5} ({6}) | Cam={7} ({8}) | IR={9} | Pad={10} | TrackPt={11} ({12}) | Mic={13} | Spk={14} | KbdIso={15} | KbdNum={16} | KbdBL={17} | NavCol={18} | Kbd='{19}'",
                 hw.FactoryBomLoaded,
                 hw.FactorySource,
                 hw.FactorySummary,
@@ -1028,6 +1074,7 @@ namespace WIS.HwTest.Core
                 NullableBoolText(hw.FactoryWebcam), hw.FactoryWebcamEvidence,
                 NullableBoolText(hw.FactoryIrCamera),
                 NullableBoolText(hw.FactoryTouchpad),
+                NullableBoolText(hw.FactoryTrackPoint), hw.FactoryTrackPointEvidence,
                 NullableBoolText(hw.FactoryMicrophone),
                 NullableBoolText(hw.FactorySpeakers),
                 NullableBoolText(hw.FactoryKeyboardIso),

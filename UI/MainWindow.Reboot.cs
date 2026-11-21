@@ -13,8 +13,8 @@ namespace WIS.UI
     {
         /// <summary>
         /// Prilagođava završni panel (BAML iz prethodne kompilacije) tako da dugmad prelaze
-        /// u WrapPanel i prošireni Border (MinWidth 680 / MaxWidth 920 + ScrollViewer),
-        /// kako bi svih 5 opcija uvek bilo potpuno vidljivo bez isecanja.
+        /// u WrapPanel i rekonstruiše 2-kolonski završni karton (Specifikacije + Periferije levo,
+        /// ServiceHub QR kod + Upozorenja sa kojima je proces završen desno).
         /// </summary>
         private void EnsureCompletionOverlayResponsiveLayout()
         {
@@ -31,30 +31,51 @@ namespace WIS.UI
                     Panel origPanel = anchor.Parent as Panel;
                     if (origPanel == null) continue;
 
-                    // Ako je roditelj još uvek StackPanel, zameni ga sa WrapPanel-om da se dugmad ne seku van okvira
-                    if (origPanel is StackPanel)
+                    if (!isLarge)
                     {
-                        Panel grandParent = origPanel.Parent as Panel;
-                        if (grandParent != null)
+                        if (origPanel is StackPanel)
                         {
-                            WrapPanel wrap = new WrapPanel
+                            ReplaceStackPanelWithWrapPanel(origPanel, false);
+                        }
+                        continue;
+                    }
+
+                    // Za završni prozor (overlay karticu): pronađi spoljašnji Border kartice
+                    Border cardBorder = null;
+                    DependencyObject cur = anchor.Parent;
+                    while (cur != null)
+                    {
+                        Border b = cur as Border;
+                        if (b != null && (
+                            b.Width == 680 ||
+                            b.MinWidth == 680 ||
+                            b.MinWidth == 780 ||
+                            string.Equals(Convert.ToString(b.Tag), "CompletionCardRedesignedV2", StringComparison.Ordinal)))
+                        {
+                            cardBorder = b;
+                            break;
+                        }
+                        cur = VisualTreeHelper.GetParent(cur) ?? LogicalTreeHelper.GetParent(cur);
+                    }
+
+                    if (cardBorder == null) continue;
+
+                    if (!string.Equals(Convert.ToString(cardBorder.Tag), "CompletionCardRedesignedV2", StringComparison.Ordinal))
+                    {
+                        WrapPanel actionButtonsWrap;
+                        if (origPanel is WrapPanel)
+                        {
+                            actionButtonsWrap = (WrapPanel)origPanel;
+                            Panel oldParent = actionButtonsWrap.Parent as Panel;
+                            if (oldParent != null) oldParent.Children.Remove(actionButtonsWrap);
+                        }
+                        else
+                        {
+                            actionButtonsWrap = new WrapPanel
                             {
                                 Orientation = Orientation.Horizontal,
-                                HorizontalAlignment = isLarge ? HorizontalAlignment.Center : HorizontalAlignment.Right,
-                                VerticalAlignment = origPanel.VerticalAlignment,
-                                Margin = origPanel.Margin
+                                HorizontalAlignment = HorizontalAlignment.Center
                             };
-
-                            System.Windows.Data.Binding visBinding = System.Windows.Data.BindingOperations.GetBinding(origPanel, UIElement.VisibilityProperty);
-                            if (visBinding != null)
-                            {
-                                System.Windows.Data.BindingOperations.SetBinding(wrap, UIElement.VisibilityProperty, visBinding);
-                            }
-                            else
-                            {
-                                wrap.Visibility = origPanel.Visibility;
-                            }
-
                             List<UIElement> children = new List<UIElement>();
                             foreach (object child in origPanel.Children)
                             {
@@ -65,54 +86,533 @@ namespace WIS.UI
                             for (int i = 0; i < children.Count; i++)
                             {
                                 Button childBtn = children[i] as Button;
-                                if (childBtn != null && isLarge)
+                                if (childBtn != null)
                                 {
                                     childBtn.Padding = new Thickness(16, 10, 16, 10);
                                     childBtn.Margin = new Thickness(6, 5, 6, 5);
                                 }
-                                wrap.Children.Add(children[i]);
+                                actionButtonsWrap.Children.Add(children[i]);
                             }
-
-                            int gIdx = grandParent.Children.IndexOf(origPanel);
-                            grandParent.Children.RemoveAt(gIdx);
-                            grandParent.Children.Insert(gIdx < 0 ? 0 : gIdx, wrap);
                         }
+
+                        BuildRedesignedCompletionCardContent(cardBorder, actionButtonsWrap);
                     }
-
-                    // Za završni prozor (overlay karticu): ukloni fiksnu širinu 680 i umotaj sadržaj u ScrollViewer
-                    if (isLarge)
+                    else if (!(cardBorder.Child is ScrollViewer))
                     {
-                        DependencyObject cur = anchor.Parent;
-                        while (cur != null)
+                        UIElement innerContent = cardBorder.Child;
+                        cardBorder.Child = null;
+                        cardBorder.Child = new ScrollViewer
                         {
-                            Border b = cur as Border;
-                            if (b != null && (b.Width == 680 || b.MinWidth == 680))
-                            {
-                                b.Width = double.NaN;
-                                b.MinWidth = 680;
-                                b.MaxWidth = 920;
-                                b.Margin = new Thickness(20);
-                                if (!(b.Child is ScrollViewer))
-                                {
-                                    UIElement innerContent = b.Child;
-                                    b.Child = null;
-                                    ScrollViewer sv = new ScrollViewer
-                                    {
-                                        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-                                        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                                        Content = innerContent
-                                    };
-                                    b.Child = sv;
-                                }
-                                break;
-                            }
-                            cur = VisualTreeHelper.GetParent(cur) ?? LogicalTreeHelper.GetParent(cur);
-                        }
+                            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                            Content = innerContent
+                        };
                     }
                 }
                 _completionLayoutAdapted = true;
             }
             catch { }
+        }
+
+        private static WrapPanel ReplaceStackPanelWithWrapPanel(Panel origPanel, bool isLarge)
+        {
+            Panel grandParent = origPanel.Parent as Panel;
+            if (grandParent == null) return null;
+
+            WrapPanel wrap = new WrapPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = isLarge ? HorizontalAlignment.Center : HorizontalAlignment.Right,
+                VerticalAlignment = origPanel.VerticalAlignment,
+                Margin = origPanel.Margin
+            };
+
+            System.Windows.Data.Binding visBinding = System.Windows.Data.BindingOperations.GetBinding(origPanel, UIElement.VisibilityProperty);
+            if (visBinding != null)
+            {
+                System.Windows.Data.BindingOperations.SetBinding(wrap, UIElement.VisibilityProperty, visBinding);
+            }
+            else
+            {
+                wrap.Visibility = origPanel.Visibility;
+            }
+
+            List<UIElement> children = new List<UIElement>();
+            foreach (object child in origPanel.Children)
+            {
+                UIElement ue = child as UIElement;
+                if (ue != null) children.Add(ue);
+            }
+            origPanel.Children.Clear();
+            for (int i = 0; i < children.Count; i++)
+            {
+                Button childBtn = children[i] as Button;
+                if (childBtn != null && isLarge)
+                {
+                    childBtn.Padding = new Thickness(16, 10, 16, 10);
+                    childBtn.Margin = new Thickness(6, 5, 6, 5);
+                }
+                wrap.Children.Add(children[i]);
+            }
+
+            int gIdx = grandParent.Children.IndexOf(origPanel);
+            grandParent.Children.RemoveAt(gIdx);
+            grandParent.Children.Insert(gIdx < 0 ? 0 : gIdx, wrap);
+            return wrap;
+        }
+
+        private void BuildRedesignedCompletionCardContent(Border cardBorder, WrapPanel actionButtonsWrap)
+        {
+            if (cardBorder == null || actionButtonsWrap == null) return;
+            var boolToVis = new BooleanToVisibilityConverter();
+
+            cardBorder.Tag = "CompletionCardRedesignedV2";
+            cardBorder.Width = double.NaN;
+            cardBorder.MinWidth = 780;
+            cardBorder.MaxWidth = 1080;
+            cardBorder.Margin = new Thickness(18);
+            cardBorder.Padding = new Thickness(22, 18, 22, 18);
+            cardBorder.Background = MainViewModel.CreateFrozenBrush(24, 28, 27);
+            cardBorder.BorderThickness = new Thickness(2);
+            cardBorder.CornerRadius = new CornerRadius(10);
+            cardBorder.SetBinding(Border.BorderBrushProperty, new System.Windows.Data.Binding("CompletionCardBorderBrush"));
+
+            var rootStack = new StackPanel();
+
+            // 1. ZAGLAVLJE KARTONA
+            var headerGrid = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+            headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            headerGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var headerLeft = new StackPanel();
+            var statusPill = new Border
+            {
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 4, 10, 4),
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+            statusPill.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("CompletionStatusBadgeBrush"));
+            var statusPillTb = new TextBlock
+            {
+                FontSize = 12,
+                FontWeight = FontWeights.Bold
+            };
+            statusPillTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("CompletionStatusBadgeText"));
+            statusPillTb.SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("CompletionStatusBadgeForeground"));
+            statusPill.Child = statusPillTb;
+            headerLeft.Children.Add(statusPill);
+
+            var modelTb = new TextBlock
+            {
+                FontSize = 18,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White,
+                Margin = new Thickness(0, 6, 0, 2),
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            modelTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("ComputerModel"));
+            headerLeft.Children.Add(modelTb);
+
+            var metaRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 0, 0, 3)
+            };
+            metaRow.Children.Add(new TextBlock
+            {
+                Text = "SN: ",
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
+            });
+            var snTb = new TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204)
+            };
+            snTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("SerialNumber"));
+            metaRow.Children.Add(snTb);
+            metaRow.Children.Add(new TextBlock
+            {
+                Text = "  •  Programi: ",
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
+            });
+            var appsTb = new TextBlock
+            {
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(88, 166, 255)
+            };
+            appsTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("AppsSummaryText"));
+            metaRow.Children.Add(appsTb);
+            headerLeft.Children.Add(metaRow);
+
+            var subSummaryTb = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(176, 184, 180),
+                TextWrapping = TextWrapping.Wrap
+            };
+            subSummaryTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("CompletionAlertsSummaryText"));
+            headerLeft.Children.Add(subSummaryTb);
+
+            Grid.SetColumn(headerLeft, 0);
+            headerGrid.Children.Add(headerLeft);
+
+            var headerRight = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            var durBox = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(12, 6, 12, 6),
+                Margin = new Thickness(12, 0, 8, 0)
+            };
+            var durStack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
+            durStack.Children.Add(new TextBlock
+            {
+                Text = "TRAJANJE",
+                FontSize = 9,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                HorizontalAlignment = HorizontalAlignment.Center
+            });
+            var durValTb = new TextBlock
+            {
+                FontSize = 15,
+                FontWeight = FontWeights.Bold,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                Margin = new Thickness(0, 1, 0, 0),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            durValTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("DurationString"));
+            durStack.Children.Add(durValTb);
+            durBox.Child = durStack;
+            headerRight.Children.Add(durBox);
+
+            var closeBtn = new Button
+            {
+                Content = "✕",
+                Width = 28,
+                Height = 28,
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
+                Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Cursor = System.Windows.Input.Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            closeBtn.SetBinding(Button.CommandProperty, new System.Windows.Data.Binding("CancelShutdownCommand"));
+            closeBtn.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("Loc[TooltipStayInApp]"));
+            headerRight.Children.Add(closeBtn);
+
+            Grid.SetColumn(headerRight, 1);
+            headerGrid.Children.Add(headerRight);
+            rootStack.Children.Add(headerGrid);
+
+            // 2. GLAVNI 2-KOLONSKI SADRŽAJ
+            var bodyGrid = new Grid { Margin = new Thickness(0, 0, 0, 14) };
+            bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.45, GridUnitType.Star) });
+            bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            bodyGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.0, GridUnitType.Star), MinWidth = 310 });
+
+            // Leva kolona: Specifikacije uređaja + Dodatne periferije (1:1 sa slike)
+            var specsCard = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 10, 14, 10)
+            };
+            var specsGrid = new Grid();
+            specsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            specsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var specsStack = new StackPanel();
+            specsStack.Children.Add(CreateOverviewSpecRow("CPU", "CpuInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("RAM", "RamInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Disk", "DiskInfo", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Rezolucija ekrana", "HardwareInfo.OverviewResolution", null, null, boolToVis, false, "HardwareInfo.OverviewResolutionTooltip"));
+            specsStack.Children.Add(CreateOverviewSpecRow("GPU", "HardwareInfo.OverviewGpu", null, null, boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("iGPU", "HardwareInfo.OverviewIgpu", null, "HardwareInfo.HasOverviewIgpu", boolToVis, false));
+            specsStack.Children.Add(CreateOverviewSpecRow("Battery wear", "HardwareInfo.BatteryWear", "HardwareInfo.BatteryHealthBrush", null, boolToVis, true));
+            Grid.SetRow(specsStack, 0);
+            specsGrid.Children.Add(specsStack);
+
+            var periphSection = new Border
+            {
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(0, 1, 0, 0),
+                Margin = new Thickness(0, 8, 0, 0),
+                Padding = new Thickness(0, 8, 0, 0)
+            };
+            var periphStack = new StackPanel();
+            periphStack.Children.Add(new TextBlock
+            {
+                Text = "DODATNE PERIFERIJE",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            var periphWrap = new WrapPanel { Orientation = Orientation.Horizontal };
+            periphStack.Children.Add(periphWrap);
+
+            var periphEmptyTb = new TextBlock
+            {
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(119, 119, 119)
+            };
+            periphEmptyTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("HardwareInfo.OverviewPeripheralsEmptyText"));
+            periphEmptyTb.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HardwareInfo.ShowOverviewPeripheralsEmpty") { Converter = boolToVis });
+            periphStack.Children.Add(periphEmptyTb);
+
+            RebuildOverviewPeripheralsHost(periphWrap);
+            if (ViewModel != null && ViewModel.HardwareInfo != null && ViewModel.HardwareInfo.OverviewPeripherals != null)
+            {
+                ViewModel.HardwareInfo.OverviewPeripherals.CollectionChanged += delegate
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        RebuildOverviewPeripheralsHost(periphWrap);
+                    });
+                };
+            }
+
+            periphSection.Child = periphStack;
+            Grid.SetRow(periphSection, 1);
+            specsGrid.Children.Add(periphSection);
+
+            specsCard.Child = specsGrid;
+            Grid.SetColumn(specsCard, 0);
+            bodyGrid.Children.Add(specsCard);
+
+            // Desna kolona: QR kod kartona gore + Upozorenja sa kojima je proces završen dole
+            var rightGrid = new Grid();
+            rightGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            rightGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(10) });
+            rightGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var qrCard = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 10, 12, 10)
+            };
+            var qrStack = new StackPanel();
+            qrStack.Children.Add(new TextBlock
+            {
+                Text = "KARTON UREĐAJA (SERVISHUB)",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                HorizontalAlignment = HorizontalAlignment.Center
+            });
+
+            var qrViewbox = new Viewbox
+            {
+                StretchDirection = StretchDirection.DownOnly,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 6, 0, 6)
+            };
+            var qrHost = new Grid();
+            var qrWhite = new Border
+            {
+                Background = Brushes.White,
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(8)
+            };
+            qrWhite.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HasDeviceCardQr") { Converter = boolToVis });
+            var qrImg = new Image
+            {
+                Width = 168,
+                Height = 168,
+                Stretch = Stretch.Uniform
+            };
+            RenderOptions.SetBitmapScalingMode(qrImg, BitmapScalingMode.NearestNeighbor);
+            qrImg.SetBinding(Image.SourceProperty, new System.Windows.Data.Binding("DeviceCardQrImage"));
+            qrWhite.Child = qrImg;
+            qrHost.Children.Add(qrWhite);
+
+            var qrPlaceholder = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(37, 37, 40),
+                BorderBrush = MainViewModel.CreateFrozenBrush(62, 62, 66),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Width = 168,
+                Height = 168,
+                Padding = new Thickness(12)
+            };
+            qrPlaceholder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowDeviceCardQrPlaceholder") { Converter = boolToVis });
+            qrPlaceholder.Child = new TextBlock
+            {
+                Text = "QR kod će se pojaviti kada se otkrije ServisHub...",
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                TextWrapping = TextWrapping.Wrap,
+                TextAlignment = TextAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            qrHost.Children.Add(qrPlaceholder);
+            qrViewbox.Child = qrHost;
+            qrStack.Children.Add(qrViewbox);
+
+            var qrStatusTb = new TextBlock
+            {
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(170, 170, 170),
+                TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            qrStatusTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("DeviceCardStatusText"));
+            qrStack.Children.Add(qrStatusTb);
+
+            var qrUrlTb = new TextBlock
+            {
+                FontSize = 10,
+                FontFamily = new FontFamily("Consolas"),
+                Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
+                TextAlignment = TextAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
+            };
+            qrUrlTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("DeviceCardUrl"));
+            qrUrlTb.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("DeviceCardUrl"));
+            qrStack.Children.Add(qrUrlTb);
+
+            qrCard.Child = qrStack;
+            Grid.SetRow(qrCard, 0);
+            rightGrid.Children.Add(qrCard);
+
+            var alertsCard = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 30),
+                BorderBrush = MainViewModel.CreateFrozenBrush(51, 51, 56),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(12, 10, 12, 10)
+            };
+            var alertsGrid = new Grid();
+            alertsGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            alertsGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+            var alertsHdr = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+            alertsHdr.Children.Add(new TextBlock
+            {
+                Text = "UPOZORENJA SA KOJIMA JE PROCES ZAVRŠEN",
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var alertsBadge = new Border
+            {
+                CornerRadius = new CornerRadius(9),
+                Padding = new Thickness(7, 1, 7, 1),
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            alertsBadge.SetBinding(Border.BackgroundProperty, new System.Windows.Data.Binding("OverviewAlertsBadgeBrush"));
+            var alertsBadgeTb = new TextBlock
+            {
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.White
+            };
+            alertsBadgeTb.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding("OverviewAlertsCountText"));
+            alertsBadge.Child = alertsBadgeTb;
+            alertsHdr.Children.Add(alertsBadge);
+            Grid.SetRow(alertsHdr, 0);
+            alertsGrid.Children.Add(alertsHdr);
+
+            var alertsBodyHost = new Grid();
+            Grid.SetRow(alertsBodyHost, 1);
+
+            var alertsScroll = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                MaxHeight = 168
+            };
+            alertsScroll.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("HasOverviewAlerts") { Converter = boolToVis });
+            var alertsHost = new StackPanel();
+            alertsScroll.Content = alertsHost;
+            alertsBodyHost.Children.Add(alertsScroll);
+
+            RebuildOverviewAlertsHost(alertsHost);
+            if (ViewModel != null && ViewModel.OverviewAlerts != null)
+            {
+                ViewModel.OverviewAlerts.CollectionChanged += delegate
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        RebuildOverviewAlertsHost(alertsHost);
+                    });
+                };
+            }
+
+            var noAlertsBorder = new Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(27, 42, 33),
+                BorderBrush = MainViewModel.CreateFrozenBrush(45, 90, 63),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 8, 10, 8),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            noAlertsBorder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowNoOverviewAlerts") { Converter = boolToVis });
+            var noAlertsStack = new StackPanel();
+            noAlertsStack.Children.Add(new TextBlock
+            {
+                Text = "✓ Proces završen bez upozorenja",
+                FontSize = 11,
+                FontWeight = FontWeights.SemiBold,
+                Foreground = MainViewModel.CreateFrozenBrush(46, 204, 113)
+            });
+            noAlertsStack.Children.Add(new TextBlock
+            {
+                Text = "Temperature, Autopilot, drajveri, programi i hardver su u normalnom stanju.",
+                FontSize = 10,
+                Foreground = MainViewModel.CreateFrozenBrush(168, 197, 180),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            noAlertsBorder.Child = noAlertsStack;
+            alertsBodyHost.Children.Add(noAlertsBorder);
+
+            alertsGrid.Children.Add(alertsBodyHost);
+            alertsCard.Child = alertsGrid;
+            Grid.SetRow(alertsCard, 2);
+            rightGrid.Children.Add(alertsCard);
+
+            Grid.SetColumn(rightGrid, 2);
+            bodyGrid.Children.Add(rightGrid);
+            rootStack.Children.Add(bodyGrid);
+
+            // 3. DONJA TRAKA SA DUGMADIMA
+            actionButtonsWrap.HorizontalAlignment = HorizontalAlignment.Center;
+            actionButtonsWrap.Margin = new Thickness(0, 2, 0, 0);
+            rootStack.Children.Add(actionButtonsWrap);
+
+            cardBorder.Child = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = rootStack
+            };
         }
 
         private void HandleInterimReboot()
@@ -339,6 +839,10 @@ namespace WIS.UI
 
         private void ExecuteShowCompletionSummary(object param)
         {
+            if (ViewModel != null)
+            {
+                ViewModel.RebuildOverviewAlerts();
+            }
             ViewModel.IsCompleted = true;
             EnsureCompletionOverlayResponsiveLayout();
             EnsureLabelPrintButtons();

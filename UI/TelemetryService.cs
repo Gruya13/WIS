@@ -20,10 +20,12 @@ namespace WIS.UI
         private readonly object _logLock = new object();
 
         private string _hubUrl;
+        private string _hubVersion;
         private int _hubPort = 8080;
         private bool _isEnabled = true;
         private bool _isDisposed = false;
         private int _consecutiveFailures = 0;
+        private bool _benchmarkFetched = false;
 
         private readonly List<string> _logBuffer = new List<string>();
         private Timer _heartbeatTimer;
@@ -44,6 +46,12 @@ namespace WIS.UI
         {
             get { lock (_stateLock) return _hubUrl; }
             private set { lock (_stateLock) _hubUrl = value; }
+        }
+
+        public string HubVersion
+        {
+            get { lock (_stateLock) return _hubVersion; }
+            private set { lock (_stateLock) _hubVersion = value; }
         }
 
         public bool IsConnected
@@ -274,11 +282,21 @@ namespace WIS.UI
                     foreach (var p in portsToProbe)
                     {
                         string testUrl = string.Format("http://{0}:{1}", candIp, p);
-                        if (ProbeHub(testUrl))
+                        string discoveredVer;
+                        if (ProbeHub(testUrl, out discoveredVer))
                         {
                             _hubPort = p;
                             HubUrl = testUrl;
+                            if (!string.IsNullOrEmpty(discoveredVer))
+                            {
+                                HubVersion = discoveredVer;
+                            }
                             _consecutiveFailures = 0;
+                            NotifyHubStatusChanged(testUrl, HubVersion, true);
+                            if (!_benchmarkFetched)
+                            {
+                                FetchBenchmarkBaselineAsync(testUrl);
+                            }
                             return true;
                         }
                     }
@@ -358,8 +376,9 @@ namespace WIS.UI
             return null;
         }
 
-        private bool ProbeHub(string baseUrl)
+        private bool ProbeHub(string baseUrl, out string hubVersion)
         {
+            hubVersion = null;
             try
             {
                 var req = (HttpWebRequest)WebRequest.Create(baseUrl + "/api/status");
@@ -368,7 +387,31 @@ namespace WIS.UI
                 req.ReadWriteTimeout = 400;
                 using (var resp = (HttpWebResponse)req.GetResponse())
                 {
-                    return (int)resp.StatusCode >= 200 && (int)resp.StatusCode < 400;
+                    int code = (int)resp.StatusCode;
+                    if (code >= 200 && code < 400)
+                    {
+                        try
+                        {
+                            using (var stream = resp.GetResponseStream())
+                            {
+                                if (stream != null)
+                                {
+                                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                                    {
+                                        string body = reader.ReadToEnd();
+                                        var m = Regex.Match(body, "\"version\"\\s*:\\s*\"([^\"]+)\"");
+                                        if (m.Success)
+                                        {
+                                            hubVersion = m.Groups[1].Value.Trim();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                        return true;
+                    }
+                    return false;
                 }
             }
             catch
@@ -462,6 +505,7 @@ namespace WIS.UI
                     {
                         HubUrl = null;
                         _consecutiveFailures = 0;
+                        NotifyHubStatusChanged(null, HubVersion, false);
                     }
                 }
                 else
@@ -477,6 +521,7 @@ namespace WIS.UI
                 {
                     HubUrl = null;
                     _consecutiveFailures = 0;
+                    NotifyHubStatusChanged(null, HubVersion, false);
                 }
             }
         }
@@ -779,6 +824,110 @@ namespace WIS.UI
             bool ok;
             HttpPostWithResponse(url, jsonBody, timeoutMs, out ok);
             return ok;
+        }
+
+        private void NotifyHubStatusChanged(string hubUrl, string hubVersion, bool isConnected)
+        {
+            if (_viewModel == null) return;
+            try
+            {
+                if (_dispatcher != null && !_dispatcher.HasShutdownStarted)
+                {
+                    _dispatcher.BeginInvoke((Action)delegate
+                    {
+                        try { _viewModel.UpdateServiceHubConnection(hubUrl, hubVersion, isConnected); } catch { }
+                    });
+                }
+                else
+                {
+                    _viewModel.UpdateServiceHubConnection(hubUrl, hubVersion, isConnected);
+                }
+            }
+            catch { }
+        }
+
+        private void FetchBenchmarkBaselineAsync(string baseUrl)
+        {
+            if (string.IsNullOrEmpty(baseUrl) || _viewModel == null) return;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string cleanBase = baseUrl.TrimEnd('/');
+                    var req = (HttpWebRequest)WebRequest.Create(cleanBase + "/api/benchmark/summary");
+                    req.Method = "GET";
+                    req.Timeout = 2500;
+                    req.ReadWriteTimeout = 2500;
+                    string body = null;
+                    using (var resp = (HttpWebResponse)req.GetResponse())
+                    {
+                        int code = (int)resp.StatusCode;
+                        if (code >= 200 && code < 400)
+                        {
+                            using (var stream = resp.GetResponseStream())
+                            {
+                                if (stream != null)
+                                {
+                                    using (var reader = new StreamReader(stream, Encoding.UTF8))
+                                    {
+                                        body = reader.ReadToEnd();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (string.IsNullOrWhiteSpace(body)) return;
+
+                    JsonNode root = JsonHelper.Parse(body);
+                    if (root == null || !root.IsObject) return;
+
+                    var baseline = new BenchmarkBaseline();
+                    double v3P50 = root["cohorts"]["v3_modern"]["p50_duration_seconds"].AsDouble(0.0);
+                    double fleetP50 = root["p50_duration_seconds"].AsDouble(0.0);
+                    double fleetAvg = root["avg_duration_seconds"].AsDouble(0.0);
+                    baseline.FleetP50TotalSeconds = v3P50 > 60.0
+                        ? v3P50
+                        : (fleetP50 > 60.0 ? fleetP50 : ((fleetAvg > 60.0 && fleetAvg <= 7200.0) ? fleetAvg : 0.0));
+
+                    JsonNode phaseNode = root["phase_averages_sec"];
+                    if (phaseNode != null && phaseNode.IsObject)
+                    {
+                        for (int p = 2; p <= 6; p++)
+                        {
+                            double val = phaseNode["Phase" + p].AsDouble(0.0);
+                            if (val >= 15.0 && val <= 2400.0)
+                            {
+                                baseline.PhaseAveragesSeconds[p] = val;
+                            }
+                        }
+                    }
+
+                    JsonNode byModelNode = root["by_model"];
+                    if (byModelNode != null && byModelNode.IsArray)
+                    {
+                        for (int i = 0; i < byModelNode.Count; i++)
+                        {
+                            JsonNode item = byModelNode[i];
+                            if (item == null || !item.IsObject) continue;
+                            string modelName = item["model"].AsString("");
+                            double avgSec = item["avg_duration_seconds"].AsDouble(0.0);
+                            if (!string.IsNullOrWhiteSpace(modelName) && avgSec >= 120.0 && avgSec <= 5400.0)
+                            {
+                                baseline.ModelAveragesSeconds[modelName.Trim()] = avgSec;
+                            }
+                        }
+                    }
+
+                    int totalInst = (int)root["total_installations"].AsDouble(0.0);
+                    baseline.SourceLabel = totalInst > 0
+                        ? string.Format("ServiceHub benchmark ({0} instalacija)", totalInst)
+                        : "ServiceHub benchmark";
+
+                    _benchmarkFetched = true;
+                    _viewModel.ApplyBenchmarkBaseline(baseline);
+                }
+                catch { }
+            });
         }
 
         #endregion
