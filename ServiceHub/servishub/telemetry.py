@@ -11,10 +11,18 @@ import sys
 import time
 import json
 import uuid
+import shutil
 import threading
 from datetime import datetime
 from servishub.drivers.cache import sanitize_id
-from servishub.reports import diagnostics_contract, compute_handover_status, _atomic_write_json
+from servishub.reports import (
+    diagnostics_contract,
+    compute_handover_status,
+    _atomic_write_json,
+    cleanup_stale_tmp_files,
+    is_enospc_error,
+    log_enospc_rate_limited,
+)
 
 
 _HW_PLACEHOLDER_VALUES = {
@@ -22,6 +30,9 @@ _HW_PLACEHOLDER_VALUES = {
     "n/a",
     "na",
     "unknown",
+    "unknown model",
+    "unknown serial",
+    "unknown-pc",
     "none",
     "null",
     "pc",
@@ -30,19 +41,56 @@ _HW_PLACEHOLDER_VALUES = {
     "nepoznat model",
     "nepoznato",
     "nepoznat serijski",
+    "nepoznat serijski broj",
     "system product name",
+    "system serial number",
+    "chassis serial number",
     "default string",
     "to be filled by o.e.m.",
+    "not specified",
+    "not available",
     "ucitavanje...",
     "učitavanje...",
+    "ucitavanje",
+    "učitavanje",
     "ucitavanje konfiguracije...",
     "učitavanje konfiguracije...",
+    "ucitavanje konfiguracije",
+    "učitavanje konfiguracije",
     "detekcija...",
+    "detekcija",
+    "loading...",
+    "loading",
+    "loading configuration...",
+    "loading configuration",
+    "detecting...",
+    "detecting",
+    "reading...",
+    "reading",
+    "加载中...",
+    "加载中",
+    "读取中...",
+    "读取中",
+    "正在加载...",
+    "正在加载",
+    "正在加载配置...",
+    "正在加载配置",
+    "检测中...",
+    "检测中",
+    "正在检测...",
+    "正在检测",
+    "未知",
+    "未知型号",
+    "未知序列号",
+    "无",
+    "未连接",
 }
+
+_VALID_SERIAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{1,63}$")
 
 
 def is_placeholder_hw_value(value) -> bool:
-    """Proverava da li je hardverska vrednost prazan string ili UI placeholder."""
+    """Proverava da li je hardverska vrednost prazan string ili lokalizovani UI placeholder (sr/en/zh-CN)."""
     if value is None or isinstance(value, bool):
         return True
     s = str(value).strip()
@@ -51,9 +99,32 @@ def is_placeholder_hw_value(value) -> bool:
     low = s.lower()
     if low in _HW_PLACEHOLDER_VALUES:
         return True
-    if low.startswith(("učitavanje", "ucitavanje", "detekcija")):
+    if low.startswith((
+        "učitavanje",
+        "ucitavanje",
+        "detekcija",
+        "loading",
+        "detecting",
+        "reading",
+        "加载中",
+        "读取中",
+        "正在加载",
+        "检测中",
+        "正在检测",
+        "未知",
+    )):
+        return True
+    if low.endswith(("...", "…")):
         return True
     return False
+
+
+def is_valid_canonical_serial(value) -> bool:
+    """Proverava da li je vrednost validan alfanumerički serijski broj / UUID a ne UI placeholder."""
+    if is_placeholder_hw_value(value):
+        return False
+    s = str(value).strip()
+    return bool(_VALID_SERIAL_RE.fullmatch(s))
 
 
 def extract_hw_from_payload(payload: dict) -> dict:
@@ -163,6 +234,8 @@ class FleetStore:
         live_log_retention_days: int = 30,
         max_sse_subscribers_total: int = 64,
         max_sse_subscribers_per_device: int = 8,
+        live_log_max_files: int = 200,
+        low_disk_prune_threshold_gb: float = 15.0,
     ):
         self.live_logs_dir = live_logs_dir
         self.reports_dir = reports_dir
@@ -172,6 +245,8 @@ class FleetStore:
         self.live_log_retention_days = int(live_log_retention_days)
         self.max_sse_subscribers_total = int(max_sse_subscribers_total)
         self.max_sse_subscribers_per_device = int(max_sse_subscribers_per_device)
+        self.live_log_max_files = int(live_log_max_files)
+        self.low_disk_prune_threshold_gb = float(low_disk_prune_threshold_gb)
 
         self.fleet_lock = threading.Lock()
         self.fleet_devices = {}      # device_id -> dict
@@ -180,6 +255,8 @@ class FleetStore:
         self._serial_index = {}      # UPPER_SERIAL -> canonical_device_key
         self._alias_index = {}       # UPPER_SANITIZED_NAME -> canonical_device_key
         self._last_log_prune_ts = 0.0
+        self._enospc_lock = threading.Lock()
+        self._last_enospc_log_ts = 0.0
 
         self.session_lock = threading.Lock()
         self.fleet_sessions = {}      # session_id -> dict
@@ -227,7 +304,7 @@ class FleetStore:
                 self._sse_per_device[key] = cur - 1
 
     def _extract_canonical_serial(self, payload: dict, hw_dict: dict = None) -> str:
-        """Izdvaja kanonski serijski broj (ili SMBIOS UUID fallback) ako nije placeholder."""
+        """Izdvaja kanonski serijski broj (ili SMBIOS UUID fallback) ako nije placeholder i ako je validan SN."""
         candidates = []
         if isinstance(payload, dict):
             candidates.extend([
@@ -243,7 +320,7 @@ class FleetStore:
                 hw_dict.get("smbios_uuid"),
             ])
         for cand in candidates:
-            if not is_placeholder_hw_value(cand):
+            if is_valid_canonical_serial(cand):
                 return str(cand).strip().upper()
         return ""
 
@@ -307,6 +384,7 @@ class FleetStore:
         "thermal_note",
         "benchmark",
         "_last_report_saved_ts",
+        "_has_in_memory_report",
         "worker_progress",
     )
 
@@ -332,12 +410,19 @@ class FleetStore:
     def _resolve_device_key_locked(self, comp_name: str, canonical_sn: str = "") -> str:
         """
         Određuje jedinstveni kanonski ključ u fleet_devices tako da promena hostname-a
-        (npr. DESKTOP-* -> TK-LAPTOP-<SN>) nikada ne stvara duplikate za isti serijski broj.
+        (npr. DESKTOP-* -> TK-LAPTOP-<SN>) nikada ne stvara duplikate za isti serijski broj,
+        a placeholder vrednosti nikada ne zagađuju _serial_index / _alias_index (IMP-45).
         Pozvati pod fleet_lock.
         """
         raw_key = sanitize_id(comp_name)
         raw_upper = raw_key.upper()
         is_tk_incoming = raw_upper.startswith("TK-")
+        is_comp_placeholder = is_placeholder_hw_value(comp_name) or raw_upper in ("", "UNKNOWN", "UNKNOWN-PC")
+
+        if canonical_sn and not is_valid_canonical_serial(canonical_sn):
+            canonical_sn = ""
+        elif canonical_sn:
+            canonical_sn = str(canonical_sn).strip().upper()
 
         existing_key = None
         if canonical_sn:
@@ -358,23 +443,45 @@ class FleetStore:
                 if is_tk_incoming and not str(existing_key).upper().startswith("TK-"):
                     self._merge_device_records_into_locked(raw_key, existing_key)
                     self._serial_index[canonical_sn] = raw_key
-                    self._alias_index[raw_upper] = raw_key
+                    if not is_comp_placeholder:
+                        self._alias_index[raw_upper] = raw_key
                     return raw_key
-                self._alias_index[raw_upper] = existing_key
+                if not is_comp_placeholder:
+                    self._alias_index[raw_upper] = existing_key
                 self._serial_index[canonical_sn] = existing_key
                 return existing_key
             self._serial_index[canonical_sn] = existing_key
+            if not is_comp_placeholder:
+                self._alias_index[raw_upper] = existing_key
             return existing_key
 
-        alias_key = self._alias_index.get(raw_upper)
+        alias_key = self._alias_index.get(raw_upper) if not is_comp_placeholder else None
         if alias_key and alias_key in self.fleet_devices:
             if canonical_sn:
+                alias_rec = self.fleet_devices.get(alias_key)
+                alias_sn = (
+                    self._extract_canonical_serial(alias_rec, alias_rec.get("hw"))
+                    if isinstance(alias_rec, dict)
+                    else ""
+                )
+                # IMP-45: Ako alias_key ukazuje na drugi uređaj (drugačiji SN ili tuđi zapis kad ovaj uređaj ima svoj SN),
+                # očisti zatrovani alias i veži raw_upper na sopstveni raw_key!
+                if (alias_sn and alias_sn != canonical_sn) or (
+                    alias_key != raw_key and not str(alias_key).upper().startswith("TK-")
+                ):
+                    self._serial_index[canonical_sn] = raw_key
+                    self._alias_index[raw_upper] = raw_key
+                    return raw_key
                 self._serial_index[canonical_sn] = alias_key
+                self._alias_index[raw_upper] = alias_key
             return alias_key
 
         if canonical_sn:
             self._serial_index[canonical_sn] = raw_key
-        self._alias_index[raw_upper] = raw_key
+            if not is_comp_placeholder:
+                self._alias_index[raw_upper] = raw_key
+        elif not is_comp_placeholder and raw_upper not in self._alias_index:
+            self._alias_index[raw_upper] = raw_key
         return raw_key
 
     def _consolidate_historical_duplicates_locked(self) -> None:
@@ -655,43 +762,157 @@ class FleetStore:
         with self.fleet_lock:
             self._consolidate_historical_duplicates_locked()
 
-    def _prune_old_disk_logs(self, now: float) -> None:
-        """Briše diskovne live logove starije od live_log_retention_days (najviše jednom na sat)."""
-        if self.live_log_retention_days <= 0 or not self.live_logs_dir or not os.path.isdir(self.live_logs_dir):
-            return
-        if (now - self._last_log_prune_ts) < 3600.0:
-            return
-        self._last_log_prune_ts = now
-        cutoff = now - (self.live_log_retention_days * 86400.0)
+    def _log_disk_error_rate_limited(self, prefix: str, err: Exception, interval_sec: float = 60.0) -> bool:
+        """Ispisuje disk grešku uz rate-limit od 1x na 60s za ENOSPC (IMP-36)."""
+        now = time.time()
+        if is_enospc_error(err):
+            with self._enospc_lock:
+                if self._last_enospc_log_ts > 0.0 and (now - self._last_enospc_log_ts) < float(interval_sec):
+                    return False
+                self._last_enospc_log_ts = now
+            print(f"[ERROR] {prefix}: {err} (ENOSPC rate-limited 1x/{int(interval_sec)}s)", file=sys.stderr)
+            return True
+        print(f"[ERROR] {prefix}: {err}", file=sys.stderr)
+        return True
+
+    def _get_protected_active_log_prefixes(self, now: float) -> set[str]:
+        """Vraća skup sanitizovanih prefiksa uređaja aktivnih u zadnja 24h (koji se ne smeju brisati pri retenciji)."""
+        protected = set()
+        cutoff_24h = now - 86400.0
+        with self.fleet_lock:
+            for dev_k, rec in self.fleet_devices.items():
+                if not isinstance(rec, dict):
+                    continue
+                last_seen = float(rec.get("last_seen", 0.0) or 0.0)
+                if last_seen >= cutoff_24h and not self._is_terminal_device_record(rec):
+                    protected.add(sanitize_id(str(dev_k)))
+                    if rec.get("computer_name"):
+                        protected.add(sanitize_id(str(rec["computer_name"])))
+                    if rec.get("device_id"):
+                        protected.add(sanitize_id(str(rec["device_id"])))
+        return {p for p in protected if p}
+
+    def _prune_old_disk_logs(self, now: float = None, force: bool = False) -> dict:
+        """
+        Bezbedna automatska retencija live logova i bajatih .tmp fajlova (IMP-36):
+        - Briše .tmp fajlove starije od 1h u live_logs_dir i reports_dir.
+        - Briše servis_deploy_*.log fajlove starije od live_log_retention_days.
+        - Kada je slobodan prostor < low_disk_prune_threshold_gb (15 GB) ili broj fajlova > live_log_max_files,
+          briše najstarije logove starije od 24h bez diranja trenutno aktivnih uređaja iz zadnja 24h.
+        - Strogo bez praćenja symlinkova i bez path traversal-a.
+        """
+        cur_ts = float(now) if now is not None else time.time()
+        stats = {"removed_logs": 0, "removed_tmp": 0}
+        if not force and (cur_ts - self._last_log_prune_ts) < 3600.0:
+            return stats
+        self._last_log_prune_ts = cur_ts
+
+        if self.reports_dir and os.path.isdir(self.reports_dir) and not os.path.islink(self.reports_dir):
+            stats["removed_tmp"] += cleanup_stale_tmp_files(self.reports_dir, max_age_sec=3600.0, now=cur_ts)
+        if self.live_logs_dir and os.path.isdir(self.live_logs_dir) and not os.path.islink(self.live_logs_dir):
+            stats["removed_tmp"] += cleanup_stale_tmp_files(self.live_logs_dir, max_age_sec=3600.0, now=cur_ts)
+
+        if self.live_log_retention_days <= 0 or not self.live_logs_dir or not os.path.isdir(self.live_logs_dir) or os.path.islink(self.live_logs_dir):
+            return stats
+
+        real_live_dir = os.path.realpath(self.live_logs_dir)
+        cutoff = cur_ts - (self.live_log_retention_days * 86400.0)
+        cutoff_24h = cur_ts - 86400.0
+        protected_prefixes = self._get_protected_active_log_prefixes(cur_ts)
+
+        low_disk = False
+        if self.low_disk_prune_threshold_gb > 0:
+            try:
+                du = shutil.disk_usage(real_live_dir)
+                free_gb = du.free / (1024.0 ** 3)
+                if free_gb < self.low_disk_prune_threshold_gb:
+                    low_disk = True
+            except OSError:
+                pass
+
+        remaining_candidates = []
         try:
-            for fname in os.listdir(self.live_logs_dir):
+            with os.scandir(self.live_logs_dir) as it:
+                entries = list(it)
+        except OSError:
+            return stats
+
+        for entry in entries:
+            try:
+                fname = entry.name
                 if not (fname.startswith("servis_deploy_") and fname.endswith(".log")):
                     continue
-                fpath = os.path.join(self.live_logs_dir, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        if os.path.getmtime(fpath) < cutoff:
-                            os.remove(fpath)
-                    except OSError:
-                        pass
-        except OSError:
-            pass
+                if ".." in fname or "/" in fname or "\\" in fname:
+                    continue
+                if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                    continue
+                fpath = entry.path
+                if os.path.islink(fpath):
+                    continue
+                real_fpath = os.path.realpath(fpath)
+                if os.path.commonpath([real_live_dir, real_fpath]) != real_live_dir:
+                    continue
+                st = entry.stat(follow_symlinks=False)
+                mtime = float(st.st_mtime)
+
+                is_protected = mtime >= cutoff_24h
+                if not is_protected and protected_prefixes:
+                    for pref in protected_prefixes:
+                        if fname.startswith(f"servis_deploy_{pref}_"):
+                            is_protected = True
+                            break
+
+                if mtime < cutoff and not is_protected:
+                    os.remove(fpath)
+                    stats["removed_logs"] += 1
+                else:
+                    remaining_candidates.append((mtime, fpath, is_protected))
+            except (OSError, ValueError):
+                continue
+
+        # Dodatno čišćenje pri niskom prostoru na disku (< 15 GB) ili prekoračenju maksimalnog broja log fajlova
+        max_files = self.live_log_max_files if self.live_log_max_files > 0 else 200
+        if low_disk:
+            max_files = min(max_files, 50)
+
+        if len(remaining_candidates) > max_files or low_disk:
+            remaining_candidates.sort(key=lambda item: item[0])
+            total_rem = len(remaining_candidates)
+            for mtime, fpath, is_protected in remaining_candidates:
+                if is_protected:
+                    continue
+                if not low_disk and total_rem <= max_files:
+                    break
+                try:
+                    if not os.path.islink(fpath):
+                        os.remove(fpath)
+                        stats["removed_logs"] += 1
+                        total_rem -= 1
+                except OSError:
+                    continue
+
+        return stats
 
     def append_to_disk_log(self, computer_name: str, lines: list):
-        """Zapisuje nove linije loga u trajni lokalni fajl na disku uz retenciju starih logova."""
+        """Zapisuje nove linije loga u trajni lokalni fajl na disku uz retenciju starih logova i ENOSPC zaštitu."""
         if not self.live_logs_dir:
             return
         try:
             os.makedirs(self.live_logs_dir, exist_ok=True)
+            real_live_dir = os.path.realpath(self.live_logs_dir)
             sanitized = sanitize_id(computer_name)
             date_str = datetime.now().strftime("%Y%m%d")
             log_file = os.path.join(self.live_logs_dir, f"servis_deploy_{sanitized}_{date_str}.log")
+            if os.path.islink(log_file) or os.path.commonpath([real_live_dir, os.path.abspath(log_file)]) != real_live_dir:
+                return
             with open(log_file, "a", encoding="utf-8") as f:
                 for l in lines:
                     f.write(l.strip() + "\n")
             self._prune_old_disk_logs(time.time())
         except Exception as e:
-            print(f"[ERROR] Neuspeh upisa loga na disk: {e}", file=sys.stderr)
+            if is_enospc_error(e):
+                self._prune_old_disk_logs(time.time(), force=True)
+            self._log_disk_error_rate_limited("Neuspeh upisa loga na disk", e)
 
     def _extract_telemetry_sensors(self, payload: dict) -> dict:
         """
@@ -870,12 +1091,50 @@ class FleetStore:
             incoming_lbl = str(payload.get("status_label") or "").strip()
             if (
                 self._is_terminal_device_record(existing_rec)
-                and incoming_phase in (1, 2)
-                and incoming_lbl != "Zavrseno"
+                and incoming_phase is not None
+                and 1 <= incoming_phase < 6
+                and incoming_lbl not in ("Zavrseno", "Završeno", "Servisiran (AGY)", "Kvar (AGY)")
             ):
+                preserved_p4_apps = (
+                    dict(existing_rec["apps"])
+                    if incoming_phase >= 5 and isinstance(existing_rec.get("apps"), dict) and existing_rec.get("apps")
+                    else None
+                )
                 self._reset_terminal_session_fields_locked(existing_rec)
-                if "status_label" not in clean_update:
+                if preserved_p4_apps:
+                    existing_rec["apps"] = preserved_p4_apps
+                existing_rec["status_label"] = "Aktivno"
+                if "status_label" not in clean_update or clean_update.get("status_label") in ("Zavrseno", "Završeno"):
                     clean_update["status_label"] = "Aktivno"
+
+            # IMP-52: Zaštita od pregaza verifikovanih Faza 4 statusa aplikacija (OK/WARN/ERROR)
+            # dolaznim WAIT/SKIPPED vrednostima nakon resume-a u Fazi 5+
+            eff_phase = incoming_phase
+            if eff_phase is None:
+                try:
+                    eff_phase = int(existing_rec.get("phase")) if existing_rec.get("phase") is not None else None
+                except (ValueError, TypeError):
+                    eff_phase = None
+            if (
+                eff_phase is not None
+                and eff_phase >= 5
+                and isinstance(clean_update.get("apps"), dict)
+                and isinstance(existing_rec.get("apps"), dict)
+                and existing_rec["apps"]
+            ):
+                _wait_skip_tokens = ("", "WAIT", "WAITING", "PENDING", "SKIP", "SKIPPED")
+                existing_has_real_status = any(
+                    str(v or "").strip().upper() not in _wait_skip_tokens
+                    for v in existing_rec["apps"].values()
+                )
+                incoming_only_wait_or_skip = all(
+                    str(v or "").strip().upper() in _wait_skip_tokens
+                    for v in clean_update["apps"].values()
+                )
+                if existing_has_real_status and incoming_only_wait_or_skip:
+                    del clean_update["apps"]
+                    if "apps_summary" in clean_update and existing_rec.get("apps_summary"):
+                        del clean_update["apps_summary"]
 
             if not str(dev_id).upper().startswith("TK-") and str(existing_rec.get("computer_name", "")).upper().startswith("TK-"):
                 clean_update["computer_name"] = existing_rec["computer_name"]
@@ -1071,14 +1330,21 @@ class FleetStore:
         for k in to_remove:
             self._merge_device_records_into_locked(canonical_id, k)
 
-    def record_logs(self, comp_name: str, lines: list) -> int:
-        """Prihvata novu grupu linija loga, baferuje u memoriji i obaveštava pretplatnike."""
+    def record_logs(self, comp_name: str, lines: list, serial_number: str = None) -> int:
+        """Prihvata novu grupu linija loga, baferuje u memoriji, osvežava last_seen i obaveštava pretplatnike."""
         if not lines:
             return 0
         raw_id = sanitize_id(comp_name)
+        canonical_sn = str(serial_number).strip().upper() if is_valid_canonical_serial(serial_number) else ""
 
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            if dev_id in self.fleet_devices:
+                rec = self.fleet_devices[dev_id]
+                if isinstance(rec, dict) and not self._is_terminal_device_record(rec):
+                    rec["last_seen"] = time.time()
+                    if canonical_sn and is_placeholder_hw_value(rec.get("serial_number")):
+                        rec["serial_number"] = canonical_sn
             if dev_id not in self.fleet_logs:
                 self.fleet_logs[dev_id] = []
             self.fleet_logs[dev_id].extend(lines)
@@ -1343,7 +1609,14 @@ class FleetStore:
                     self.fleet_devices[dev_id]["latest_report"] = enriched_payload
                     self.fleet_devices[dev_id]["_last_report_saved_ts"] = time.time()
             except Exception as e:
-                print(f"[ERROR] Neuspeh čuvanja servisnog kartona na disk: {e}", file=sys.stderr)
+                if is_enospc_error(e):
+                    self._prune_old_disk_logs(time.time(), force=True)
+                self._log_disk_error_rate_limited("Neuspeh čuvanja servisnog kartona na disk", e)
+        elif not self.reports_dir and not skip_disk_write:
+            with self.fleet_lock:
+                self.fleet_devices[dev_id]["latest_report"] = enriched_payload
+                self.fleet_devices[dev_id]["_has_in_memory_report"] = True
+                self.fleet_devices[dev_id]["_last_report_saved_ts"] = time.time()
 
         return dev_id
 
@@ -1561,13 +1834,27 @@ class FleetStore:
                             "status_message", "phase_name",
                         )
                     ).lower()
-                    is_interim_reboot = (phase == 2) or (
-                        phase == 3
-                        and (
-                            bool(d.get("interim_reboot"))
-                            or bool(d.get("reboot_pending"))
-                            or "restart" in reboot_text
-                            or "reboot" in reboot_text
+                    is_interim_reboot = (
+                        (phase in (2, "2"))
+                        or (
+                            phase in (3, "3")
+                            and (
+                                bool(d.get("interim_reboot"))
+                                or bool(d.get("reboot_pending"))
+                                or "restart" in reboot_text
+                                or "reboot" in reboot_text
+                            )
+                        )
+                        or (
+                            phase in (5, "5")
+                            and (
+                                bool(d.get("interim_reboot"))
+                                or bool(d.get("reboot_pending"))
+                                or "uefi" in reboot_text
+                                or "restartujem" in reboot_text
+                                or "restart" in reboot_text
+                                or "reboot" in reboot_text
+                            )
                         )
                     )
                     if is_interim_reboot and sec_ago <= 720:

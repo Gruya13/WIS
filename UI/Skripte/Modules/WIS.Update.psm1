@@ -4410,6 +4410,8 @@ function Write-BackgroundWuStatus {
         [int]$FoundCount = 0,
         [int]$DownloadedCount = 0,
         [int]$InstalledCount = 0,
+        [int]$PendingDriverCount = 0,
+        [bool]$InstallingDriver = $false,
         [bool]$RebootRequired = $false,
         [int]$WorkerPid = 0
     )
@@ -4423,16 +4425,19 @@ function Write-BackgroundWuStatus {
         $tempFile = Join-Path $setupDir "wu-bg-status.tmp"
 
         $effectivePid = if ($WorkerPid -gt 0) { $WorkerPid } else { $PID }
+        $safePendingDrivers = [int]([Math]::Max(0, $PendingDriverCount))
         $payload = [ordered]@{
-            status           = $Status
-            phase_text       = $PhaseText
-            phase_text_zh    = $(if ($PhaseTextZh) { $PhaseTextZh } else { $PhaseText })
-            found_count      = $FoundCount
-            downloaded_count = $DownloadedCount
-            installed_count  = $InstalledCount
-            reboot_required  = [bool]$RebootRequired
-            pid              = $effectivePid
-            updated_at       = [datetime]::UtcNow.ToString("o")
+            status               = $Status
+            phase_text           = $PhaseText
+            phase_text_zh        = $(if ($PhaseTextZh) { $PhaseTextZh } else { $PhaseText })
+            found_count          = $FoundCount
+            downloaded_count     = $DownloadedCount
+            installed_count      = $InstalledCount
+            pending_driver_count = $safePendingDrivers
+            installing_driver    = [bool]$InstallingDriver
+            reboot_required      = [bool]$RebootRequired
+            pid                  = $effectivePid
+            updated_at           = [datetime]::UtcNow.ToString("o")
         }
 
         $json = $payload | ConvertTo-Json -Depth 4 -Compress
@@ -4596,12 +4601,14 @@ function Invoke-BackgroundWindowsUpdateWorker {
     $totalFoundAll = 0
     $totalDownloadedAll = 0
     $totalInstalledAll = 0
+    $pendingDriverCount = 0
+    $installingDriver = $false
     $rebootReq = $false
     $harvestUpdates = @()
 
     for ($bgCycle = 1; $bgCycle -le 2; $bgCycle++) {
         if ($bgCycle -gt 1) {
-            Write-BackgroundWuStatus -Status "SEARCHING" -PhaseText "Pozadinski WU: Dodatna provera kataloga (krug $bgCycle/2)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            Write-BackgroundWuStatus -Status "SEARCHING" -PhaseText "Pozadinski WU: Dodatna provera kataloga (krug $bgCycle/2)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
             try { Start-Process "usoclient.exe" -ArgumentList "StartInteractiveScan" -WindowStyle Hidden -ErrorAction SilentlyContinue } catch {}
             Start-Sleep -Seconds 3
         }
@@ -4630,7 +4637,7 @@ function Invoke-BackgroundWindowsUpdateWorker {
                 } catch {
                     $errStr = $_.Exception.Message
                     if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
-                        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Katalog trenutno nedostupan" -WorkerPid $PID
+                        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Katalog trenutno nedostupan" -PendingDriverCount 0 -InstallingDriver $false -WorkerPid $PID
                         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                             Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pretraga kataloga nije uspela ($errStr)." -Level "WARN" -Component "BgWinUpdate"
                         }
@@ -4644,7 +4651,7 @@ function Invoke-BackgroundWindowsUpdateWorker {
         $rawCount = if ($searchResult -and $searchResult.Updates) { $searchResult.Updates.Count } else { 0 }
         if ($rawCount -eq 0) {
             if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
-                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Sistem je azuran (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -RebootRequired $rebootReq -WorkerPid $PID
+                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Sistem je azuran (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Sistem je u potpunosti azuran (0 zaostalih zakrpa)." -Level "SUCCESS" -Component "BgWinUpdate"
                 }
@@ -4654,10 +4661,12 @@ function Invoke-BackgroundWindowsUpdateWorker {
         }
 
         $filteredUpdates = @()
+        $cycleDriverFlags = @()
+        $cycleDriverCount = 0
         for ($i = 0; $i -lt $rawCount; $i++) {
             $u = $searchResult.Updates.Item($i)
-            $isDrv = Test-IsDriverUpdate -UpdateItem $u
-            $isCum = Test-IsCumulativeUpdate -UpdateItem $u
+            $isDrv = [bool](Test-IsDriverUpdate -UpdateItem $u)
+            $isCum = [bool](Test-IsCumulativeUpdate -UpdateItem $u)
 
             $includeItem = $false
             if ($wuMode -eq "DriversOnly") {
@@ -4673,13 +4682,17 @@ function Invoke-BackgroundWindowsUpdateWorker {
                     try { $u.AcceptEula() } catch {}
                 }
                 $filteredUpdates += $u
+                $cycleDriverFlags += $isDrv
+                if ($isDrv) {
+                    $cycleDriverCount++
+                }
             }
         }
 
         $cycleCount = $filteredUpdates.Count
         if ($cycleCount -eq 0) {
             if ($bgCycle -eq 1 -and $totalInstalledAll -eq 0) {
-                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Azurno za rezim $wuMode (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -RebootRequired $rebootReq -WorkerPid $PID
+                Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Azurno za rezim $wuMode (0 zakrpa)" -FoundCount 0 -DownloadedCount 0 -InstalledCount 0 -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Nakon filtera ($wuMode) nema dodatnih zakrpa (0)." -Level "SUCCESS" -Component "BgWinUpdate"
                 }
@@ -4689,15 +4702,17 @@ function Invoke-BackgroundWindowsUpdateWorker {
         }
 
         $totalFoundAll += $cycleCount
+        $pendingDriverCount = $cycleDriverCount
+        $installingDriver = $false
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker (krug $bgCycle): Pronadjeno $cycleCount stavki (rezim: $wuMode). Zapocinjem pozadinsko preuzimanje..." -Level "INFO" -Component "BgWinUpdate"
+            Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker (krug $bgCycle): Pronadjeno $cycleCount stavki (drajveri: $pendingDriverCount, rezim: $wuMode). Zapocinjem pozadinsko preuzimanje..." -Level "INFO" -Component "BgWinUpdate"
         }
 
         # FAZA A: Pozadinsko preuzimanje (Download ne drzi MSI mutex - radi 100% paralelno sa Fazama 3 i 4)
         for ($idx = 0; $idx -lt $cycleCount; $idx++) {
             $item = $filteredUpdates[$idx]
             $num = $idx + 1
-            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzimanje ($($totalDownloadedAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzimanje ($($totalDownloadedAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount $pendingDriverCount -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
 
             if (-not $item.IsDownloaded) {
                 try {
@@ -4713,13 +4728,14 @@ function Invoke-BackgroundWindowsUpdateWorker {
                 }
             }
             $totalDownloadedAll++
-            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            Write-BackgroundWuStatus -Status "DOWNLOADING" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount $pendingDriverCount -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
         }
 
         # FAZA B: Koordinisana instalacija (ceka slobodan MSI instalator da ne izazove Error 1618 u Fazi 4)
         $cycleInstalledOk = 0
         for ($idx = 0; $idx -lt $cycleCount; $idx++) {
             $item = $filteredUpdates[$idx]
+            $itemIsDriver = if ($idx -lt $cycleDriverFlags.Count) { [bool]$cycleDriverFlags[$idx] } else { [bool](Test-IsDriverUpdate -UpdateItem $item) }
 
             $waitCycles = 0
             while ($waitCycles -lt 300) {
@@ -4753,12 +4769,13 @@ function Invoke-BackgroundWindowsUpdateWorker {
                 }
 
                 if (-not $msiBusy) { break }
-                Write-BackgroundWuStatus -Status "WAITING_MSI" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll) - ceka MSI instalator..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+                Write-BackgroundWuStatus -Status "WAITING_MSI" -PhaseText "Pozadinski WU: Preuzeto ($totalDownloadedAll/$totalFoundAll) - ceka MSI instalator..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount $pendingDriverCount -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
                 Start-Sleep -Seconds 3
                 $waitCycles++
             }
 
-            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalacija ($($totalInstalledAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            $installingDriver = $itemIsDriver
+            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalacija ($($totalInstalledAll + 1)/$totalFoundAll)..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount $pendingDriverCount -InstallingDriver $installingDriver -RebootRequired $rebootReq -WorkerPid $PID
 
             try {
                 if (-not (Test-Path "HKLM:\SOFTWARE\WIS")) {
@@ -4786,9 +4803,13 @@ function Invoke-BackgroundWindowsUpdateWorker {
                 }
             } finally {
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuActive" -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                if ($itemIsDriver -and $pendingDriverCount -gt 0) {
+                    $pendingDriverCount--
+                }
+                $installingDriver = $false
             }
 
-            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalirano ($totalInstalledAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+            Write-BackgroundWuStatus -Status "INSTALLING" -PhaseText "Pozadinski WU: Instalirano ($totalInstalledAll/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount $pendingDriverCount -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
         }
 
         $harvestUpdates += $filteredUpdates
@@ -4798,19 +4819,19 @@ function Invoke-BackgroundWindowsUpdateWorker {
     }
 
     if ($harvestUpdates -and $harvestUpdates.Count -gt 0) {
-        Write-BackgroundWuStatus -Status "HARVESTING" -PhaseText "Pozadinski WU: Arhiviranje novih zakrpa na NAS..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        Write-BackgroundWuStatus -Status "HARVESTING" -PhaseText "Pozadinski WU: Arhiviranje novih zakrpa na NAS..." -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
         try {
             Export-ServisWindowsUpdates -Updates $harvestUpdates
         } catch {}
     }
 
     if ($totalFoundAll -gt 0 -and $totalInstalledAll -eq 0) {
-        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Nijedna zakrpa nije instalirana (0/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        Write-BackgroundWuStatus -Status "WARN" -PhaseText "Pozadinski WU: Nijedna zakrpa nije instalirana (0/$totalFoundAll)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pronadjeno $totalFoundAll zakrpi, ali nijedna nije instalirana (0/$totalFoundAll) — obelezeno kao WARN za Invoke-WindowsUpdateSecondPass." -Level "WARN" -Component "BgWinUpdate"
         }
     } else {
-        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($totalInstalledAll/$totalFoundAll instalirano)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -RebootRequired $rebootReq -WorkerPid $PID
+        Write-BackgroundWuStatus -Status "COMPLETED" -PhaseText "Pozadinski WU: Zavrseno ($totalInstalledAll/$totalFoundAll instalirano)" -FoundCount $totalFoundAll -DownloadedCount $totalDownloadedAll -InstalledCount $totalInstalledAll -PendingDriverCount 0 -InstallingDriver $false -RebootRequired $rebootReq -WorkerPid $PID
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Invoke-BackgroundWindowsUpdateWorker: Pozadinski Windows Update uspesno zavrsen (Instalirano: $totalInstalledAll/$totalFoundAll, RebootRequired: $rebootReq)." -Level "SUCCESS" -Component "BgWinUpdate"
         }

@@ -105,6 +105,18 @@
                 </div>
             </header>
 
+            <!-- IMP-36: Uočljiv LOW_DISK_WARNING / CRITICAL_DISK_WARNING Alert Banner (< 10 GB / < 5 GB) -->
+            <div id="low-disk-warning-banner" class="low-disk-alert-banner" style="display:none; margin: 12px 24px 0 24px; padding: 12px 18px; border-radius: var(--radius-sm); border: 1px solid #ef4444; background: rgba(239, 68, 68, 0.14); color: #fecaca; font-size: 0.88rem; align-items: center; justify-content: space-between; gap: 14px;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span id="low-disk-warning-icon" style="font-size:1.25rem;">🚨</span>
+                    <div>
+                        <strong id="low-disk-warning-badge" style="color:#fff; letter-spacing:0.03em;">LOW_DISK_WARNING</strong>
+                        <span id="low-disk-warning-text" style="margin-left:8px;">Slobodan prostor na NAS skladištu je kritično nizak (&lt; 10 GB / &lt; 5 GB).</span>
+                    </div>
+                </div>
+                <span id="low-disk-warning-stats" class="header-badge" style="border-color:#ef4444; color:#fca5a5; font-family:var(--font-mono); white-space:nowrap;">0.00 GB slobodno</span>
+            </div>
+
             <main>
                 <!-- TAB 1: Radionička Flota & Telemetrija (Hibridni Cockpit) -->
                 <section id="tab-fleet" class="tab-content active">
@@ -608,3 +620,59 @@
          Vanilla JavaScript Logika
          ===================================================================== -->
     <!-- __DASHBOARD_JS__ -->
+    <script>
+        function checkLowDiskStatusAlert() {
+            fetch('/api/status')
+                .then(function(res) { return res.json(); })
+                .then(function(data) {
+                    var banner = document.getElementById('low-disk-warning-banner');
+                    if (!banner) return;
+                    var du = (data && data.disk_usage) ? data.disk_usage : {};
+                    var isCrit = Boolean((data && data.critical_disk_warning) || du.critical_disk_warning);
+                    var isLow = Boolean((data && data.low_disk_warning) || du.low_disk_warning || isCrit);
+                    if (!isLow) {
+                        banner.style.display = 'none';
+                        return;
+                    }
+                    var iconEl = document.getElementById('low-disk-warning-icon');
+                    var badgeEl = document.getElementById('low-disk-warning-badge');
+                    var textEl = document.getElementById('low-disk-warning-text');
+                    var statsEl = document.getElementById('low-disk-warning-stats');
+                    var freeGb = (du.free_gb !== undefined) ? du.free_gb : 0;
+                    var usedPct = (du.used_pct !== undefined) ? du.used_pct : 0;
+                    if (isCrit) {
+                        banner.style.borderColor = '#ef4444';
+                        banner.style.background = 'rgba(239, 68, 68, 0.18)';
+                        banner.style.color = '#fecaca';
+                        if (iconEl) iconEl.textContent = '🚨';
+                        if (badgeEl) badgeEl.textContent = 'CRITICAL_DISK_WARNING (< 5 GB)';
+                        if (statsEl) {
+                            statsEl.style.borderColor = '#ef4444';
+                            statsEl.style.color = '#fca5a5';
+                        }
+                    } else {
+                        banner.style.borderColor = '#f59e0b';
+                        banner.style.background = 'rgba(245, 158, 11, 0.14)';
+                        banner.style.color = '#fde68a';
+                        if (iconEl) iconEl.textContent = '⚠️';
+                        if (badgeEl) badgeEl.textContent = 'LOW_DISK_WARNING (< 10 GB)';
+                        if (statsEl) {
+                            statsEl.style.borderColor = '#f59e0b';
+                            statsEl.style.color = '#fcd34d';
+                        }
+                    }
+                    if (textEl) {
+                        textEl.textContent = du.status_message || data.status_message || ('Upozorenje o slobodnom prostoru na disku: ' + freeGb + ' GB slobodno.');
+                    }
+                    if (statsEl) {
+                        statsEl.textContent = freeGb + ' GB slobodno (' + usedPct + '% zauzeto)';
+                    }
+                    banner.style.display = 'flex';
+                })
+                .catch(function() {});
+        }
+        setInterval(checkLowDiskStatusAlert, 10000);
+        checkLowDiskStatusAlert();
+    </script>
+</body>
+</html>

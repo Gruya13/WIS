@@ -231,6 +231,10 @@ class TestLocalizationParity(unittest.TestCase):
             (HWTEST_DIR / "Build-HwTest.py", "HwTestLocalization.cs"),
             (UI_DIR / "WIS.UI.csproj", r"HwTest\Core\HwTestLocalization.cs"),
             (HWTEST_DIR / "WIS.HwTest.csproj", r"Core\HwTestLocalization.cs"),
+            (UI_DIR / "Build-UI.py", "DriverReadinessGate.cs"),
+            (HWTEST_DIR / "Build-HwTest.py", "DriverReadinessGate.cs"),
+            (UI_DIR / "WIS.UI.csproj", r"HwTest\Core\DriverReadinessGate.cs"),
+            (HWTEST_DIR / "WIS.HwTest.csproj", r"Core\DriverReadinessGate.cs"),
         )
         for path, token in build_files:
             self.assertIn(token, path.read_text(encoding="utf-8"), f"{path.name} mora uključivati {token}")

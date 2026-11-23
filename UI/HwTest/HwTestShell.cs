@@ -70,6 +70,7 @@ namespace WIS.HwTest
         private TextBlock _manualSectionSubBlock;
         private Button _btnFinish;
         private Button _btnRunAll;
+        private Button _btnResetAllTests;
         private bool _isEmbedded = false;
         private Window _hostWindow = null;
         private Action<HwTestRunResult> _onReportSavedCallback = null;
@@ -81,6 +82,34 @@ namespace WIS.HwTest
         private volatile bool _inSequentialPeripheralRun = false;
         private Window _activePeripheralDialog = null;
         public event Action<List<string>> PendingInteractiveTestsRequired;
+
+        // V344-01: Driver Readiness Gate za interaktivne testove
+        private Func<DriverGateState> _driverGateProvider;
+        private Action _openDriversTabHandler;
+        private bool _driverGateEmergencyUnlocked = false;
+        private string _driverGateEmergencyOverrideReason = "";
+        private bool _driverGateWasLocked = false;
+        private bool _hardwareProbeRefreshedAfterDrivers = false;
+        private DriverGateState _lastDriverGateState = null;
+        private DispatcherTimer _driverGatePollTimer = null;
+        private Border _driverGateBanner = null;
+        private TextBlock _driverGateBannerTitle = null;
+        private TextBlock _driverGateBannerDetail = null;
+        private Button _btnDriverGateOpenDrivers = null;
+        private Button _btnDriverGateRecheck = null;
+        private Button _btnDriverGateEmergencyUnlock = null;
+
+        public void SetInteractiveTestsGateProvider(Func<DriverGateState> provider)
+        {
+            _driverGateProvider = provider;
+            RefreshDriverGateUi();
+        }
+
+        public void SetOpenDriversTabHandler(Action handler)
+        {
+            _openDriversTabHandler = handler;
+            RefreshDriverGateUi();
+        }
         public bool IsWaitingForManualTests
         {
             get { return _phase5WorkflowActive && _waitingForManualPeripherals && !_phase5CompletedNotified; }
@@ -401,6 +430,8 @@ namespace WIS.HwTest
             };
             StackPanel manualColStack = new StackPanel();
             manualColStack.Children.Add(CreateManualSectionHeader());
+            _driverGateBanner = CreateDriverGateBanner();
+            manualColStack.Children.Add(_driverGateBanner);
             _manualCardsPanel = new StackPanel();
             manualColStack.Children.Add(_manualCardsPanel);
             manualColBorder.Child = manualColStack;
@@ -435,6 +466,12 @@ namespace WIS.HwTest
             fg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             fg.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
+            StackPanel leftFooterStack = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
             Button btnRunAll = new Button
             {
                 Content = HwTestLocalization.Pick("▶ Pokreni sve testove redom", "▶ 依次运行全部测试"),
@@ -447,8 +484,28 @@ namespace WIS.HwTest
             };
             btnRunAll.Click += (s, e) => RunSequentialTests();
             _btnRunAll = btnRunAll;
-            Grid.SetColumn(btnRunAll, 0);
-            fg.Children.Add(btnRunAll);
+            leftFooterStack.Children.Add(btnRunAll);
+
+            Button btnResetAll = new Button
+            {
+                Content = HwTestLocalization.Pick("↻ Ponovi sve testove", "↻ 重新运行所有测试"),
+                ToolTip = HwTestLocalization.Pick("Obriši sačuvane rezultate i ponovi sve hardverske testove ispočetka", "清除已保存的结果并从头重新运行所有硬件测试"),
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
+                Foreground = new SolidColorBrush(Color.FromRgb(220, 225, 235)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(85, 92, 108)),
+                BorderThickness = new Thickness(1),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(12, 6, 12, 6),
+                Margin = new Thickness(10, 0, 0, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btnResetAll.Click += (s, e) => ResetAllTestsWithConfirmation();
+            _btnResetAllTests = btnResetAll;
+            leftFooterStack.Children.Add(btnResetAll);
+
+            Grid.SetColumn(leftFooterStack, 0);
+            fg.Children.Add(leftFooterStack);
 
             Button btnFinish = new Button
             {
@@ -472,6 +529,9 @@ namespace WIS.HwTest
             _runningUiTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             _runningUiTimer.Tick += (s, e) => UpdateRunningElapsedTimers();
 
+            _driverGatePollTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _driverGatePollTimer.Tick += (s, e) => RefreshDriverGateUi();
+
             Content = root;
             if (_checkpointRestored && _autoSectionStatus != null)
             {
@@ -483,6 +543,7 @@ namespace WIS.HwTest
             }
             RefreshCardVisibility();
             UpdateSummaryBadge();
+            RefreshDriverGateUi();
 
             HwTestLocalization.LanguageChanged += OnHwTestLanguageChanged;
             Loaded += (s, e) => StartPassiveAutoChecks();
@@ -491,7 +552,12 @@ namespace WIS.HwTest
                 HwTestLocalization.LanguageChanged -= OnHwTestLanguageChanged;
                 _phase5WorkflowActive = false;
                 if (_runningUiTimer != null) _runningUiTimer.Stop();
+                if (_driverGatePollTimer != null) _driverGatePollTimer.Stop();
                 _autoStressCancel.Cancel();
+                if (!_uefiBiosRebootRequested && HasAnyCompletedTestsForCheckpoint())
+                {
+                    try { SaveCheckpoint(""); } catch { }
+                }
                 _autoEngine.Dispose();
             };
         }
@@ -537,8 +603,28 @@ namespace WIS.HwTest
                 _manualSectionSubBlock.Text = HwTestLocalization.Pick("Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja", "物理外设及输入/输出设备的交互式测试");
             if (_btnRunAll != null)
                 _btnRunAll.Content = HwTestLocalization.Pick("▶ Pokreni sve testove redom", "▶ 依次运行全部测试");
+            if (_btnResetAllTests != null)
+            {
+                _btnResetAllTests.Content = HwTestLocalization.Pick("↻ Ponovi sve testove", "↻ 重新运行所有测试");
+                _btnResetAllTests.ToolTip = HwTestLocalization.Pick("Obriši sačuvane rezultate i ponovi sve hardverske testove ispočetka", "清除已保存的结果并从头重新运行所有硬件测试");
+            }
             if (_btnFinish != null)
                 _btnFinish.Content = HwTestLocalization.Pick("✓ Završi i sačuvaj izveštaj", "✓ 完成并保存报告");
+            if (_btnDriverGateOpenDrivers != null)
+            {
+                _btnDriverGateOpenDrivers.Content = HwTestLocalization.Pick("🔧 Otvori tab Drajveri", "🔧 打开驱动选项卡");
+                _btnDriverGateOpenDrivers.ToolTip = HwTestLocalization.Pick("Prebaci se na tab Drajveri radi pregleda i instalacije nedostajućih drajvera", "切换到驱动选项卡以查看并安装缺失的驱动程序");
+            }
+            if (_btnDriverGateRecheck != null)
+            {
+                _btnDriverGateRecheck.Content = HwTestLocalization.Pick("🔄 Proveri ponovo", "🔄 重新检查");
+                _btnDriverGateRecheck.ToolTip = HwTestLocalization.Pick("Ponovo proveri stanje drajvera i Device Manager-a", "重新检查驱动程序与设备管理器状态");
+            }
+            if (_btnDriverGateEmergencyUnlock != null)
+            {
+                _btnDriverGateEmergencyUnlock.Content = HwTestLocalization.Pick("⚠️ Vanredno otključaj testove", "⚠️ 紧急解锁测试");
+                _btnDriverGateEmergencyUnlock.ToolTip = HwTestLocalization.Pick("Vanredno otključaj interaktivne testove uz obavezan serviserski razlog (samo nakon završene instalacije drajvera)", "在驱动安装完成后填写技术员原因以紧急解锁交互式测试");
+            }
             if (_btnRunAutoSuite != null)
             {
                 _btnRunAutoSuite.Content = _autoStressRunning
@@ -585,6 +671,7 @@ namespace WIS.HwTest
             }
             RefreshCardVisibility();
             UpdateSummaryBadge();
+            RefreshDriverGateUi();
         }
 
         private Window GetDialogOwner()
@@ -604,6 +691,7 @@ namespace WIS.HwTest
                 Content = null;
             }
 
+            RefreshDriverGateUi();
             StartPassiveAutoChecks();
             return _rootGrid;
         }
@@ -616,7 +704,15 @@ namespace WIS.HwTest
             {
                 try { _runningUiTimer.Stop(); } catch { }
             }
+            if (_driverGatePollTimer != null)
+            {
+                try { _driverGatePollTimer.Stop(); } catch { }
+            }
             _autoStressCancel.Cancel();
+            if (!_uefiBiosRebootRequested && HasAnyCompletedTestsForCheckpoint())
+            {
+                try { SaveCheckpoint(""); } catch { }
+            }
             try { _autoEngine.Dispose(); } catch { }
         }
 
@@ -638,6 +734,12 @@ namespace WIS.HwTest
             if (t.StartsWith("Učitavanje", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Ucitavanje", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Loading", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Detecting", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Unknown", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("加载中", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("读取中", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("正在加载", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("未知", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("To be filled", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("Default string", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("System Product Name", StringComparison.OrdinalIgnoreCase)) return true;
@@ -647,6 +749,7 @@ namespace WIS.HwTest
         public void UpdateIdentity(string modelName, string serialNumber)
         {
             bool changed = false;
+            bool serialBecameValid = false;
             if (!IsPlaceholderIdentity(modelName))
             {
                 _modelName = modelName.Trim();
@@ -655,15 +758,23 @@ namespace WIS.HwTest
             }
             if (!IsPlaceholderIdentity(serialNumber))
             {
+                bool wasPlaceholder = IsPlaceholderIdentity(_serialNumber);
                 _serialNumber = serialNumber.Trim();
                 if (_hwInfo != null) _hwInfo.SerialNumber = _serialNumber;
                 changed = true;
+                if (wasPlaceholder) serialBecameValid = true;
+            }
+            if (serialBecameValid && !_checkpointRestored)
+            {
+                try { TryRestorePersistedTestState(); } catch { }
             }
             if (changed && _subTitleBlock != null)
             {
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     _subTitleBlock.Text = BuildSubTitleText();
+                    RefreshCardVisibility();
+                    UpdateSummaryBadge();
                 }));
             }
         }
@@ -1247,6 +1358,633 @@ namespace WIS.HwTest
             return b;
         }
 
+        private Border CreateDriverGateBanner()
+        {
+            Border banner = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(54, 30, 24)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(230, 126, 34)),
+                BorderThickness = new Thickness(1.5),
+                CornerRadius = new CornerRadius(5),
+                Padding = new Thickness(10, 8, 10, 8),
+                Margin = new Thickness(0, 0, 0, 8),
+                Visibility = Visibility.Collapsed
+            };
+
+            StackPanel sp = new StackPanel();
+
+            _driverGateBannerTitle = new TextBlock
+            {
+                Text = HwTestLocalization.Pick("🔒 Interaktivni testovi su zaključani dok se svi drajveri ne instaliraju", "🔒 所有驱动程序安装完成前，交互式测试已锁定"),
+                FontSize = 11.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102)),
+                TextWrapping = TextWrapping.Wrap
+            };
+            sp.Children.Add(_driverGateBannerTitle);
+
+            _driverGateBannerDetail = new TextBlock
+            {
+                Text = HwTestLocalization.Pick("Sačekajte završetak Faze 2 i instalaciju svih drajvera pre pokretanja interaktivnih testova periferija.", "请等待阶段 2 及所有驱动程序安装完成后再启动外设交互式测试。"),
+                FontSize = 10.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(235, 215, 205)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 3, 0, 6)
+            };
+            sp.Children.Add(_driverGateBannerDetail);
+
+            WrapPanel btnPanel = new WrapPanel
+            {
+                Orientation = Orientation.Horizontal
+            };
+
+            _btnDriverGateOpenDrivers = new Button
+            {
+                Content = HwTestLocalization.Pick("🔧 Otvori tab Drajveri", "🔧 打开驱动选项卡"),
+                ToolTip = HwTestLocalization.Pick("Prebaci se na tab Drajveri radi pregleda i instalacije nedostajućih drajvera", "切换到驱动选项卡以查看并安装缺失的驱动程序"),
+                Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
+                Foreground = Brushes.White,
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(9, 4, 9, 4),
+                Margin = new Thickness(0, 0, 6, 4),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Visibility = Visibility.Collapsed
+            };
+            _btnDriverGateOpenDrivers.Click += (s, e) =>
+            {
+                Action h = _openDriversTabHandler;
+                if (h != null)
+                {
+                    try { h(); } catch { }
+                }
+            };
+            btnPanel.Children.Add(_btnDriverGateOpenDrivers);
+
+            _btnDriverGateRecheck = new Button
+            {
+                Content = HwTestLocalization.Pick("🔄 Proveri ponovo", "🔄 重新检查"),
+                ToolTip = HwTestLocalization.Pick("Ponovo proveri stanje drajvera i Device Manager-a", "重新检查驱动程序与设备管理器状态"),
+                Background = new SolidColorBrush(Color.FromRgb(55, 62, 76)),
+                Foreground = Brushes.White,
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(9, 4, 9, 4),
+                Margin = new Thickness(0, 0, 6, 4),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            _btnDriverGateRecheck.Click += (s, e) => RefreshDriverGateUi();
+            btnPanel.Children.Add(_btnDriverGateRecheck);
+
+            _btnDriverGateEmergencyUnlock = new Button
+            {
+                Content = HwTestLocalization.Pick("⚠️ Vanredno otključaj testove", "⚠️ 紧急解锁测试"),
+                ToolTip = HwTestLocalization.Pick("Vanredno otključaj interaktivne testove uz obavezan serviserski razlog (samo nakon završene instalacije drajvera)", "在驱动安装完成后填写技术员原因以紧急解锁交互式测试"),
+                Background = new SolidColorBrush(Color.FromRgb(180, 90, 20)),
+                Foreground = Brushes.White,
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(9, 4, 9, 4),
+                Margin = new Thickness(0, 0, 0, 4),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Visibility = Visibility.Collapsed
+            };
+            _btnDriverGateEmergencyUnlock.Click += (s, e) => PromptEmergencyDriverGateUnlock();
+            btnPanel.Children.Add(_btnDriverGateEmergencyUnlock);
+
+            sp.Children.Add(btnPanel);
+            banner.Child = sp;
+            return banner;
+        }
+
+        public DriverGateState GetCurrentDriverGateState()
+        {
+            return EvaluateEffectiveDriverGateState();
+        }
+
+        public bool IsInteractiveDriverGateUnlocked()
+        {
+            DriverGateState st = EvaluateEffectiveDriverGateState();
+            return st != null && st.IsUnlocked;
+        }
+
+        private DriverGateState EvaluateEffectiveDriverGateState()
+        {
+            DriverGateState raw = null;
+            Func<DriverGateState> provider = _driverGateProvider;
+            if (provider != null)
+            {
+                try { raw = provider(); }
+                catch { raw = null; }
+            }
+            if (raw == null)
+            {
+                raw = DriverReadinessGate.EvaluateLocal();
+            }
+            if (raw == null)
+            {
+                raw = new DriverGateState { IsUnlocked = true };
+            }
+
+            // Odluka 1A: Vanredno otkljucavanje vazi iskljucivo kada instalacija drajvera NIJE aktivna,
+            // nema Code 14 restarta i nema BackgroundWu drajvera (tj. raw.CanEmergencyUnlock == true).
+            if (!raw.IsUnlocked &&
+                _driverGateEmergencyUnlocked &&
+                !string.IsNullOrEmpty(_driverGateEmergencyOverrideReason) &&
+                raw.CanEmergencyUnlock &&
+                !raw.IsDriverInstallActive &&
+                !raw.HasCode14PendingReboot &&
+                !raw.HasBackgroundWuDrivers)
+            {
+                DriverGateState unlockedOverride = new DriverGateState
+                {
+                    IsUnlocked = true,
+                    CanEmergencyUnlock = false,
+                    ReasonTitle = raw.ReasonTitle,
+                    ReasonDetail = raw.ReasonDetail,
+                    ProblemDevices = raw.ProblemDevices != null ? new List<string>(raw.ProblemDevices) : new List<string>(),
+                    IsDriverInstallActive = false,
+                    HasCode14PendingReboot = false,
+                    HasBackgroundWuDrivers = false
+                };
+                _lastDriverGateState = unlockedOverride;
+                return unlockedOverride;
+            }
+
+            _lastDriverGateState = raw;
+            return raw;
+        }
+
+        private bool HasPendingAutomatedTests()
+        {
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.IsAutomated && (t.Status == TestStatus.Pending || t.Status == TestStatus.Running))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public void RefreshDriverGateUi()
+        {
+            if (Dispatcher != null && !Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(RefreshDriverGateUi));
+                return;
+            }
+
+            DriverGateState state = EvaluateEffectiveDriverGateState();
+            bool unlocked = state != null && state.IsUnlocked;
+
+            if (!unlocked)
+            {
+                _driverGateWasLocked = true;
+            }
+            else if (_driverGateWasLocked)
+            {
+                _driverGateWasLocked = false;
+                RefreshHardwareProbeAfterDrivers();
+            }
+
+            if (_driverGateBanner != null)
+            {
+                _driverGateBanner.Visibility = unlocked ? Visibility.Collapsed : Visibility.Visible;
+            }
+
+            if (!unlocked && state != null)
+            {
+                if (_driverGateBannerTitle != null)
+                {
+                    string title = !string.IsNullOrEmpty(state.ReasonTitle)
+                        ? state.ReasonTitle
+                        : HwTestLocalization.Pick("Interaktivni testovi su zaključani dok se svi drajveri ne instaliraju", "所有驱动程序安装完成前，交互式测试已锁定");
+                    _driverGateBannerTitle.Text = "🔒 " + title;
+                }
+                if (_driverGateBannerDetail != null)
+                {
+                    _driverGateBannerDetail.Text = !string.IsNullOrEmpty(state.ReasonDetail)
+                        ? state.ReasonDetail
+                        : HwTestLocalization.Pick("Instalirajte sve nedostajuće drajvere pre pokretanja interaktivnih testova periferija.", "请先安装所有缺失的驱动程序，然后再启动外设交互式测试。");
+                }
+                if (_btnDriverGateOpenDrivers != null)
+                {
+                    _btnDriverGateOpenDrivers.Visibility = (_openDriversTabHandler != null) ? Visibility.Visible : Visibility.Collapsed;
+                }
+                if (_btnDriverGateEmergencyUnlock != null)
+                {
+                    bool canEmergency = state.CanEmergencyUnlock &&
+                                        !state.IsDriverInstallActive &&
+                                        !state.HasCode14PendingReboot &&
+                                        !state.HasBackgroundWuDrivers;
+                    _btnDriverGateEmergencyUnlock.Visibility = canEmergency ? Visibility.Visible : Visibility.Collapsed;
+                }
+            }
+
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (!t.IsAutomated)
+                {
+                    Button btnRun;
+                    if (_runBtnMap.TryGetValue(t.Id, out btnRun) && btnRun != null)
+                    {
+                        btnRun.IsEnabled = unlocked;
+                        btnRun.Opacity = unlocked ? 1.0 : 0.45;
+                    }
+                }
+            }
+
+            if (_btnRunAll != null)
+            {
+                bool wouldStartInteractive = !HasPendingAutomatedTests() || (_phase5WorkflowActive && _waitingForManualPeripherals);
+                bool canRunAll = !_autoStressRunning && (unlocked || !wouldStartInteractive);
+                _btnRunAll.IsEnabled = canRunAll;
+                _btnRunAll.Opacity = canRunAll ? 1.0 : 0.50;
+            }
+
+            if (_driverGatePollTimer != null)
+            {
+                if (!unlocked)
+                {
+                    if (!_driverGatePollTimer.IsEnabled) _driverGatePollTimer.Start();
+                }
+                else
+                {
+                    if (_driverGatePollTimer.IsEnabled) _driverGatePollTimer.Stop();
+                }
+            }
+
+            if (unlocked && _phase5WorkflowActive && _waitingForManualPeripherals && !_phase5CompletedNotified && !_autoStressRunning)
+            {
+                List<string> pendingNames = GetPendingInteractiveTestNames();
+                if (pendingNames.Count > 0)
+                {
+                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "RUNNING", "");
+                    if (_autoSectionStatus != null)
+                    {
+                        _autoSectionStatus.Text = HwTestLocalization.PickFormat("⚠️ Drajveri su spremni — preostalo {0} obaveznih interaktivnih testova ({1}).", "⚠️ 驱动程序已就绪 — 剩余 {0} 项必选交互式测试（{1}）。",
+                            pendingNames.Count,
+                            string.Join(", ", pendingNames.ToArray()));
+                    }
+                    RaisePendingInteractiveTestsRequired();
+                }
+                else
+                {
+                    CheckAndHandlePhase5InteractiveCompletion();
+                }
+            }
+        }
+
+        private bool EnsureInteractiveTestsDriverGateUnlocked(bool showMessageBox)
+        {
+            RefreshDriverGateUi();
+            DriverGateState state = EvaluateEffectiveDriverGateState();
+            if (state != null && state.IsUnlocked)
+            {
+                if (!_hardwareProbeRefreshedAfterDrivers)
+                {
+                    RefreshHardwareProbeAfterDrivers();
+                }
+                return true;
+            }
+
+            string title = (state != null && !string.IsNullOrEmpty(state.ReasonTitle))
+                ? state.ReasonTitle
+                : HwTestLocalization.Pick("Interaktivni testovi su zaključani dok svi drajveri nisu instalirani", "所有驱动程序安装完成前，交互式测试已锁定");
+            string detail = (state != null && !string.IsNullOrEmpty(state.ReasonDetail))
+                ? state.ReasonDetail
+                : HwTestLocalization.Pick("Sačekajte završetak Faze 2 i instalaciju svih drajvera pre testiranja periferija.", "请等待阶段 2 和所有驱动程序安装完成后再测试外设。");
+
+            HwTestLogger.Warn("DRIVER_GATE_BLOCKED", title + " | " + detail);
+
+            if (showMessageBox)
+            {
+                MessageBox.Show(
+                    title + "\n\n" + detail,
+                    HwTestLocalization.Pick("Drajveri nisu spremni", "驱动程序未就绪"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+            }
+            return false;
+        }
+
+        private void PromptEmergencyDriverGateUnlock()
+        {
+            DriverGateState state = EvaluateEffectiveDriverGateState();
+            if (state == null || state.IsUnlocked)
+            {
+                RefreshDriverGateUi();
+                return;
+            }
+
+            if (!state.CanEmergencyUnlock || state.IsDriverInstallActive || state.HasCode14PendingReboot || state.HasBackgroundWuDrivers)
+            {
+                MessageBox.Show(
+                    HwTestLocalization.Pick(
+                        "Vanredno otključavanje nije dozvoljeno dok je instalacija drajvera u toku, dok pozadinski Windows Update preuzima drajvere ili dok sistem čeka restart (Code 14).",
+                        "驱动安装进行中、后台 Windows Update 正在安装驱动或系统等待重启 (Code 14) 时，不允许紧急解锁。"),
+                    HwTestLocalization.Pick("Vanredno otključavanje odbijeno", "拒绝紧急解锁"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            MessageBoxResult confirm = MessageBox.Show(
+                HwTestLocalization.PickFormat(
+                    "U Device Manager-u su i dalje prisutni uređaji sa greškom posle završene instalacije drajvera:\n\n{0}\n\n" +
+                    "Da li potvrđujete da je instalacija drajvera završena i želite vanredno da otključate interaktivne testove uz unos serviserskog razloga (biće trajno zabeleženo u izveštaju)?",
+                    "驱动安装完成后，设备管理器中仍存在异常设备：\n\n{0}\n\n" +
+                    "是否确认驱动安装已结束，并填写技术员原因以紧急解锁交互式测试（将永久记录在报告中）？",
+                    state.ReasonDetail),
+                HwTestLocalization.Pick("Vanredno otključavanje interaktivnih testova", "紧急解锁交互式测试"),
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (confirm != MessageBoxResult.Yes) return;
+
+            Window promptWin = new Window
+            {
+                Title = HwTestLocalization.Pick("Serviserski razlog za vanredno otključavanje testova", "紧急解锁测试的技术员原因"),
+                Width = 480,
+                Height = 230,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                ResizeMode = ResizeMode.NoResize,
+                Background = new SolidColorBrush(Color.FromRgb(32, 34, 40)),
+                Owner = GetDialogOwner()
+            };
+
+            StackPanel rootSp = new StackPanel { Margin = new Thickness(16) };
+            TextBlock lbl = new TextBlock
+            {
+                Text = HwTestLocalization.Pick("Unesite tačan serviserski razlog za vanredno otključavanje (najmanje 5 znakova, npr. neispravan senzor ili uređaj bez podrške):", "请输入紧急解锁的详细技术员原因（至少 5 个字符，例如传感器损坏或无可用驱动）："),
+                Foreground = Brushes.White,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            rootSp.Children.Add(lbl);
+
+            TextBox tbReason = new TextBox
+            {
+                Height = 56,
+                TextWrapping = TextWrapping.Wrap,
+                AcceptsReturn = false,
+                FontSize = 12,
+                Padding = new Thickness(6),
+                Background = new SolidColorBrush(Color.FromRgb(22, 24, 28)),
+                Foreground = Brushes.White,
+                BorderBrush = new SolidColorBrush(Color.FromRgb(85, 92, 108))
+            };
+            rootSp.Children.Add(tbReason);
+
+            StackPanel btnRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 14, 0, 0)
+            };
+
+            string enteredReason = "";
+            Button btnOk = new Button
+            {
+                Content = HwTestLocalization.Pick("Otključaj testove", "解锁测试"),
+                Background = new SolidColorBrush(Color.FromRgb(180, 90, 20)),
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(14, 5, 14, 5),
+                Margin = new Thickness(0, 0, 8, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btnOk.Click += (s, e) =>
+            {
+                string r = (tbReason.Text ?? "").Trim();
+                if (r.Length < 5)
+                {
+                    MessageBox.Show(
+                        HwTestLocalization.Pick("Unesite validan serviserski razlog (najmanje 5 znakova).", "请输入有效的技术员原因（至少 5 个字符）。"),
+                        HwTestLocalization.Pick("Prekratak razlog", "原因过短"),
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                    return;
+                }
+                enteredReason = r;
+                promptWin.DialogResult = true;
+                promptWin.Close();
+            };
+
+            Button btnCancel = new Button
+            {
+                Content = HwTestLocalization.Pick("Otkaži", "取消"),
+                Background = new SolidColorBrush(Color.FromRgb(55, 60, 72)),
+                Foreground = Brushes.White,
+                Padding = new Thickness(14, 5, 14, 5),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            btnCancel.Click += (s, e) =>
+            {
+                promptWin.DialogResult = false;
+                promptWin.Close();
+            };
+
+            btnRow.Children.Add(btnOk);
+            btnRow.Children.Add(btnCancel);
+            rootSp.Children.Add(btnRow);
+            promptWin.Content = rootSp;
+
+            bool? ok = promptWin.ShowDialog();
+            if (ok == true && enteredReason.Length >= 5)
+            {
+                _driverGateEmergencyOverrideReason = enteredReason;
+                _driverGateEmergencyUnlocked = true;
+                HwTestLogger.Warn("DRIVER_GATE_OVERRIDE", "Vanredno otključani interaktivni testovi uz razlog: " + _driverGateEmergencyOverrideReason);
+                try { SaveCheckpoint(""); } catch { }
+                RefreshDriverGateUi();
+            }
+        }
+
+        public void RefreshHardwareProbeAfterDrivers()
+        {
+            if (Dispatcher != null && !Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(new Action(RefreshHardwareProbeAfterDrivers));
+                return;
+            }
+
+            try
+            {
+                HardwareProbeResult fresh = HardwareProbe.DetectHardware();
+                if (fresh == null) return;
+
+                if (string.IsNullOrEmpty(fresh.Manufacturer) && !string.IsNullOrEmpty(_hwInfo.Manufacturer))
+                    fresh.Manufacturer = _hwInfo.Manufacturer;
+                if (string.IsNullOrEmpty(fresh.SystemSkuNumber) && !string.IsNullOrEmpty(_hwInfo.SystemSkuNumber))
+                    fresh.SystemSkuNumber = _hwInfo.SystemSkuNumber;
+                if (IsPlaceholderIdentity(fresh.ModelName) && !IsPlaceholderIdentity(_modelName))
+                    fresh.ModelName = _modelName;
+                if (IsPlaceholderIdentity(fresh.SerialNumber) && !IsPlaceholderIdentity(_serialNumber))
+                    fresh.SerialNumber = _serialNumber;
+
+                FactorySpecProbe.ResolveAndMerge(fresh, _profileClient);
+                CopyHardwareProbeResult(fresh, _hwInfo);
+                _hardwareProbeRefreshedAfterDrivers = true;
+
+                // Sacuvaj postojece testove kako bismo osvezili SAMO nezapocete (Pending / NotApplicable) stavke
+                List<TestItemResult> snapshot = new List<TestItemResult>(_testItems);
+                _testItems.Clear();
+                InitTestList();
+                List<TestItemResult> freshItems = new List<TestItemResult>(_testItems);
+                _testItems.Clear();
+
+                Dictionary<string, TestItemResult> freshMap = new Dictionary<string, TestItemResult>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < freshItems.Count; i++)
+                {
+                    freshMap[freshItems[i].Id] = freshItems[i];
+                }
+
+                int updatedPendingOrNa = 0;
+                int preservedCompleted = 0;
+                for (int i = 0; i < snapshot.Count; i++)
+                {
+                    TestItemResult existing = snapshot[i];
+                    _testItems.Add(existing);
+
+                    bool isCompletedOrRestored =
+                        existing.Status == TestStatus.Pass ||
+                        existing.Status == TestStatus.Fail ||
+                        existing.Status == TestStatus.Running ||
+                        (existing.Status == TestStatus.Skip && !string.IsNullOrEmpty(existing.Reason)) ||
+                        (_restoredTestIds.Contains(existing.Id) && existing.Status != TestStatus.Pending && existing.Status != TestStatus.NotApplicable);
+
+                    if (isCompletedOrRestored)
+                    {
+                        preservedCompleted++;
+                        continue;
+                    }
+
+                    TestItemResult freshItem;
+                    if (freshMap.TryGetValue(existing.Id, out freshItem) && freshItem != null)
+                    {
+                        existing.Title = freshItem.Title;
+                        existing.Description = freshItem.Description;
+                        if (!existing.IsAutomated)
+                        {
+                            existing.Status = freshItem.Status;
+                            existing.HasWarning = freshItem.HasWarning;
+                            existing.Reason = freshItem.Reason;
+                            existing.Details = freshItem.Details;
+                        }
+                        TextBlock tbTitle;
+                        if (_titleTextMap.TryGetValue(existing.Id, out tbTitle) && tbTitle != null)
+                        {
+                            tbTitle.Text = existing.Title;
+                        }
+                        Border card;
+                        if (_cardMap.TryGetValue(existing.Id, out card) && card != null)
+                        {
+                            UpdateCardVisual(card, existing);
+                        }
+                        updatedPendingOrNa++;
+                    }
+                }
+
+                RefreshCardVisibility();
+                UpdateSummaryBadge();
+                HwTestLogger.Info("PROBE_REFRESH", string.Format(
+                    "Osvežena hardverska proba posle instalacije drajvera (ažurirano Pending/NA={0}, sačuvano završenih={1}).",
+                    updatedPendingOrNa, preservedCompleted));
+            }
+            catch (Exception ex)
+            {
+                HwTestLogger.Warn("PROBE_REFRESH", "Greška pri osvežavanju hardverske probe posle drajvera: " + ex.Message);
+            }
+        }
+
+        private static void CopyHardwareProbeResult(HardwareProbeResult source, HardwareProbeResult target)
+        {
+            if (source == null || target == null) return;
+            target.HasTouchscreen = source.HasTouchscreen;
+            target.MaxTouches = source.MaxTouches;
+            target.TouchscreenPnpPresent = source.TouchscreenPnpPresent;
+            target.TouchscreenBiosPresent = source.TouchscreenBiosPresent;
+            target.TouchscreenDisabledInBios = source.TouchscreenDisabledInBios;
+            target.TouchscreenBiosStatus = source.TouchscreenBiosStatus;
+            target.HasTouchpad = source.HasTouchpad;
+            target.TouchpadBiosPresent = source.TouchpadBiosPresent;
+            target.TouchpadDisabledInBios = source.TouchpadDisabledInBios;
+            target.TouchpadBiosStatus = source.TouchpadBiosStatus;
+            target.TrackPointBiosPresent = source.TrackPointBiosPresent;
+            target.TrackPointDisabledInBios = source.TrackPointDisabledInBios;
+            target.TrackPointBiosStatus = source.TrackPointBiosStatus;
+            target.FactoryTrackPoint = source.FactoryTrackPoint;
+            target.FactoryTrackPointEvidence = source.FactoryTrackPointEvidence;
+            target.HasWebcam = source.HasWebcam;
+            target.WebcamPnpPresent = source.WebcamPnpPresent;
+            target.WebcamName = source.WebcamName;
+            target.CameraBiosPresent = source.CameraBiosPresent;
+            target.CameraDisabledInBios = source.CameraDisabledInBios;
+            target.CameraBiosStatus = source.CameraBiosStatus;
+            target.HasIrCamera = source.HasIrCamera;
+            target.IrCameraName = source.IrCameraName;
+            target.HasSpeakers = source.HasSpeakers;
+            target.HasMicrophone = source.HasMicrophone;
+            target.MicrophoneBiosPresent = source.MicrophoneBiosPresent;
+            target.MicrophoneDisabledInBios = source.MicrophoneDisabledInBios;
+            target.MicrophoneBiosStatus = source.MicrophoneBiosStatus;
+            target.HasFingerprint = source.HasFingerprint;
+            target.FingerprintName = source.FingerprintName;
+            target.FingerprintDeviceId = source.FingerprintDeviceId;
+            target.FingerprintPnpError = source.FingerprintPnpError;
+            target.FingerprintBiosPresent = source.FingerprintBiosPresent;
+            target.FingerprintDisabledInBios = source.FingerprintDisabledInBios;
+            target.FingerprintBiosStatus = source.FingerprintBiosStatus;
+            target.WbioServiceState = source.WbioServiceState;
+            target.FingerprintUnitId = source.FingerprintUnitId;
+            target.PnpAuditNotes = source.PnpAuditNotes;
+            target.BiosAuditNotes = source.BiosAuditNotes;
+            target.IsLaptop = source.IsLaptop;
+            target.RecommendedLayout = source.RecommendedLayout;
+            target.FactoryBomLoaded = source.FactoryBomLoaded;
+            target.FactorySource = source.FactorySource;
+            target.FactorySummary = source.FactorySummary;
+            target.FactoryTouchscreen = source.FactoryTouchscreen;
+            target.FactoryTouchscreenEvidence = source.FactoryTouchscreenEvidence;
+            target.FactoryFingerprint = source.FactoryFingerprint;
+            target.FactoryFingerprintEvidence = source.FactoryFingerprintEvidence;
+            target.FactoryWebcam = source.FactoryWebcam;
+            target.FactoryWebcamEvidence = source.FactoryWebcamEvidence;
+            target.FactoryIrCamera = source.FactoryIrCamera;
+            target.FactoryIrCameraEvidence = source.FactoryIrCameraEvidence;
+            target.FactoryTouchpad = source.FactoryTouchpad;
+            target.FactorySpeakers = source.FactorySpeakers;
+            target.FactoryMicrophone = source.FactoryMicrophone;
+            if (!string.IsNullOrEmpty(source.Manufacturer)) target.Manufacturer = source.Manufacturer;
+            if (!string.IsNullOrEmpty(source.ModelName)) target.ModelName = source.ModelName;
+            if (!string.IsNullOrEmpty(source.SerialNumber)) target.SerialNumber = source.SerialNumber;
+            if (!string.IsNullOrEmpty(source.SystemSkuNumber)) target.SystemSkuNumber = source.SystemSkuNumber;
+            if (!string.IsNullOrEmpty(source.ProductMtm)) target.ProductMtm = source.ProductMtm;
+            target.ScreenInches = source.ScreenInches;
+            target.OsHasOem102 = source.OsHasOem102;
+            target.KeyboardType = source.KeyboardType;
+            target.HasNavColumn = source.HasNavColumn;
+            target.IsThinkPad = source.IsThinkPad;
+            target.FactoryKeyboardIso = source.FactoryKeyboardIso;
+            target.FactoryKeyboardNumpad = source.FactoryKeyboardNumpad;
+            target.FactoryKeyboardDesc = source.FactoryKeyboardDesc;
+            target.FactoryKeyboardBacklight = source.FactoryKeyboardBacklight;
+            target.FactoryKeyboardBacklightEvidence = source.FactoryKeyboardBacklightEvidence;
+            target.HasKeyboardBacklight = source.HasKeyboardBacklight;
+            target.KeyboardBacklightBiosDisabled = source.KeyboardBacklightBiosDisabled;
+            target.KeyboardBacklightEvidence = source.KeyboardBacklightEvidence;
+            target.EstimatedUsbPortCount = source.EstimatedUsbPortCount;
+            target.HasStylusPen = source.HasStylusPen;
+            target.StylusPenName = source.StylusPenName;
+            target.HasTrackPoint = source.HasTrackPoint;
+            target.HasRotationSensor = source.HasRotationSensor;
+        }
+
         private Border CreateTestCard(TestItemResult t)
         {
             Border card = new Border
@@ -1803,6 +2541,11 @@ namespace WIS.HwTest
                 return;
             }
 
+            if (!EnsureInteractiveTestsDriverGateUnlocked(true))
+            {
+                return;
+            }
+
             bool prevHadBiosAction = IsBoolDetailTrue(t.Details, "bios_action_recommended");
             bool prevWarn = t.HasWarning;
             string prevReason = t.Reason;
@@ -1905,11 +2648,21 @@ namespace WIS.HwTest
 
             sw.Stop();
             t.DurationSeconds = (int)sw.Elapsed.TotalSeconds;
+            if (!string.IsNullOrEmpty(_driverGateEmergencyOverrideReason) &&
+                (t.Status == TestStatus.Pass || t.Status == TestStatus.Fail))
+            {
+                if (t.Details == null) t.Details = new Dictionary<string, object>();
+                t.Details["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason;
+            }
             HwTestLogger.Info("TEST_END", string.Format("Završen '{0}' -> Status={1} | Trajanje={2}s | Reason='{3}' | Details={4}",
                 t.Id, t.Status, t.DurationSeconds, t.Reason ?? "", SimpleJson.Serialize(t.Details ?? new Dictionary<string, object>())));
 
             if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
             UpdateSummaryBadge();
+            if (!_uefiBiosRebootRequested && (t.Status == TestStatus.Pass || t.Status == TestStatus.Fail))
+            {
+                try { SaveCheckpoint(""); } catch { }
+            }
 
             if (!t.IsAutomated && !_inSequentialPeripheralRun)
             {
@@ -1950,6 +2703,10 @@ namespace WIS.HwTest
 
                 if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
                 UpdateSummaryBadge();
+                if (!_uefiBiosRebootRequested)
+                {
+                    try { SaveCheckpoint(""); } catch { }
+                }
                 return;
             }
 
@@ -1966,6 +2723,10 @@ namespace WIS.HwTest
 
             if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
             UpdateSummaryBadge();
+            if (!_uefiBiosRebootRequested)
+            {
+                try { SaveCheckpoint(""); } catch { }
+            }
         }
 
         private void ApplyResult(TestItemResult target, TestItemResult source)
@@ -2148,6 +2909,10 @@ namespace WIS.HwTest
                             Border c;
                             if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
                             UpdateSummaryBadge();
+                            if (!_uefiBiosRebootRequested)
+                            {
+                                try { SaveCheckpoint(""); } catch { }
+                            }
                         }));
                     }
 
@@ -2193,6 +2958,10 @@ namespace WIS.HwTest
                         _autoStressRunning = false;
                         SetAutoControlsBusy(false);
                         UpdateSummaryBadge();
+                        if (!_uefiBiosRebootRequested && HasAnyCompletedTestsForCheckpoint())
+                        {
+                            try { SaveCheckpoint(""); } catch { }
+                        }
                         if (_autoSectionStatus != null)
                         {
                             _autoSectionStatus.Text = _autoStressCancel.IsCancelled
@@ -2246,6 +3015,10 @@ namespace WIS.HwTest
                         SetAutoControlsBusy(false);
                         RefreshCardVisibility();
                         UpdateSummaryBadge();
+                        if (!_uefiBiosRebootRequested)
+                        {
+                            try { SaveCheckpoint(""); } catch { }
+                        }
                     }));
                 }
             });
@@ -2283,6 +3056,7 @@ namespace WIS.HwTest
                     kv.Value.IsEnabled = !busy;
             }
             UpdateSummaryBadge();
+            RefreshDriverGateUi();
         }
 
         private void RunSequentialTests()
@@ -2301,6 +3075,14 @@ namespace WIS.HwTest
             {
                 RunSequentialPeripheralTests();
                 return;
+            }
+
+            if (!HasPendingAutomatedTests())
+            {
+                if (!EnsureInteractiveTestsDriverGateUnlocked(true))
+                {
+                    return;
+                }
             }
 
             for (int i = 0; i < _testItems.Count; i++)
@@ -2322,6 +3104,10 @@ namespace WIS.HwTest
                     }
                     else
                     {
+                        if (!EnsureInteractiveTestsDriverGateUnlocked(true))
+                        {
+                            break;
+                        }
                         RunSingleTest(t);
                     }
                 }
@@ -2373,6 +3159,10 @@ namespace WIS.HwTest
             SetAutoControlsBusy(false);
             RefreshCardVisibility();
             UpdateSummaryBadge();
+            if (!_uefiBiosRebootRequested)
+            {
+                try { SaveCheckpoint(""); } catch { }
+            }
         }
 
         private void UpdateSummaryBadge()
@@ -2546,6 +3336,11 @@ namespace WIS.HwTest
                 return;
             }
 
+            if (!EnsureInteractiveTestsDriverGateUnlocked(true))
+            {
+                return;
+            }
+
             _inSequentialPeripheralRun = true;
             try
             {
@@ -2555,6 +3350,10 @@ namespace WIS.HwTest
                     TestItemResult t = _testItems[i];
                     if (!t.IsAutomated && t.Status == TestStatus.Pending)
                     {
+                        if (!EnsureInteractiveTestsDriverGateUnlocked(true))
+                        {
+                            break;
+                        }
                         RunSingleTest(t);
                         if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) break;
                         if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
@@ -2665,13 +3464,41 @@ namespace WIS.HwTest
             return string.Format("{0}: {1}", label, rawReason);
         }
 
+        public bool IsAllApplicableTestsCompleted()
+        {
+            int applicable = 0;
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.Status == TestStatus.NotApplicable) continue;
+                applicable++;
+                if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                {
+                    return false;
+                }
+            }
+            return applicable > 0;
+        }
+
         public void StartPhase5FullWorkflow(
             Action<string, string, string, string> onStepProgress,
             Action<HwTestRunResult, int, float, float, bool, bool> onPhase5Finished)
         {
+            if (!_checkpointRestored)
+            {
+                try { TryRestorePersistedTestState(); } catch { }
+            }
+
+            // V344-01: Osvezi hardversku probu nakon instalacije drajvera u Fazi 2 (nikada ne gazi vec zavrsene ili restaurirane testove)
+            DriverGateState preGate = EvaluateEffectiveDriverGateState();
+            if (preGate != null && preGate.IsUnlocked && !_hardwareProbeRefreshedAfterDrivers)
+            {
+                try { RefreshHardwareProbeAfterDrivers(); } catch { }
+            }
+
             TestItemResult existingCpu = FindItemById("auto_cpu");
-            bool preserveRestoredThermalMetrics = _checkpointRestored && existingCpu != null &&
-                                                  _restoredTestIds.Contains("auto_cpu") && IsFinalTestStatus(existingCpu.Status);
+            bool preserveRestoredThermalMetrics = existingCpu != null && IsFinalTestStatus(existingCpu.Status) &&
+                                                  (_checkpointRestored || _restoredTestIds.Contains("auto_cpu") || _phase5CpuDurationSec > 0);
 
             _cancelPassiveAutoChecks = true;
 
@@ -2698,6 +3525,95 @@ namespace WIS.HwTest
             }
             _autoTestsFinishedUtc = null;
             _firstOperatorInteractionUtc = null;
+
+            // V344-03: Ako su svi primenljivi automatski i interaktivni testovi vec zavrseni pre restarta (0 Pending / Running),
+            // odmah popuni P5.AutoDiag, P5.Stress, P5.Peripherals iz restauriranih rezultata i zavrsi Fazu 5 bez ponovnog testiranja.
+            int pendingOrRunningCount = 0;
+            int totalApplicableCount = 0;
+            int manualApplicableDoneCount = 0;
+            int manualWarnOrFailEarly = 0;
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.Status == TestStatus.NotApplicable) continue;
+                totalApplicableCount++;
+                if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                {
+                    pendingOrRunningCount++;
+                }
+                else if (!t.IsAutomated)
+                {
+                    manualApplicableDoneCount++;
+                    if (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip)
+                        manualWarnOrFailEarly++;
+                }
+            }
+
+            if (pendingOrRunningCount == 0 && totalApplicableCount > 0)
+            {
+                string[] passiveIdsEarly = new string[] { "auto_battery", "auto_network", "auto_security" };
+                bool autoDiagWarnEarly = false;
+                List<string> autoDiagIssuesEarly = new List<string>();
+                for (int i = 0; i < passiveIdsEarly.Length; i++)
+                {
+                    TestItemResult pi = FindItemById(passiveIdsEarly[i]);
+                    if (pi != null && (pi.HasWarning || pi.Status == TestStatus.Fail))
+                    {
+                        autoDiagWarnEarly = true;
+                        autoDiagIssuesEarly.Add(FormatAutoDiagIssueSummary(passiveIdsEarly[i], pi));
+                    }
+                }
+                EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"),
+                    autoDiagWarnEarly ? "WARN" : "OK", string.Join(" | ", autoDiagIssuesEarly.ToArray()));
+
+                string[] stressIdsEarly = new string[] { "auto_disk", "auto_ram", "auto_cpu", "auto_gpu" };
+                bool stressWarnEarly = false;
+                for (int i = 0; i < stressIdsEarly.Length; i++)
+                {
+                    TestItemResult si = FindItemById(stressIdsEarly[i]);
+                    if (si != null && (si.HasWarning || si.Status == TestStatus.Fail))
+                        stressWarnEarly = true;
+                }
+                if (_phase5ThermalCritical)
+                {
+                    EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "WARN",
+                        HwTestLocalization.PickFormat("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", "注意：CPU 过热 ({0:F1}°C)", _phase5PeakCpuTemp));
+                }
+                else
+                {
+                    EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"),
+                        stressWarnEarly ? "WARN" : "OK", "");
+                }
+
+                if (_hwInfo != null && _hwInfo.IsLaptop && manualApplicableDoneCount > 0)
+                {
+                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
+                        manualWarnOrFailEarly > 0 ? "WARN" : "OK", "");
+                }
+                else
+                {
+                    string skipPeriphReasonEarly = (_hwInfo != null && !_hwInfo.IsLaptop)
+                        ? HwTestLocalization.Pick("Desktop računar — ručni testovi periferija nisu potrebni", "台式机 — 无需手动外设测试")
+                        : HwTestLocalization.Pick("Nema primenljivih periferijskih testova", "没有适用的外设测试");
+                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
+                        "SKIPPED_DONE", skipPeriphReasonEarly);
+                }
+
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_autoSectionStatus != null)
+                    {
+                        _autoSectionStatus.Text = HwTestLocalization.PickFormat(
+                            "♻️ Svi hardverski testovi ({0}/{0}) su već završeni pre restarta — preskačem ponovno testiranje.",
+                            "♻️ 所有硬件测试 ({0}/{0}) 在重启前已完成 — 跳过重复测试。",
+                            totalApplicableCount);
+                        _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+                    }
+                    UpdateSummaryBadge();
+                    SaveCurrentReport(false, false, "", false);
+                }));
+                return;
+            }
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
@@ -2732,7 +3648,7 @@ namespace WIS.HwTest
                         try { passiveTh.Join(2500); } catch { }
                     }
 
-                    // 1. Automatska provera (baterija, mreža, sigurnost) — UVEK sveže pri ulasku u Fazu 5 (osim ako je restaurirano iz UEFI BIOS checkpointa)
+                    // 1. Automatska provera (baterija, mreža, sigurnost)
                     EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"), "RUNNING", "");
                     string[] passiveIds = new string[] { "auto_battery", "auto_network", "auto_security" };
                     List<string> autoDiagIssues = new List<string>();
@@ -2768,6 +3684,10 @@ namespace WIS.HwTest
                                     if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
                                     RefreshCardVisibility();
                                     UpdateSummaryBadge();
+                                    if (!_uefiBiosRebootRequested)
+                                    {
+                                        try { SaveCheckpoint(""); } catch { }
+                                    }
                                 }));
                             }
                         }
@@ -2886,6 +3806,10 @@ namespace WIS.HwTest
                                     Border c;
                                     if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
                                     UpdateSummaryBadge();
+                                    if (!_uefiBiosRebootRequested)
+                                    {
+                                        try { SaveCheckpoint(""); } catch { }
+                                    }
                                 }));
 
                                 if (_phase5ThermalCritical) break;
@@ -2911,6 +3835,10 @@ namespace WIS.HwTest
                                         Border gc;
                                         if (_cardMap.TryGetValue(gpuSkipItem.Id, out gc)) UpdateCardVisual(gc, gpuSkipItem);
                                         UpdateSummaryBadge();
+                                        if (!_uefiBiosRebootRequested)
+                                        {
+                                            try { SaveCheckpoint(""); } catch { }
+                                        }
                                     }));
                                 }
 
@@ -2978,6 +3906,16 @@ namespace WIS.HwTest
                     return;
                 }
 
+                // V344-01: Pre prelaska na P5.Peripherals proveri gate i osvezi probu ako su drajveri spremni
+                DriverGateState gateBeforePeripherals = EvaluateEffectiveDriverGateState();
+                if (gateBeforePeripherals != null && gateBeforePeripherals.IsUnlocked && !_hardwareProbeRefreshedAfterDrivers)
+                {
+                    Dispatcher.Invoke(new Action(() =>
+                    {
+                        RefreshHardwareProbeAfterDrivers();
+                    }));
+                }
+
                 // 3. Interaktivni periferijski testovi
                 bool hasPendingManual = false;
                 int manualCompletedCount = 0;
@@ -3037,9 +3975,31 @@ namespace WIS.HwTest
                     return;
                 }
 
-                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "RUNNING", "");
                 _waitingForManualPeripherals = true;
                 _autoTestsFinishedUtc = DateTime.UtcNow;
+
+                // V344-01: Ako drajveri jos nisu spremni, NE oglasavaj interaktivne testove spremnim
+                if (gateBeforePeripherals != null && !gateBeforePeripherals.IsUnlocked)
+                {
+                    string gateBlockReason = !string.IsNullOrEmpty(gateBeforePeripherals.ReasonTitle)
+                        ? gateBeforePeripherals.ReasonTitle
+                        : HwTestLocalization.Pick("Čeka se završetak instalacije drajvera", "正在等待驱动程序安装完成");
+                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "WARN", gateBlockReason);
+                    Dispatcher.Invoke(new Action(() =>
+                    {
+                        RefreshDriverGateUi();
+                        if (_autoSectionStatus != null)
+                        {
+                            _autoSectionStatus.Text = HwTestLocalization.PickFormat(
+                                "🔒 Interaktivni testovi su zaključani dok svi drajveri ne budu instalirani: {0}",
+                                "🔒 所有驱动程序安装完成前，交互式测试已锁定：{0}",
+                                gateBlockReason);
+                        }
+                    }));
+                    return;
+                }
+
+                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "RUNNING", "");
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try
@@ -3058,6 +4018,7 @@ namespace WIS.HwTest
                     lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
                     if (alreadyNotified) return;
 
+                    RefreshDriverGateUi();
                     List<string> pendingNames = GetPendingInteractiveTestNames();
                     if (pendingNames.Count == 0)
                     {
@@ -3206,6 +4167,10 @@ namespace WIS.HwTest
                     { "active_hwtest_sec", activeHwTestSec }
                 }
             };
+            if (!string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
+            {
+                runResult.Summary["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason;
+            }
 
             foreach (TestItemResult t in _testItems)
             {
@@ -3225,7 +4190,20 @@ namespace WIS.HwTest
                 runResult.Tests.Add(itemDict);
             }
 
-            // Upis u JSON fajl (lokalno + kopija pored exe-a u hwtest-logs/)
+            TestItemResult cpuTest = FindItemById("auto_cpu");
+            int cpuDurReport = _phase5CpuDurationSec > 0 ? _phase5CpuDurationSec : (cpuTest != null ? cpuTest.DurationSeconds : 0);
+            float peakTempReport = _phase5PeakCpuTemp > 0f ? _phase5PeakCpuTemp : (cpuTest != null ? ExtractFloatDetail(cpuTest.Details, "peak_temp_c") : 0f);
+            float maxThrotReport = _phase5MaxCpuThrottle > 0f ? _phase5MaxCpuThrottle : (cpuTest != null ? ExtractFloatDetail(cpuTest.Details, "max_throttle_pct") : 0f);
+            Dictionary<string, object> phase5MetricsReport = new Dictionary<string, object>
+            {
+                { "cpu_duration_sec", cpuDurReport },
+                { "peak_cpu_temp", (double)peakTempReport },
+                { "max_cpu_throttle", (double)maxThrotReport },
+                { "thermal_critical", _phase5ThermalCritical },
+                { "thermal_note", _phase5ThermalNote ?? "" }
+            };
+
+            // Upis u JSON fajl (lokalno + trajna kopija u C:\Windows\Logs\WIS\hwtest-result.json + kopija pored exe-a u hwtest-logs/)
             var reportPayload = new Dictionary<string, object>
             {
                 { "schema", runResult.Schema },
@@ -3235,8 +4213,13 @@ namespace WIS.HwTest
                 { "serial", runResult.Serial },
                 { "app_version", runResult.AppVersion },
                 { "summary", runResult.Summary },
+                { "phase5_metrics", phase5MetricsReport },
                 { "tests", runResult.Tests }
             };
+            if (!string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
+            {
+                reportPayload["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason;
+            }
             if (!string.IsNullOrEmpty(_phase5ThermalNote))
             {
                 reportPayload["thermal_note"] = _phase5ThermalNote;
@@ -3267,6 +4250,16 @@ namespace WIS.HwTest
                 }
                 catch { }
             }
+
+            try
+            {
+                const string persistentLogResultPath = @"C:\Windows\Logs\WIS\hwtest-result.json";
+                string persistentDir = Path.GetDirectoryName(persistentLogResultPath);
+                if (!string.IsNullOrEmpty(persistentDir) && !Directory.Exists(persistentDir))
+                    Directory.CreateDirectory(persistentDir);
+                File.WriteAllText(persistentLogResultPath, json, System.Text.Encoding.UTF8);
+            }
+            catch { }
 
             try
             {
@@ -3390,6 +4383,19 @@ namespace WIS.HwTest
             }
         }
 
+        private bool HasAnyCompletedTestsForCheckpoint()
+        {
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.Status == TestStatus.Pass || t.Status == TestStatus.Fail)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public void SaveCheckpoint(string rebootReasonTestId)
         {
             string reasonId = string.IsNullOrEmpty(rebootReasonTestId) ? "" : rebootReasonTestId.Trim();
@@ -3425,11 +4431,16 @@ namespace WIS.HwTest
                 }
             }
 
+            TestItemResult cpuItem = FindItemById("auto_cpu");
+            int cpuDurSec = _phase5CpuDurationSec > 0 ? _phase5CpuDurationSec : (cpuItem != null ? cpuItem.DurationSeconds : 0);
+            float peakCpuTemp = _phase5PeakCpuTemp > 0f ? _phase5PeakCpuTemp : (cpuItem != null ? ExtractFloatDetail(cpuItem.Details, "peak_temp_c") : 0f);
+            float maxCpuThrot = _phase5MaxCpuThrottle > 0f ? _phase5MaxCpuThrottle : (cpuItem != null ? ExtractFloatDetail(cpuItem.Details, "max_throttle_pct") : 0f);
+
             Dictionary<string, object> phase5Metrics = new Dictionary<string, object>
             {
-                { "cpu_duration_sec", _phase5CpuDurationSec },
-                { "peak_cpu_temp", (double)_phase5PeakCpuTemp },
-                { "max_cpu_throttle", (double)_phase5MaxCpuThrottle },
+                { "cpu_duration_sec", cpuDurSec },
+                { "peak_cpu_temp", (double)peakCpuTemp },
+                { "max_cpu_throttle", (double)maxCpuThrot },
                 { "thermal_critical", _phase5ThermalCritical },
                 { "thermal_note", _phase5ThermalNote ?? "" }
             };
@@ -3441,6 +4452,7 @@ namespace WIS.HwTest
                 { "serial", _serialNumber ?? "" },
                 { "model", _modelName ?? "" },
                 { "reboot_reason_test_id", reasonId },
+                { "driver_gate_emergency_override_reason", _driverGateEmergencyOverrideReason ?? "" },
                 { "phase5_metrics", phase5Metrics },
                 { "completed_tests", completedTests }
             };
@@ -3481,149 +4493,426 @@ namespace WIS.HwTest
             }
         }
 
+        public static bool TryParsePersistedUtcTimestamp(string rawTimestamp, out DateTime savedUtc)
+        {
+            savedUtc = DateTime.MinValue;
+            if (string.IsNullOrEmpty(rawTimestamp)) return false;
+            if (!DateTime.TryParse(rawTimestamp, CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind, out savedUtc))
+            {
+                return false;
+            }
+            savedUtc = savedUtc.ToUniversalTime();
+            return true;
+        }
+
+        private static bool HasRecordedServiceSkipReason(string reason, IDictionary<string, object> details)
+        {
+            if (details != null)
+            {
+                string manualReason = ReadCpString(details, "manual_skip_reason");
+                if (!string.IsNullOrEmpty(manualReason) && manualReason.Trim().Length >= 5) return true;
+                string emergencyReason = ReadCpString(details, "emergency_skip_reason");
+                if (!string.IsNullOrEmpty(emergencyReason) && emergencyReason.Trim().Length >= 5) return true;
+            }
+
+            if (string.IsNullOrEmpty(reason)) return false;
+            string r = reason.Trim();
+            if (r.Length < 5) return false;
+
+            // Genericke poruke prekida bez konkretnog servisnog razloga se NE priznaju kao zavrseni testovi
+            if (r.Equals("Preskočeno u okviru Faze 5", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("在阶段 5 中跳过", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("Preskočeno od strane servisera", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("技术员已跳过", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("CPU stres test je prekinut od strane korisnika", StringComparison.OrdinalIgnoreCase) ||
+                r.Equals("CPU 压力测试已被用户中断", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            return true;
+        }
+
         private void TryRestoreCheckpoint()
         {
-            string cpPath = GetCheckpointFilePath();
-            if (string.IsNullOrEmpty(cpPath) || !File.Exists(cpPath))
-                return;
+            TryRestorePersistedTestState();
+        }
 
-            try
+        public bool TryRestorePersistedTestState()
+        {
+            const double MaxTtlHours = 48.0;
+            List<string> candidatePaths = new List<string>();
+            const string logsResultPath = @"C:\Windows\Logs\WIS\hwtest-result.json";
+            const string setupResultPath = @"C:\setup\hwtest-result.json";
+            const string setupCheckpointPath = @"C:\setup\hwtest-checkpoint.json";
+
+            candidatePaths.Add(logsResultPath);
+            if (!string.IsNullOrEmpty(_outJsonPath) &&
+                !string.Equals(_outJsonPath, logsResultPath, StringComparison.OrdinalIgnoreCase))
             {
-                string json = File.ReadAllText(cpPath, Encoding.UTF8);
-                if (string.IsNullOrEmpty(json)) return;
+                candidatePaths.Add(_outJsonPath);
+            }
+            if (!candidatePaths.Contains(setupResultPath))
+            {
+                candidatePaths.Add(setupResultPath);
+            }
 
-                JavaScriptSerializer ser = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
-                IDictionary<string, object> root = ser.DeserializeObject(json) as IDictionary<string, object>;
-                if (root == null) return;
+            string primaryCpPath = GetCheckpointFilePath();
+            if (!string.IsNullOrEmpty(primaryCpPath))
+            {
+                candidatePaths.Add(primaryCpPath);
+            }
+            if (!string.Equals(primaryCpPath, setupCheckpointPath, StringComparison.OrdinalIgnoreCase))
+            {
+                candidatePaths.Add(setupCheckpointPath);
+            }
 
-                string schema = ReadCpString(root, "schema");
-                if (!string.Equals(schema, "wis.hwtest.checkpoint.v1", StringComparison.Ordinal))
+            string activeRebootReasonId = "";
+            string lastLoadedSourcePath = "";
+            int totalMerged = 0;
+
+            for (int pIdx = 0; pIdx < candidatePaths.Count; pIdx++)
+            {
+                string path = candidatePaths[pIdx];
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+
+                try
                 {
-                    HwTestLogger.Warn("CHECKPOINT_RESTORE", "Ignorišem checkpoint nepoznate šeme: " + schema);
-                    return;
-                }
+                    string json = File.ReadAllText(path, Encoding.UTF8);
+                    if (string.IsNullOrEmpty(json)) continue;
 
-                string savedUtcStr = ReadCpString(root, "saved_utc");
-                DateTime savedUtc;
-                if (!DateTime.TryParse(savedUtcStr, CultureInfo.InvariantCulture,
-                    DateTimeStyles.RoundtripKind | DateTimeStyles.AdjustToUniversal, out savedUtc))
-                {
-                    HwTestLogger.Warn("CHECKPOINT_RESTORE", "Neispravan saved_utc u checkpointu — ignorišem.");
-                    return;
-                }
+                    JavaScriptSerializer ser = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
+                    IDictionary<string, object> root = ser.DeserializeObject(json) as IDictionary<string, object>;
+                    if (root == null) continue;
 
-                double ageHours = (DateTime.UtcNow - savedUtc).TotalHours;
-                if (ageHours >= 24.0 || ageHours < -1.0)
-                {
-                    HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
-                        "Checkpoint je zastareo ({0:F1}h) — ignorišem.", ageHours));
-                    return;
-                }
-
-                string cpSerial = ReadCpString(root, "serial");
-                if (!IsPlaceholderIdentity(cpSerial) && !IsPlaceholderIdentity(_serialNumber) &&
-                    !string.Equals(cpSerial.Trim(), _serialNumber.Trim(), StringComparison.OrdinalIgnoreCase))
-                {
-                    HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
-                        "Serial neusklađen (checkpoint='{0}', uređaj='{1}') — ignorišem.",
-                        cpSerial, _serialNumber));
-                    return;
-                }
-
-                string rebootReasonId = ReadCpString(root, "reboot_reason_test_id");
-
-                object metricsObj;
-                if (root.TryGetValue("phase5_metrics", out metricsObj))
-                {
-                    IDictionary<string, object> mDict = metricsObj as IDictionary<string, object>;
-                    if (mDict != null)
+                    string schema = ReadCpString(root, "schema");
+                    bool isCheckpoint = string.Equals(schema, "wis.hwtest.checkpoint.v1", StringComparison.Ordinal);
+                    bool isReport = string.Equals(schema, "wis.hwtest.v1", StringComparison.Ordinal);
+                    if (!isCheckpoint && !isReport)
                     {
-                        _phase5CpuDurationSec = ReadCpInt(mDict, "cpu_duration_sec");
-                        _phase5PeakCpuTemp = ReadCpFloat(mDict, "peak_cpu_temp");
-                        _phase5MaxCpuThrottle = ReadCpFloat(mDict, "max_cpu_throttle");
-                        _phase5ThermalCritical = ReadCpBool(mDict, "thermal_critical");
-                        _phase5ThermalNote = ReadCpString(mDict, "thermal_note");
+                        HwTestLogger.Warn("CHECKPOINT_RESTORE", "Ignorišem fajl nepoznate šeme (" + path + "): " + schema);
+                        continue;
                     }
-                }
 
-                int restoredCount = 0;
-                object testsObj;
-                if (root.TryGetValue("completed_tests", out testsObj) && testsObj != null)
-                {
-                    System.Collections.IEnumerable testsEnum = testsObj as System.Collections.IEnumerable;
-                    if (testsEnum != null)
+                    string savedUtcStr = isCheckpoint ? ReadCpString(root, "saved_utc") : ReadCpString(root, "finished");
+                    if (string.IsNullOrEmpty(savedUtcStr) && isReport)
                     {
-                        foreach (object entry in testsEnum)
+                        savedUtcStr = ReadCpString(root, "started");
+                    }
+
+                    DateTime savedUtc;
+                    if (!TryParsePersistedUtcTimestamp(savedUtcStr, out savedUtc))
+                    {
+                        HwTestLogger.Warn("CHECKPOINT_RESTORE", "Neispravan saved_utc/finished u '" + path + "' — ignorišem.");
+                        continue;
+                    }
+
+                    double ageHours = (DateTime.UtcNow - savedUtc).TotalHours;
+                    if (ageHours >= MaxTtlHours || ageHours < -1.0)
+                    {
+                        HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
+                            "Persisted stanje '{0}' je zastarelo ({1:F1}h >= {2:F0}h) — ignorišem.",
+                            path, ageHours, MaxTtlHours));
+                        continue;
+                    }
+
+                    string srcSerial = ReadCpString(root, "serial");
+                    if (!IsPlaceholderIdentity(srcSerial) && !IsPlaceholderIdentity(_serialNumber) &&
+                        !string.Equals(srcSerial.Trim(), _serialNumber.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        HwTestLogger.Warn("CHECKPOINT_RESTORE", string.Format(
+                            "Serial neusklađen (izvor='{0}', uređaj='{1}', fajl='{2}') — ignorišem.",
+                            srcSerial, _serialNumber, path));
+                        continue;
+                    }
+
+                    string rebootReasonId = isCheckpoint ? ReadCpString(root, "reboot_reason_test_id") : "";
+                    if (!string.IsNullOrEmpty(rebootReasonId))
+                    {
+                        activeRebootReasonId = rebootReasonId;
+                    }
+
+                    string emergencyOverride = ReadCpString(root, "driver_gate_emergency_override_reason");
+                    if (string.IsNullOrEmpty(emergencyOverride))
+                    {
+                        object sumObj;
+                        if (root.TryGetValue("summary", out sumObj) && sumObj is IDictionary<string, object>)
                         {
-                            IDictionary<string, object> td = entry as IDictionary<string, object>;
-                            if (td == null) continue;
-
-                            string id = ReadCpString(td, "id");
-                            if (string.IsNullOrEmpty(id)) continue;
-
-                            if (!string.IsNullOrEmpty(rebootReasonId) &&
-                                string.Equals(id, rebootReasonId, StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-                            if (string.Equals(id, "auto_security", StringComparison.OrdinalIgnoreCase))
-                            {
-                                continue;
-                            }
-
-                            TestItemResult item = FindItemById(id);
-                            if (item == null) continue;
-
-                            string statusStr = ReadCpString(td, "status");
-                            TestStatus parsedStatus;
-                            if (!TryParseCheckpointStatus(statusStr, out parsedStatus)) continue;
-
-                            if (parsedStatus == TestStatus.NotApplicable)
-                            {
-                                continue;
-                            }
-
-                            if (item.Status == TestStatus.NotApplicable && parsedStatus != TestStatus.Skip)
-                            {
-                                continue;
-                            }
-
-                            item.Status = parsedStatus;
-                            item.HasWarning = ReadCpBool(td, "warning");
-                            string mSum = ReadCpString(td, "metric_summary");
-                            if (!string.IsNullOrEmpty(mSum)) item.MetricSummary = mSum;
-                            item.Attempts = Math.Max(1, ReadCpInt(td, "attempts"));
-                            item.DurationSeconds = Math.Max(0, ReadCpInt(td, "duration_s"));
-                            item.Reason = ReadCpString(td, "reason");
-                            object dObj;
-                            if (td.TryGetValue("details", out dObj))
-                            {
-                                item.Details = NormalizeCpDetails(dObj as IDictionary<string, object>);
-                            }
-                            _restoredTestIds.Add(item.Id);
-                            restoredCount++;
+                            emergencyOverride = ReadCpString((IDictionary<string, object>)sumObj, "driver_gate_emergency_override_reason");
                         }
                     }
-                }
+                    if (!string.IsNullOrEmpty(emergencyOverride) && emergencyOverride.Trim().Length >= 5)
+                    {
+                        _driverGateEmergencyOverrideReason = emergencyOverride.Trim();
+                        _driverGateEmergencyUnlocked = true;
+                    }
 
-                int applicableTotal = 0;
-                for (int i = 0; i < _testItems.Count; i++)
+                    object metricsObj;
+                    if (root.TryGetValue("phase5_metrics", out metricsObj))
+                    {
+                        IDictionary<string, object> mDict = metricsObj as IDictionary<string, object>;
+                        if (mDict != null)
+                        {
+                            int dur = ReadCpInt(mDict, "cpu_duration_sec");
+                            float pk = ReadCpFloat(mDict, "peak_cpu_temp");
+                            float thr = ReadCpFloat(mDict, "max_cpu_throttle");
+                            bool crit = ReadCpBool(mDict, "thermal_critical");
+                            string tNote = ReadCpString(mDict, "thermal_note");
+                            if (dur > 0) _phase5CpuDurationSec = dur;
+                            if (pk > 0f) _phase5PeakCpuTemp = pk;
+                            if (thr > 0f) _phase5MaxCpuThrottle = thr;
+                            if (crit) _phase5ThermalCritical = true;
+                            if (!string.IsNullOrEmpty(tNote)) _phase5ThermalNote = tNote;
+                        }
+                    }
+                    else if (isReport)
+                    {
+                        string rootThermalNote = ReadCpString(root, "thermal_note");
+                        if (!string.IsNullOrEmpty(rootThermalNote)) _phase5ThermalNote = rootThermalNote;
+                    }
+
+                    string testsKey = isCheckpoint ? "completed_tests" : "tests";
+                    object testsObj;
+                    if (root.TryGetValue(testsKey, out testsObj) && testsObj != null)
+                    {
+                        System.Collections.IEnumerable testsEnum = testsObj as System.Collections.IEnumerable;
+                        if (testsEnum != null)
+                        {
+                            foreach (object entry in testsEnum)
+                            {
+                                IDictionary<string, object> td = entry as IDictionary<string, object>;
+                                if (td == null) continue;
+
+                                string id = ReadCpString(td, "id");
+                                if (string.IsNullOrEmpty(id)) continue;
+
+                                if (!string.IsNullOrEmpty(rebootReasonId) &&
+                                    string.Equals(id, rebootReasonId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    continue;
+                                }
+
+                                // V344-03: auto_security se preskace pri restauraciji ISKLJUCIVO kod stvarnog UEFI BIOS restarta
+                                if (!string.IsNullOrEmpty(rebootReasonId) &&
+                                    string.Equals(id, "auto_security", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    continue;
+                                }
+
+                                TestItemResult item = FindItemById(id);
+                                if (item == null) continue;
+
+                                string statusStr = ReadCpString(td, "status");
+                                TestStatus parsedStatus;
+                                if (!TryParseCheckpointStatus(statusStr, out parsedStatus)) continue;
+
+                                if (parsedStatus == TestStatus.NotApplicable)
+                                {
+                                    continue;
+                                }
+
+                                string reasonStr = ReadCpString(td, "reason");
+                                IDictionary<string, object> rawDetailsDict = null;
+                                object dObj;
+                                if (td.TryGetValue("details", out dObj))
+                                {
+                                    rawDetailsDict = dObj as IDictionary<string, object>;
+                                }
+
+                                // V344-03: SKIP bez zabelezenog servisnog razloga ostaje Pending
+                                if (parsedStatus == TestStatus.Skip && !HasRecordedServiceSkipReason(reasonStr, rawDetailsDict))
+                                {
+                                    continue;
+                                }
+
+                                if (item.Status == TestStatus.NotApplicable && parsedStatus != TestStatus.Skip)
+                                {
+                                    continue;
+                                }
+
+                                item.Status = parsedStatus;
+                                item.HasWarning = ReadCpBool(td, "warning");
+                                string mSum = ReadCpString(td, "metric_summary");
+                                if (!string.IsNullOrEmpty(mSum)) item.MetricSummary = mSum;
+                                item.Attempts = Math.Max(1, ReadCpInt(td, "attempts"));
+                                item.DurationSeconds = Math.Max(0, ReadCpInt(td, "duration_s"));
+                                item.Reason = reasonStr;
+                                if (rawDetailsDict != null)
+                                {
+                                    item.Details = NormalizeCpDetails(rawDetailsDict);
+                                }
+
+                                if (string.Equals(item.Id, "auto_cpu", StringComparison.OrdinalIgnoreCase) &&
+                                    (parsedStatus == TestStatus.Pass || parsedStatus == TestStatus.Fail))
+                                {
+                                    if (_phase5CpuDurationSec <= 0 && item.DurationSeconds > 0)
+                                        _phase5CpuDurationSec = item.DurationSeconds;
+                                    float pkDetail = ExtractFloatDetail(item.Details, "peak_temp_c");
+                                    if (_phase5PeakCpuTemp <= 0f && pkDetail > 0f)
+                                        _phase5PeakCpuTemp = pkDetail;
+                                    float thDetail = ExtractFloatDetail(item.Details, "max_throttle_pct");
+                                    if (_phase5MaxCpuThrottle <= 0f && thDetail > 0f)
+                                        _phase5MaxCpuThrottle = thDetail;
+                                    if (_phase5PeakCpuTemp >= 95.0f)
+                                        _phase5ThermalCritical = true;
+                                }
+
+                                Border card;
+                                if (_cardMap != null && _cardMap.TryGetValue(item.Id, out card) && card != null)
+                                {
+                                    UpdateCardVisual(card, item);
+                                }
+
+                                _restoredTestIds.Add(item.Id);
+                                totalMerged++;
+                            }
+                        }
+                    }
+
+                    lastLoadedSourcePath = path;
+                }
+                catch (Exception ex)
                 {
-                    if (_testItems[i].Status != TestStatus.NotApplicable)
-                        applicableTotal++;
+                    HwTestLogger.Warn("CHECKPOINT_RESTORE", "Greška pri čitanju '" + path + "': " + ex.Message);
                 }
-
-                _checkpointRestoredCount = restoredCount;
-                _checkpointTotalApplicable = applicableTotal;
-                _checkpointRestored = (restoredCount > 0 || !string.IsNullOrEmpty(rebootReasonId));
-
-                HwTestLogger.Info("CHECKPOINT_RESTORE", string.Format(
-                    "Restaurirano {0}/{1} već završenih testova iz checkpointa '{2}' (reboot_reason='{3}').",
-                    restoredCount, applicableTotal, cpPath, rebootReasonId));
             }
-            catch (Exception ex)
+
+            if (!string.IsNullOrEmpty(activeRebootReasonId))
             {
-                HwTestLogger.Warn("CHECKPOINT_RESTORE", "Greška pri čitanju checkpointa: " + ex.Message);
+                TestItemResult rebootTarget = FindItemById(activeRebootReasonId);
+                if (rebootTarget != null && rebootTarget.Status != TestStatus.NotApplicable)
+                {
+                    rebootTarget.Status = TestStatus.Pending;
+                    _restoredTestIds.Remove(activeRebootReasonId);
+                }
+                TestItemResult secTarget = FindItemById("auto_security");
+                if (secTarget != null && secTarget.Status != TestStatus.NotApplicable)
+                {
+                    secTarget.Status = TestStatus.Pending;
+                    _restoredTestIds.Remove("auto_security");
+                }
+            }
+
+            int restoredCount = _restoredTestIds.Count;
+            int applicableTotal = 0;
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                if (_testItems[i].Status != TestStatus.NotApplicable)
+                    applicableTotal++;
+            }
+
+            _checkpointRestoredCount = restoredCount;
+            _checkpointTotalApplicable = applicableTotal;
+            _checkpointRestored = (restoredCount > 0 || !string.IsNullOrEmpty(activeRebootReasonId));
+
+            if (_checkpointRestored)
+            {
+                HwTestLogger.Info("CHECKPOINT_RESTORE", string.Format(
+                    "Restaurirano {0}/{1} već završenih testova iz '{2}' (reboot_reason='{3}', spojeno={4}).",
+                    restoredCount, applicableTotal, lastLoadedSourcePath, activeRebootReasonId, totalMerged));
+            }
+
+            return _checkpointRestored;
+        }
+
+        public void ResetAllTestsWithConfirmation()
+        {
+            MarkOperatorInteraction();
+            if (_autoStressRunning)
+            {
+                MessageBox.Show(
+                    HwTestLocalization.Pick(
+                        "Automatski stres testovi su trenutno u toku. Sačekajte da se završe pre resetovanja svih testova.",
+                        "自动压力测试正在运行，请等待其完成后再重置所有测试。"),
+                    HwTestLocalization.Pick("Test u toku", "测试进行中"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            MessageBoxResult confirm = MessageBox.Show(
+                HwTestLocalization.Pick(
+                    "Da li ste sigurni da želite da obrišete sve sačuvane rezultate (checkpoint i izveštaj) i ponovite sve hardverske testove ispočetka?",
+                    "确定要清除所有已保存的测试结果（检查点和报告）并从头重新运行所有硬件测试吗？"),
+                HwTestLocalization.Pick("Ponovi sve testove", "重新运行所有测试"),
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (confirm != MessageBoxResult.Yes) return;
+
+            ResetAllPersistedTests();
+        }
+
+        public void ResetAllPersistedTests()
+        {
+            try { DeleteCheckpointFile(); } catch { }
+            string[] filesToClear = new string[]
+            {
+                @"C:\setup\hwtest-checkpoint.json",
+                _outJsonPath,
+                @"C:\setup\hwtest-result.json",
+                @"C:\Windows\Logs\WIS\hwtest-result.json"
+            };
+            for (int i = 0; i < filesToClear.Length; i++)
+            {
+                string fp = filesToClear[i];
+                if (string.IsNullOrEmpty(fp)) continue;
+                try
+                {
+                    if (File.Exists(fp)) File.Delete(fp);
+                }
+                catch { }
+            }
+
+            _restoredTestIds.Clear();
+            _checkpointRestored = false;
+            _checkpointRestoredCount = 0;
+            _phase5CpuDurationSec = 0;
+            _phase5PeakCpuTemp = 0f;
+            _phase5MaxCpuThrottle = 0f;
+            _phase5ThermalCritical = false;
+            _phase5ThermalNote = "";
+
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (t.Status != TestStatus.NotApplicable)
+                {
+                    t.Status = TestStatus.Pending;
+                    t.DurationSeconds = 0;
+                    t.Attempts = 0;
+                    t.HasWarning = false;
+                    t.Reason = "";
+                    t.MetricSummary = "";
+                    t.Details = new Dictionary<string, object>();
+                }
+                Border card;
+                if (_cardMap.TryGetValue(t.Id, out card) && card != null)
+                {
+                    UpdateCardVisual(card, t);
+                }
+            }
+
+            RefreshHardwareProbeAfterDrivers();
+            RefreshCardVisibility();
+            UpdateSummaryBadge();
+            RefreshDriverGateUi();
+
+            if (_autoSectionStatus != null)
+            {
+                _autoSectionStatus.Text = HwTestLocalization.Pick(
+                    "↻ Svi sačuvani rezultati su obrisani — testovi su vraćeni na početak.",
+                    "↻ 所有已保存的测试结果已清除 — 测试已重置为初始状态。");
+                _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+            }
+
+            HwTestLogger.Info("RESET_ALL", "Serviser je ručno obrisao sačuvano stanje i vratio sve hardverske testove na Pending.");
+
+            if (!_phase5WorkflowActive)
+            {
+                _passiveChecksStarted = false;
+                _cancelPassiveAutoChecks = false;
+                StartPassiveAutoChecks();
             }
         }
 

@@ -422,13 +422,18 @@ namespace WIS.AutopilotAuditor
                         Arguments = string.Format("-area \"Autopilot;DeviceProvisioning;DeviceEnrollment\" -cab \"{0}\"", cabPath),
                         CreateNoWindow = true,
                         UseShellExecute = false,
-                        WindowStyle = ProcessWindowStyle.Hidden
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
                     };
 
                     using (Process proc = Process.Start(psi))
                     {
                         if (proc != null)
                         {
+                            try { proc.BeginOutputReadLine(); } catch { }
+                            try { proc.BeginErrorReadLine(); } catch { }
+
                             // Pametni polling do 35 sekundi (sa ranim izlaskom čim Microsoft upiše odgovor)
                             for (int waitSec = 0; waitSec < 35; waitSec++)
                             {
@@ -485,14 +490,21 @@ namespace WIS.AutopilotAuditor
                             Arguments = string.Format("\"{0}\" -F:* \"{1}\"", cabPath, outDir),
                             CreateNoWindow = true,
                             UseShellExecute = false,
-                            WindowStyle = ProcessWindowStyle.Hidden
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true
                         };
 
                         using (Process expProc = Process.Start(expPsi))
                         {
-                            if (expProc != null && !expProc.WaitForExit(5000))
+                            if (expProc != null)
                             {
-                                try { expProc.Kill(); } catch { }
+                                try { expProc.BeginOutputReadLine(); } catch { }
+                                try { expProc.BeginErrorReadLine(); } catch { }
+                                if (!expProc.WaitForExit(5000))
+                                {
+                                    try { expProc.Kill(); } catch { }
+                                }
                             }
                         }
 
@@ -614,11 +626,21 @@ namespace WIS.AutopilotAuditor
                     Arguments = "start " + serviceName,
                     CreateNoWindow = true,
                     UseShellExecute = false,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 };
                 using (Process p = Process.Start(psi))
                 {
-                    if (p != null) p.WaitForExit(1000);
+                    if (p != null)
+                    {
+                        try { p.BeginOutputReadLine(); } catch { }
+                        try { p.BeginErrorReadLine(); } catch { }
+                        if (!p.WaitForExit(1000))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
                 }
             }
             catch { }
@@ -634,11 +656,21 @@ namespace WIS.AutopilotAuditor
                     Arguments = args,
                     CreateNoWindow = true,
                     UseShellExecute = false,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 };
                 using (Process p = Process.Start(psi))
                 {
-                    if (p != null) p.WaitForExit(timeoutMs);
+                    if (p != null)
+                    {
+                        try { p.BeginOutputReadLine(); } catch { }
+                        try { p.BeginErrorReadLine(); } catch { }
+                        if (!p.WaitForExit(timeoutMs))
+                        {
+                            try { p.Kill(); } catch { }
+                        }
+                    }
                 }
             }
             catch { }

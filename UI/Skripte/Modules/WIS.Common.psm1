@@ -770,7 +770,7 @@ function Save-DeployStatePhase {
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($sf, $json, $utf8NoBom)
         if ($Phase -gt 1) {
-            try { Complete-WisPhaseBenchmark -Phase ($Phase - 1) -Status "COMPLETED" } catch {}
+            try { $null = Complete-WisPhaseBenchmark -Phase ($Phase - 1) -Status "COMPLETED" } catch {}
         }
     } catch {
         Write-ServisLog -Message "Upozorenje pri upisu deploy-state.json: $($_.Exception.Message)" -Level "WARN" -Component "State"

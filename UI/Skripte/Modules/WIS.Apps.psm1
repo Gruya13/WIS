@@ -166,7 +166,7 @@ function Invoke-SafeMsi {
     if (-not $WorkingDirectory -or -not (Test-Path $WorkingDirectory)) {
         $WorkingDirectory = "C:\setup"
     }
-    Wait-MsiMutexAvailable -TimeoutSec $MaxWaitSec
+    $null = Wait-MsiMutexAvailable -TimeoutSec $MaxWaitSec
     Remove-PendingRebootLocks
 
     for ($retry = 1; $retry -le 5; $retry++) {
@@ -184,7 +184,7 @@ function Invoke-SafeMsi {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Windows Installer zauzet (ExitCode 1618). Cekam oslobadjanje mutexa (Pokusaj $retry/5)..." -Level "WARN" -Component "SafeMsi"
                 }
-                Wait-MsiMutexAvailable -TimeoutSec 120
+                $null = Wait-MsiMutexAvailable -TimeoutSec 120
                 Remove-PendingRebootLocks
                 continue
             }
@@ -194,7 +194,7 @@ function Invoke-SafeMsi {
                 }
                 Start-Sleep -Seconds 5
                 Remove-PendingRebootLocks
-                Wait-MsiMutexAvailable -TimeoutSec 60
+                $null = Wait-MsiMutexAvailable -TimeoutSec 60
                 continue
             }
             return $proc
@@ -466,6 +466,24 @@ function Create-ServisShortcuts {
 }
 
 function Set-AcrobatDefaultPDF {
+    $acrobatCandidates = @(
+        "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+        "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+        "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+        "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+        "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe",
+        "C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe",
+        "C:\Program Files\Adobe\Acrobat\Acrobat.exe",
+        "C:\Program Files (x86)\Adobe\Acrobat\Acrobat.exe"
+    )
+    $acrobatExe = $acrobatCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $acrobatExe) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Set-AcrobatDefaultPDF: Adobe Acrobat (Acrobat.exe) nije instaliran na disku — preskacem upis GPO/PDF asocijacija." -Level "WARN" -Component "PdfDefault"
+        }
+        return $false
+    }
+
     try {
         $assocXmlPath = "C:\Windows\System32\AppAssoc_Acrobat.xml"
         $assocContent = @'
@@ -500,14 +518,13 @@ function Set-AcrobatDefaultPDF {
         } catch {}
 
         cmd.exe /c "assoc .pdf=AcroExch.Document.DC" | Out-Null
-        $acrobatExe = "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe"
-        if (-not (Test-Path $acrobatExe)) {
-            $acrobatExe = "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe"
-        }
         if (Test-Path $acrobatExe) {
             cmd.exe /c "ftype AcroExch.Document.DC=`"$acrobatExe`" `"%1`"" | Out-Null
         }
-    } catch {}
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 function Get-WindowsLicenseStatus {
@@ -1628,6 +1645,25 @@ function Get-WisAppPresence {
         }
 
         '(?i)^PdfDefault$' {
+            $acroCandidatesPdf = @(
+                "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat 2024\Acrobat\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat Pro\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat Pro\Acrobat.exe",
+                "C:\Program Files\Adobe\Acrobat\Acrobat.exe",
+                "C:\Program Files (x86)\Adobe\Acrobat\Acrobat.exe"
+            )
+            $acroExeForPdf = $acroCandidatesPdf | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if (-not $acroExeForPdf) {
+                $result.Installed = $false
+                $result.Done      = $false
+                $result.Message   = "SKIPPED_ERROR: Adobe Acrobat (Acrobat.exe) nije instaliran na disku"
+                $result.Reason    = "Adobe Acrobat (Acrobat.exe) nije instaliran — nije moguće podesiti podrazumevani PDF čitač"
+                return $result
+            }
+
             $pdfProgId = ""
             try {
                 $userChoiceKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice"
@@ -1654,6 +1690,7 @@ function Get-WisAppPresence {
                 $msg = "Adobe Acrobat je podešen kao podrazumevani PDF čitač ($desc)"
                 $result.Installed = $true
                 $result.Done      = $true
+                $result.Path      = $acroExeForPdf
                 $result.Message   = $msg
                 $result.Reason    = $msg
             } else {
@@ -1673,8 +1710,24 @@ function Get-WisAppPresence {
             $officeSkipped = ($licMode -ieq "Skip")
             $winSkipped = ($winLicMode -ieq "Skip")
 
+            $officeStepFailed = ($Global:WisOfficeInstallFailed -eq $true)
+            if (-not $hasOffice -and -not $officeStepFailed -and (Test-Path -LiteralPath "C:\setup\step-journal.json" -ErrorAction SilentlyContinue)) {
+                try {
+                    $sjRaw = Get-Content -LiteralPath "C:\setup\step-journal.json" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                    if ($sjRaw) {
+                        $sjObj = ConvertFrom-Json -InputObject $sjRaw -ErrorAction SilentlyContinue
+                        if ($sjObj -and $sjObj.steps -and $sjObj.steps.PSObject.Properties["P4.Office"]) {
+                            $p4OffState = [string]$sjObj.steps.PSObject.Properties["P4.Office"].Value.state
+                            if ($p4OffState -and $p4OffState -notin @("OK", "SKIPPED_DONE")) {
+                                $officeStepFailed = $true
+                            }
+                        }
+                    }
+                } catch {}
+            }
+
             $offStatus = if ($hasOffice) { Get-OfficeLicenseStatus } else { $null }
-            $offAct = if ($hasOffice) { [bool]($offStatus -and $offStatus.Activated) } else { $true }
+            $offAct = if ($hasOffice) { [bool]($offStatus -and $offStatus.Activated) } elseif ($officeStepFailed -and (-not $officeSkipped)) { $false } else { $true }
 
             $result.WindowsActivated     = $winAct
             $result.OfficeInstalled  = $hasOffice
@@ -1723,7 +1776,9 @@ function Get-WisAppPresence {
                         $parts += "Windows nije aktiviran"
                     }
                 }
-                if ($hasOffice -and -not $offAct -and -not $officeSkipped) {
+                if (-not $hasOffice -and $officeStepFailed -and -not $officeSkipped) {
+                    $parts += "UPOZORENJE: Microsoft Office nije instaliran (korak P4.Office nije uspeo)"
+                } elseif ($hasOffice -and -not $offAct -and -not $officeSkipped) {
                     $offDetailInfo = ""
                     if ($offStatus) {
                         if (-not [string]::IsNullOrWhiteSpace($offStatus.LastErrorCode)) {
@@ -1973,7 +2028,10 @@ function Get-ServisProgramiRoot {
 
         if (-not $portOpen) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Get-ServisProgramiRoot: Host $h nije dostupan na portu 445 (SMB)." -Level "DEBUG" -Component "Apps"
+                Write-ServisLog "Get-ServisProgramiRoot: Host $h nije dostupan na portu 445 (SMB)." -Level "WARN" -Component "Apps"
+            }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Get-ServisProgramiRoot: NAS host $h nije dostupan na portu 445 (SMB)." -Level "WARN" -Tag "[NasProgrami]"
             }
             continue
         }
@@ -2004,6 +2062,14 @@ function Get-ServisProgramiRoot {
                     }
                     if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
                         $null = & cmd.exe /c "net.exe use `"$uncShare`" `"`" /user:guest /persistent:no >nul 2>&1"
+                    }
+                    if (-not (Test-Path $uncShare -ErrorAction SilentlyContinue)) {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Get-ServisProgramiRoot: SMB povezivanje na $uncShare nije uspelo (korisnik: $nasUser)." -Level "WARN" -Component "Apps"
+                        }
+                        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                            Send-IpcLog -Message "Get-ServisProgramiRoot: SMB pristup odbijen ili neuspešan za $uncShare (korisnik: $nasUser)." -Level "WARN" -Tag "[NasProgrami]"
+                        }
                     }
                 }
             } catch {} finally {
@@ -2061,6 +2127,9 @@ function Get-ServisProgramiRoot {
     $fallback = if ($PreferredDir) { $PreferredDir } else { "C:\setup\Programi" }
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "Get-ServisProgramiRoot: Nijedan izvor nije potpuno verifikovan, koristim podrazumevanu putanju: $fallback" -Level "WARN" -Component "Apps"
+    }
+    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+        Send-IpcLog -Message "Get-ServisProgramiRoot: Nijedan lokalni, USB ili NAS SMB izvor programa nije verifikovan (fallback: $fallback)." -Level "ERROR" -Tag "[NasProgrami]"
     }
     return $fallback
 }
@@ -3183,7 +3252,7 @@ function Install-AllServisPrograms {
             if (Get-Command Grant-SetupAclPermissions -ErrorAction SilentlyContinue) {
                 Grant-SetupAclPermissions
             }
-            Wait-MsiMutexAvailable -TimeoutSec 180
+            $null = Wait-MsiMutexAvailable -TimeoutSec 180
 
             $dotnetDirCandidates = @(
                 "C:\setup\Programi\DotNet",
@@ -3211,7 +3280,7 @@ function Install-AllServisPrograms {
                         if (Get-Command Grant-SetupAclPermissions -ErrorAction SilentlyContinue) {
                             Grant-SetupAclPermissions
                         }
-                        Wait-MsiMutexAvailable -TimeoutSec 120
+                        $null = Wait-MsiMutexAvailable -TimeoutSec 120
                         Remove-PendingRebootLocks
                         Unblock-File -Path $rtPath -ErrorAction SilentlyContinue
 
@@ -3246,7 +3315,7 @@ function Install-AllServisPrograms {
                                     Grant-SetupAclPermissions
                                 }
                                 Start-Sleep -Seconds 3
-                                Wait-MsiMutexAvailable -TimeoutSec 120
+                                $null = Wait-MsiMutexAvailable -TimeoutSec 120
                                 # Retry sa cistim argumentima (bez navodnika u putanji loga)
                                 $proc = Start-Process -FilePath $rtPath -ArgumentList "/install /quiet /norestart" -Wait -PassThru -WindowStyle Hidden
                                 $rtCode = if ($proc) { $proc.ExitCode } else { -1 }
@@ -3414,12 +3483,12 @@ function Install-AllServisPrograms {
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                                 Write-ServisLog "Chrome MSI sa ALLUSERS=1 vratio $cCode. Pokusavam direktan MSI bez ALLUSERS parametra..." -Level "WARN" -Component "Chrome"
                             }
-                            Wait-MsiMutexAvailable -TimeoutSec 60
+                            $null = Wait-MsiMutexAvailable -TimeoutSec 60
                             $proc2 = Start-Process "msiexec.exe" -ArgumentList "/i `"$chromePkg`" /qn /norestart" -WorkingDirectory $chDir -Wait -PassThru -WindowStyle Hidden
                             if ($proc2) { $cCode = $proc2.ExitCode }
                         }
                     } else {
-                        Wait-MsiMutexAvailable -TimeoutSec 120
+                        $null = Wait-MsiMutexAvailable -TimeoutSec 120
                         $proc = Start-Process -FilePath $chromePkg -ArgumentList "/silent /install" -Wait -PassThru -WindowStyle Hidden
                         $cCode = if ($proc) { $proc.ExitCode } else { -1 }
                     }
@@ -3453,7 +3522,7 @@ function Install-AllServisPrograms {
                     $chromeExe = $chromeExeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
                     if ($chromeExe) {
                         Unblock-File -Path $chromeExe -ErrorAction SilentlyContinue
-                        Wait-MsiMutexAvailable -TimeoutSec 120
+                        $null = Wait-MsiMutexAvailable -TimeoutSec 120
                         Remove-PendingRebootLocks
                         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                             Write-ServisLog "Pokrecem ChromeSetup.exe fallback: $chromeExe /silent /install" -Level "STEP" -Component "Chrome"
@@ -3642,7 +3711,7 @@ function Install-AllServisPrograms {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Instaliram obavezni preduslov za Acrobat: Visual C++ Runtime ($vcrtMsi)..." -Level "STEP" -Component "Acrobat"
                 }
-                Invoke-SafeMsi -Arguments "/i `"$vcrtMsi`" /qn /norestart" -WorkingDirectory (Split-Path $vcrtMsi -Parent) -MaxWaitSec 120
+                $null = Invoke-SafeMsi -Arguments "/i `"$vcrtMsi`" /qn /norestart" -WorkingDirectory (Split-Path $vcrtMsi -Parent) -MaxWaitSec 120
             }
 
             if (Test-Path $acroMsi) {
@@ -3681,7 +3750,7 @@ function Install-AllServisPrograms {
                     if (-not $IsWorker -and (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue)) {
                         Show-ServisDashboard -LiveStatus "Instaliram kumulativni patch za Adobe Acrobat..." -InstallProgress "Adobe Acrobat Patch [============----]"
                     }
-                    Wait-MsiMutexAvailable -TimeoutSec 60
+                    $null = Wait-MsiMutexAvailable -TimeoutSec 60
                     Remove-PendingRebootLocks
                     $patchArgs = "/p `"$acroMsp`" /qn /norestart /l*v `"C:\setup\acrobat_patch.log`""
                     $procPatch = Invoke-SafeMsi -Arguments $patchArgs -WorkingDirectory $acrobatDir -MaxWaitSec 300
@@ -3703,7 +3772,7 @@ function Install-AllServisPrograms {
                 $setupExe = Join-Path $acrobatDir "Setup.exe"
                 if (Test-Path $setupExe) {
                     Start-Sleep -Seconds 5
-                    Wait-MsiMutexAvailable -TimeoutSec 180
+                    $null = Wait-MsiMutexAvailable -TimeoutSec 180
                     Remove-PendingRebootLocks
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                         Write-ServisLog "Bazni MSI nije uspeo ili Acrobat.exe nedostaje. Pokrecem Setup.exe fallback..." -Level "WARN" -Component "Acrobat"
@@ -4706,7 +4775,7 @@ function Invoke-AppsPhase {
 
     # Osiguraj da je Windows Installer mutex slobodan nakon zavrsetka Windows Update-a i pozadinskog radnika
     if (Get-Command Wait-MsiMutexAvailable -ErrorAction SilentlyContinue) {
-        Wait-MsiMutexAvailable -TimeoutSec 180
+        $null = Wait-MsiMutexAvailable -TimeoutSec 180
     }
 
     $progStatus = Test-AllServisProgramsInstalled
@@ -4730,6 +4799,25 @@ function Invoke-AppsPhase {
         $missingStr = $progStatus.MissingList -join ", "
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Detektovano da sledeci programi nedostaju: $missingStr. Pokrecem instalaciju u prednjem planu..." -Level "WARN" -Component "Phase4"
+        }
+        if ((-not $progStatus.Acrobat.Installed) -or (-not $progStatus.Office.Installed)) {
+            $repoRoot = Get-ServisProgramiRoot -LocalSetupDir "C:\setup" -PreferredDir $Global:ProgramiDir
+            if (-not (Test-ProgramiPackageComplete -DirPath $repoRoot) -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+                if (Test-ProgramiPackageComplete -DirPath "C:\setup\Programi") {
+                    $repoRoot = "C:\setup\Programi"
+                }
+            }
+            if (-not (Test-ProgramiPackageComplete -DirPath $repoRoot) -and -not (Test-ProgramiPackageComplete -DirPath "C:\setup\Programi")) {
+                $repoErrMsg = "KRITIČNA GREŠKA FAZE 4: Ključni instalacioni paketi (Acrobat/Office) ne postoje ni na NAS SMB repozitorijumu ni lokalno (C:\setup\Programi / USB). Zaustavljam Fazu 4."
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog $repoErrMsg -Level "ERROR" -Component "NasProgrami"
+                }
+                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                    Send-IpcLog -Message $repoErrMsg -Level "ERROR" -Tag "[NasProgrami]" -Phase 4
+                }
+                throw $repoErrMsg
+            }
         }
         if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
             Show-ServisDashboard -LiveStatus "Pokrecem instalaciju programa koji nedostaju ($missingStr)..."
@@ -5174,7 +5262,7 @@ function Invoke-Phase4Apps {
     }
 
     if (Get-Command Ensure-ProgramiAvailable -ErrorAction SilentlyContinue) {
-        $ensuredDir = Ensure-ProgramiAvailable -Interactive:$false
+        $ensuredDir = Ensure-ProgramiAvailable -Interactive:$false -OnlyApp $OnlyApp
         if ($ensuredDir -and (Test-Path $ensuredDir)) {
             $activeProgDir = $ensuredDir
         }
@@ -5182,6 +5270,71 @@ function Invoke-Phase4Apps {
 
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "Aktivni direktorijum sa programima: $activeProgDir" -Level "INFO" -Component "Apps"
+    }
+
+    # IMP-37: Rana fail-fast provera ključnih paketa (Acrobat, Office) pre kaskadnog pada pojedinačnih P4.* koraka
+    $needAcrobatRepo = $runAcrobat -and (-not (Get-WisAppPresence -AppId "Acrobat").Installed)
+    $needOfficeRepo  = $runOffice -and (-not (Get-WisAppPresence -AppId "Office").Installed)
+    if ($needAcrobatRepo -or $needOfficeRepo) {
+        $checkRepoDirs = @($activeProgDir, "C:\setup\Programi", (Join-Path $LocalSetupDir "Programi")) | Where-Object { $_ } | Select-Object -Unique
+        $hasAcrobatPkg = $false
+        $hasOfficePkg  = $false
+        foreach ($crd in $checkRepoDirs) {
+            if (Test-Path $crd -ErrorAction SilentlyContinue) {
+                if ((Test-Path (Join-Path $crd "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or `
+                    (Test-Path (Join-Path $crd "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi")) -or `
+                    (Test-Path (Join-Path $crd "Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi"))) {
+                    $hasAcrobatPkg = $true
+                }
+                if ((Test-Path (Join-Path $crd "Office 2024\files\setup.exe")) -or `
+                    (Test-Path (Join-Path $crd "Office 2024\setup.exe")) -or `
+                    (Test-Path (Join-Path $crd "Programi\Office 2024\files\setup.exe")) -or `
+                    (Test-Path (Join-Path $crd "Programi\Office 2024\setup.exe"))) {
+                    $hasOfficePkg = $true
+                }
+            }
+        }
+        if ((($needAcrobatRepo -and -not $hasAcrobatPkg) -or ($needOfficeRepo -and -not $hasOfficePkg)) -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+            if ($isSingleAppRetry) {
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp $retryCanonicalAppId -Force
+            } else {
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+            }
+            foreach ($crd in (@("C:\setup\Programi") + $checkRepoDirs | Select-Object -Unique)) {
+                if (Test-Path $crd -ErrorAction SilentlyContinue) {
+                    if ((Test-Path (Join-Path $crd "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or `
+                        (Test-Path (Join-Path $crd "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi")) -or `
+                        (Test-Path (Join-Path $crd "Programi\Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi"))) {
+                        $hasAcrobatPkg = $true
+                        if ($activeProgDir -ne $crd -and -not (Test-ProgramiPackageComplete -DirPath $activeProgDir)) { $activeProgDir = $crd }
+                    }
+                    if ((Test-Path (Join-Path $crd "Office 2024\files\setup.exe")) -or `
+                        (Test-Path (Join-Path $crd "Office 2024\setup.exe")) -or `
+                        (Test-Path (Join-Path $crd "Programi\Office 2024\files\setup.exe")) -or `
+                        (Test-Path (Join-Path $crd "Programi\Office 2024\setup.exe"))) {
+                        $hasOfficePkg = $true
+                        if ($activeProgDir -ne $crd -and -not (Test-ProgramiPackageComplete -DirPath $activeProgDir)) { $activeProgDir = $crd }
+                    }
+                }
+            }
+        }
+        $missingKeyRepoPkgs = [System.Collections.Generic.List[string]]::new()
+        if ($needAcrobatRepo -and -not $hasAcrobatPkg) { $missingKeyRepoPkgs.Add("Acrobat") }
+        if ($needOfficeRepo -and -not $hasOfficePkg)   { $missingKeyRepoPkgs.Add("Office") }
+        if ($missingKeyRepoPkgs.Count -gt 0) {
+            $missingKeyStr = $missingKeyRepoPkgs -join ", "
+            $repoFatalMsg = "KRITIČNA GREŠKA FAZE 4: Ključni instalacioni paketi ($missingKeyStr) ne postoje ni na NAS SMB repozitorijumu ni lokalno (C:\setup\Programi / USB). Faza 4 je odmah zaustavljena."
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog $repoFatalMsg -Level "ERROR" -Component "NasProgrami"
+            }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message $repoFatalMsg -Level "ERROR" -Tag "[NasProgrami]" -Phase $ipcLogPhase
+            }
+            if ($isSingleAppRetry -and $retryCanonicalAppId -and (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue)) {
+                Send-IpcAppUpdate -AppId $retryCanonicalAppId -Status "ERROR" -Detail "Nedostupan NAS/lokalni instalacioni paket ($missingKeyStr)"
+            }
+            throw $repoFatalMsg
+        }
     }
 
     # Rekurzivna deblokada svih instalacionih fajlova ako je skladište lokalno
@@ -5198,7 +5351,7 @@ function Invoke-Phase4Apps {
     # Otklanjanje reboot i MSI lockova (Best-Effort)
     try {
         Remove-PendingRebootLocks
-        Wait-MsiMutexAvailable -TimeoutSec 60
+        $null = Wait-MsiMutexAvailable -TimeoutSec 60
     } catch {}
 
     $appsStatusMap = [ordered]@{
@@ -5232,6 +5385,10 @@ function Invoke-Phase4Apps {
         } -Action {
             if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
                 Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
+            } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Runtimes" -StatusMessage "Instalacija: DotNet..."
             }
             if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
                 Send-IpcAppUpdate -AppId "DotNet" -Status "RUNNING" -Detail "Instalacija sistemskih runtime paketa (.NET / VC++)..."
@@ -5259,6 +5416,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 20 -Phase 4 -PhaseName "Programi" -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "WinRAR" -Status "RUNNING" -Detail "Instalacija u toku..."
@@ -5276,7 +5437,12 @@ function Invoke-Phase4Apps {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Lokalni WinRAR instaler nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "WinRAR"
             }
-            $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+            $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "WinRAR" -Force
+            if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "WinRAR" -StatusMessage "Instalacija: WinRAR..."
+            }
             if (Test-Path "C:\setup\Programi") {
                 $activeProgDir = "C:\setup\Programi"
             }
@@ -5389,6 +5555,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 35 -Phase 4 -PhaseName "Programi" -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "Chrome" -Status "RUNNING" -Detail "Instalacija Chrome pretraživača..."
@@ -5423,7 +5593,12 @@ function Invoke-Phase4Apps {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Lokalni Google Chrome paket nije pronadjen u '$activeProgDir'. Pokrecem Sync-ProgramiFromNas retry..." -Level "WARN" -Component "Chrome"
                 }
-                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "Chrome" -Force
+                if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                    $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                    $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                    Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Google Chrome" -StatusMessage "Instalacija: Google Chrome..."
+                }
                 if (Test-Path "C:\setup\Programi") {
                     $activeProgDir = "C:\setup\Programi"
                 }
@@ -5505,6 +5680,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 50 -Phase 4 -PhaseName "Programi" -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "Acrobat" -Status "RUNNING" -Detail "Instalacija Adobe Acrobat Pro..."
@@ -5540,7 +5719,12 @@ function Invoke-Phase4Apps {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Lokalni Adobe Acrobat Pro paket nije pronadjen. Preuzimam sa servisnog NAS-a..." -Level "WARN" -Component "Acrobat"
             }
-            Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force | Out-Null
+            Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "Acrobat" -SubFolders @("Adobe.Acrobat.Pro.2024.x64.Multilingual", "Acrobat Pro 2024") -Force | Out-Null
+            if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Adobe Acrobat Pro" -StatusMessage "Instalacija: Adobe Acrobat Pro..."
+            }
             $acroDir = $acroDirCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "AcroPro.msi")) } | Select-Object -First 1
             if (-not $acroDir -and (Test-Path "C:\setup\Programi")) {
                 $foundMsiAfterSync = Get-ChildItem -Path "C:\setup\Programi" -Filter "AcroPro.msi" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -5638,6 +5822,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 65 -Phase 4 -PhaseName "Programi" -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "Office" -Status "RUNNING" -Detail "Instalacija Office 2024 paketa..."
@@ -5710,7 +5898,12 @@ function Invoke-Phase4Apps {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Lokalni Office 2024 offline paket nije potpun (SourcePath=$officeSourcePath, FilesDir=$officeFilesDir). Preuzimam sa NAS-a..." -Level "WARN" -Component "Office"
             }
-            Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force | Out-Null
+            Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "Office" -SubFolders @("Office 2024") -Force | Out-Null
+            if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
+            }
             $officeSourcePath = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
             $officeFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
             if (-not $officeFilesDir) {
@@ -5908,7 +6101,12 @@ function Invoke-Phase4Apps {
                     Write-ServisLog "Prvi pokusaj instalacije Office 2024 nije stvorio WINWORD.EXE/EXCEL.EXE. Pokrecem prinudno NAS osvezavanje i ponovni pokusaj sa cistim XML-om..." -Level "WARN" -Component "Office"
                 }
                 if (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue) {
-                    Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -Force | Out-Null
+                    Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "Office" -SubFolders @("Office 2024") -Force | Out-Null
+                    if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                        $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                        $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                        Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Office 2024" -StatusMessage "Instalacija: Microsoft Office 2024..."
+                    }
                     $retrySourcePath = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
                     $retryFilesDir = $officeCandidates | Where-Object { $_ -and -not ($_ -like "\\*") -and (Test-Path (Join-Path $_ "setup.exe")) -and (Test-Path (Join-Path $_ "Office\Data")) } | Select-Object -First 1
                     if (-not $retryFilesDir) {
@@ -5929,6 +6127,7 @@ function Invoke-Phase4Apps {
     }
 
     $appsStatusMap["Office"] = if ($stepOffice.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    $Global:WisOfficeInstallFailed = [bool](($stepOffice.State -notin @("OK", "SKIPPED_DONE")) -or (-not (Test-OfficeInstalled)))
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
         $offDetail = if ($stepOffice.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepOffice.State -eq "OK") { "Instaliran Office 2024" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Office" -Status $appsStatusMap["Office"] -Detail $offDetail
@@ -5954,6 +6153,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 80 -Phase 4 -PhaseName "Programi" -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "BatteryBar" -Status "RUNNING" -Detail "Provera baterije i instalacija..."
@@ -5975,6 +6178,15 @@ function Invoke-Phase4Apps {
                 "C:\setup\Programi\BatteryBar"
             )
             $bbFoundDir = $bbFolderCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "BatteryBar.exe")) } | Select-Object -First 1
+            if (-not $bbFoundDir -and (Get-Command Sync-ProgramiFromNas -ErrorAction SilentlyContinue)) {
+                $null = Sync-ProgramiFromNas -DestinationDir "C:\setup\Programi" -OnlyApp "BatteryBar" -SubFolders @("BatteryBar") -Force
+                if ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+                    $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+                    $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+                    Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "BatteryBar" -StatusMessage "Instalacija: BatteryBar..."
+                }
+                $bbFoundDir = $bbFolderCandidates | Where-Object { $_ -and (Test-Path (Join-Path $_ "BatteryBar.exe")) } | Select-Object -First 1
+            }
             if ($bbFoundDir) {
                 if (-not (Test-Path $targetBbDir)) {
                     New-Item -Path $targetBbDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
@@ -6012,6 +6224,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 88 -Phase 4 -PhaseName "Programi" -SubPhase "Prečice" -StatusMessage "Kreiranje prečica na radnoj površini..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Prečice" -StatusMessage "Instalacija: Shortcuts..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "Shortcuts" -Status "RUNNING" -Detail "Kreiranje prečica na radnoj površini..."
@@ -6033,7 +6249,22 @@ function Invoke-Phase4Apps {
     $stepPdf = Invoke-WisStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -NoSkip:$isSingleAppRetry -Test {
         Get-WisAppPresence -AppId "PdfDefault"
     } -Action {
-        $null = Set-AcrobatDefaultPDF
+        $pdfOk = Set-AcrobatDefaultPDF
+        if (-not $pdfOk) {
+            throw "SKIPPED_ERROR: Adobe Acrobat (Acrobat.exe) nije instaliran na disku — nije moguće podesiti podrazumevani PDF čitač."
+        }
+    }
+    if (-not (Get-WisAppPresence -AppId "Acrobat").Installed) {
+        $pdfErrReason = "SKIPPED_ERROR: Adobe Acrobat (Acrobat.exe) nije instaliran na disku"
+        if ($stepPdf) {
+            $stepPdf.State  = "SKIPPED_ERROR"
+            $stepPdf.Reason = $pdfErrReason
+        } else {
+            $stepPdf = @{ State = "SKIPPED_ERROR"; Reason = $pdfErrReason; Executed = $true; DurationMs = 0 }
+        }
+        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+            Send-IpcStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -State "FAIL" -Reason $pdfErrReason
+        }
     }
     }
 
@@ -6041,7 +6272,8 @@ function Invoke-Phase4Apps {
     # 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation
     # =========================================================================
     if ($runLicense) {
-    $stepActivation = Invoke-WisStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -NoSkip:$isSingleAppRetry -Test {
+    $officePlannedButMissing = [bool]($runOffice -and (($null -eq $stepOffice) -or ($stepOffice.State -notin @("OK", "SKIPPED_DONE")) -or ($appsStatusMap["Office"] -notin @("OK", "SKIP")) -or (-not (Test-OfficeInstalled))))
+    $stepActivation = Invoke-WisStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -NoSkip:($isSingleAppRetry -or $officePlannedButMissing) -Test {
         Get-WisAppPresence -AppId "Activation"
     } -Action {
         if (Get-Command Wait-ServisUICooperativePause -ErrorAction SilentlyContinue) {
@@ -6049,6 +6281,10 @@ function Invoke-Phase4Apps {
         }
         if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
             Send-IpcProgress -Progress 93 -Phase 4 -PhaseName "Programi" -SubPhase "Provera licenci" -StatusMessage "Verifikacija OEM i sistemskih licenci..."
+        } elseif ($isSingleAppRetry -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
+            $curP = if ($null -ne $Global:CurrentPhase -and [int]$Global:CurrentPhase -gt 0) { [int]$Global:CurrentPhase } else { 4 }
+            $curPrg = if ($null -ne $Global:CurrentProgress -and [int]$Global:CurrentProgress -gt 0) { [int]$Global:CurrentProgress } else { 95 }
+            Send-IpcStatus -Phase $curP -Progress $curPrg -SubPhase "Provera licenci" -StatusMessage "Instalacija: License..."
         }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
             Send-IpcAppUpdate -AppId "License" -Status "RUNNING" -Detail "Provera sistemskih licenci..."
@@ -6064,7 +6300,23 @@ function Invoke-Phase4Apps {
         Invoke-WindowsOfficeActivation -ProgramiDir $activeProgDir
     }
 
-    $appsStatusMap["License"] = if ($stepActivation.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if ($officePlannedButMissing) {
+        $offMissingWarn = "UPOZORENJE: Microsoft Office nije instaliran (P4.Office nije uspeo) — Office aktivacija nije izvršena"
+        if ($stepActivation) {
+            $stepActivation.State = "WARN"
+            if ([string]::IsNullOrWhiteSpace($stepActivation.Reason) -or $stepActivation.Reason -match 'Office nije instaliran') {
+                $stepActivation.Reason = $offMissingWarn
+            }
+        }
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "P4.Activation: $offMissingWarn" -Level "WARN" -Component "License"
+        }
+        if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
+            Send-IpcStep -Phase 4 -StepId "P4.Activation" -Title "Aktivacija Windows i Office paketa" -State "WARN" -Reason $stepActivation.Reason
+        }
+    }
+
+    $appsStatusMap["License"] = if (($stepActivation.State -in @("OK", "SKIPPED_DONE")) -and (-not $officePlannedButMissing)) { "OK" } else { "WARN" }
     $licStatusFile = Join-Path $LocalSetupDir "license-status.json"
     if ($stepActivation.State -eq "SKIPPED_DONE" -and -not (Test-Path -LiteralPath $licStatusFile -ErrorAction SilentlyContinue)) {
         try {

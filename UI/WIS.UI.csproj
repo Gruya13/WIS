@@ -117,6 +117,7 @@
     <Compile Include="HwTest\Core\ResultModel.cs" />
     <Compile Include="HwTest\Core\HwTestLogger.cs" />
     <Compile Include="HwTest\Core\HwTestLocalization.cs" />
+    <Compile Include="HwTest\Core\DriverReadinessGate.cs" />
     <Compile Include="HwTest\Core\ModelProfileClient.cs" />
     <Compile Include="HwTest\Core\HardwareProbe.cs" />
     <Compile Include="HwTest\Core\FactorySpecProbe.cs" />

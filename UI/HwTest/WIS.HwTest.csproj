@@ -74,6 +74,7 @@
     <Compile Include="Core\ResultModel.cs" />
     <Compile Include="Core\HwTestLogger.cs" />
     <Compile Include="Core\HwTestLocalization.cs" />
+    <Compile Include="Core\DriverReadinessGate.cs" />
     <Compile Include="Core\ModelProfileClient.cs" />
     <Compile Include="Core\HardwareProbe.cs" />
     <Compile Include="Core\FactorySpecProbe.cs" />

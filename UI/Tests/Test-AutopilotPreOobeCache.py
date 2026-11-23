@@ -20,6 +20,7 @@ PREOOBE_NET_OEM = ROOT / "ISO" / "sources" / "$OEM$" / "$$" / "Setup" / "Scripts
 PREOOBE_NET_PATH = PREOOBE_NET_OEM if PREOOBE_NET_OEM.is_file() else PREOOBE_NET_CANONICAL
 SETUP_COMPLETE_PATH = ROOT / "ISO" / "SetupComplete.ps1"
 CLOUD_ZTD_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "CloudZtdInspector.cs"
+LOCAL_FORENSICS_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "LocalForensicsInspector.cs"
 PROGRAM_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "Program.cs"
 AUDITOR_MAIN_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "MainWindow.cs"
 PROVERA_PS1_PATH = ROOT / "UI" / "Skripte" / "Provera_autopilota.ps1"
@@ -104,6 +105,7 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
         cls.preoobe_src = PREOOBE_NET_PATH.read_text(encoding="utf-8")
         cls.setup_complete_src = SETUP_COMPLETE_PATH.read_text(encoding="utf-8")
         cls.cloud_ztd_src = CLOUD_ZTD_CS_PATH.read_text(encoding="utf-8")
+        cls.local_forensics_src = LOCAL_FORENSICS_CS_PATH.read_text(encoding="utf-8")
         cls.program_src = PROGRAM_CS_PATH.read_text(encoding="utf-8")
         cls.auditor_main_src = AUDITOR_MAIN_CS_PATH.read_text(encoding="utf-8")
         cls.provera_src = PROVERA_PS1_PATH.read_text(encoding="utf-8")
@@ -178,6 +180,55 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
                     continue
                 self.assertTrue(dst.is_file(), f"Odredisni fajl ne postoji: {dst}")
                 self.assertEqual(sha256_file(dst), expected, f"SHA-256 neuskladjen za {dst}")
+
+    def test_06_v344_04_silent_background_execution(self):
+        """V344-04: AutopilotAuditor ne sme alocirati konzolni prozor u --json/--silent/redirected rezimu i svi podprocesi moraju biti skriveni."""
+        self.assertIn('"--silent"', self.program_src)
+        self.assertIn('"--no-console"', self.program_src)
+        self.assertIn("consoleAttachedOrAllocated", self.program_src)
+        self.assertIn("isJsonOutput || isSilent || Console.IsOutputRedirected", self.program_src)
+        self.assertIn("Console.OutputEncoding = Encoding.UTF8", self.program_src)
+        self.assertRegex(
+            self.program_src,
+            r"if\s*\(\s*!suppressConsoleWindow\s*\)\s*\{\s*consoleAttachedOrAllocated\s*=\s*TryAttachOrAllocConsole\(\);",
+        )
+        self.assertRegex(
+            self.program_src,
+            r"finally\s*\{\s*if\s*\(\s*consoleAttachedOrAllocated\s*\)\s*\{\s*TryFreeConsole\(\);",
+        )
+
+        self.assertIn("WindowStyle = ProcessWindowStyle.Hidden", self.local_forensics_src)
+        self.assertIn("CreateNoWindow = true", self.local_forensics_src)
+        self.assertIn("UseShellExecute = false", self.local_forensics_src)
+
+        self.assertGreaterEqual(
+            self.cloud_ztd_src.count("WindowStyle = ProcessWindowStyle.Hidden"),
+            4,
+            "CloudZtdInspector.cs mora imati ProcessWindowStyle.Hidden za sve ProcessStartInfo pozive",
+        )
+        self.assertGreaterEqual(
+            self.cloud_ztd_src.count("CreateNoWindow = true"),
+            4,
+            "CloudZtdInspector.cs mora imati CreateNoWindow = true za sve ProcessStartInfo pozive",
+        )
+        self.assertGreaterEqual(
+            self.cloud_ztd_src.count("RedirectStandardOutput = true"),
+            4,
+            "CloudZtdInspector.cs mora preusmeriti StandardOutput za sve ProcessStartInfo pozive",
+        )
+        self.assertGreaterEqual(
+            self.cloud_ztd_src.count("RedirectStandardError = true"),
+            4,
+            "CloudZtdInspector.cs mora preusmeriti StandardError za sve ProcessStartInfo pozive",
+        )
+
+        self.assertIn('Arguments = "--json --silent"', self.ui_main_src)
+        self.assertIn("-WindowStyle Hidden", self.ui_main_src)
+        self.assertGreaterEqual(
+            self.ui_main_src.count("WindowStyle = ProcessWindowStyle.Hidden"),
+            2,
+            "MainWindow.xaml.cs mora sakriti i EXE i PowerShell fallback prozor za Autopilot skeniranje",
+        )
 
 
 if __name__ == "__main__":

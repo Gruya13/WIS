@@ -1650,6 +1650,10 @@ namespace WIS.HwTest.Core
                     {
                         wlanAccessDenied = bss.AccessDenied;
                         wlanLastError = bss.LastError;
+                        if (bss.AccessDenied && !locationPolicyDisabled)
+                        {
+                            locationPolicyDisabled = NativeMethods.IsLocationPolicyDisabled() || (bss.LastError == 5u);
+                        }
                         if (bss.AccessDenied || bss.LastError != 0u)
                         {
                             HwTestLogger.Warn("WIFI_SCAN", string.Format(
@@ -1729,6 +1733,7 @@ namespace WIS.HwTest.Core
                     if (netshVisible == 0 && bssidCount == 0 && IsNetshLocationBlockedMessage(output))
                     {
                         netshLocationBlocked = true;
+                        locationPolicyDisabled = true;
                         HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show networks blokiran od strane Windows Location politike.");
                     }
 
@@ -1758,6 +1763,7 @@ namespace WIS.HwTest.Core
                         if (bssidCount == 0 && visibleNetworks == 0 && IsNetshLocationBlockedMessage(ifaceOut))
                         {
                             netshLocationBlocked = true;
+                            locationPolicyDisabled = true;
                             HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show interfaces blokiran od strane Windows Location politike.");
                         }
                         string[] ifaceLines = ifaceOut.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -2683,6 +2689,13 @@ namespace WIS.HwTest.Core
             return res;
         }
 
+        public static int ComputeCpuStressThreadCount(int logicalProcessors)
+        {
+            if (logicalProcessors <= 1) return 1;
+            if (logicalProcessors <= 7) return logicalProcessors - 1;
+            return logicalProcessors - 2;
+        }
+
         public TestItemResult RunCpuStress(Action<string> onProgress, CancelFlag cancel)
         {
             TestItemResult res = new TestItemResult("auto_cpu", HwTestLocalization.Pick("Procesor (CPU)", "处理器 (CPU)"), HwTestLocalization.Pick("Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature", "多核压力负载,检查频率、热降频与温度"));
@@ -2695,7 +2708,13 @@ namespace WIS.HwTest.Core
             int baseClockMhz;
             ReadCpuWmi(out cpuName, out cores, out logical, out baseClockMhz);
 
-            int threadCount = Math.Max(1, Environment.ProcessorCount);
+            int logicalCount = Math.Max(1, logical > 0 ? logical : Environment.ProcessorCount);
+            int threadCount = ComputeCpuStressThreadCount(Environment.ProcessorCount);
+            if (logicalCount > 1 && threadCount >= logicalCount)
+            {
+                threadCount = ComputeCpuStressThreadCount(logicalCount);
+            }
+            int reservedThreads = Math.Max(0, logicalCount - threadCount);
             const int durationSec = 10;
             CancelFlag workerStop = new CancelFlag();
             int workerCrashCount = 0;
@@ -2728,6 +2747,8 @@ namespace WIS.HwTest.Core
                                 hash = (hash * 6364136223846793005UL) ^ (ulong)(k + 1);
                             }
                             localIter++;
+                            if ((localIter & 0x0F) == 0) Thread.Yield();
+                            if (logicalCount <= 1 && (localIter & 0x07) == 0) Thread.Sleep(1);
                         }
                         if (double.IsNaN(acc)) Interlocked.Increment(ref workerCrashCount);
                         Interlocked.Add(ref totalIterations, localIter);
@@ -2738,7 +2759,7 @@ namespace WIS.HwTest.Core
                     }
                 });
                 workers[t].IsBackground = true;
-                workers[t].Priority = ThreadPriority.BelowNormal;
+                workers[t].Priority = ThreadPriority.Lowest;
                 workers[t].Start();
             }
 
@@ -2841,7 +2862,7 @@ namespace WIS.HwTest.Core
                     int secLeft = Math.Max(0, durationSec - (int)loopSw.Elapsed.TotalSeconds);
                     string tempLabel = curTemp > 0 ? string.Format("{0:0}°C", curTemp) : "N/A";
                     string clkLabel = curClock > 0 ? string.Format("{0:0} MHz", curClock) : (baseClockMhz + " MHz");
-                    onProgress(HwTestLocalization.PickFormat("CPU Stres ({0}T): {1} | {2} | {3}s", "CPU 压力测试 ({0}T): {1} | {2} | {3}s", threadCount, tempLabel, clkLabel, secLeft));
+                    onProgress(HwTestLocalization.PickFormat("CPU Stres ({0}/{1}T): {2} | {3} | {4}s", "CPU 压力测试 ({0}/{1}T): {2} | {3} | {4}s", threadCount, logicalCount, tempLabel, clkLabel, secLeft));
                 }
             }
 
@@ -2880,6 +2901,8 @@ namespace WIS.HwTest.Core
             res.Details["cpu_name"] = cpuName;
             res.Details["cores"] = cores;
             res.Details["logical_processors"] = logical;
+            res.Details["stress_threads"] = threadCount;
+            res.Details["reserved_threads"] = reservedThreads;
             res.Details["base_clock_mhz"] = baseClockMhz;
             res.Details["avg_clock_mhz"] = Math.Round(meanClockMhz, 0);
             res.Details["peak_temp_c"] = Math.Round(peakTemp, 1);
@@ -2899,7 +2922,7 @@ namespace WIS.HwTest.Core
                 : (staticAcpiZone ? HwTestLocalization.Pick("Temp: N/A (ACPI static)", "温度: 不可用 (ACPI 静态)") : "Temp: N/A");
             string clkStr = meanClockMhz > 0 ? HwTestLocalization.PickFormat(" | Takt: {0:0} MHz", " | 频率: {0:0} MHz", meanClockMhz) : HwTestLocalization.PickFormat(" | Baza: {0} MHz", " | 基础频率: {0} MHz", baseClockMhz);
             string fanStr = maxFanRpm > 0 ? HwTestLocalization.PickFormat(" | Fan: {0} RPM", " | 风扇: {0} RPM", maxFanRpm) : "";
-            res.MetricSummary = string.Format("{0} ({1}T) | {2}{3}{4}", ShortModel(cpuName, 24), threadCount, tempStr, clkStr, fanStr);
+            res.MetricSummary = string.Format("{0} ({1}/{2}T) | {3}{4}{5}", ShortModel(cpuName, 24), threadCount, logicalCount, tempStr, clkStr, fanStr);
 
             bool lowCoolTemp = (peakTemp > 0f && peakTemp < 75.0f);
             bool severeThrottle = (baseClockMhz > 500 && meanClockMhz > 100 && meanClockMhz < (baseClockMhz * 0.45f) && peakTemp >= 85f);
@@ -2939,8 +2962,8 @@ namespace WIS.HwTest.Core
                 res.Status = TestStatus.Pass;
                 res.HasWarning = false;
                 res.Reason = peakTemp > 0
-                    ? HwTestLocalization.PickFormat("CPU stabilan pod 100% opterećenjem ({0} niti, max {1:0}°C)", "CPU 在 100% 负载下稳定 ({0} 线程,最高 {1:0}°C)", threadCount, peakTemp)
-                    : HwTestLocalization.PickFormat("CPU stabilan pod 100% opterećenjem ({0} niti, 0 grešaka; temp senzor nedostupan)", "CPU 在 100% 负载下稳定 ({0} 线程,0 个错误;温度传感器不可用)", threadCount);
+                    ? HwTestLocalization.PickFormat("CPU stabilan pod opterećenjem ({0}/{1}T niti, max {2:0}°C)", "CPU 在压力负载下稳定 ({0}/{1}T 线程,最高 {2:0}°C)", threadCount, logicalCount, peakTemp)
+                    : HwTestLocalization.PickFormat("CPU stabilan pod opterećenjem ({0}/{1}T niti, 0 grešaka; temp senzor nedostupan)", "CPU 在压力负载下稳定 ({0}/{1}T 线程,0 个错误;温度传感器不可用)", threadCount, logicalCount);
             }
 
             sw.Stop();

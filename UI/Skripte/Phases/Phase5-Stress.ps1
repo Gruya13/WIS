@@ -133,7 +133,15 @@ try {
             }
         }
 
-        $cpuCount = [Math]::Max(1, [Environment]::ProcessorCount)
+        $logical = [Math]::Max(1, [Environment]::ProcessorCount)
+        $stressThreads = if ($logical -le 1) {
+            1
+        } elseif ($logical -le 7) {
+            $logical - 1
+        } else {
+            $logical - 2
+        }
+        $cpuCount = $stressThreads
         $syncState = [hashtable]::Synchronized(@{ Stop = $false })
         $runspacePool = $null
         $stressInstances = [System.Collections.ArrayList]::new()
@@ -150,11 +158,14 @@ try {
                 $skipCpuWorkers = ($useControlledInput -and $controlledInput -and $controlledInput.skip_cpu_load -eq $true)
                 if (-not $skipCpuWorkers) {
                     $sessionState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-                    $runspacePool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, $cpuCount, $sessionState, $Host)
+                    $runspacePool = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, $stressThreads, $sessionState, $Host)
                     $runspacePool.Open()
 
                     $stressScript = {
-                        param($sync)
+                        param($sync, $logicalCount)
+                        try {
+                            [System.Threading.Thread]::CurrentThread.Priority = [System.Threading.ThreadPriority]::Lowest
+                        } catch {}
                         $val = 1.0001
                         $counter = 0
                         while (-not $sync.Stop) {
@@ -163,22 +174,26 @@ try {
                             }
                             $counter++
                             if ($counter % 20 -eq 0) {
-                                [System.Threading.Thread]::Yield() | Out-Null
+                                if ($logicalCount -le 1) {
+                                    [System.Threading.Thread]::Sleep(1)
+                                } else {
+                                    [System.Threading.Thread]::Yield() | Out-Null
+                                }
                             }
                         }
                     }
 
-                    for ($i = 0; $i -lt $cpuCount; $i++) {
+                    for ($i = 0; $i -lt $stressThreads; $i++) {
                         $ps = [powershell]::Create()
                         $ps.RunspacePool = $runspacePool
-                        [void]$ps.AddScript($stressScript).AddArgument($syncState)
+                        [void]$ps.AddScript($stressScript).AddArgument($syncState).AddArgument($logical)
                         [void]$stressInstances.Add(@{
                             Instance    = $ps
                             AsyncResult = $ps.BeginInvoke()
                         })
                     }
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        Write-ServisLog "Phase5: Pokrenut intenzivni 100% CPU load na svih $cpuCount jezgara..." -Level "INFO" -Component "Phase5"
+                        Write-ServisLog "Phase5: Pokrenut CPU stres test na $stressThreads/$logical niti (ThreadPriority.Lowest)..." -Level "INFO" -Component "Phase5"
                     }
                 }
 

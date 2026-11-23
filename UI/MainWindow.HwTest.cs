@@ -38,34 +38,60 @@ namespace WIS.UI
             if (string.IsNullOrEmpty(val)) return true;
             string t = val.Trim();
             if (t.Length == 0) return true;
+            if (t.EndsWith("...", StringComparison.Ordinal) || t.EndsWith("…", StringComparison.Ordinal)) return true;
             if (t.Equals("N/A", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("NA", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("None", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Unknown", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("Standardni PC", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("GenericPC", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("Nepoznat model", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("Nepoznat serijski", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Učitavanje", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Ucitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Detekcija", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Očitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Ocitavanje", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Provera", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("Loading", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Detecting", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Reading", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Checking", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.StartsWith("To be filled", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("Default string", StringComparison.OrdinalIgnoreCase)) return true;
             if (t.Equals("System Product Name", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Equals("System Serial Number", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.IndexOf("加载中", StringComparison.Ordinal) >= 0) return true;
+            if (t.IndexOf("正在加载", StringComparison.Ordinal) >= 0) return true;
+            if (t.IndexOf("读取中", StringComparison.Ordinal) >= 0) return true;
+            if (t.IndexOf("检测中", StringComparison.Ordinal) >= 0) return true;
+            if (t.IndexOf("正在检测", StringComparison.Ordinal) >= 0) return true;
+            if (t.IndexOf("未知", StringComparison.Ordinal) >= 0) return true;
             return false;
         }
 
         private void GetCurrentDeviceIdentity(out string model, out string serial, out string mfg, out string sku)
         {
             string vmModel = ViewModel != null ? ViewModel.ComputerModel : null;
+            string apModel = (ViewModel != null && ViewModel.Autopilot != null) ? ViewModel.Autopilot.HwModel : null;
             string hwModel = (ViewModel != null && ViewModel.HardwareInfo != null) ? ViewModel.HardwareInfo.MotherboardModel : null;
             if (!IsPlaceholderIdentity(vmModel))
                 model = vmModel.Trim();
+            else if (!IsPlaceholderIdentity(apModel))
+                model = apModel.Trim();
             else if (!IsPlaceholderIdentity(hwModel))
                 model = hwModel.Trim();
             else
                 model = "";
 
             string vmSerial = ViewModel != null ? ViewModel.SerialNumber : null;
+            string apSerial = (ViewModel != null && ViewModel.Autopilot != null) ? ViewModel.Autopilot.HwSerialNumber : null;
             string hwSerial = (ViewModel != null && ViewModel.HardwareInfo != null) ? ViewModel.HardwareInfo.SerialNumber : null;
             if (!IsPlaceholderIdentity(vmSerial))
                 serial = vmSerial.Trim();
+            else if (!IsPlaceholderIdentity(apSerial))
+                serial = apSerial.Trim();
             else if (!IsPlaceholderIdentity(hwSerial))
                 serial = hwSerial.Trim();
             else
@@ -87,6 +113,198 @@ namespace WIS.UI
                 }
             }
             catch { }
+        }
+
+        public DriverGateState EvaluateInteractiveTestsDriverGate()
+        {
+            DriverGateState state = DriverReadinessGate.EvaluateLocal();
+            if (state == null)
+            {
+                state = new DriverGateState();
+            }
+
+            int currentPhase = (ViewModel != null) ? ViewModel.CurrentPhase : 1;
+            bool isServiceFinished = (ViewModel != null) && (ViewModel.IsServiceFinished || ViewModel.IsCompleted);
+            bool phase2Failed = (_failedPhase == 2);
+            bool phase2CompletedOrSkipped = isServiceFinished || (currentPhase >= 3);
+            if (!phase2CompletedOrSkipped && ViewModel != null && ViewModel.Phases != null)
+            {
+                for (int i = 0; i < ViewModel.Phases.Count; i++)
+                {
+                    PhaseItem ph = ViewModel.Phases[i];
+                    if (ph != null && ph.Number == 2)
+                    {
+                        string st = (ph.Status ?? "").Trim().ToUpperInvariant();
+                        if (st == "COMPLETED" || st == "OK" || st == "SKIPPED")
+                        {
+                            phase2CompletedOrSkipped = true;
+                        }
+                        break;
+                    }
+                }
+            }
+            bool phase2NotDone = phase2Failed || !phase2CompletedOrSkipped;
+
+            bool journalInterimRebootPending = false;
+            if (currentPhase <= 3 && !isServiceFinished)
+            {
+                try
+                {
+                    string journalPath = @"C:\setup\step-journal.json";
+                    if (File.Exists(journalPath))
+                    {
+                        string jTxt = File.ReadAllText(journalPath, Encoding.UTF8);
+                        if (!string.IsNullOrWhiteSpace(jTxt))
+                        {
+                            JsonNode jRoot = JsonHelper.Parse(jTxt);
+                            if (jRoot != null && jRoot.IsObject && jRoot["interim_reboot_required"].AsBool(false))
+                            {
+                                journalInterimRebootPending = true;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            bool driversTabBusy = false;
+            if (ViewModel != null && ViewModel.Drivers != null)
+            {
+                if (ViewModel.Drivers.IsBatchResolving || ViewModel.Drivers.IsScanning)
+                {
+                    driversTabBusy = true;
+                }
+                else if (ViewModel.Drivers.MissingDevices != null)
+                {
+                    for (int i = 0; i < ViewModel.Drivers.MissingDevices.Count; i++)
+                    {
+                        DriverItemViewModel d = ViewModel.Drivers.MissingDevices[i];
+                        if (d != null && d.IsInstalling)
+                        {
+                            driversTabBusy = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            int bgPendingDrivers;
+            bool bgInstallingDriver;
+            GetBackgroundWuDriverState(out bgPendingDrivers, out bgInstallingDriver);
+            bool hasBgWuDrivers = (bgPendingDrivers > 0) || bgInstallingDriver;
+
+            state.IsDriverInstallActive = phase2NotDone || driversTabBusy || hasBgWuDrivers;
+            state.HasBackgroundWuDrivers = hasBgWuDrivers;
+            if (journalInterimRebootPending)
+            {
+                state.HasCode14PendingReboot = true;
+            }
+
+            if (phase2Failed)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.ReasonTitle = LocalizationService.Get("HwTGatePhase2FailedTitle", "Faza 2 (Instalacija drajvera) nije uspešno završena");
+                state.ReasonDetail = LocalizationService.Get("HwTGatePhase2FailedDetail", "Interaktivni testovi periferija su zaključani dok se Faza 2 (Drajveri) ne završi ili dok se drajveri ne instaliraju u tabu Drajveri.");
+                return state;
+            }
+
+            if (phase2NotDone)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.ReasonTitle = LocalizationService.Get("HwTGatePhase2RunningTitle", "Instalacija drajvera (Faza 2) još uvek nije završena");
+                state.ReasonDetail = LocalizationService.Get("HwTGatePhase2RunningDetail", "Sačekajte da se Faza 2 (Drajveri i zakrpe) završi pre pokretanja interaktivnih testova periferija.");
+                return state;
+            }
+
+            if (driversTabBusy)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.ReasonTitle = LocalizationService.Get("HwTGateDriversBusyTitle", "Instalacija ili skeniranje drajvera je u toku");
+                state.ReasonDetail = LocalizationService.Get("HwTGateDriversBusyDetail", "Sačekajte da se operacija u tabu Drajveri završi pre pokretanja interaktivnih testova.");
+                return state;
+            }
+
+            if (hasBgWuDrivers)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.ReasonTitle = LocalizationService.Get("HwTGateBgWuDriversTitle", "Pozadinski Windows Update preuzima ili instalira drajvere");
+                state.ReasonDetail = string.Format(
+                    LocalizationService.Get("HwTGateBgWuDriversDetailFmt", "Pozadinski WU obrađuje drajvere (preostalo drajvera: {0}). Interaktivni testovi će se otključati po završetku instalacije drajvera."),
+                    Math.Max(1, bgPendingDrivers));
+                return state;
+            }
+
+            if (state.HasCode14PendingReboot)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                if (string.IsNullOrEmpty(state.ReasonTitle))
+                {
+                    state.ReasonTitle = LocalizationService.Get("HwTGateRebootReqTitle", "Potreban je međurestart sistema radi aktivacije drajvera (Code 14)");
+                    state.ReasonDetail = LocalizationService.Get("HwTGateRebootReqDetail", "Neki instalirani drajveri zahtevaju restart računara pre nego što periferije postanu spremne za interaktivno testiranje.");
+                }
+                return state;
+            }
+
+            if (state.ProblemDevices != null && state.ProblemDevices.Count > 0)
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = true;
+                return state;
+            }
+
+            state.IsUnlocked = true;
+            state.CanEmergencyUnlock = false;
+            state.ReasonTitle = string.Empty;
+            state.ReasonDetail = string.Empty;
+            return state;
+        }
+
+        private void OpenDriversTabFromHwTest()
+        {
+            Action openAction = delegate
+            {
+                NavigateToAlertTab("drivers");
+                DetectDrivers();
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess()) openAction();
+                else Dispatcher.BeginInvoke(openAction);
+            }
+        }
+
+        public void NotifyHwTestDriverStateChanged(bool refreshHardwareProbe)
+        {
+            if (_embeddedHwTestShell == null) return;
+            Action act = delegate
+            {
+                if (_embeddedHwTestShell == null) return;
+                try
+                {
+                    if (refreshHardwareProbe)
+                    {
+                        DriverGateState gate = EvaluateInteractiveTestsDriverGate();
+                        if (gate != null && gate.IsUnlocked)
+                        {
+                            _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
+                        }
+                    }
+                    _embeddedHwTestShell.RefreshDriverGateUi();
+                }
+                catch { }
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess()) act();
+                else Dispatcher.BeginInvoke(act);
+            }
         }
 
         private void EnsureEmbeddedHwTestTab()
@@ -117,6 +335,8 @@ namespace WIS.UI
                     HwTestLogger.Initialize(client.HubBaseUrl);
                     _embeddedHwTestShell = new HwTestShell(@"C:\setup\hwtest-result.json", model, serial, mfg, sku, client);
                     _embeddedHwTestShell.SetUefiBiosRebootHandler(HandlePhase5UefiBiosRebootRequest);
+                    _embeddedHwTestShell.SetInteractiveTestsGateProvider(EvaluateInteractiveTestsDriverGate);
+                    _embeddedHwTestShell.SetOpenDriversTabHandler(OpenDriversTabFromHwTest);
                     _embeddedHwTestShell.PendingInteractiveTestsRequired += OnPendingInteractiveTestsRequired;
                 }
 
@@ -141,6 +361,7 @@ namespace WIS.UI
 
                     // Dodajemo na kraj MainTabControl-a da indeksi postojecih tabova (0..7) ostanu netaknuti.
                     MainTabControl.Items.Add(_hwTestTabItem);
+                    _embeddedHwTestShell.RefreshDriverGateUi();
                 }
             }
             catch (Exception ex)
@@ -215,6 +436,116 @@ namespace WIS.UI
             }
         }
 
+        private bool TryReadPersistedInteractiveTestsFromReportFiles(out List<string> pendingNames, out int completedInteractiveCount)
+        {
+            pendingNames = new List<string>();
+            completedInteractiveCount = 0;
+
+            string currentModel, currentSerial, currentMfg, currentSku;
+            GetCurrentDeviceIdentity(out currentModel, out currentSerial, out currentMfg, out currentSku);
+
+            string[] candidatePaths = new string[]
+            {
+                @"C:\setup\hwtest-result.json",
+                @"C:\Windows\Logs\WIS\hwtest-result.json"
+            };
+
+            for (int pIdx = 0; pIdx < candidatePaths.Length; pIdx++)
+            {
+                string path = candidatePaths[pIdx];
+                try
+                {
+                    if (!File.Exists(path)) continue;
+                    string json = File.ReadAllText(path, Encoding.UTF8);
+                    if (string.IsNullOrWhiteSpace(json)) continue;
+
+                    JsonNode root = JsonHelper.Parse(json);
+                    if (root == null || !root.IsObject) continue;
+
+                    string fileSerial = root.ContainsKey("serial") ? root["serial"].AsString("") : "";
+                    if (string.IsNullOrEmpty(fileSerial) && root.ContainsKey("serial_number"))
+                    {
+                        fileSerial = root["serial_number"].AsString("");
+                    }
+
+                    if (!IsPlaceholderIdentity(currentSerial) && !IsPlaceholderIdentity(fileSerial) &&
+                        !string.Equals(currentSerial.Trim(), fileSerial.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    JsonNode testsNode = root["tests"];
+                    if (testsNode == null || !testsNode.IsArray) continue;
+
+                    List<string> filePending = new List<string>();
+                    int fileCompleted = 0;
+                    int interactiveTotal = 0;
+
+                    for (int i = 0; i < testsNode.Count; i++)
+                    {
+                        JsonNode t = testsNode[i];
+                        if (t == null || !t.IsObject) continue;
+                        bool isAuto = t["automated"].AsBool(true);
+                        if (isAuto) continue;
+
+                        string status = t["status"].AsString("").Trim().ToUpperInvariant();
+                        if (status == "NA" || status == "NOTAPPLICABLE" || status == "NOT_APPLICABLE")
+                        {
+                            continue;
+                        }
+
+                        interactiveTotal++;
+                        if (status == "PASS" || status == "FAIL")
+                        {
+                            fileCompleted++;
+                        }
+                        else if (status == "SKIP")
+                        {
+                            string skipReason = t.ContainsKey("manual_skip_reason") ? t["manual_skip_reason"].AsString("") : "";
+                            if (string.IsNullOrWhiteSpace(skipReason) && t.ContainsKey("reason"))
+                            {
+                                string r = t["reason"].AsString("");
+                                if (!string.IsNullOrWhiteSpace(r) &&
+                                    r.IndexOf("Nije pokrenut", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                    r.IndexOf("未运行", StringComparison.OrdinalIgnoreCase) < 0 &&
+                                    r.IndexOf("Čeka", StringComparison.OrdinalIgnoreCase) < 0)
+                                {
+                                    skipReason = r;
+                                }
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(skipReason))
+                            {
+                                fileCompleted++;
+                            }
+                            else
+                            {
+                                string title = t["title"].AsString("");
+                                if (string.IsNullOrEmpty(title)) title = t["id"].AsString("Interaktivni test");
+                                filePending.Add(title);
+                            }
+                        }
+                        else
+                        {
+                            string title = t["title"].AsString("");
+                            if (string.IsNullOrEmpty(title)) title = t["id"].AsString("Interaktivni test");
+                            filePending.Add(title);
+                        }
+                    }
+
+                    if (interactiveTotal > 0 || testsNode.Count > 0)
+                    {
+                        pendingNames = filePending;
+                        completedInteractiveCount = fileCompleted;
+                        return true;
+                    }
+                }
+                catch { }
+            }
+
+            return false;
+        }
+
         private static List<string> ReadPendingInteractiveTestsFromReportFile()
         {
             var list = new List<string>();
@@ -263,29 +594,53 @@ namespace WIS.UI
             }
             catch { }
 
+            List<string> persistedPending;
+            int persistedCompleted;
+            bool hasPersistedFile = TryReadPersistedInteractiveTestsFromReportFiles(out persistedPending, out persistedCompleted);
+
             if (_embeddedHwTestShell != null)
             {
                 try
                 {
+                    List<string> shellPending = null;
                     if (Dispatcher != null && !Dispatcher.CheckAccess() && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
                     {
-                        List<string> invoked = null;
                         Dispatcher.Invoke((Action)(() =>
                         {
                             if (_embeddedHwTestShell != null)
                             {
-                                invoked = _embeddedHwTestShell.GetPendingInteractiveTestNames();
+                                shellPending = _embeddedHwTestShell.GetPendingInteractiveTestNames();
                             }
                         }));
-                        if (invoked != null) return invoked;
                     }
                     else
                     {
-                        List<string> direct = _embeddedHwTestShell.GetPendingInteractiveTestNames();
-                        if (direct != null) return direct;
+                        shellPending = _embeddedHwTestShell.GetPendingInteractiveTestNames();
+                    }
+
+                    if (shellPending != null)
+                    {
+                        if (shellPending.Count == 0)
+                        {
+                            return shellPending;
+                        }
+                        if (hasPersistedFile && persistedCompleted > 0 && persistedPending.Count == 0)
+                        {
+                            return new List<string>();
+                        }
+                        if (hasPersistedFile && persistedCompleted > 0 && persistedPending.Count < shellPending.Count)
+                        {
+                            return persistedPending;
+                        }
+                        return shellPending;
                     }
                 }
                 catch { }
+            }
+
+            if (hasPersistedFile)
+            {
+                return persistedPending;
             }
 
             if (File.Exists(@"C:\setup\hwtest-result.json"))
@@ -317,13 +672,17 @@ namespace WIS.UI
                 return false;
             }
 
+            List<string> persistedPending;
+            int persistedCompleted;
+            bool hasPersistedFile = TryReadPersistedInteractiveTestsFromReportFiles(out persistedPending, out persistedCompleted);
+
             if (_embeddedHwTestShell != null)
             {
                 try
                 {
+                    bool hasUnfinished = false;
                     if (Dispatcher != null && !Dispatcher.CheckAccess() && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
                     {
-                        bool hasUnfinished = false;
                         Dispatcher.Invoke((Action)(() =>
                         {
                             if (_embeddedHwTestShell != null)
@@ -331,11 +690,28 @@ namespace WIS.UI
                                 hasUnfinished = _embeddedHwTestShell.HasUnfinishedInteractiveTests();
                             }
                         }));
-                        return hasUnfinished;
                     }
-                    return _embeddedHwTestShell.HasUnfinishedInteractiveTests();
+                    else
+                    {
+                        hasUnfinished = _embeddedHwTestShell.HasUnfinishedInteractiveTests();
+                    }
+
+                    if (!hasUnfinished)
+                    {
+                        return false;
+                    }
+                    if (hasPersistedFile && persistedCompleted > 0 && persistedPending.Count == 0)
+                    {
+                        return false;
+                    }
+                    return true;
                 }
                 catch { }
+            }
+
+            if (hasPersistedFile)
+            {
+                return persistedPending.Count > 0;
             }
 
             if (File.Exists(@"C:\setup\hwtest-result.json"))
@@ -416,6 +792,34 @@ namespace WIS.UI
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
                 return;
+            }
+
+            DriverGateState gate = EvaluateInteractiveTestsDriverGate();
+            _embeddedHwTestShell.RefreshDriverGateUi();
+            if (gate != null && !gate.IsUnlocked && !gate.CanEmergencyUnlock)
+            {
+                if (MainTabControl != null && _hwTestTabItem != null)
+                {
+                    MainTabControl.SelectedItem = _hwTestTabItem;
+                }
+                if (ViewModel != null)
+                {
+                    ViewModel.AddLog("WARN", "Hardver", string.Format(
+                        "Pokretanje interaktivnih testova odbijeno — instalacija drajvera nije završena: {0} ({1})",
+                        gate.ReasonTitle, gate.ReasonDetail));
+                }
+                MessageBox.Show(
+                    this,
+                    string.Format("{0}\n\n{1}", gate.ReasonTitle, gate.ReasonDetail),
+                    LocalizationService.Get("HwTTitle", "WIS Hardverski testovi"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            if (gate != null && gate.IsUnlocked)
+            {
+                _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
             }
 
             HidePendingInteractiveTestsOverlayOnly();
@@ -861,6 +1265,7 @@ namespace WIS.UI
                             {
                                 try
                                 {
+                                    SaveDeployStatePhase(6);
                                     ExecutePhase(6);
                                 }
                                 catch { }
@@ -1100,6 +1505,12 @@ namespace WIS.UI
                 if (_embeddedHwTestShell != null && _hwTestTabItem != null)
                 {
                     RefreshEmbeddedHwTestIdentity();
+                    DriverGateState gate = EvaluateInteractiveTestsDriverGate();
+                    if (gate != null && gate.IsUnlocked)
+                    {
+                        _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
+                    }
+                    _embeddedHwTestShell.RefreshDriverGateUi();
                     if (MainTabControl != null)
                     {
                         MainTabControl.SelectedItem = _hwTestTabItem;
@@ -1138,6 +1549,7 @@ namespace WIS.UI
 
                 if (Interlocked.CompareExchange(ref _phase6DispatchGuard, 1, 0) == 0)
                 {
+                    SaveDeployStatePhase(6);
                     ExecutePhase(6);
                 }
                 return;
@@ -1299,6 +1711,7 @@ namespace WIS.UI
 
             if (Interlocked.CompareExchange(ref _phase6DispatchGuard, 1, 0) == 0)
             {
+                SaveDeployStatePhase(6);
                 ExecutePhase(6);
             }
         }

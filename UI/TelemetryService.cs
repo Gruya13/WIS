@@ -914,7 +914,7 @@ namespace WIS.UI
                 string url = HubUrl + "/api/heartbeat";
 
                 bool ok;
-                string respBody = HttpPostWithResponse(url, jsonBody, 1000, out ok);
+                string respBody = HttpPostWithResponse(url, jsonBody, 2500, out ok);
                 if (!ok)
                 {
                     _consecutiveFailures++;
@@ -943,22 +943,53 @@ namespace WIS.UI
             }
         }
 
-        private static bool IsPlaceholderHwValue(string val)
+        public static bool IsPlaceholderHwValue(string val)
         {
             if (string.IsNullOrWhiteSpace(val)) return true;
-            string low = val.Trim().ToLowerInvariant();
-            if (low == "n/a" || low == "na" || low == "unknown" || low == "none" || low == "null" ||
-                low == "nepoznat model" || low == "nepoznat serijski" || low == "nepoznato" ||
-                low == "genericpc" || low == "system product name" || low == "default string" ||
-                low == "to be filled by o.e.m.")
+            string trimmed = val.Trim();
+            if (trimmed.Length < 2) return true;
+            if (trimmed.EndsWith("...", StringComparison.Ordinal) || trimmed.EndsWith("…", StringComparison.Ordinal))
             {
                 return true;
             }
-            if (low.StartsWith("učitavanje") || low.StartsWith("ucitavanje") || low.StartsWith("detekcija"))
+            string low = trimmed.ToLowerInvariant();
+            if (low == "n/a" || low == "na" || low == "unknown" || low == "none" || low == "null" ||
+                low == "nepoznat model" || low == "nepoznat serijski" || low == "nepoznato" ||
+                low == "standardni pc" || low == "genericpc" || low == "system product name" ||
+                low == "system serial number" || low == "default string" ||
+                low == "to be filled by o.e.m." || low == "0" || low == "123456789" ||
+                low == "未知" || low == "未知设备" || low == "未知型号" || low == "未启动" || low == "不可用")
+            {
+                return true;
+            }
+            if (low.StartsWith("učitavanje") || low.StartsWith("ucitavanje") ||
+                low.StartsWith("detekcija") || low.StartsWith("očitavanje") || low.StartsWith("ocitavanje") ||
+                low.StartsWith("provera") || low.StartsWith("povezivanje") ||
+                low.StartsWith("loading") || low.StartsWith("detecting") ||
+                low.StartsWith("reading") || low.StartsWith("checking") ||
+                low.StartsWith("to be filled") ||
+                low.Contains("加载中") || low.Contains("正在加载") ||
+                low.Contains("检测中") || low.Contains("正在检测") ||
+                low.Contains("读取中") || low.Contains("正在读取"))
             {
                 return true;
             }
             return false;
+        }
+
+        private string GetResolvedSerialNumber()
+        {
+            if (_viewModel == null) return "";
+            string serial = _viewModel.SerialNumber ?? "";
+            if (IsPlaceholderHwValue(serial) && _viewModel.Autopilot != null && !IsPlaceholderHwValue(_viewModel.Autopilot.HwSerialNumber))
+            {
+                serial = _viewModel.Autopilot.HwSerialNumber.Trim();
+            }
+            if (IsPlaceholderHwValue(serial) && _viewModel.HardwareInfo != null && !IsPlaceholderHwValue(_viewModel.HardwareInfo.SerialNumber))
+            {
+                serial = _viewModel.HardwareInfo.SerialNumber.Trim();
+            }
+            return IsPlaceholderHwValue(serial) ? "" : serial.Trim();
         }
 
         private Dictionary<string, object> BuildHardwarePayload()
@@ -977,16 +1008,13 @@ namespace WIS.UI
             {
                 model = _viewModel.Autopilot.HwModel.Trim();
             }
+            if (IsPlaceholderHwValue(model) && _viewModel.HardwareInfo != null && !IsPlaceholderHwValue(_viewModel.HardwareInfo.MotherboardModel))
+            {
+                model = _viewModel.HardwareInfo.MotherboardModel.Trim();
+            }
+            model = IsPlaceholderHwValue(model) ? "" : model.Trim();
 
-            string serial = _viewModel.SerialNumber ?? "";
-            if (IsPlaceholderHwValue(serial) && _viewModel.Autopilot != null && !IsPlaceholderHwValue(_viewModel.Autopilot.HwSerialNumber))
-            {
-                serial = _viewModel.Autopilot.HwSerialNumber.Trim();
-            }
-            if (IsPlaceholderHwValue(serial) && _viewModel.HardwareInfo != null && !IsPlaceholderHwValue(_viewModel.HardwareInfo.SerialNumber))
-            {
-                serial = _viewModel.HardwareInfo.SerialNumber.Trim();
-            }
+            string serial = GetResolvedSerialNumber();
 
             if (!string.IsNullOrEmpty(manufacturer))
             {
@@ -1029,25 +1057,8 @@ namespace WIS.UI
                 };
                 data["network"] = net;
 
-                // Apps
-                var appsDict = new Dictionary<string, string>();
-                if (_dispatcher != null && !_dispatcher.HasShutdownStarted)
-                {
-                    try
-                    {
-                        _dispatcher.Invoke((Action)(() =>
-                        {
-                            foreach (var app in _viewModel.Apps)
-                            {
-                                if (!string.IsNullOrEmpty(app.Id))
-                                {
-                                    appsDict[app.Id] = app.Status;
-                                }
-                            }
-                        }));
-                    }
-                    catch { }
-                }
+                // Apps (IMP-39: čitanje iz thread-safe keša bez blokirajućeg _dispatcher.Invoke)
+                Dictionary<string, string> appsDict = _viewModel.GetAppsStatusSnapshot();
                 data["apps"] = appsDict;
 
                 // Diagnostics
@@ -1128,6 +1139,11 @@ namespace WIS.UI
                         { "lines", linesToSend },
                         { "timestamp", DateTime.Now.ToString("o") }
                     };
+                    string resolvedSerial = GetResolvedSerialNumber();
+                    if (!string.IsNullOrEmpty(resolvedSerial))
+                    {
+                        payload["serial_number"] = resolvedSerial;
+                    }
 
                     string jsonBody = JsonHelper.Serialize(payload);
                     string url = HubUrl + "/api/log";

@@ -683,6 +683,16 @@ namespace WIS.UI
             }
             SaveDeployStatePhase(4);
 
+            // V344-03: Sačuvaj dosadašnji progres hardverskih testova pre međurestarta
+            try
+            {
+                if (_embeddedHwTestShell != null)
+                {
+                    _embeddedHwTestShell.SaveCheckpoint("");
+                }
+            }
+            catch { }
+
             // U2 (Paket C2): Čisto zaustavi Screen Capture worker pre međurestarta
             StopScreenCaptureWorker();
 

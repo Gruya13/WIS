@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 
 namespace WIS.AutopilotAuditor
@@ -23,6 +24,7 @@ namespace WIS.AutopilotAuditor
         {
             bool isCliMode = false;
             bool isJsonOutput = false;
+            bool isSilent = false;
             string exportHtmlPath = null;
             string exportHashPath = null;
 
@@ -32,8 +34,23 @@ namespace WIS.AutopilotAuditor
                 string arg = args[i].ToLowerInvariant().Trim();
                 if (arg == "--help" || arg == "-h" || arg == "/?")
                 {
-                    TryAttachOrAllocConsole();
-                    PrintHelp();
+                    bool helpConsoleAllocated = false;
+                    if (!Console.IsOutputRedirected)
+                    {
+                        helpConsoleAllocated = TryAttachOrAllocConsole();
+                    }
+                    try
+                    {
+                        try { Console.OutputEncoding = Encoding.UTF8; } catch { }
+                        PrintHelp();
+                    }
+                    finally
+                    {
+                        if (helpConsoleAllocated)
+                        {
+                            TryFreeConsole();
+                        }
+                    }
                     return 0;
                 }
                 else if (arg == "--cli" || arg == "-c")
@@ -44,6 +61,11 @@ namespace WIS.AutopilotAuditor
                 {
                     isCliMode = true;
                     isJsonOutput = true;
+                }
+                else if (arg == "--silent" || arg == "-s" || arg == "--no-console")
+                {
+                    isCliMode = true;
+                    isSilent = true;
                 }
                 else if ((arg == "--export-html" || arg == "-html") && i + 1 < args.Length)
                 {
@@ -60,11 +82,22 @@ namespace WIS.AutopilotAuditor
             // Ako je zatražen CLI režim ili eksport preko komandne linije
             if (isCliMode)
             {
-                TryAttachOrAllocConsole();
+                bool consoleAttachedOrAllocated = false;
+                bool suppressConsoleWindow = isJsonOutput || isSilent || Console.IsOutputRedirected;
+                if (!suppressConsoleWindow)
+                {
+                    consoleAttachedOrAllocated = TryAttachOrAllocConsole();
+                }
 
                 try
                 {
-                    if (!isJsonOutput)
+                    Console.OutputEncoding = Encoding.UTF8;
+                }
+                catch { }
+
+                try
+                {
+                    if (!isJsonOutput && !isSilent)
                     {
                         Console.WriteLine("\n[+] Pokrećem Microsoft Autopilot Forensic Auditor v3.0...");
                         Console.WriteLine("[*] Skeniram hardver i WMI parametre...");
@@ -72,14 +105,14 @@ namespace WIS.AutopilotAuditor
 
                     HardwareDetails hw = HardwareInspector.Inspect();
 
-                    if (!isJsonOutput)
+                    if (!isJsonOutput && !isSilent)
                     {
                         Console.WriteLine("[*] Vrsim lokalnu sistemsku i registarsku forenziku...");
                     }
 
                     LocalForensicsDetails local = LocalForensicsInspector.Inspect();
 
-                    if (!isJsonOutput)
+                    if (!isJsonOutput && !isSilent)
                     {
                         Console.WriteLine("[*] Kontaktiram Microsoft ZTD servis i proveravam Event Log...");
                     }
@@ -95,12 +128,12 @@ namespace WIS.AutopilotAuditor
                         try
                         {
                             ReportExporter.ExportHtml(result, exportHtmlPath);
-                            if (!isJsonOutput)
+                            if (!isJsonOutput && !isSilent)
                                 Console.WriteLine(string.Format("[✓] HTML izveštaj uspešno sačuvan u: {0}", exportHtmlPath));
                         }
                         catch (Exception ex)
                         {
-                            if (!isJsonOutput)
+                            if (!isJsonOutput && !isSilent)
                                 Console.WriteLine(string.Format("[-] Greška pri snimanju HTML-a: {0}", ex.Message));
                         }
                     }
@@ -111,12 +144,12 @@ namespace WIS.AutopilotAuditor
                         try
                         {
                             ReportExporter.ExportHardwareHashCsv(result, exportHashPath);
-                            if (!isJsonOutput)
+                            if (!isJsonOutput && !isSilent)
                                 Console.WriteLine(string.Format("[✓] Hardware Hash CSV uspešno sačuvan u: {0}", exportHashPath));
                         }
                         catch (Exception ex)
                         {
-                            if (!isJsonOutput)
+                            if (!isJsonOutput && !isSilent)
                                 Console.WriteLine(string.Format("[-] Greška pri snimanju CSV-a: {0}", ex.Message));
                         }
                     }
@@ -126,7 +159,7 @@ namespace WIS.AutopilotAuditor
                     {
                         Console.WriteLine(result.ToJson());
                     }
-                    else
+                    else if (!isSilent)
                     {
                         Console.WriteLine(ReportExporter.GetFormattedConsoleText(result));
                     }
@@ -148,7 +181,10 @@ namespace WIS.AutopilotAuditor
                 }
                 finally
                 {
-                    TryFreeConsole();
+                    if (consoleAttachedOrAllocated)
+                    {
+                        TryFreeConsole();
+                    }
                 }
             }
             else
@@ -162,6 +198,7 @@ namespace WIS.AutopilotAuditor
                 {
                     // Fallback na konzolu ako WPF nije podržan (npr. WinPE okruženje)
                     TryAttachOrAllocConsole();
+                    try { Console.OutputEncoding = Encoding.UTF8; } catch { }
                     Console.WriteLine("[!] Upozorenje: Grafički interfejs (WPF) nije dostupan na ovom sistemu (WinPE/Minimal OS): " + ex.Message);
                     Console.WriteLine("[*] Automatski prelazim na konzolni režim...\n");
                     
@@ -176,19 +213,24 @@ namespace WIS.AutopilotAuditor
             }
         }
 
-        private static void TryAttachOrAllocConsole()
+        private static bool TryAttachOrAllocConsole()
         {
             try
             {
                 if (Environment.OSVersion.Platform == PlatformID.Win32NT)
                 {
-                    if (!AttachConsole(ATTACH_PARENT_PROCESS))
+                    if (AttachConsole(ATTACH_PARENT_PROCESS))
                     {
-                        AllocConsole();
+                        return true;
+                    }
+                    if (AllocConsole())
+                    {
+                        return true;
                     }
                 }
             }
             catch { }
+            return false;
         }
 
         private static void TryFreeConsole()
@@ -225,6 +267,7 @@ Opcije:
   (bez argumenata)       Pokreće moderni grafički prozor (WPF GUI).
   --cli, -c              Pokreće direktnu analizu u konzoli sa formatiranim ispisom.
   --json, -j             Vraća kompaktan JSON izveštaj na standardni izlaz (za skripte).
+  --silent, --no-console Izvršava proveru tiho u pozadini bez alokacije konzolnog prozora.
   --export-html <fajl>   Automatski generiše stilizovani HTML servisni izveštaj.
   --export-hash <fajl>   Generiše 4K Hardware Hash CSV fajl za uvoz u Microsoft Intune.
   --help, -h             Prikazuje ovo uputstvo.

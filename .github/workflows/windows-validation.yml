@@ -55,7 +55,7 @@ jobs:
       - run: python ISO/Skripte/Verify-PowerShellSyntax.py
       - run: python ISO/Skripte/Verify-CSharpSyntax.py
       - run: python Launcher/Tests/run_tests.py
-      - run: python -m unittest UI/Tests/Test-HwTestLogic.py UI/Tests/Test-AutopilotPreOobeCache.py UI/Tests/Test-UpdateAndDriversLogic.py
+      - run: python -m unittest UI/Tests/Test-HwTestLogic.py UI/Tests/Test-AutopilotPreOobeCache.py UI/Tests/Test-UpdateAndDriversLogic.py UI/Tests/Test-LocalizationParity.py
       - run: git diff --check
 # Restart/cleanup harness runs only inside a dedicated disposable Windows VM.
 # Hosted CI above never runs the installer or modifies WLAN profiles.

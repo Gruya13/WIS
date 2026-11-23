@@ -572,15 +572,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.4.3 / ServiceHub v3.6.3 u root version.json i komponentama
+        # 1. Verzije v3.4.4 / ServiceHub v3.6.4 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.4.3")
-        self.assertEqual(root_ver["release_package"]["version"], "3.4.3")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.3")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.3")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.3")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.3")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.3")
+        self.assertEqual(root_ver["version"], "3.4.4")
+        self.assertEqual(root_ver["release_package"]["version"], "3.4.4")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.4")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.4")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.4")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.4")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.4")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -849,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.4.3";', result_src)
+        self.assertIn('AppVersion = "3.4.4";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1431,6 +1431,82 @@ class TestHwTestComponents(unittest.TestCase):
         ):
             self.assertIn(tok, hw_cs)
         self.assertIn("RefreshPeripheralsAfterDrivers()", main_xaml_cs)
+
+    def test_wis_task_269_270_v344_contracts(self):
+        """Proverava ugovore za WIS v3.4.4 / ServiceHub v3.6.4 (V344-01..V344-03, IMP-39, IMP-44..46, IMP-51, IMP-52)."""
+        import re
+
+        ui_dir = ROOT / "UI"
+        gate_src = (HWTEST_DIR / "Core" / "DriverReadinessGate.cs").read_text(encoding="utf-8")
+        native_src = (HWTEST_DIR / "Interop" / "NativeMethods.cs").read_text(encoding="utf-8")
+        diag_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        models_cs = (ui_dir / "Models.cs").read_text(encoding="utf-8")
+        tel_cs = (ui_dir / "TelemetryService.cs").read_text(encoding="utf-8")
+        main_xaml_cs = (ui_dir / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        ui_hw_cs = (ui_dir / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+
+        # V344-01 (Odluke 1A + 2A): DriverReadinessGate i povezivanje u HwTestShell + MainWindow.HwTest
+        for tok in (
+            "class DriverGateState",
+            "CanEmergencyUnlock",
+            "HasCode14PendingReboot",
+            "HasBackgroundWuDrivers",
+            "DriverReadinessGate.EvaluateLocal()",
+            "IsAllowedErrorCode",
+            "IsIgnoredPnpDevice",
+            "IsGenericDisplayDriverName",
+        ):
+            self.assertIn(tok, gate_src + "\n" + "DriverReadinessGate.EvaluateLocal()")
+        for tok in (
+            "SetInteractiveTestsGateProvider",
+            "SetOpenDriversTabHandler",
+            "RefreshDriverGateUi",
+            "RefreshHardwareProbeAfterDrivers",
+            "_driverGateBanner",
+            "driver_gate_emergency_override_reason",
+        ):
+            self.assertIn(tok, shell_src)
+        for tok in (
+            "EvaluateInteractiveTestsDriverGate",
+            "OpenDriversTabFromHwTest",
+            "NotifyHwTestDriverStateChanged",
+        ):
+            self.assertIn(tok, ui_hw_cs)
+        self.assertIn("pending_driver_count", main_xaml_cs)
+        self.assertIn("installing_driver", main_xaml_cs)
+
+        # V344-02 (Opcija A): Adaptivna rezervacija CPU niti + ThreadPriority.Lowest + Thread.Yield()
+        for tok in ("ComputeCpuStressThreadCount", "ThreadPriority.Lowest", "Thread.Yield()", "stress_threads", "reserved_threads"):
+            self.assertIn(tok, diag_src)
+        self.assertIn("ComputeCpuStressThreadCount", main_xaml_cs)
+        self.assertIn("ThreadPriority.Lowest", main_xaml_cs)
+
+        # V344-03 + IMP-51: Perzistencija preko restarta, TryParsePersistedUtcTimestamp bez RoundtripKind|AdjustToUniversal, SaveDeployStatePhase(5)/(6)
+        self.assertNotIn("DateTimeStyles.RoundtripKind | DateTimeStyles.AdjustToUniversal", shell_src)
+        for tok in (
+            "TryParsePersistedUtcTimestamp",
+            "TryRestorePersistedTestState",
+            "ResetAllTestsWithConfirmation",
+            "phase5_metrics",
+            r"C:\Windows\Logs\WIS\hwtest-result.json",
+        ):
+            self.assertIn(tok, shell_src)
+        self.assertIn("SaveDeployStatePhase(5);", main_xaml_cs)
+        self.assertIn("SaveDeployStatePhase(6);", ui_hw_cs + "\n" + main_xaml_cs)
+
+        # IMP-39, IMP-44, IMP-45, IMP-52 u UI
+        self.assertIn("GetAppsStatusSnapshot", models_cs)
+        self.assertIn("GetAppsStatusSnapshot()", tel_cs)
+        tel_cs_code = re.sub(r"//.*", "", tel_cs)
+        self.assertNotIn("_dispatcher.Invoke", tel_cs_code)
+        self.assertIn("SanitizeHardwareIdentityValue", main_xaml_cs)
+        self.assertIn("HydrateAppsStateOnResume", main_xaml_cs)
+        self.assertIn("加载中...", tel_cs + "\n" + main_xaml_cs + "\n" + models_cs)
+
+        # IMP-46: IsLocationPolicyDisabled u NativeMethods
+        self.assertIn("IsLocationPolicyDisabled", native_src)
+        self.assertIn("lfsvc", native_src)
 
 
 if __name__ == "__main__":

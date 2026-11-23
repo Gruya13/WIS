@@ -111,6 +111,9 @@ namespace WIS.UI
         private bool _pendingPostRetryShortcutsRefresh = false;
         private bool _pendingPostRetryLicenseRefresh = false;
         private volatile bool _phase6ScriptCompletedSuccessfully = false;
+        private volatile int _bgWuPendingDriverCount = 0;
+        private volatile bool _bgWuInstallingDriver = false;
+        private volatile bool _phase6AllowMissingAppsNeedsAttention = false;
 
         // BUG-02: Čuvar maksimizovanog stanja glavnog prozora uz dozvoljen Minimize
         private bool _isEnforcingMaximize = false;
@@ -375,6 +378,10 @@ namespace WIS.UI
                 int savedPhase = GetSavedDeployStatePhase();
                 if (savedPhase >= 4 && savedPhase <= 6)
                 {
+                    if (savedPhase >= 5)
+                    {
+                        HydrateAppsStateOnResume();
+                    }
                     ViewModel.IsServiceReadyVisible = false;
                     ViewModel.AddLog("INFO", "Sistem", string.Format("Detektovano stanje nakon međurestarta: automatski nastavljam Fazu {0}...", savedPhase));
                     ViewModel.CurrentPhase = savedPhase;
@@ -638,6 +645,16 @@ namespace WIS.UI
             }
         }
 
+        private void GetBackgroundWuDriverState(out int pendingDrivers, out bool installingDriver)
+        {
+            if (_lastBgWuFileWriteUtc == DateTime.MinValue)
+            {
+                PollBackgroundWuStatusFile();
+            }
+            pendingDrivers = _bgWuPendingDriverCount;
+            installingDriver = _bgWuInstallingDriver;
+        }
+
         private void PollBackgroundWuStatusFile()
         {
             try
@@ -674,8 +691,21 @@ namespace WIS.UI
                 int foundCount = root.ContainsKey("found_count") ? root["found_count"].AsInt(0) : 0;
                 int downloadedCount = root.ContainsKey("downloaded_count") ? root["downloaded_count"].AsInt(0) : 0;
                 int installedCount = root.ContainsKey("installed_count") ? root["installed_count"].AsInt(0) : 0;
+                int pendingDriverCount = root.ContainsKey("pending_driver_count") ? root["pending_driver_count"].AsInt(0) : 0;
+                bool installingDriver = root.ContainsKey("installing_driver") ? root["installing_driver"].AsBool(false) : false;
 
                 string normStatus = (status ?? "RUNNING").Trim().ToUpperInvariant();
+                if (normStatus == "COMPLETED" || normStatus == "SKIPPED")
+                {
+                    pendingDriverCount = 0;
+                    installingDriver = false;
+                }
+
+                bool prevHadDrivers = (_bgWuPendingDriverCount > 0 || _bgWuInstallingDriver);
+                _bgWuPendingDriverCount = Math.Max(0, pendingDriverCount);
+                _bgWuInstallingDriver = installingDriver;
+                bool nowHasDrivers = (_bgWuPendingDriverCount > 0 || _bgWuInstallingDriver);
+
                 int wuPct = -1;
                 if (normStatus == "STARTING")
                 {
@@ -737,6 +767,15 @@ namespace WIS.UI
                 if (ViewModel != null)
                 {
                     ViewModel.UpdateBackgroundWuStatus(status, textSr, textZh, wuPct);
+                }
+
+                if (prevHadDrivers != nowHasDrivers || normStatus == "COMPLETED" || normStatus == "SKIPPED")
+                {
+                    NotifyHwTestDriverStateChanged(!nowHasDrivers);
+                }
+                else
+                {
+                    NotifyHwTestDriverStateChanged(false);
                 }
             }
             catch { }
@@ -899,13 +938,39 @@ namespace WIS.UI
         private void ExecuteRunHwTest(object param)
         {
             EnsureEmbeddedHwTestTab();
+            WIS.HwTest.Core.DriverGateState gate = EvaluateInteractiveTestsDriverGate();
             if (_embeddedHwTestShell != null && _hwTestTabItem != null && MainTabControl != null)
             {
                 RefreshEmbeddedHwTestIdentity();
+                if (gate != null && gate.IsUnlocked)
+                {
+                    _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
+                }
+                _embeddedHwTestShell.RefreshDriverGateUi();
                 ViewModel.ShutdownTimerActive = false;
                 ViewModel.IsCompleted = false;
                 MainTabControl.SelectedItem = _hwTestTabItem;
-                ViewModel.AddLog("INFO", "Hardver", "Otvoren ugrađeni tab za hardverske testove (WIS.HwTest).");
+                if (gate != null && !gate.IsUnlocked)
+                {
+                    ViewModel.AddLog("WARN", "Hardver", string.Format(
+                        "Otvoren tab Hardverski testovi u zaključanom režimu (drajveri nisu spremni): {0}",
+                        gate.ReasonTitle));
+                }
+                else
+                {
+                    ViewModel.AddLog("INFO", "Hardver", "Otvoren ugrađeni tab za hardverske testove (WIS.HwTest).");
+                }
+                return;
+            }
+
+            if (gate != null && !gate.IsUnlocked)
+            {
+                MessageBox.Show(
+                    this,
+                    string.Format("{0}\n\n{1}", gate.ReasonTitle, gate.ReasonDetail),
+                    LocalizationService.Get("HwTTitle", "WIS Hardverski testovi"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
                 return;
             }
 
@@ -921,34 +986,20 @@ namespace WIS.UI
             bool wasShutdownActive = ViewModel.ShutdownTimerActive;
             ViewModel.ShutdownTimerActive = false;
 
-            string model = ViewModel != null && !string.IsNullOrEmpty(ViewModel.ComputerModel)
-                ? ViewModel.ComputerModel
-                : (ViewModel != null && ViewModel.HardwareInfo != null ? ViewModel.HardwareInfo.MotherboardModel : "Nepoznat model");
-            string serial = ViewModel != null && !string.IsNullOrEmpty(ViewModel.SerialNumber)
-                ? ViewModel.SerialNumber
-                : (ViewModel != null && ViewModel.HardwareInfo != null ? ViewModel.HardwareInfo.SerialNumber : "Nepoznat serijski");
+            string model;
+            string serial;
+            string mfgArg;
+            string skuArg;
+            GetCurrentDeviceIdentity(out model, out serial, out mfgArg, out skuArg);
 
-            string mfgArg = "";
-            string skuArg = "";
-            try
-            {
-                using (var biosReg = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\BIOS"))
-                {
-                    if (biosReg != null)
-                    {
-                        object sm = biosReg.GetValue("SystemManufacturer");
-                        if (sm != null) mfgArg = sm.ToString().Trim();
-                        object ss = biosReg.GetValue("SystemSKU");
-                        if (ss != null) skuArg = ss.ToString().Trim();
-                    }
-                }
-            }
-            catch { }
-
-            string args = string.Format("--out \"{0}\" --model \"{1}\" --serial \"{2}\"", outJson, model, serial);
-            if (!string.IsNullOrEmpty(mfgArg))
+            string args = string.Format("--out \"{0}\"", outJson);
+            if (!string.IsNullOrEmpty(model) && !IsPlaceholderIdentity(model))
+                args += string.Format(" --model \"{0}\"", model.Replace("\"", ""));
+            if (!string.IsNullOrEmpty(serial) && !IsPlaceholderIdentity(serial))
+                args += string.Format(" --serial \"{0}\"", serial.Replace("\"", ""));
+            if (!string.IsNullOrEmpty(mfgArg) && !IsPlaceholderIdentity(mfgArg))
                 args += string.Format(" --manufacturer \"{0}\"", mfgArg.Replace("\"", ""));
-            if (!string.IsNullOrEmpty(skuArg))
+            if (!string.IsNullOrEmpty(skuArg) && !IsPlaceholderIdentity(skuArg))
                 args += string.Format(" --sku \"{0}\"", skuArg.Replace("\"", ""));
 
             ProcessStartInfo psi = new ProcessStartInfo
@@ -5391,6 +5442,92 @@ namespace WIS.UI
                 return;
             }
 
+            // IMP-44: Reality Check za ključne aplikacije PRE pokretanja Faze 6 (dok Wi-Fi/NAS mreža još nije obrisana Anti-Leak korakom)
+            if (phaseNumber == 6 && !_phase6AllowMissingAppsNeedsAttention &&
+                string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+            {
+                List<string> missingBeforeP6 = GetMissingKeyApplications();
+                if (missingBeforeP6.Count > 0)
+                {
+                    string missingStr = string.Join(", ", missingBeforeP6.ToArray());
+                    bool operatorConfirmedNeedsAttention = false;
+                    if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        Action promptAction = delegate
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("WARN", "RealityCheck", "Pre-Phase 6 Reality Check: Nedostaju ključne aplikacije pre pokretanja Faze 6 (Anti-Leak čišćenja): " + missingStr);
+                            }
+                            MessageBoxResult mbRes = MessageBox.Show(
+                                this,
+                                string.Format(
+                                    LocalizationService.Get(
+                                        "WinPrePhase6MissingAppsConfirmBody",
+                                        "UPOZORENJE PRE ZAVRŠETKA (FAZA 6):\n\n" +
+                                        "Na disku nedostaju sledeći ključni programi:\n• {0}\n\n" +
+                                        "Faza 6 trajno briše servisni Wi-Fi profil (Anti-Leak), nakon čega preuzimanje programa sa NAS-a više neće biti moguće!\n\n" +
+                                        "• Kliknite 'Ne' (preporučeno) da ostanete pre Faze 6 i instalirate programe (↻ Retry na kartici Programi).\n" +
+                                        "• Kliknite 'Da' samo ako svesno želite da završite servis bez ovih programa (uređaj će dobiti status NEEDS_ATTENTION / NEEDS_SERVICE)."),
+                                    missingStr),
+                                LocalizationService.Get("WinPrePhase6MissingAppsConfirmTitle", "WIS Reality Check — Nedostaju ključni programi pre Faze 6"),
+                                MessageBoxButton.YesNo,
+                                MessageBoxImage.Warning,
+                                MessageBoxResult.No);
+                            operatorConfirmedNeedsAttention = (mbRes == MessageBoxResult.Yes);
+                        };
+                        if (Dispatcher.CheckAccess()) promptAction();
+                        else Dispatcher.Invoke(promptAction);
+                    }
+
+                    if (operatorConfirmedNeedsAttention)
+                    {
+                        _phase6AllowMissingAppsNeedsAttention = true;
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.DeploymentStatus = "NEEDS_ATTENTION";
+                                ViewModel.AddLog("WARN", "RealityCheck", "Operater je potvrdio nastavak u Fazu 6 uprkos nedostajućim aplikacijama (" + missingStr + ") — status: NEEDS_ATTENTION.");
+                            }
+                        }));
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _phase6DispatchGuard, 0);
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("ERROR", "RealityCheck", "Faza 6 je zaustavljena pre Anti-Leak brisanja mreže jer nedostaju ključne aplikacije: " + missingStr);
+                                ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinFinalMissingApps", "Greška: Nedostaju ključni programi ({0}). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole."), missingStr);
+                                string appNotFoundTxt = LocalizationService.Get("WinAppFileNotFound", "Fajl nije pronađen");
+                                foreach (string item in missingBeforeP6)
+                                {
+                                    if (item.Contains("Chrome")) ViewModel.UpdateAppStatus("Chrome", "FAIL", appNotFoundTxt);
+                                    if (item.Contains("Acrobat")) ViewModel.UpdateAppStatus("Acrobat", "FAIL", appNotFoundTxt);
+                                    if (item.Contains("Office")) ViewModel.UpdateAppStatus("Office", "FAIL", appNotFoundTxt);
+                                    if (item.Contains("WinRAR")) ViewModel.UpdateAppStatus("WinRAR", "FAIL", appNotFoundTxt);
+                                }
+                                ViewModel.CurrentPhase = 4;
+                                SetFailedPhase(4);
+                            }
+                        }));
+                        return;
+                    }
+                }
+            }
+
+            // V344-03: Perzistencija faza 5 i 6 u deploy-state.json u redovnom toku
+            if (phaseNumber == 5)
+            {
+                SaveDeployStatePhase(5);
+            }
+            else if (phaseNumber == 6)
+            {
+                SaveDeployStatePhase(6);
+            }
+
             if (phaseNumber >= 6)
             {
                 _phase6ScriptCompletedSuccessfully = false;
@@ -5464,17 +5601,20 @@ namespace WIS.UI
                 }
 
                 ViewModel.AddLog("INFO", "TaskRunner", string.Format("Započeto izvršavanje Faze {0}: {1}", phaseNumber, ViewModel.PhaseName));
+                NotifyHwTestDriverStateChanged(phaseNumber >= 3);
             }));
 
-            // 2. Na početku Faze 1 emitujemo STARTED Lifecycle događaj
+            // 2. Na početku Faze 1 emitujemo STARTED Lifecycle događaj (IMP-45: bez slanja UI placeholder stringova)
             if (phaseNumber == 1 && _telemetryService != null)
             {
+                string startModel = (ViewModel != null && !IsPlaceholderIdentity(ViewModel.ComputerModel)) ? ViewModel.ComputerModel.Trim() : "";
+                string startSerial = (ViewModel != null && !IsPlaceholderIdentity(ViewModel.SerialNumber)) ? ViewModel.SerialNumber.Trim() : "";
                 var startData = new Dictionary<string, object>
                 {
                     { "phase", 1 },
                     { "phase_name", "Mreza" },
-                    { "model", ViewModel.ComputerModel },
-                    { "serial", ViewModel.SerialNumber }
+                    { "model", startModel },
+                    { "serial", startSerial }
                 };
                 _telemetryService.SendLifecycleEvent("STARTED", startData);
             }
@@ -5747,6 +5887,7 @@ namespace WIS.UI
                     {
                         PerformPhase2RealityCheck();
                         RefreshPeripheralsAfterDrivers();
+                        NotifyHwTestDriverStateChanged(true);
                         Dispatcher.BeginInvoke((Action)(() =>
                         {
                             PollBackgroundWuStatusFile();
@@ -5846,8 +5987,13 @@ namespace WIS.UI
                         return;
                     }
 
-                    // Prelazak na sledeću fazu
-                    ExecutePhase(phaseNumber + 1);
+                    // Prelazak na sledeću fazu (V344-03: perzistencija Faze 5 i 6 u deploy-state.json)
+                    int nextPhase = phaseNumber + 1;
+                    if (nextPhase == 5 || nextPhase == 6)
+                    {
+                        SaveDeployStatePhase(nextPhase);
+                    }
+                    ExecutePhase(nextPhase);
                 }
                 else
                 {
@@ -6731,19 +6877,29 @@ namespace WIS.UI
                 RecordThermalOverheatNote();
             }
 
-            // Pre nego što TaskRunner označi 100% "Završeno", proveri fizičke artefakte aplikacija
+            // IMP-44: Provera ključnih aplikacija je izvršena pre pokretanja Faze 6 (pre Anti-Leak brisanja Wi-Fi mreže).
+            // Ukoliko su neke aplikacije i dalje odsutne (npr. operater je svesno potvrdio završetak), ne vraćamo CurrentPhase = 4 posle Anti-Leak-a,
+            // već označavamo završetak kao NEEDS_ATTENTION.
             List<string> missingApps = GetMissingKeyApplications();
-            if (missingApps.Count > 0)
+            bool hasMissingAppsAtCompletion = (missingApps.Count > 0);
+            if (hasMissingAppsAtCompletion)
             {
                 string missingStr = string.Join(", ", missingApps.ToArray());
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
-                    ViewModel.AddLog("ERROR", "RealityCheck", "Post-Execution Reality Check: Servis NE MOŽE biti označen kao završen jer nedostaju ključne aplikacije: " + missingStr);
-                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinFinalMissingApps", "Greška: Nedostaju ključni programi ({0}). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole."), missingStr);
-                    ViewModel.CurrentPhase = 4;
-                    SetFailedPhase(4);
+                    if (ViewModel != null)
+                    {
+                        string appNotFoundTxt = LocalizationService.Get("WinAppFileNotFound", "Fajl nije pronađen");
+                        foreach (string item in missingApps)
+                        {
+                            if (item.Contains("Chrome")) ViewModel.UpdateAppStatus("Chrome", "FAIL", appNotFoundTxt);
+                            if (item.Contains("Acrobat")) ViewModel.UpdateAppStatus("Acrobat", "FAIL", appNotFoundTxt);
+                            if (item.Contains("Office")) ViewModel.UpdateAppStatus("Office", "FAIL", appNotFoundTxt);
+                            if (item.Contains("WinRAR")) ViewModel.UpdateAppStatus("WinRAR", "FAIL", appNotFoundTxt);
+                        }
+                        ViewModel.AddLog("WARN", "RealityCheck", "Završetak servisa uz upozorenje (NEEDS_ATTENTION) — nedostaju aplikacije: " + missingStr);
+                    }
                 }));
-                return;
             }
             if (_telemetryService != null && !_phase6ScriptCompletedSuccessfully)
             {
@@ -6788,7 +6944,7 @@ namespace WIS.UI
                 {
                     { "phase", 6 },
                     { "phase_name", "Zavrsetak" },
-                    { "status", "SUCCESS" },
+                    { "status", hasMissingAppsAtCompletion ? "NEEDS_ATTENTION" : "SUCCESS" },
                     { "stress_status", _lastStressStatus },
                     { "diagnostics_status", diagStatus },
                     { "cooling_verified", coolingVerified },
@@ -6813,7 +6969,7 @@ namespace WIS.UI
             {
                 ViewModel.CurrentPhase = 6;
                 ViewModel.Progress = 100;
-                ViewModel.DeploymentStatus = "READY";
+                ViewModel.DeploymentStatus = hasMissingAppsAtCompletion ? "NEEDS_ATTENTION" : "READY";
                 ViewModel.IsCompleted = true;
                 ViewModel.IsServiceFinished = true;
                 ViewModel.CriticalStressFailure = false;
@@ -7010,6 +7166,185 @@ namespace WIS.UI
             }
         }
 
+        /// <summary>
+        /// IMP-52: Pri resume-u u Fazu 5 ili 6 (npr. posle UEFI BIOS restarta) hidrira ViewModel.Apps iz deploy-state.json,
+        /// step-journal.json, license-status.json i direktnom verifikacijom fajlova na disku (Get-WisAppPresence paritet),
+        /// kako inicijalni WAIT statusi ne bi pregazili već instalirane programe na ServiceHub-u.
+        /// </summary>
+        private void HydrateAppsStateOnResume()
+        {
+            if (ViewModel == null) return;
+
+            var hydrated = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. Pokušaj čitanja već snimljenih statusa iz C:\setup\deploy-state.json
+            try
+            {
+                string statePath = @"C:\setup\deploy-state.json";
+                if (File.Exists(statePath))
+                {
+                    string json = File.ReadAllText(statePath, Encoding.UTF8);
+                    JsonNode root = JsonHelper.Parse(json);
+                    if (root != null && root.IsObject && root.ContainsKey("apps"))
+                    {
+                        JsonNode appsNode = root["apps"];
+                        if (appsNode != null && appsNode.IsObject)
+                        {
+                            foreach (string key in appsNode.Keys)
+                            {
+                                JsonNode valNode = appsNode[key];
+                                string st = valNode != null && valNode.IsObject
+                                    ? valNode["status"].AsString("WAIT")
+                                    : (valNode != null ? valNode.AsString("WAIT") : "WAIT");
+                                st = (st ?? "WAIT").Trim().ToUpperInvariant();
+                                if (!string.IsNullOrEmpty(key) && st != "WAIT")
+                                {
+                                    hydrated[key] = st;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Dopuna iz C:\setup\step-journal.json (P4.* koraci)
+            try
+            {
+                string journalPath = @"C:\setup\step-journal.json";
+                if (File.Exists(journalPath))
+                {
+                    string jTxt = File.ReadAllText(journalPath, Encoding.UTF8);
+                    JsonNode jRoot = JsonHelper.Parse(jTxt);
+                    if (jRoot != null && jRoot.IsObject && jRoot.ContainsKey("steps") && jRoot["steps"].IsObject)
+                    {
+                        JsonNode stepsNode = jRoot["steps"];
+                        var stepToAppMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            { "P4.Runtimes", "DotNet" },
+                            { "P4.Chrome", "Chrome" },
+                            { "P4.WinRAR", "WinRAR" },
+                            { "P4.Acrobat", "Acrobat" },
+                            { "P4.Office", "Office" },
+                            { "P4.BatteryBar", "BatteryBar" },
+                            { "P4.Shortcuts", "Shortcuts" },
+                            { "P4.Activation", "License" }
+                        };
+                        foreach (KeyValuePair<string, string> kv in stepToAppMap)
+                        {
+                            if (hydrated.ContainsKey(kv.Value) && hydrated[kv.Value] != "WAIT") continue;
+                            if (!stepsNode.ContainsKey(kv.Key)) continue;
+                            JsonNode sNode = stepsNode[kv.Key];
+                            if (sNode != null && sNode.IsObject)
+                            {
+                                string st = sNode["state"].AsString("").Trim().ToUpperInvariant();
+                                if (st == "OK" || st == "SKIPPED_DONE")
+                                {
+                                    hydrated[kv.Value] = "OK";
+                                }
+                                else if (st == "WARN" || st == "ERROR" || st == "SKIPPED" || st == "SKIPPED_USER")
+                                {
+                                    hydrated[kv.Value] = st;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 3. Fizička verifikacija prisustva aplikacija na disku (Get-WisAppPresence paritet)
+            try
+            {
+                List<string> missingKeyApps = GetMissingKeyApplications();
+                bool hasChrome = true;
+                bool hasAcrobat = true;
+                bool hasOffice = true;
+                bool hasWinRar = true;
+                for (int i = 0; i < missingKeyApps.Count; i++)
+                {
+                    string m = missingKeyApps[i] ?? "";
+                    if (m.IndexOf("Chrome", StringComparison.OrdinalIgnoreCase) >= 0) hasChrome = false;
+                    else if (m.IndexOf("Acrobat", StringComparison.OrdinalIgnoreCase) >= 0) hasAcrobat = false;
+                    else if (m.IndexOf("Office", StringComparison.OrdinalIgnoreCase) >= 0) hasOffice = false;
+                    else if (m.IndexOf("WinRAR", StringComparison.OrdinalIgnoreCase) >= 0) hasWinRar = false;
+                }
+
+                if (hasChrome && (!hydrated.ContainsKey("Chrome") || hydrated["Chrome"] == "WAIT")) hydrated["Chrome"] = "OK";
+                if (hasAcrobat && (!hydrated.ContainsKey("Acrobat") || hydrated["Acrobat"] == "WAIT")) hydrated["Acrobat"] = "OK";
+                if (hasOffice && (!hydrated.ContainsKey("Office") || hydrated["Office"] == "WAIT")) hydrated["Office"] = "OK";
+                if (hasWinRar && (!hydrated.ContainsKey("WinRAR") || hydrated["WinRAR"] == "WAIT")) hydrated["WinRAR"] = "OK";
+
+                // DotNet 8 Runtime
+                if (!hydrated.ContainsKey("DotNet") || hydrated["DotNet"] == "WAIT")
+                {
+                    if (File.Exists(@"C:\Program Files\dotnet\dotnet.exe") ||
+                        Directory.Exists(@"C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App"))
+                    {
+                        hydrated["DotNet"] = "OK";
+                    }
+                }
+
+                // BatteryBar
+                if (!hydrated.ContainsKey("BatteryBar") || hydrated["BatteryBar"] == "WAIT")
+                {
+                    string[] bbPaths = new string[]
+                    {
+                        @"C:\Tools\BatteryBar\BatteryBar.exe",
+                        @"C:\Program Files\BatteryBar\BatteryBar.exe",
+                        @"C:\Program Files (x86)\BatteryBar\BatteryBar.exe"
+                    };
+                    if (ExistsAnyFileOrAppPath(bbPaths, null))
+                    {
+                        hydrated["BatteryBar"] = "OK";
+                    }
+                    else
+                    {
+                        hydrated["BatteryBar"] = "SKIPPED";
+                    }
+                }
+
+                // Shortcuts
+                if (!hydrated.ContainsKey("Shortcuts") || hydrated["Shortcuts"] == "WAIT")
+                {
+                    if (File.Exists(@"C:\Users\Public\Desktop\Google Chrome.lnk") ||
+                        File.Exists(@"C:\Users\Public\Desktop\Word.lnk") ||
+                        File.Exists(@"C:\Users\Public\Desktop\Adobe Acrobat.lnk"))
+                    {
+                        hydrated["Shortcuts"] = "OK";
+                    }
+                }
+
+                // License (iz C:\setup\license-status.json)
+                if (!hydrated.ContainsKey("License") || hydrated["License"] == "WAIT")
+                {
+                    string licPath = @"C:\setup\license-status.json";
+                    if (File.Exists(licPath))
+                    {
+                        string licJson = File.ReadAllText(licPath, Encoding.UTF8);
+                        JsonNode licRoot = JsonHelper.Parse(licJson);
+                        if (licRoot != null && licRoot.IsObject)
+                        {
+                            bool winAct = licRoot["windows_activated"].AsBool(false);
+                            bool offInst = licRoot["office_installed"].AsBool(hasOffice);
+                            bool offAct = licRoot["office_activated"].AsBool(false);
+                            hydrated["License"] = (winAct && (!offInst || offAct)) ? "OK" : "WARN";
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            foreach (KeyValuePair<string, string> kv in hydrated)
+            {
+                if (!string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value))
+                {
+                    ViewModel.UpdateAppStatus(kv.Key, kv.Value);
+                }
+            }
+            ViewModel.UpdateAppsSummary();
+        }
+
         private void SaveDeployStatePhase(int phase)
         {
             try
@@ -7021,6 +7356,52 @@ namespace WIS.UI
                     {
                         _initialStartTimeIso = DateTime.Now.ToString("o");
                     }
+
+                    Dictionary<string, string> existingApps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    string existingHubUrl = null;
+                    string statePath = @"C:\setup\deploy-state.json";
+                    if (File.Exists(statePath))
+                    {
+                        try
+                        {
+                            string existingJson = File.ReadAllText(statePath, Encoding.UTF8);
+                            JsonNode existingRoot = JsonHelper.Parse(existingJson);
+                            if (existingRoot != null && existingRoot.IsObject)
+                            {
+                                if (existingRoot.ContainsKey("hub_url"))
+                                {
+                                    existingHubUrl = existingRoot["hub_url"].AsString(null);
+                                }
+                                if (existingRoot.ContainsKey("apps") && existingRoot["apps"].IsObject)
+                                {
+                                    JsonNode appsNode = existingRoot["apps"];
+                                    foreach (string k in appsNode.Keys)
+                                    {
+                                        string v = appsNode[k] != null ? appsNode[k].AsString("WAIT") : "WAIT";
+                                        if (!string.IsNullOrEmpty(k) && !string.Equals(v, "WAIT", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            existingApps[k] = v;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (ViewModel != null)
+                    {
+                        Dictionary<string, string> currentApps = ViewModel.GetAppsStatusSnapshot();
+                        foreach (KeyValuePair<string, string> kv in currentApps)
+                        {
+                            if (!string.IsNullOrEmpty(kv.Key) && !string.IsNullOrEmpty(kv.Value) &&
+                                !string.Equals(kv.Value, "WAIT", StringComparison.OrdinalIgnoreCase))
+                            {
+                                existingApps[kv.Key] = kv.Value;
+                            }
+                        }
+                    }
+
                     var stateMap = new Dictionary<string, object>
                     {
                         { "phase", phase },
@@ -7032,8 +7413,16 @@ namespace WIS.UI
                         { "restart_due_at", _restartDueAtUtc > DateTime.MinValue ? _restartDueAtUtc.ToLocalTime().ToString("o") : "" },
                         { "delayed_restart_minutes", _delayedRestartMinutesTotal }
                     };
+                    if (!string.IsNullOrEmpty(existingHubUrl))
+                    {
+                        stateMap["hub_url"] = existingHubUrl;
+                    }
+                    if (existingApps.Count > 0)
+                    {
+                        stateMap["apps"] = existingApps;
+                    }
                     string json = JsonHelper.Serialize(stateMap);
-                    File.WriteAllText(@"C:\setup\deploy-state.json", json, Encoding.UTF8);
+                    File.WriteAllText(statePath, json, Encoding.UTF8);
                 }
             }
             catch (Exception ex)
@@ -7658,14 +8047,29 @@ namespace WIS.UI
                     UpdateAutopilotFromData(apNode);
                 }
 
-                // 10. Status pozadinskog Windows Update-a preko IPC (WIS-TASK-175)
+                // 10. Status pozadinskog Windows Update-a preko IPC (WIS-TASK-175 / V344-01)
                 if (root.ContainsKey("bg_wu") && root["bg_wu"].IsObject)
                 {
                     var bgNode = root["bg_wu"];
                     string bgSt = bgNode.ContainsKey("status") ? bgNode["status"].AsString("RUNNING") : "RUNNING";
                     string bgTxtSr = bgNode.ContainsKey("phase_text") ? bgNode["phase_text"].AsString("") : "";
                     string bgTxtZh = bgNode.ContainsKey("phase_text_zh") ? bgNode["phase_text_zh"].AsString("") : "";
+                    if (bgNode.ContainsKey("pending_driver_count"))
+                    {
+                        _bgWuPendingDriverCount = Math.Max(0, bgNode["pending_driver_count"].AsInt(0));
+                    }
+                    if (bgNode.ContainsKey("installing_driver"))
+                    {
+                        _bgWuInstallingDriver = bgNode["installing_driver"].AsBool(false);
+                    }
+                    string bgNorm = (bgSt ?? "RUNNING").Trim().ToUpperInvariant();
+                    if (bgNorm == "COMPLETED" || bgNorm == "SKIPPED")
+                    {
+                        _bgWuPendingDriverCount = 0;
+                        _bgWuInstallingDriver = false;
+                    }
                     ViewModel.UpdateBackgroundWuStatus(bgSt, bgTxtSr, bgTxtZh);
+                    NotifyHwTestDriverStateChanged(bgNorm == "COMPLETED" || bgNorm == "SKIPPED" || (_bgWuPendingDriverCount == 0 && !_bgWuInstallingDriver));
                 }
             }
             catch (Exception ex)
@@ -9292,11 +9696,12 @@ namespace WIS.UI
                     psi = new ProcessStartInfo
                     {
                         FileName = toolPath,
-                        Arguments = "--json",
+                        Arguments = "--json --silent",
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
                         CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
                         StandardOutputEncoding = Encoding.UTF8
                     };
                 }
@@ -9309,11 +9714,12 @@ namespace WIS.UI
                     psi = new ProcessStartInfo
                     {
                         FileName = "powershell.exe",
-                        Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -JsonOutput", toolPath),
+                        Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{0}\" -JsonOutput", toolPath),
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true,
                         CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
                         StandardOutputEncoding = Encoding.UTF8
                     };
                 }
@@ -10548,6 +10954,7 @@ namespace WIS.UI
         {
             if (string.IsNullOrEmpty(value)) return "";
             string trimmed = value.Trim();
+            if (IsPlaceholderIdentity(trimmed)) return "";
             string lower = trimmed.ToLowerInvariant();
             if (lower.Length == 0 || lower == "n/a" || lower == "none" ||
                 lower.StartsWith("učitavanje") || lower.StartsWith("detekcija") ||
@@ -10918,6 +11325,7 @@ namespace WIS.UI
             ViewModel.Drivers.BatchProgressPercent = 0;
             ViewModel.Drivers.BatchStatusText = string.Format(LocalizationService.Get("WinDrvBatchStart", "Započinjem rešavanje {0} nedostajućih drajvera..."), missingCopy.Count);
             ViewModel.AddLog("INFO", "Drajveri", string.Format("Pokrenuto grupno rešavanje {0} nedostajućih drajvera...", missingCopy.Count));
+            NotifyHwTestDriverStateChanged(false);
 
             Task.Factory.StartNew(delegate
             {
@@ -10964,6 +11372,7 @@ namespace WIS.UI
                 {
                     ViewModel.Drivers.IsBatchResolving = false;
                     DetectDrivers();
+                    NotifyHwTestDriverStateChanged(true);
                 });
             });
         }
@@ -11722,6 +12131,7 @@ namespace WIS.UI
                     }
 
                     ViewModel.AddLog("INFO", "Drajveri", string.Format("Detektovano {0} instaliranih uređaja, {1} problematičnih.", totalCount, missingList.Count));
+                    NotifyHwTestDriverStateChanged(missingList.Count == 0);
                 });
             }
             catch (Exception ex)
@@ -11730,6 +12140,7 @@ namespace WIS.UI
                 {
                     ViewModel.Drivers.IsScanning = false;
                     ViewModel.AddLog("ERROR", "Drajveri", "Kritična greška tokom detekcije drajvera: " + ex.Message);
+                    NotifyHwTestDriverStateChanged(false);
                 });
             }
         }
@@ -12151,9 +12562,17 @@ namespace WIS.UI
             }
         }
 
+        public static int ComputeCpuStressThreadCount(int logicalProcessors)
+        {
+            if (logicalProcessors <= 1) return 1;
+            if (logicalProcessors >= 8) return logicalProcessors - 2;
+            return logicalProcessors - 1;
+        }
+
         private void RunStressTestWorkerInternal(CancellationToken token, int durationSeconds)
         {
-            int coreCount = Math.Max(1, Environment.ProcessorCount);
+            int logicalCount = Math.Max(1, Environment.ProcessorCount);
+            int coreCount = ComputeCpuStressThreadCount(Environment.ProcessorCount);
             Thread[] workerThreads = new Thread[coreCount];
 
             for (int i = 0; i < coreCount; i++)
@@ -12171,7 +12590,14 @@ namespace WIS.UI
                         counter++;
                         if (counter % 20 == 0)
                         {
-                            Thread.Yield(); // Omogućava OS-u trenutnu obradu UI događaja
+                            if (logicalCount <= 1)
+                            {
+                                Thread.Sleep(1);
+                            }
+                            else
+                            {
+                                Thread.Yield(); // Omogućava OS-u trenutnu obradu UI događaja
+                            }
                         }
                     }
                 }));

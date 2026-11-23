@@ -4,6 +4,35 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.4.4] / ServiceHub [v3.6.4] — 2026-11-23
+
+### Drajver Kapija za Interaktivne Testove, Adaptivni CPU Stres, Perzistencija Testova, Tiho Pozadinsko Skeniranje & Live Audit Sanacija (`WIS-TASK-269`, `WIS-TASK-270`, `V344-01`–`V344-04`, `IMP-36`–`IMP-52`, `[SECURITY GREEN]`)
+
+- **`V344-01` — Zabrana pokretanja interaktivnih testova dok svi drajveri nisu instalirani (odluke `1A` + `2A`, `UI/HwTest/Core/DriverReadinessGate.cs`, `HwTestShell.cs`, `UI/MainWindow.HwTest.cs`, `UI/MainWindow.xaml.cs`, `UI/LocalizationService.cs`, `WIS.Update.psm1`):**
+  - Uveden centralni dvostruki `DriverReadinessGate` i `EvaluateInteractiveTestsDriverGate()` koji zatvara svih 5 ulaznih tačaka u interaktivne testove (`RunSingleTest`, `RunSequentialTests`, `RunSequentialPeripheralTests`, `StartPhase5FullWorkflow`, `StartPendingInteractiveTestsFromUi`) dok traju Faza 2, `Code 14` / `interim_reboot_required` restart, operacije u tabu `Drajveri` (`IsBatchResolving`/`IsScanning`/`IsInstalling`) ili `BackgroundWu` drajveri (`pending_driver_count > 0 || installing_driver == true` po odluci `2A`).
+  - Dodat vizuelni baner `_driverGateBanner` sa dugmadima `[🔧 Otvori tab Drajveri]` / `[🔄 Proveri ponovo]`, uslovno vanredno otključavanje (odluka `1A`: dozvoljeno isključivo kad su sve drajverske operacije završene a ostane zaostala Device Manager greška bez `Code 14`, uz potvrdu i razlog `>= 5` znakova sačuvan kao `driver_gate_emergency_override_reason`), i reaktivni `RefreshHardwareProbeAfterDrivers()` bez gaženja završenih testova.
+- **`V344-02` — Adaptivna rezervacija slobodnih CPU niti tokom CPU stres testa (odluka `Opcija A`, `AutoHardwareDiagnostics.cs`, `UI/MainWindow.xaml.cs`, `UI/Skripte/Phases/Phase5-Stress.ps1`):**
+  - Implementirana jedinstvena formula `ComputeCpuStressThreadCount(logicalProcessors)` (`1` za `<= 1T`, `N - 1` za `2..7T`, `N - 2` za `>= 8T`), `ThreadPriority.Lowest` i kooperativni `Thread.Yield()` (`Thread.Sleep(1)` za `<= 1T`) u sve 3 komponente, uz `stress_threads` / `reserved_threads` detalje i `"{0}/{1}T"` prikaz.
+- **`V344-03` & `IMP-51` — Perzistencija i restauracija završenih testova preko restarta (`HwTestShell.cs`, `UI/MainWindow.HwTest.cs`, `UI/MainWindow.xaml.cs`, `UI/MainWindow.Reboot.cs`):**
+  - Inkrementalni atomični `SaveCheckpoint("")` posle svakog završenog testa, pri zatvaranju i u `HandleInterimReboot()`; jedinstvena restauracija `TryRestorePersistedTestState()` spaja `hwtest-checkpoint.json`, `C:\setup\hwtest-result.json` i `C:\Windows\Logs\WIS\hwtest-result.json` uz `serial` i 48h TTL zaštitu (`SKIP` bez razloga ostaje `Pending`, `auto_security` se preskače samo za neprazan `reboot_reason_test_id`).
+  - `TryParsePersistedUtcTimestamp` koristi `DateTimeStyles.RoundtripKind` + `.ToUniversalTime()` (otklonjen `ArgumentException` iz `IMP-51`), dodati `SaveDeployStatePhase(5)`/`(6)` u redovnom toku Faza 4→5→6, disk provera u `HasUnfinishedInteractiveHwTests()` i dugme `[↻ Ponovi sve testove]`.
+- **`V344-04` — Tiho pozadinsko pokretanje Autopilot Auditora bez vidljivih prozora (`Tools/AutopilotAuditor/{Program.cs,LocalForensicsInspector.cs,CloudZtdInspector.cs}`, `UI/MainWindow.xaml.cs`, `Test-AutopilotPreOobeCache.py`):**
+  - Dodata podrška za `--silent` (`-s`) / `--no-console` u `Program.cs` (preskače `AttachConsole`/`AllocConsole` kada je `isJsonOutput || isSilent || Console.IsOutputRedirected`, a `TryFreeConsole` poziva samo kad je konzola stvarno alocirana).
+  - Obezbeđeni `WindowStyle = ProcessWindowStyle.Hidden` (uklj. `--json --silent` i `-WindowStyle Hidden` za PS fallback) i asinhrono preusmeravanje `stdout`/`stderr` za sve podprocese.
+- **Klijentski Live Audit Paketi (`IMP-37`, `IMP-38`, `IMP-39`, `IMP-40`, `IMP-42`, `IMP-44`, `IMP-45`, `IMP-46`, `IMP-48`, `IMP-49`, `IMP-52`):**
+  - **`IMP-42`:** Svi pozivi `Send-FleetFinalReport` u `Phase6-Finalize.ps1` izvršavaju se isključivo u `try` bloku pre `finally { Clear-ServisWifiSecrets }` uz fail-closed `exit 2`.
+  - **`IMP-44` & `IMP-52`:** `GetMissingKeyApplications()` Reality Check pomeren pre Faze 6 i Anti-Leak čišćenja mreže; dodata `HydrateAppsStateOnResume()` za resume u `savedPhase >= 5`.
+  - **`IMP-37`, `IMP-48`, `IMP-49`:** `Send-IpcLog -Tag "[NasProgrami]"` i rana fail-fast provera za NAS `Programi`, `-SubFolders`/`-OnlyApp` ciljani `robocopy` u `Sync-ProgramiFromNas` i očuvanje `$Global:WisPreserveCurrentPhase`.
+  - **`IMP-38`, `IMP-40`, `IMP-39`, `IMP-45`, `IMP-46`:** `$null =` zaštita od STDOUT curenja (`WIS.Common.psm1`, `WIS.Apps.psm1`), fizička provera `Acrobat.exe` u `P4.PdfDefault` i `WARN` u `P4.Activation`, thread-safe `GetAppsStatusSnapshot()` u `2500 ms` heartbeat-u bez `_dispatcher.Invoke`, `zh-CN`/`sr`/`en` placeholder filter u `TelemetryService.cs`/`MainWindow.xaml.cs`, te dopuna `IsLocationPolicyDisabled()` u `NativeMethods.cs` za Win11 24H2.
+- **`ServiceHub v3.6.4` Paketi (`IMP-36`, `IMP-39`, `IMP-41`, `IMP-43`, `IMP-45`, `IMP-47`, `IMP-50`, `IMP-52`, `ServiceHub/tests/test_v344_regressions.py`):**
+  - **`IMP-36`:** `disk_usage` (`< 10 GB` / `< 5 GB`) u `/api/status` & `/api/health`, `LOW_DISK_WARNING`/`CRITICAL_DISK_WARNING` baner u dashboardu, `cleanup_stale_tmp_files`, `_prune_old_disk_logs` bez praćenja symlinkova i `ENOSPC` rate-limit.
+  - **`IMP-41` (odluka `3A`) & `IMP-43`:** `KVAR*` u `compute_handover_status` uvek daje `"FAILED"`; `_has_skipped_interactive_hwtests` spušta na `"NEEDS_SERVICE"` samo `>= 3.4.3` ili sa `manual_skip_reason`; blokada lažnog `READY` kad `apps` ima `ERROR`/`FAIL`, `errors` nije prazan ili nedostaje `latest_report` u Fazi 6.
+  - **`IMP-39`, `IMP-45`, `IMP-47`, `IMP-50`, `IMP-52`:** `record_logs` osvežava `last_seen` i prima `serial_number`; proširena `zh-CN` placeholder zaštita (`"加载中..."`, `"正在加载配置..."`) u `_resolve_device_key_locked`; reset terminalnog stanja za svaki aktivan heartbeat sa `1 <= incoming_phase < 6`; `UEFI_REBOOT` u `phase == 5` prikazuje `"Restart u toku"`; zaštita `apps` u `phase >= 5` od `WAIT`-only pregaza.
+- **Operativna TrueNAS higijena (Odluka `4B`, van Git-a):** Pripremljen izvršni akcioni plan za `TK_NAS` ZFS snapshotove (`IMP-36`), dozvole `/mnt/TK_NAS/Programi` (`IMP-37`), čišćenje `/mnt/TK_NAS/Servis/Programi` (`IMP-48`) i usklađivanje `Mode=DriversOnly` (`IMP-28`) — čeka odobrenje korisnika posle release-a.
+- **Verzionisanje & Verifikacija:** Root [`version.json`](version.json) i svi podsistemi podignuti na **`WIS v3.4.4`** / **`ServiceHub v3.6.4`** (`[SECURITY GREEN]`).
+
+---
+
 ## [v3.4.3] / ServiceHub [v3.6.3] — 2026-11-23
 
 ### Ispravke bagova, Hard Gate interaktivnih testova, USB Auto-Learn i `zh-CN` Lokalizacija (`WIS-TASK-268`, `V343-01`–`V343-08`, `[SECURITY GREEN]`)

@@ -10,6 +10,7 @@ import time
 import hmac
 import json
 import uuid
+import shutil
 import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,8 @@ from servishub.reports import (
     register_new_device,
     save_device_checkpoint,
     diagnostics_contract,
+    is_enospc_error,
+    log_enospc_rate_limited,
 )
 from servishub.version import VERSION, RELEASE_STATUS
 from servishub.web.dashboard import HTML_DASHBOARD
@@ -73,6 +76,87 @@ def _update_wis_burn_progress(phase: str, percent: int, message: str, **kwargs):
             with cond:
                 q.append(state_copy)
                 cond.notify_all()
+
+
+def compute_disk_usage_info(cfg=None) -> dict:
+    """
+    Računa zauzeće diska nad LOG_DIR / DATA_DIR (logs_dir / storage_dir) pomoću shutil.disk_usage
+    i vraća kanonsku strukturu za /api/status i LOW_DISK_WARNING alert (IMP-36).
+    """
+    target_cfg = cfg or active_config
+    candidate_paths = []
+    for attr in ("logs_dir", "reports_dir", "live_logs_dir", "storage_dir", "base_dir"):
+        p = getattr(target_cfg, attr, None)
+        if p and isinstance(p, str):
+            candidate_paths.append(p)
+    candidate_paths.append(os.getcwd())
+
+    best_usage = None
+    best_path = ""
+    for p in candidate_paths:
+        check_p = p
+        while check_p and not os.path.exists(check_p):
+            parent = os.path.dirname(check_p)
+            if parent == check_p:
+                break
+            check_p = parent
+        if not check_p or not os.path.exists(check_p):
+            continue
+        try:
+            usage = shutil.disk_usage(check_p)
+            if best_usage is None or usage.free < best_usage.free:
+                best_usage = usage
+                best_path = check_p
+        except OSError:
+            continue
+
+    if best_usage is None:
+        return {
+            "path": "",
+            "free_bytes": 0,
+            "total_bytes": 0,
+            "used_bytes": 0,
+            "used_pct": 0.0,
+            "free_gb": 0.0,
+            "low_disk_warning": True,
+            "critical_disk_warning": True,
+            "status_message": "KRITIČNO: Nije moguće očitati slobodan prostor na disku (LOW_DISK_WARNING).",
+            "message": "KRITIČNO: Nije moguće očitati slobodan prostor na disku (LOW_DISK_WARNING).",
+        }
+
+    total_b = int(best_usage.total)
+    used_b = int(best_usage.used)
+    free_b = int(best_usage.free)
+    used_pct = round((used_b / float(total_b)) * 100.0, 1) if total_b > 0 else 0.0
+    free_gb = round(free_b / (1024.0 ** 3), 2)
+    low_warn = bool(free_gb < 10.0)
+    crit_warn = bool(free_gb < 5.0)
+
+    if crit_warn:
+        msg = (
+            f"KRITIČNO (CRITICAL_DISK_WARNING / LOW_DISK_WARNING): Slobodan prostor na disku je "
+            f"samo {free_gb} GB ({used_pct}% zauzeto, < 5 GB)! Hitno oslobodite prostor na NAS-u."
+        )
+    elif low_warn:
+        msg = (
+            f"UPOZORENJE (LOW_DISK_WARNING): Slobodan prostor na disku je pao ispod 10 GB "
+            f"({free_gb} GB slobodno, {used_pct}% zauzeto)."
+        )
+    else:
+        msg = f"OK ({free_gb} GB slobodno, {used_pct}% zauzeto)"
+
+    return {
+        "path": best_path,
+        "free_bytes": free_b,
+        "total_bytes": total_b,
+        "used_bytes": used_b,
+        "used_pct": used_pct,
+        "free_gb": free_gb,
+        "low_disk_warning": low_warn,
+        "critical_disk_warning": crit_warn,
+        "status_message": msg,
+        "message": msg,
+    }
 
 
 def reset_wis_burn_state():
@@ -574,7 +658,19 @@ class ServisHubHandler(BaseHTTPRequestHandler):
 
         if path in ("/api/health", "/api/status"):
             uptime = int(time.time() - self.start_time)
-            self._send_json({"status": "ok", "uptime_sec": uptime, "version": VERSION, "release_status": RELEASE_STATUS})
+            disk_info = compute_disk_usage_info(self.config)
+            status_payload = {
+                "status": "ok",
+                "uptime_sec": uptime,
+                "version": VERSION,
+                "release_status": RELEASE_STATUS,
+                "disk_usage": disk_info,
+                "low_disk_warning": disk_info["low_disk_warning"],
+                "critical_disk_warning": disk_info["critical_disk_warning"],
+            }
+            if disk_info["critical_disk_warning"] or disk_info["low_disk_warning"]:
+                status_payload["status_message"] = disk_info["status_message"]
+            self._send_json(status_payload)
             return
 
         if path == "/api/model-profile":
@@ -2376,7 +2472,9 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 try:
                     json_fp, md_fp, json_fn, md_fn = save_device_report(clean_id, payload, self.config.reports_dir)
                 except Exception as e:
-                    print(f"[ERROR] Neuspeh arhiviranja izveštaja: {e}", file=sys.stderr)
+                    if is_enospc_error(e) and self.fleet_store and hasattr(self.fleet_store, "_prune_old_disk_logs"):
+                        self.fleet_store._prune_old_disk_logs(time.time(), force=True)
+                    log_enospc_rate_limited("Neuspeh arhiviranja izveštaja", e)
                     self._send_json({"error": f"Greška pri arhiviranju: {e}"}, 500)
                     return
 
@@ -2458,7 +2556,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     return
 
                 status_raw = str(payload.get("status", "COMPLETED")).upper()
-                is_critical = status_raw in ("CRITICAL_ISSUE", "ERROR", "CRITICAL", "FAILED")
+                is_critical = status_raw in ("CRITICAL_ISSUE", "ERROR", "CRITICAL", "FAILED", "KVAR_POTVRDJEN") or "KVAR" in status_raw
                 status_label = "Kvar (AGY)" if is_critical else "Servisiran (AGY)"
 
                 hw = payload.get("hardware") or {}
@@ -2649,10 +2747,16 @@ class ServisHubHandler(BaseHTTPRequestHandler):
 
         if path == "/api/log":
             comp_name = payload.get("computer_name") or "UNKNOWN-PC"
+            serial_num = (
+                payload.get("serial_number")
+                or payload.get("serial")
+                or payload.get("device_serial")
+                or ((payload.get("hw") or {}).get("serial") if isinstance(payload.get("hw"), dict) else None)
+            )
             lines = payload.get("lines") or []
             if isinstance(lines, str):
                 lines = [lines]
-            appended = self.fleet_store.record_logs(comp_name, lines)
+            appended = self.fleet_store.record_logs(comp_name, lines, serial_number=serial_num)
             self._send_json({"status": "ok", "appended": appended})
             return
 

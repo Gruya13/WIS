@@ -4,11 +4,87 @@ servishub.reports
 Generisanje profesionalnih Markdown servisnih kartona i perzistencija JSON izveštaja.
 """
 
+import errno
+import json
 import os
 import re
-import json
+import sys
+import threading
+import time
 from datetime import datetime
 from servishub.drivers.cache import sanitize_id
+
+_ENOSPC_LOG_LOCK = threading.Lock()
+_LAST_ENOSPC_LOG_TS = 0.0
+
+
+def is_enospc_error(err: Exception) -> bool:
+    """Proverava da li je izuzetak izazvan nedostatkom prostora na disku (Errno 28 / ENOSPC)."""
+    if err is None:
+        return False
+    err_no = getattr(err, "errno", None)
+    if err_no in (errno.ENOSPC, 28):
+        return True
+    msg = str(err).lower()
+    return "[errno 28]" in msg or "no space left on device" in msg or "enospc" in msg
+
+
+def log_enospc_rate_limited(prefix: str, err: Exception, interval_sec: float = 60.0, now: float = None) -> bool:
+    """
+    Ispisuje disk grešku na stderr uz rate-limit od max 1x na interval_sec (60s) za ENOSPC,
+    kako pun disk ne bi zagušio Docker logove (IMP-36).
+    Vraća True ako je poruka ispisana, False ako je potisnuta rate-limitom.
+    """
+    global _LAST_ENOSPC_LOG_TS
+    cur_ts = float(now) if now is not None else time.time()
+    if is_enospc_error(err):
+        with _ENOSPC_LOG_LOCK:
+            if _LAST_ENOSPC_LOG_TS > 0.0 and (cur_ts - _LAST_ENOSPC_LOG_TS) < float(interval_sec):
+                return False
+            _LAST_ENOSPC_LOG_TS = cur_ts
+        print(f"[ERROR] {prefix}: {err} (ENOSPC rate-limited 1x/{int(interval_sec)}s)", file=sys.stderr)
+        return True
+    print(f"[ERROR] {prefix}: {err}", file=sys.stderr)
+    return True
+
+
+def cleanup_stale_tmp_files(directory: str, max_age_sec: float = 3600.0, now: float = None) -> int:
+    """
+    Briše bajate .tmp fajlove starije od max_age_sec (podrazumevano 1h) u zadatom direktorijumu,
+    strogo bez praćenja symlinkova i bez path traversal-a (IMP-36).
+    Vraća broj obrisanih .tmp fajlova.
+    """
+    if not directory or not os.path.isdir(directory) or os.path.islink(directory):
+        return 0
+    cur_ts = float(now) if now is not None else time.time()
+    real_base = os.path.realpath(directory)
+    removed = 0
+    try:
+        with os.scandir(directory) as it:
+            entries = list(it)
+    except OSError:
+        return 0
+
+    for entry in entries:
+        try:
+            name = entry.name
+            if not name.endswith(".tmp") or ".." in name or "/" in name or "\\" in name:
+                continue
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            full_path = entry.path
+            if os.path.islink(full_path):
+                continue
+            real_target = os.path.realpath(full_path)
+            if os.path.commonpath([real_base, real_target]) != real_base:
+                continue
+            st = entry.stat(follow_symlinks=False)
+            if (cur_ts - float(st.st_mtime)) >= float(max_age_sec):
+                os.remove(full_path)
+                removed += 1
+        except (OSError, ValueError):
+            continue
+    return removed
 
 
 def _atomic_write_text(filepath: str, content: str) -> None:
@@ -18,17 +94,22 @@ def _atomic_write_text(filepath: str, content: str) -> None:
         os.makedirs(parent, exist_ok=True)
     tmp_path = f"{filepath}.tmp"
     try:
+        if os.path.islink(tmp_path) or os.path.islink(filepath):
+            raise OSError(errno.ELOOP, "Odbijen upis preko simboličkog linka", filepath)
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(content)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, filepath)
-    except Exception:
-        if os.path.exists(tmp_path):
+    except Exception as ex:
+        if os.path.exists(tmp_path) and not os.path.islink(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
+        if parent and is_enospc_error(ex):
+            cleanup_stale_tmp_files(parent, max_age_sec=3600.0)
+            log_enospc_rate_limited("Atomični upis fajla nije uspeo (disk pun)", ex)
         raise
 
 
@@ -65,9 +146,95 @@ def _format_hw_disk(hw: dict) -> str:
     return "N/A"
 
 
-def _has_skipped_interactive_hwtests(hwtest) -> bool:
-    """Proverava da li u `hwtest.tests` postoje preskočeni ili nezavršeni interaktivni testovi."""
+def _parse_semver_tuple(raw_ver) -> tuple[int, int, int] | None:
+    """Parsira semantičku verziju ('3.4.3', 'v3.4.2') u (major, minor, patch) ili vraća None."""
+    if raw_ver is None or isinstance(raw_ver, bool):
+        return None
+    s = str(raw_ver).strip()
+    if not s:
+        return None
+    m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", s)
+    if not m:
+        return None
+    try:
+        major = int(m.group(1))
+        minor = int(m.group(2))
+        patch = int(m.group(3)) if m.group(3) is not None else 0
+        return (major, minor, patch)
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_report_version_tuple(hwtest: dict, report_data: dict = None) -> tuple[int, int, int] | None:
+    """Izdvaja verziju klijenta/HwTest-a iz hwtest ili report_data rečnika (IMP-41)."""
+    candidates = []
+    if isinstance(hwtest, dict):
+        candidates.extend([
+            hwtest.get("app_version"),
+            hwtest.get("version"),
+            hwtest.get("wis_version"),
+        ])
+    if isinstance(report_data, dict):
+        candidates.extend([
+            report_data.get("wis_version"),
+            report_data.get("app_version"),
+            report_data.get("version"),
+        ])
+        nested = report_data.get("latest_report")
+        if isinstance(nested, dict):
+            candidates.extend([
+                nested.get("wis_version"),
+                nested.get("app_version"),
+                nested.get("version"),
+            ])
+            nested_hw = nested.get("hwtest")
+            if isinstance(nested_hw, dict):
+                candidates.extend([
+                    nested_hw.get("app_version"),
+                    nested_hw.get("version"),
+                    nested_hw.get("wis_version"),
+                ])
+    for cand in candidates:
+        vt = _parse_semver_tuple(cand)
+        if vt is not None:
+            return vt
+    return None
+
+
+def _has_explicit_manual_skip_reason(hwtest: dict, report_data: dict = None) -> bool:
+    """Proverava da li postoji eksplicitan manual_skip_reason na nivou izveštaja, hwtest bloka ili pojedinačnog testa."""
+    if isinstance(hwtest, dict):
+        if str(hwtest.get("manual_skip_reason") or "").strip():
+            return True
+        summary = hwtest.get("summary")
+        if isinstance(summary, dict) and str(summary.get("manual_skip_reason") or "").strip():
+            return True
+        tests = hwtest.get("tests")
+        if isinstance(tests, list):
+            for t in tests:
+                if isinstance(t, dict) and str(t.get("manual_skip_reason") or "").strip():
+                    return True
+    if isinstance(report_data, dict):
+        if str(report_data.get("manual_skip_reason") or "").strip():
+            return True
+        nested = report_data.get("latest_report")
+        if isinstance(nested, dict) and str(nested.get("manual_skip_reason") or "").strip():
+            return True
+    return False
+
+
+def _has_skipped_interactive_hwtests(hwtest, report_data: dict = None) -> bool:
+    """
+    Proverava da li u `hwtest.tests` postoje preskočeni ili nezavršeni interaktivni testovi.
+    Prema IMP-41 (3A): strogo spuštanje na NEEDS_SERVICE primenjuje se na izveštaje sa verzijom >= 3.4.3
+    (ili kada postoji eksplicitan `manual_skip_reason`), dok istorijski v3.4.0–v3.4.2 izveštaji
+    zadržavaju svoj status (READY_WITH_NOTE za PASS_WITH_SKIP).
+    """
     if not isinstance(hwtest, dict):
+        return False
+    ver_tuple = _extract_report_version_tuple(hwtest, report_data)
+    has_manual_reason = _has_explicit_manual_skip_reason(hwtest, report_data)
+    if ver_tuple is not None and ver_tuple < (3, 4, 3) and not has_manual_reason:
         return False
     tests = hwtest.get("tests")
     if not isinstance(tests, list):
@@ -82,12 +249,44 @@ def _has_skipped_interactive_hwtests(hwtest) -> bool:
     return False
 
 
+def _has_failed_apps_or_errors(rec: dict, nested: dict) -> bool:
+    """
+    Proverava da li `apps` sadrži aplikaciju sa ERROR/FAIL statusom ili `errors` nije prazan (IMP-43).
+    """
+    apps = rec.get("apps")
+    if apps is None and isinstance(nested, dict):
+        apps = nested.get("apps")
+    if isinstance(apps, dict):
+        for app_st in apps.values():
+            st_norm = str(app_st or "").strip().upper()
+            if st_norm in ("ERROR", "FAIL", "FAILED", "CRITICAL", "ERR") or st_norm.startswith(("ERROR", "FAIL")):
+                return True
+    elif isinstance(apps, list):
+        for item in apps:
+            if isinstance(item, dict):
+                st_norm = str(item.get("status") or "").strip().upper()
+                if st_norm in ("ERROR", "FAIL", "FAILED", "CRITICAL", "ERR") or st_norm.startswith(("ERROR", "FAIL")):
+                    return True
+
+    errors = rec.get("errors")
+    if errors is None and isinstance(nested, dict):
+        errors = nested.get("errors")
+    if isinstance(errors, list) and any(str(e or "").strip() for e in errors):
+        return True
+    if isinstance(errors, str) and bool(errors.strip()):
+        return True
+    if rec.get("has_errors") is True or (isinstance(nested, dict) and nested.get("has_errors") is True):
+        return True
+    return False
+
+
 def compute_handover_status(rec: dict) -> str:
     """
     Računa jedinstveni kanonski status spremnosti uređaja za predaju kupcu:
-    - FAILED: kritični neuspeh ili propala anti-leak / security provera
-    - NEEDS_SERVICE: termalno pregrevanje (THERMAL_CRITICAL), HwTest FAIL, preskočeni interaktivni testovi ili NEEDS_ATTENTION
-    - READY_WITH_NOTE: završeno uz napomenu (WARN / SENSOR_UNAVAILABLE / PASS_WITH_SKIP automatskih testova / servisne beleške)
+    - FAILED: kritični neuspeh, KVAR_POTVRDJEN (*KVAR*) ili propala anti-leak / security provera
+    - NEEDS_SERVICE: termalno pregrevanje (THERMAL_CRITICAL), HwTest FAIL, preskočeni interaktivni testovi (v3.4.3+),
+      aplikacija u ERROR/FAIL stanju, zabeležene greške, nedostajući latest_report u Fazi 6 ili NEEDS_ATTENTION
+    - READY_WITH_NOTE: završeno uz napomenu (WARN / SENSOR_UNAVAILABLE / PASS_WITH_SKIP automatskih ili pre-v3.4.3 testova / servisne beleške)
     - READY: potpuno spreman bez primedbi
     """
     if not isinstance(rec, dict):
@@ -103,7 +302,9 @@ def compute_handover_status(rec: dict) -> str:
 
     status_raw = str(_pick("status") or "").strip().upper()
     dep_raw = str(_pick("deployment_status") or "").strip().upper()
+    agy_raw = str(_pick("agy_status") or "").strip().upper()
     lbl_raw = str(_pick("status_label") or "").strip()
+    lbl_upper = lbl_raw.upper()
     diag = diagnostics_contract(rec if "diagnostics_status" in rec or "max_cpu_temp_c" in rec else nested)
     diag_st = diag.get("diagnostics_status", "NOT_VERIFIED")
 
@@ -116,15 +317,36 @@ def compute_handover_status(rec: dict) -> str:
         elif hwtest.get("passed") is False:
             hwtest_overall = "FAIL"
 
-    has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest)
+    has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest, report_data=rec)
+    has_app_or_rec_errors = _has_failed_apps_or_errors(rec, nested)
+
+    phase_val = _pick("phase")
+    has_saved_report = (
+        (isinstance(rec.get("latest_report"), dict) and bool(rec.get("latest_report")))
+        or bool(rec.get("latest_report_file"))
+        or bool(rec.get("_has_in_memory_report"))
+    )
+    is_missing_terminal_report = (
+        lbl_raw in ("Zavrseno", "Završeno")
+        and not has_saved_report
+        and (
+            phase_val in (6, "6")
+            or "latest_report" in rec
+            or (not status_raw and not dep_raw)
+        )
+    )
 
     anti_leak = _pick("anti_leak_verified")
     sec_hardening = _pick("security_hardening_verified")
     handover_ready = _pick("handover_ready")
 
     if (
-        status_raw in ("ERROR", "FAILED", "CRITICAL", "CRITICAL_ISSUE")
+        status_raw in ("ERROR", "FAILED", "CRITICAL", "CRITICAL_ISSUE", "KVAR_POTVRDJEN")
+        or "KVAR" in status_raw
+        or "KVAR" in dep_raw
+        or "KVAR" in agy_raw
         or lbl_raw == "Kvar (AGY)"
+        or "KVAR" in lbl_upper
         or anti_leak is False
         or sec_hardening is False
     ):
@@ -137,6 +359,8 @@ def compute_handover_status(rec: dict) -> str:
         or dep_raw == "NEEDS_ATTENTION"
         or status_raw == "NEEDS_ATTENTION"
         or handover_ready is False
+        or has_app_or_rec_errors
+        or is_missing_terminal_report
     ):
         return "NEEDS_SERVICE"
 
@@ -533,7 +757,7 @@ def generate_markdown_report(report_data: dict) -> str:
         skipped = summary.get("skip", 0)
         na = summary.get("na", 0)
 
-        has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest)
+        has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest, report_data=report_data)
         if overall == "FAIL":
             badge = "❌ FAIL"
         elif has_skipped_interactive:
@@ -630,6 +854,7 @@ def save_device_report(
     import time as _rep_time
 
     os.makedirs(reports_dir, exist_ok=True)
+    cleanup_stale_tmp_files(reports_dir, max_age_sec=3600.0)
     clean_id = sanitize_id(device_id)
     now_ts = _rep_time.time()
 

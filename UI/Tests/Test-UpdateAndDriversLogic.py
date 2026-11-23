@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.4.3 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.4.3 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.4.3 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.4.4 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.4.4 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.4.4 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -1143,6 +1143,122 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("$spMsg = Protect-WisLicenseLogText", act_blk)
         self.assertIn("$inpMsg = Protect-WisLicenseLogText", act_blk)
         self.assertIn("$cleanAct = Protect-WisLicenseLogText", act_blk)
+
+    def test_30_v344_01_background_wu_driver_status_contract(self):
+        """V344-01 (Odluka 2A): Write-BackgroundWuStatus i Invoke-BackgroundWindowsUpdateWorker upisuju pending_driver_count i installing_driver."""
+        write_bg_blk = self.update_src.split("function Write-BackgroundWuStatus", 1)[1].split("function Start-BackgroundWindowsUpdateWorker", 1)[0]
+        self.assertIn("[int]$PendingDriverCount = 0", write_bg_blk)
+        self.assertIn("[bool]$InstallingDriver = $false", write_bg_blk)
+        self.assertIn("pending_driver_count =", write_bg_blk)
+        self.assertIn("installing_driver    = [bool]$InstallingDriver", write_bg_blk)
+
+        bg_worker_blk = self.update_src.split("function Invoke-BackgroundWindowsUpdateWorker", 1)[1].split("function Invoke-WindowsUpdateSecondPass", 1)[0]
+        self.assertIn("Test-IsDriverUpdate -UpdateItem", bg_worker_blk)
+        self.assertIn("-PendingDriverCount $pendingDriverCount", bg_worker_blk)
+        self.assertIn("-InstallingDriver $installingDriver", bg_worker_blk)
+        self.assertIn("$pendingDriverCount--", bg_worker_blk)
+
+    def test_31_v344_02_phase5_cpu_stress_thread_reservation_and_lowest_priority(self):
+        """V344-02 (Odluka A): Phase5-Stress.ps1 rezervise 1 nit za 2..7T, 2 niti za >=8T i koristi ThreadPriority.Lowest."""
+        p5_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase5-Stress.ps1").read_text(encoding="utf-8")
+        self.assertIn("$logical -le 1", p5_src)
+        self.assertIn("$logical -le 7", p5_src)
+        self.assertIn("$logical - 1", p5_src)
+        self.assertIn("$logical - 2", p5_src)
+        self.assertIn("[System.Threading.Thread]::CurrentThread.Priority = [System.Threading.ThreadPriority]::Lowest", p5_src)
+        self.assertIn("[System.Threading.Thread]::Sleep(1)", p5_src)
+        self.assertIn("[System.Threading.Thread]::Yield()", p5_src)
+        self.assertIn("$stressThreads/$logical", p5_src)
+
+    def test_32_v344_imp37_imp48_imp49_nas_programi_ipc_targeted_sync_and_preserve_phase(self):
+        """IMP-37, IMP-48, IMP-49: Send-IpcLog [NasProgrami] bez lozinki, fail-fast u Fazi 4, -SubFolders/-OnlyApp i $Global:WisPreserveCurrentPhase."""
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+
+        sync_prog_blk = core_src.split("function Sync-ProgramiFromNas", 1)[1].split("function Format-WisCoreProcessArg", 1)[0]
+        self.assertIn("[string[]]$SubFolders = @()", sync_prog_blk)
+        self.assertIn('[string]$OnlyApp = ""', sync_prog_blk)
+        self.assertIn('-Tag "[NasProgrami]"', sync_prog_blk)
+        self.assertNotIn("$uPass", "\n".join(line for line in sync_prog_blk.splitlines() if "Send-IpcLog" in line or "Write-ServisLog" in line))
+
+        # IMP-49: Kada je $Global:WisPreserveCurrentPhase = $true, Sync-ProgramiFromNas koristi Send-IpcStatus umesto Send-IpcProgress -Progress 10 -Phase 0
+        self.assertIn("if ($Global:WisPreserveCurrentPhase -eq $true)", sync_prog_blk)
+        self.assertIn("Send-IpcStatus -Phase $preservePhaseNum -Progress $preserveProg", sync_prog_blk)
+        self.assertNotIn("$syncPhase = 0", sync_prog_blk)
+
+        test_dir_blk = core_src.split("function Test-ProgramiDirComplete", 1)[1].split("function Ensure-ProgramiAvailable", 1)[0]
+        self.assertIn('-Tag "[NasProgrami]"', test_dir_blk)
+
+        get_root_blk = apps_src.split("function Get-ServisProgramiRoot", 1)[1].split("function Invoke-InstallerWithLocalFallback", 1)[0]
+        self.assertIn('-Tag "[NasProgrami]"', get_root_blk)
+        self.assertNotIn("$nasPass", "\n".join(line for line in get_root_blk.splitlines() if "Send-IpcLog" in line or "Write-ServisLog" in line))
+
+        inv_p4_blk = apps_src.split("function Invoke-Phase4Apps", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("$missingKeyRepoPkgs", inv_p4_blk)
+        self.assertIn('Send-IpcLog -Message $repoFatalMsg -Level "ERROR" -Tag "[NasProgrami]"', inv_p4_blk)
+        self.assertIn('-OnlyApp "Acrobat" -SubFolders @("Adobe.Acrobat.Pro.2024.x64.Multilingual", "Acrobat Pro 2024")', inv_p4_blk)
+        self.assertIn('-OnlyApp "Office" -SubFolders @("Office 2024")', inv_p4_blk)
+        self.assertIn('-StatusMessage "Instalacija: Adobe Acrobat Pro..."', inv_p4_blk)
+        self.assertIn('-StatusMessage "Instalacija: Microsoft Office 2024..."', inv_p4_blk)
+
+    def test_33_v344_imp38_no_stdout_leak_from_benchmark_or_msi_mutex(self):
+        """IMP-38: Complete-WisPhaseBenchmark u Save-DeployStatePhase i svi pozivi Wait-MsiMutexAvailable imaju $null = / varijablu."""
+        common_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Common.psm1").read_text(encoding="utf-8")
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+
+        save_phase_blk = common_src.split("function Save-DeployStatePhase", 1)[1].split("function Get-DeployStatePhase", 1)[0]
+        self.assertIn("$null = Complete-WisPhaseBenchmark", save_phase_blk)
+
+        for idx, raw_line in enumerate(apps_src.splitlines(), start=1):
+            stripped = raw_line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if "Wait-MsiMutexAvailable" in stripped:
+                if stripped.startswith("function Wait-MsiMutexAvailable") or stripped.startswith("Wait-MsiMutexAvailable,") or "Get-Command Wait-MsiMutexAvailable" in stripped:
+                    continue
+                self.assertTrue(
+                    stripped.startswith("$null = Wait-MsiMutexAvailable") or stripped.startswith("$msiOk = Wait-MsiMutexAvailable") or "| Out-Null" in stripped,
+                    f"Neuhvacen povratni bool iz Wait-MsiMutexAvailable na liniji {idx}: {stripped}",
+                )
+
+    def test_34_v344_imp40_pdf_default_requires_acrobat_exe_and_activation_warns_on_missing_office(self):
+        """IMP-40: Set-AcrobatDefaultPDF i Get-WisAppPresence -AppId PdfDefault traze Acrobat.exe na disku; P4.Activation javlja WARN kad je P4.Office pao."""
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+
+        pdf_fn = apps_src.split("function Set-AcrobatDefaultPDF", 1)[1].split("function Get-WindowsLicenseStatus", 1)[0]
+        idx_check = pdf_fn.find("if (-not $acrobatExe)")
+        idx_return_false = pdf_fn.find("return $false")
+        idx_write_xml = pdf_fn.find("Set-Content -Path $assocXmlPath")
+        self.assertGreater(idx_check, 0)
+        self.assertGreater(idx_return_false, idx_check)
+        self.assertGreater(idx_write_xml, idx_return_false, "Set-AcrobatDefaultPDF mora prekinuti sa return $false pre upisa AppAssoc_Acrobat.xml ako Acrobat.exe ne postoji")
+
+        pres_pdf_blk = apps_src.split("'(?i)^PdfDefault$'", 1)[1].split("'(?i)^(Activation|WindowsActivation|OfficeActivation)$'", 1)[0]
+        self.assertIn("if (-not $acroExeForPdf)", pres_pdf_blk)
+        self.assertIn("$result.Installed = $false", pres_pdf_blk)
+        self.assertIn("SKIPPED_ERROR", pres_pdf_blk)
+
+        p4_pdf_blk = apps_src.split("# 8. PODRAZUMEVANI PDF PREGLEDAČ - P4.PdfDefault", 1)[1].split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[0]
+        self.assertIn("SKIPPED_ERROR", p4_pdf_blk)
+        self.assertIn('-State "FAIL"', p4_pdf_blk)
+
+        p4_act_blk = apps_src.split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[1].split("# Režim pojedinačnog Retry-a", 1)[0]
+        self.assertIn("$officePlannedButMissing", p4_act_blk)
+        self.assertIn('$stepActivation.State = "WARN"', p4_act_blk)
+        self.assertIn("P4.Office nije uspeo", p4_act_blk)
+
+    def test_35_v344_imp42_phase6_no_final_report_after_clear_wifi_finally(self):
+        """IMP-42: Phase6-Finalize.ps1 ne sme pozivati Send-FleetFinalReport posle finally { Clear-ServisWifiSecrets }."""
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        idx_finally = phase6_src.find("} finally {")
+        self.assertGreater(idx_finally, 0)
+        before_finally = phase6_src[:idx_finally]
+        after_finally = phase6_src[idx_finally:]
+
+        self.assertIn('Send-FleetFinalReport -Status "NEEDS_ATTENTION"', before_finally)
+        self.assertIn('Send-FleetFinalReport -Status "COMPLETED"', before_finally)
+        self.assertNotIn("Send-FleetFinalReport", after_finally, "Send-FleetFinalReport se nikada ne sme pozivati posle finally { Clear-ServisWifiSecrets } bloka")
+        self.assertIn("exit 2", after_finally)
 
 
 if __name__ == "__main__":

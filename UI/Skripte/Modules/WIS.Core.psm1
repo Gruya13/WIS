@@ -765,7 +765,9 @@ function Sync-ProgramiFromNas {
     [CmdletBinding()]
     param(
         [string]$DestinationDir = "C:\setup\Programi",
-        [switch]$Force = $false
+        [switch]$Force = $false,
+        [string[]]$SubFolders = @(),
+        [string]$OnlyApp = ""
     )
 
     $nas = Get-ServisNasSettings
@@ -779,6 +781,9 @@ function Sync-ProgramiFromNas {
     $programiHost = if ($nas.NasHost) { $nas.NasHost } else { "192.168.170.254" }
     if (-not (Test-NasHostOnline -NasHost $programiHost)) {
         Write-ServisLog "NAS host $programiHost nije dostupan na SMB portu." -Level "WARN" -Component "NasProgrami"
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "NAS host $programiHost nije dostupan na SMB portu (445)." -Level "WARN" -Tag "[NasProgrami]"
+        }
         return $false
     }
 
@@ -832,6 +837,12 @@ function Sync-ProgramiFromNas {
                     if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
                         $null = & cmd.exe /c "net.exe use `"$candUnc`" `"`" /user:guest /persistent:no >nul 2>&1"
                     }
+                    if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                        Write-ServisLog "SMB pristup odbijen ili nedostupan za $candUnc (korisnik: $uName)." -Level "WARN" -Component "NasProgrami"
+                        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                            Send-IpcLog -Message "SMB pristup odbijen ili nedostupan za $candUnc (korisnik: $uName)." -Level "WARN" -Tag "[NasProgrami]"
+                        }
+                    }
                 }
             } catch {} finally {
                 $ErrorActionPreference = $prevEap
@@ -862,8 +873,59 @@ function Sync-ProgramiFromNas {
 
         if (-not $uncShare -or -not (Test-Path $nasProgDir)) {
             Write-ServisLog "Folder sa programima ne postoji na NAS-u ($nasProgDir)." -Level "WARN" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Folder sa programima nije pronađen na NAS serveru ($programiHost)." -Level "ERROR" -Tag "[NasProgrami]"
+            }
             return $false
         }
+
+        # IMP-48: Priprema ciljanog (single-app / SubFolders) prenosa za pojedinacni Retry
+        $targetSubFolders = [System.Collections.Generic.List[string]]::new()
+        $targetRootFilters = [System.Collections.Generic.List[string]]::new()
+        if ($SubFolders) {
+            foreach ($sfItem in $SubFolders) {
+                if (-not [string]::IsNullOrWhiteSpace($sfItem) -and -not $targetSubFolders.Contains($sfItem.Trim())) {
+                    $targetSubFolders.Add($sfItem.Trim())
+                }
+            }
+        }
+        $normalizedOnlyApp = if ($OnlyApp) { $OnlyApp.Trim().ToLowerInvariant() } else { "" }
+        if ($normalizedOnlyApp) {
+            switch -Regex ($normalizedOnlyApp) {
+                '^(acrobat|adobe acrobat|adobe acrobat pro)$' {
+                    foreach ($af in @("Adobe.Acrobat.Pro.2024.x64.Multilingual", "Acrobat Pro 2024", "Adobe Acrobat Pro")) {
+                        if (-not $targetSubFolders.Contains($af)) { $targetSubFolders.Add($af) }
+                    }
+                }
+                '^(office|microsoft office|ms office)$' {
+                    if (-not $targetSubFolders.Contains("Office 2024")) { $targetSubFolders.Add("Office 2024") }
+                }
+                '^(dotnet|runtimes)$' {
+                    foreach ($df in @("DotNet", "VCRedist")) {
+                        if (-not $targetSubFolders.Contains($df)) { $targetSubFolders.Add($df) }
+                    }
+                    foreach ($rf in @("*windowsdesktop-runtime*.exe", "*aspnetcore-runtime*.exe", "*VC_redist*.exe")) {
+                        if (-not $targetRootFilters.Contains($rf)) { $targetRootFilters.Add($rf) }
+                    }
+                }
+                '^batterybar$' {
+                    if (-not $targetSubFolders.Contains("BatteryBar")) { $targetSubFolders.Add("BatteryBar") }
+                }
+                '^(chrome|google chrome)$' {
+                    if (-not $targetSubFolders.Contains("Chrome")) { $targetSubFolders.Add("Chrome") }
+                    foreach ($cf in @("GoogleChromeStandaloneEnterprise64.msi", "ChromeSetup.exe", "*chrome*.msi", "*chrome*.exe")) {
+                        if (-not $targetRootFilters.Contains($cf)) { $targetRootFilters.Add($cf) }
+                    }
+                }
+                '^winrar$' {
+                    if (-not $targetSubFolders.Contains("WinRAR")) { $targetSubFolders.Add("WinRAR") }
+                    foreach ($wf in @("winrar-x64-701.exe", "*winrar*.exe")) {
+                        if (-not $targetRootFilters.Contains($wf)) { $targetRootFilters.Add($wf) }
+                    }
+                }
+            }
+        }
+        $isTargetedSync = ($targetSubFolders.Count -gt 0) -or ($targetRootFilters.Count -gt 0)
 
         # 2. Provera postojanja kljucnih instalacionih paketa na NAS-u
         $nasOffice = (Test-Path (Join-Path $nasProgDir "Office 2024\files\setup.exe")) -or `
@@ -875,13 +937,16 @@ function Sync-ProgramiFromNas {
         $nasBatteryBar = (Test-Path (Join-Path $nasProgDir "BatteryBar\BatteryBar.exe")) -or `
                          (Test-Path (Join-Path $nasProgDir "Programi\BatteryBar\BatteryBar.exe"))
 
-        if (-not $nasOffice -and -not $nasAdobe) {
+        if (-not $isTargetedSync -and -not $nasOffice -and -not $nasAdobe) {
             Write-ServisLog "NAS folder $nasProgDir ne sadrzi kompletne pakete (Office=$nasOffice, Adobe=$nasAdobe, BatteryBar=$nasBatteryBar)." -Level "WARN" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "NAS folder $nasProgDir ne sadrži kompletne instalacione pakete (Office=$nasOffice, Adobe=$nasAdobe)." -Level "ERROR" -Tag "[NasProgrami]"
+            }
             return $false
         }
 
         # 3. Provera da li su paketi vec prekopirani i kompletni na lokalnom SSD-u
-        if (-not $Force -and (Test-Path $DestinationDir)) {
+        if (-not $Force -and -not $isTargetedSync -and (Test-Path $DestinationDir)) {
             Repair-ProgramiNesting $DestinationDir
             $locOffice = (Test-Path (Join-Path $DestinationDir "Office 2024\files\setup.exe")) -or (Test-Path (Join-Path $DestinationDir "Office 2024\setup.exe"))
             $locAdobe = (Test-Path (Join-Path $DestinationDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or (Test-Path (Join-Path $DestinationDir "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi"))
@@ -913,54 +978,123 @@ function Sync-ProgramiFromNas {
         Write-Host "   Molimo sacekajte (kopiranje zavisi od brzine mreze i velicine paketa, obicno 1-5 min)..." -ForegroundColor White
         Write-Host "--------------------------------------------------------------------------------------" -ForegroundColor DarkGray
 
-        Write-ServisLog "Zapocinjem robocopy prenos paketa sa NAS-a ($nasProgDir) na SSD ($DestinationDir)..." -Level "STEP" -Component "NasProgrami"
-
         if (-not (Test-Path $DestinationDir)) {
             New-Item -Path $DestinationDir -ItemType Directory -Force | Out-Null
         }
 
-        $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $rcArgs = @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll")
-        $proc = Start-Process -FilePath "robocopy.exe" -ArgumentList $rcArgs -PassThru -WindowStyle Hidden
-        if ($proc) {
-            while (-not $proc.WaitForExit(15000)) {
-                $elapsedSec = [int]$sw.Elapsed.TotalSeconds
-                $copiedMb = 0.0
-                try {
-                    if (Test-Path -LiteralPath $DestinationDir -ErrorAction SilentlyContinue) {
-                        $sumMeasure = Get-ChildItem -LiteralPath $DestinationDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
-                        if ($sumMeasure -and $null -ne $sumMeasure.Sum) {
-                            $copiedMb = [Math]::Round(([double]$sumMeasure.Sum / 1MB), 1)
-                        }
+        $robocopyJobs = [System.Collections.Generic.List[object]]::new()
+        if ($isTargetedSync) {
+            foreach ($sf in $targetSubFolders) {
+                $srcCand1 = Join-Path $nasProgDir $sf
+                $srcCand2 = Join-Path (Join-Path $nasProgDir "Programi") $sf
+                $resolvedSrc = if (Test-Path -LiteralPath $srcCand1 -PathType Container -ErrorAction SilentlyContinue) {
+                    $srcCand1
+                } elseif (Test-Path -LiteralPath $srcCand2 -PathType Container -ErrorAction SilentlyContinue) {
+                    $srcCand2
+                } else {
+                    $null
+                }
+                if ($resolvedSrc) {
+                    $dstSub = Join-Path $DestinationDir $sf
+                    if (-not (Test-Path -LiteralPath $dstSub -ErrorAction SilentlyContinue)) {
+                        New-Item -Path $dstSub -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
                     }
-                } catch {}
-
-                $syncMsg = "Preuzimam instalacione pakete sa NAS-a ($copiedMb MB preuzeto, ${elapsedSec}s)..."
-                Write-ServisLog "Robocopy prenos sa NAS-a u toku: $copiedMb MB preuzeto (${elapsedSec}s)..." -Level "INFO" -Component "NasProgrami"
-
-                if (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
-                    $syncProg = 10
-                    if ($null -ne $Global:CurrentProgress) {
-                        $parsedSyncP = 0
-                        if ([int]::TryParse([string]$Global:CurrentProgress, [ref]$parsedSyncP) -and $parsedSyncP -ge 0 -and $parsedSyncP -le 99) {
-                            $syncProg = $parsedSyncP
-                        }
-                    }
-                    $syncPhase = 0
-                    if (-not ($Global:WisPreserveCurrentPhase -eq $true) -and ($null -ne $Global:CurrentPhase)) {
-                        $parsedSyncPhase = 0
-                        if ([int]::TryParse([string]$Global:CurrentPhase, [ref]$parsedSyncPhase) -and $parsedSyncPhase -gt 0) {
-                            $syncPhase = $parsedSyncPhase
-                        }
-                    }
-                    Send-IpcProgress -Progress $syncProg -Phase $syncPhase -SubPhase "Sinhronizacija NAS paketa (${elapsedSec}s)" -StatusMessage $syncMsg
+                    $robocopyJobs.Add(@{
+                        Source = $resolvedSrc
+                        Dest   = $dstSub
+                        Args   = @($resolvedSrc, $dstSub, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll")
+                    })
                 }
             }
-            $proc.WaitForExit()
+            if ($targetRootFilters.Count -gt 0) {
+                $rootArgs = @($nasProgDir, $DestinationDir) + @($targetRootFilters) + @("/MT:16", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS")
+                $robocopyJobs.Add(@{
+                    Source = $nasProgDir
+                    Dest   = $DestinationDir
+                    Args   = $rootArgs
+                })
+            }
+            if ($robocopyJobs.Count -eq 0) {
+                Write-ServisLog "Ciljani paket ($OnlyApp / $($targetSubFolders -join ', ')) nije pronadjen na NAS-u ($nasProgDir)." -Level "WARN" -Component "NasProgrami"
+                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                    Send-IpcLog -Message "Ciljani paket ($OnlyApp) nije pronađen na NAS repozitorijumu ($nasProgDir)." -Level "WARN" -Tag "[NasProgrami]"
+                }
+                return $false
+            }
+            Write-ServisLog "Zapocinjem ciljani robocopy prenos ($($robocopyJobs.Count) zadatak(a), OnlyApp='$OnlyApp', SubFolders='$($targetSubFolders -join ',')') sa NAS-a ($nasProgDir) na SSD ($DestinationDir)..." -Level "STEP" -Component "NasProgrami"
+        } else {
+            Write-ServisLog "Zapocinjem robocopy prenos paketa sa NAS-a ($nasProgDir) na SSD ($DestinationDir)..." -Level "STEP" -Component "NasProgrami"
+            $robocopyJobs.Add(@{
+                Source = $nasProgDir
+                Dest   = $DestinationDir
+                Args   = @($nasProgDir, $DestinationDir, "/E", "/MT:32", "/J", "/R:1", "/W:1", "/NDL", "/NFL", "/NJH", "/NJS", "/XF", "BatteryBarSetup*.exe", "ShowBatteryBar.exe", "BatteryBar.dll", "BarExplorerHook.dll")
+            })
+        }
+
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $rcExitCode = -1
+        foreach ($job in $robocopyJobs) {
+            $rcArgs = $job.Args
+            $measureDir = if ($job.Dest) { $job.Dest } else { $DestinationDir }
+            $proc = Start-Process -FilePath "robocopy.exe" -ArgumentList $rcArgs -PassThru -WindowStyle Hidden
+            if ($proc) {
+                while (-not $proc.WaitForExit(15000)) {
+                    $elapsedSec = [int]$sw.Elapsed.TotalSeconds
+                    $copiedMb = 0.0
+                    try {
+                        if (Test-Path -LiteralPath $measureDir -ErrorAction SilentlyContinue) {
+                            $sumMeasure = Get-ChildItem -LiteralPath $measureDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                            if ($sumMeasure -and $null -ne $sumMeasure.Sum) {
+                                $copiedMb = [Math]::Round(([double]$sumMeasure.Sum / 1MB), 1)
+                            }
+                        }
+                    } catch {}
+
+                    $syncMsg = "Preuzimam instalacione pakete sa NAS-a ($copiedMb MB preuzeto, ${elapsedSec}s)..."
+                    Write-ServisLog "Robocopy prenos sa NAS-a u toku: $copiedMb MB preuzeto (${elapsedSec}s)..." -Level "INFO" -Component "NasProgrami"
+
+                    if ($Global:WisPreserveCurrentPhase -eq $true) {
+                        $preservePhaseNum = 4
+                        if ($null -ne $Global:CurrentPhase) {
+                            $parsedPresP = 0
+                            if ([int]::TryParse([string]$Global:CurrentPhase, [ref]$parsedPresP) -and $parsedPresP -gt 0) {
+                                $preservePhaseNum = $parsedPresP
+                            }
+                        }
+                        $preserveProg = 95
+                        if ($null -ne $Global:CurrentProgress) {
+                            $parsedPresProg = 0
+                            if ([int]::TryParse([string]$Global:CurrentProgress, [ref]$parsedPresProg) -and $parsedPresProg -ge 0 -and $parsedPresProg -le 100) {
+                                $preserveProg = $parsedPresProg
+                            }
+                        }
+                        if (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue) {
+                            Send-IpcStatus -Phase $preservePhaseNum -Progress $preserveProg -SubPhase "Sinhronizacija NAS paketa (${elapsedSec}s)" -StatusMessage $syncMsg
+                        }
+                    } elseif (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue) {
+                        $syncProg = 10
+                        if ($null -ne $Global:CurrentProgress) {
+                            $parsedSyncP = 0
+                            if ([int]::TryParse([string]$Global:CurrentProgress, [ref]$parsedSyncP) -and $parsedSyncP -ge 0 -and $parsedSyncP -le 99) {
+                                $syncProg = $parsedSyncP
+                            }
+                        }
+                        $syncPhase = 4
+                        if ($null -ne $Global:CurrentPhase) {
+                            $parsedSyncPhase = 0
+                            if ([int]::TryParse([string]$Global:CurrentPhase, [ref]$parsedSyncPhase) -and $parsedSyncPhase -gt 0) {
+                                $syncPhase = $parsedSyncPhase
+                            }
+                        }
+                        Send-IpcProgress -Progress $syncProg -Phase $syncPhase -SubPhase "Sinhronizacija NAS paketa (${elapsedSec}s)" -StatusMessage $syncMsg
+                    }
+                }
+                $proc.WaitForExit()
+                $rcExitCode = [int]$proc.ExitCode
+            }
         }
         $sw.Stop()
         $dur = $sw.Elapsed.TotalSeconds.ToString("F1")
-        $rcExitCode = if ($proc) { [int]$proc.ExitCode } else { -1 }
         Write-ServisLog "Robocopy prenos sa NAS-a zavrsen za ${dur}s. ExitCode: $rcExitCode" -Level "INFO" -Component "NasProgrami"
 
         Repair-ProgramiNesting $DestinationDir
@@ -970,12 +1104,36 @@ function Sync-ProgramiFromNas {
         $vAdobe = (Test-Path (Join-Path $DestinationDir "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or (Test-Path (Join-Path $DestinationDir "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi"))
         $vChrome = (Test-Path (Join-Path $DestinationDir "ChromeSetup.exe")) -or (Test-Path (Join-Path $DestinationDir "GoogleChromeStandaloneEnterprise64.msi"))
 
+        if ($isTargetedSync) {
+            $targetVerified = $false
+            switch -Regex ($normalizedOnlyApp) {
+                '^(acrobat|adobe acrobat|adobe acrobat pro)$' { $targetVerified = [bool]$vAdobe }
+                '^(office|microsoft office|ms office)$'       { $targetVerified = [bool]$vOffice }
+                '^(chrome|google chrome)$'                    { $targetVerified = [bool]$vChrome }
+                '^winrar$'                                    { $targetVerified = @(Get-ChildItem -Path $DestinationDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0 }
+                '^batterybar$'                                { $targetVerified = (Test-Path (Join-Path $DestinationDir "BatteryBar\BatteryBar.exe")) }
+                default                                       { $targetVerified = ($rcExitCode -ge 0 -and $rcExitCode -lt 8) }
+            }
+            if ($targetVerified) {
+                Write-ServisLog "Ciljana NAS sinhronizacija uspesna (OnlyApp='$OnlyApp', SubFolders='$($targetSubFolders -join ',')') na $DestinationDir." -Level "SUCCESS" -Component "NasProgrami"
+                return $true
+            }
+            Write-ServisLog "UPOZORENJE: Ciljani paket ($OnlyApp) nije verifikovan nakon robocopy-ja (ExitCode=$rcExitCode)." -Level "WARN" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Ciljani paket ($OnlyApp) nije kompletiran sa NAS-a na $DestinationDir (ExitCode=$rcExitCode)." -Level "WARN" -Tag "[NasProgrami]"
+            }
+            return $false
+        }
+
         if ($vOffice -and $vAdobe) {
             Write-ServisLog "Verifikacija uspesna! Kljucni instalacioni paketi su preuzeti sa NAS-a na $DestinationDir." -Level "SUCCESS" -Component "NasProgrami"
             Write-Host "   [OK] Svi instalacioni paketi su uspesno preuzeti sa NAS-a i verifikovani na SSD-u!" -ForegroundColor Green
             return $true
         } else {
             Write-ServisLog "UPOZORENJE: Paketi nakon robocopy-ja sa NAS-a nisu kompletni (Office=$vOffice, Adobe=$vAdobe, Chrome=$vChrome). Pokrecem Copy-Item dopunu..." -Level "WARN" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Paketi nakon robocopy prenosa nisu kompletni (Office=$vOffice, Adobe=$vAdobe). Pokrećem dopunsko kopiranje..." -Level "WARN" -Tag "[NasProgrami]"
+            }
             Copy-Item -Path "$nasProgDir\*" -Destination "$DestinationDir\" -Recurse -Force -ErrorAction SilentlyContinue
             Repair-ProgramiNesting $DestinationDir
             Grant-SetupAclPermissions -Path $DestinationDir
@@ -989,11 +1147,17 @@ function Sync-ProgramiFromNas {
                 return $true
             } else {
                 Write-ServisLog "UPOZORENJE: Paketi sa NAS-a nisu mogli biti kompletirani na SSD-u." -Level "WARN" -Component "NasProgrami"
+                if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                    Send-IpcLog -Message "KRITIČNO: Paketi sa NAS-a nisu mogli biti kompletirani na lokalnom SSD-u ($DestinationDir, Office=$vOffice, Adobe=$vAdobe)." -Level "ERROR" -Tag "[NasProgrami]"
+                }
                 return $false
             }
         }
     } catch {
         Write-ServisLog "Greska pri preuzimanju programa sa NAS-a: $($_.Exception.Message)" -Level "ERROR" -Component "NasProgrami"
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "Greška pri preuzimanju programa sa NAS-a: $($_.Exception.Message)" -Level "ERROR" -Tag "[NasProgrami]"
+        }
         return $false
     }
     # Sesija se ne pamti (/persistent:no), ali ostaje dostupna drugim fazama.
@@ -1355,8 +1519,17 @@ function Sync-ServisLicensingFromNas {
 }
 
 function Test-ProgramiDirComplete {
-    param([string]$DirPath)
+    param(
+        [string]$DirPath,
+        [switch]$Quiet
+    )
     if ([string]::IsNullOrWhiteSpace($DirPath) -or -not (Test-Path $DirPath -ErrorAction SilentlyContinue)) {
+        if (-not $Quiet) {
+            Write-ServisLog "Test-ProgramiDirComplete: Direktorijum '$DirPath' ne postoji ili nije dostupan." -Level "WARN" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Direktorijum sa programima '$DirPath' ne postoji ili nije dostupan." -Level "WARN" -Tag "[NasProgrami]"
+            }
+        }
         return [PSCustomObject]@{ IsComplete = $false; HasOffice = $false; HasAdobe = $false; HasBatteryBarOk = $false }
     }
     $hasOffice = (Test-Path (Join-Path $DirPath "Office 2024\files\setup.exe")) -or `
@@ -1370,8 +1543,15 @@ function Test-ProgramiDirComplete {
     $hasBatteryBar = (Test-Path (Join-Path $DirPath "BatteryBar\BatteryBar.exe")) -or `
                      (Test-Path (Join-Path $DirPath "Programi\BatteryBar\BatteryBar.exe"))
     $hasBatteryBarOk = if ($hasBattery) { [bool]$hasBatteryBar } else { $true }
+    $isComplete = ($hasOffice -and $hasAdobe -and $hasBatteryBarOk)
+    if (-not $isComplete -and -not $Quiet) {
+        Write-ServisLog "Test-ProgramiDirComplete: Paketi u '$DirPath' nisu kompletni (Office=$hasOffice, Adobe=$hasAdobe, BatteryBar=$hasBatteryBarOk)." -Level "WARN" -Component "NasProgrami"
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "Instalacioni paketi u '$DirPath' nisu kompletni (Office=$hasOffice, Adobe=$hasAdobe, BatteryBar=$hasBatteryBarOk)." -Level "WARN" -Tag "[NasProgrami]"
+        }
+    }
     return [PSCustomObject]@{
-        IsComplete      = ($hasOffice -and $hasAdobe -and $hasBatteryBarOk)
+        IsComplete      = $isComplete
         HasOffice       = $hasOffice
         HasAdobe        = $hasAdobe
         HasBatteryBarOk = $hasBatteryBarOk
@@ -1380,13 +1560,20 @@ function Test-ProgramiDirComplete {
 
 function Ensure-ProgramiAvailable {
     param(
-        [switch]$Interactive = $true
+        [switch]$Interactive = $true,
+        [string]$OnlyApp = "",
+        [string[]]$SubFolders = @()
     )
     $localProg = "C:\setup\Programi"
     Repair-ProgramiNesting $localProg
     Grant-SetupAclPermissions -Path "C:\setup"
     Grant-SetupAclPermissions -Path $localProg
     $progDir = Get-ProgramiDir
+
+    $isTargeted = (-not [string]::IsNullOrWhiteSpace($OnlyApp)) -or ($SubFolders -and $SubFolders.Count -gt 0)
+    if ($isTargeted) {
+        return $progDir
+    }
 
     $checkInit = Test-ProgramiDirComplete -DirPath $progDir
     if ($checkInit.IsComplete) {
@@ -1404,7 +1591,7 @@ function Ensure-ProgramiAvailable {
         )
         $usbProg = $null
         foreach ($candUsb in $usbProgCandidates) {
-            if ((Test-ProgramiDirComplete -DirPath $candUsb).IsComplete) {
+            if ((Test-ProgramiDirComplete -DirPath $candUsb -Quiet).IsComplete) {
                 $usbProg = $candUsb
                 break
             }
@@ -1423,13 +1610,18 @@ function Ensure-ProgramiAvailable {
     }
 
     # 2. Ako paketi na SSD-u i dalje nisu kompletni (npr. Lean USB ostao uboden ili PXE boot), obavezno povuci sa servisnog NAS-a
-    $checkAfterUsb = Test-ProgramiDirComplete -DirPath $localProg
+    $checkAfterUsb = Test-ProgramiDirComplete -DirPath $localProg -Quiet
     if (-not $checkAfterUsb.IsComplete) {
         Write-ServisLog "Pokrecem obavezno preuzimanje nedostajucih paketa (Office=$($checkAfterUsb.HasOffice), Adobe=$($checkAfterUsb.HasAdobe)) sa servisnog NAS-a..." -Level "INFO" -Component "PackageChecker"
         $nasOk = Sync-ProgramiFromNas -DestinationDir $localProg -Force
         if ($nasOk) {
             $progDir = Get-ProgramiDir
             return $progDir
+        } else {
+            Write-ServisLog "Preuzimanje instalacionih paketa sa servisnog NAS-a nije uspelo (Office=$($checkAfterUsb.HasOffice), Adobe=$($checkAfterUsb.HasAdobe))." -Level "ERROR" -Component "NasProgrami"
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Preuzimanje instalacionih paketa sa servisnog NAS-a nije uspelo (Office=$($checkAfterUsb.HasOffice), Adobe=$($checkAfterUsb.HasAdobe))." -Level "ERROR" -Tag "[NasProgrami]"
+            }
         }
     }
 

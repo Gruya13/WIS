@@ -174,26 +174,31 @@ namespace WIS.AutopilotAuditor
                         Arguments = "/status",
                         CreateNoWindow = true,
                         UseShellExecute = false,
+                        WindowStyle = ProcessWindowStyle.Hidden,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true
                     };
 
                     using (Process proc = Process.Start(psi))
                     {
-                        string output = proc.StandardOutput.ReadToEnd();
-                        proc.WaitForExit(3000);
-
-                        if (!string.IsNullOrEmpty(output))
+                        if (proc != null)
                         {
-                            report.AzureAdJoined = Regex.IsMatch(output, @"AzureAdJoined\s*:\s*YES", RegexOptions.IgnoreCase);
-                            report.MdmEnrolled = Regex.IsMatch(output, @"MdmEnrolled\s*:\s*YES", RegexOptions.IgnoreCase);
+                            try { proc.BeginErrorReadLine(); } catch { }
+                            string output = proc.StandardOutput.ReadToEnd();
+                            proc.WaitForExit(3000);
 
-                            report.AzureAdStatus = report.AzureAdJoined ? "PRIDRUŽEN (YES)" : "Nije pridružen (NO)";
-                            report.MdmStatus = report.MdmEnrolled ? "UPISAN (YES)" : "Nije upisan (NO)";
-
-                            if (report.AzureAdJoined || report.MdmEnrolled)
+                            if (!string.IsNullOrEmpty(output))
                             {
-                                report.HasTraces = true;
+                                report.AzureAdJoined = Regex.IsMatch(output, @"AzureAdJoined\s*:\s*YES", RegexOptions.IgnoreCase);
+                                report.MdmEnrolled = Regex.IsMatch(output, @"MdmEnrolled\s*:\s*YES", RegexOptions.IgnoreCase);
+
+                                report.AzureAdStatus = report.AzureAdJoined ? "PRIDRUŽEN (YES)" : "Nije pridružen (NO)";
+                                report.MdmStatus = report.MdmEnrolled ? "UPISAN (YES)" : "Nije upisan (NO)";
+
+                                if (report.AzureAdJoined || report.MdmEnrolled)
+                                {
+                                    report.HasTraces = true;
+                                }
                             }
                         }
                     }

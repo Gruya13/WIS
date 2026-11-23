@@ -2121,15 +2121,111 @@ namespace WIS.HwTest.Interop
             return false;
         }
 
+        private static bool TryReadConsentLocationValue(Microsoft.Win32.RegistryKey root, string subKey, out bool keyExists, out string valueStr)
+        {
+            keyExists = false;
+            valueStr = "";
+            if (root == null || string.IsNullOrEmpty(subKey)) return false;
+            try
+            {
+                using (Microsoft.Win32.RegistryKey consent = root.OpenSubKey(subKey, false))
+                {
+                    if (consent == null) return false;
+                    keyExists = true;
+                    object v = consent.GetValue("Value");
+                    if (v != null)
+                    {
+                        valueStr = v.ToString().Trim();
+                        return !string.IsNullOrEmpty(valueStr);
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool IsLfsvcDisabledOrNotAllowed(Microsoft.Win32.RegistryKey hklm, bool hasExplicitNonPackagedAllow)
+        {
+            try
+            {
+                if (hklm != null)
+                {
+                    using (Microsoft.Win32.RegistryKey lfsvcKey = hklm.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\lfsvc", false))
+                    {
+                        if (lfsvcKey != null)
+                        {
+                            object startVal = lfsvcKey.GetValue("Start");
+                            if (startVal != null)
+                            {
+                                try { if (Convert.ToInt32(startVal) == 4) return true; }
+                                catch { }
+                            }
+                        }
+                    }
+                    using (Microsoft.Win32.RegistryKey lfsvcCfg = hklm.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration", false))
+                    {
+                        if (lfsvcCfg != null)
+                        {
+                            object statusVal = lfsvcCfg.GetValue("Status");
+                            if (statusVal != null)
+                            {
+                                try { if (Convert.ToInt32(statusVal) == 0) return true; }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                using (System.Management.ManagementObjectSearcher s = new System.Management.ManagementObjectSearcher(
+                    @"root\CIMV2",
+                    "SELECT State, StartMode FROM Win32_Service WHERE Name = 'lfsvc'"))
+                using (System.Management.ManagementObjectCollection col = s.Get())
+                {
+                    foreach (System.Management.ManagementObject mo in col)
+                    {
+                        string st = mo["State"] != null ? mo["State"].ToString().Trim() : "";
+                        string mode = mo["StartMode"] != null ? mo["StartMode"].ToString().Trim() : "";
+                        if (mode.Equals("Disabled", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                        if (!hasExplicitNonPackagedAllow &&
+                            !string.IsNullOrEmpty(st) &&
+                            !st.Equals("Running", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public static bool IsLocationPolicyDisabled()
         {
             const string consentSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location";
             const string consentNonPackagedSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged";
+            const string hkcuConsentSubKey = @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location";
+            const string hkcuConsentNonPackagedSubKey = @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged";
             try
             {
                 Microsoft.Win32.RegistryView regView = Environment.Is64BitOperatingSystem
                     ? Microsoft.Win32.RegistryView.Registry64
                     : Microsoft.Win32.RegistryView.Default;
+
+                bool hklmNonPackagedExists = false;
+                string hklmNonPackagedVal = "";
+                bool hklmRootExists = false;
+                string hklmRootVal = "";
+                bool hkcuNonPackagedExists = false;
+                string hkcuNonPackagedVal = "";
+                bool hkcuRootExists = false;
+                string hkcuRootVal = "";
 
                 using (Microsoft.Win32.RegistryKey hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(
                     Microsoft.Win32.RegistryHive.LocalMachine, regView))
@@ -2171,13 +2267,54 @@ namespace WIS.HwTest.Interop
                     {
                         return true;
                     }
-                }
 
-                using (Microsoft.Win32.RegistryKey hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(
-                    Microsoft.Win32.RegistryHive.CurrentUser, regView))
-                {
-                    if (IsConsentLocationDenied(hkcu, @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location") ||
-                        IsConsentLocationDenied(hkcu, @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged"))
+                    TryReadConsentLocationValue(hklm, consentSubKey, out hklmRootExists, out hklmRootVal);
+                    TryReadConsentLocationValue(hklm, consentNonPackagedSubKey, out hklmNonPackagedExists, out hklmNonPackagedVal);
+
+                    // IMP-46 (Win11 24H2): kada NonPackaged podkljuc ne postoji ili nema vrednost, proveri root ConsentStore\location
+                    if (!hklmNonPackagedExists || string.IsNullOrEmpty(hklmNonPackagedVal))
+                    {
+                        if (hklmRootExists && !string.Equals(hklmRootVal, "Allow", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    else if (!string.Equals(hklmNonPackagedVal, "Allow", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    using (Microsoft.Win32.RegistryKey hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                        Microsoft.Win32.RegistryHive.CurrentUser, regView))
+                    {
+                        if (IsConsentLocationDenied(hkcu, hkcuConsentSubKey) ||
+                            IsConsentLocationDenied(hkcu, hkcuConsentNonPackagedSubKey))
+                        {
+                            return true;
+                        }
+
+                        TryReadConsentLocationValue(hkcu, hkcuConsentSubKey, out hkcuRootExists, out hkcuRootVal);
+                        TryReadConsentLocationValue(hkcu, hkcuConsentNonPackagedSubKey, out hkcuNonPackagedExists, out hkcuNonPackagedVal);
+
+                        if (!hkcuNonPackagedExists || string.IsNullOrEmpty(hkcuNonPackagedVal))
+                        {
+                            if (hkcuRootExists && !string.IsNullOrEmpty(hkcuRootVal) &&
+                                !string.Equals(hkcuRootVal, "Allow", StringComparison.OrdinalIgnoreCase))
+                            {
+                                return true;
+                            }
+                        }
+                        else if (!string.Equals(hkcuNonPackagedVal, "Allow", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+
+                    bool hasExplicitNonPackagedAllow =
+                        string.Equals(hklmNonPackagedVal, "Allow", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(hkcuNonPackagedVal, "Allow", StringComparison.OrdinalIgnoreCase);
+
+                    if (IsLfsvcDisabledOrNotAllowed(hklm, hasExplicitNonPackagedAllow))
                     {
                         return true;
                     }

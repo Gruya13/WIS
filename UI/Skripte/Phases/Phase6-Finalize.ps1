@@ -787,6 +787,18 @@ try {
                 $antiLeakVerified = $false
             }
             $hardeningOk = ($null -ne $Global:WisSecurityHardeningVerified -and [bool]$Global:WisSecurityHardeningVerified)
+
+            if ($antiLeakVerified -and (-not $forceAntiLeakFail)) {
+                if (($Global:WisFinalReportSentStatus -ne "COMPLETED") -and (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue)) {
+                    Send-FleetFinalReport -Status "COMPLETED" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+                }
+            } elseif (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
+                try {
+                    $finalTelemetryData['handover_ready'] = $false
+                    $finalTelemetryData['anti_leak_verified'] = $false
+                    Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
+                } catch {}
+            }
         }
     } catch {
         $reportAndCleanupError = $_
@@ -900,11 +912,6 @@ try {
                 [System.IO.File]::WriteAllText($stateFile, $secErrJson, $utf8NoBom)
                 [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "deploy-state.json"), $secErrJson, $utf8NoBom)
             } catch {}
-            try {
-                if (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue) {
-                    Send-FleetFinalReport -Status "NEEDS_ATTENTION" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
-                }
-            } catch {}
         }
 
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -928,9 +935,6 @@ try {
     }
 
     Update-ServisKartonContract -FinalStatus "DONE" -HandoverReadyFlag $true -AntiLeakFlag $true -StatusMsg $readyMsg
-    if (($Global:WisFinalReportSentStatus -ne "COMPLETED") -and (Get-Command Send-FleetFinalReport -ErrorAction SilentlyContinue)) {
-        Send-FleetFinalReport -Status "COMPLETED" -CustomData $finalTelemetryData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir | Out-Null
-    }
 
     # Očuvanje stress-test-result.json i deploy-state.json nakon što je Start-FinalCleanup izvršen
     try {

@@ -289,7 +289,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v3.4.3 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v3.4.4 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -1352,11 +1352,23 @@ namespace WIS.UI
             _srDict["WinStorageTempNa"] = "N/A (Senzor nedostupan)";
             _srDict["WinThermalSensorNative"] = "● Nativni senzor ({0}, 1 Hz)";
             _srDict["WinThermalSensorNa"] = "● Termalni senzori nisu dostupni (N/A)";
+            _srDict["HwTGatePhase2FailedTitle"] = "Faza 2 (Instalacija drajvera) nije uspešno završena";
+            _srDict["HwTGatePhase2FailedDetail"] = "Interaktivni testovi periferija su zaključani dok se Faza 2 (Drajveri) ne završi ili dok se drajveri ne instaliraju u tabu Drajveri.";
+            _srDict["HwTGatePhase2RunningTitle"] = "Instalacija drajvera (Faza 2) još uvek nije završena";
+            _srDict["HwTGatePhase2RunningDetail"] = "Sačekajte da se Faza 2 (Drajveri i zakrpe) završi pre pokretanja interaktivnih testova periferija.";
+            _srDict["HwTGateDriversBusyTitle"] = "Instalacija ili skeniranje drajvera je u toku";
+            _srDict["HwTGateDriversBusyDetail"] = "Sačekajte da se operacija u tabu Drajveri završi pre pokretanja interaktivnih testova.";
+            _srDict["HwTGateBgWuDriversTitle"] = "Pozadinski Windows Update preuzima ili instalira drajvere";
+            _srDict["HwTGateBgWuDriversDetailFmt"] = "Pozadinski WU obrađuje drajvere (preostalo drajvera: {0}). Interaktivni testovi će se otključati po završetku instalacije drajvera.";
+            _srDict["HwTGateRebootReqTitle"] = "Potreban je međurestart sistema radi aktivacije drajvera (Code 14)";
+            _srDict["HwTGateRebootReqDetail"] = "Neki instalirani drajveri zahtevaju restart računara pre nego što periferije postanu spremne za interaktivno testiranje.";
+            _srDict["WinPrePhase6MissingAppsConfirmTitle"] = "WIS Reality Check — Nedostaju ključni programi pre Faze 6";
+            _srDict["WinPrePhase6MissingAppsConfirmBody"] = "UPOZORENJE PRE ZAVRŠETKA (FAZA 6):\n\nNa disku nedostaju sledeći ključni programi:\n• {0}\n\nFaza 6 trajno briše servisni Wi-Fi profil (Anti-Leak), nakon čega preuzimanje programa sa NAS-a više neće biti moguće!\n\n• Kliknite 'Ne' (preporučeno) da ostanete pre Faze 6 i instalirate programe (↻ Retry na kartici Programi).\n• Kliknite 'Da' samo ako svesno želite da završite servis bez ovih programa (uređaj će dobiti status NEEDS_ATTENTION / NEEDS_SERVICE).";
 
             // ==========================================
             // ENGLESKI JEZIK (EN - English)
             // ==========================================
-            _enDict["AppTitle"] = "WIS v3.4.3 - Windows Installation Assistant";
+            _enDict["AppTitle"] = "WIS v3.4.4 - Windows Installation Assistant";
             _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
             _enDict["WorkTimeTitle"] = "Elapsed Time";
             _enDict["CpuLabel"] = "⚙ CPU:";
@@ -1443,7 +1455,7 @@ namespace WIS.UI
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v3.4.3 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v3.4.4 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";
@@ -2506,6 +2518,18 @@ namespace WIS.UI
             _zhDict["WinStorageTempNa"] = "N/A（传感器不可用）";
             _zhDict["WinThermalSensorNative"] = "● 原生传感器 ({0}, 1 Hz)";
             _zhDict["WinThermalSensorNa"] = "● 温度传感器不可用 (N/A)";
+            _zhDict["HwTGatePhase2FailedTitle"] = "第 2 阶段（驱动程序安装）未成功完成";
+            _zhDict["HwTGatePhase2FailedDetail"] = "在第 2 阶段（驱动程序）完成或在“驱动程序”选项卡中安装完所有驱动之前，外设交互式测试处于锁定状态。";
+            _zhDict["HwTGatePhase2RunningTitle"] = "驱动程序安装（第 2 阶段）尚未完成";
+            _zhDict["HwTGatePhase2RunningDetail"] = "请等待第 2 阶段（驱动程序与补丁）完成后再启动外设交互式测试。";
+            _zhDict["HwTGateDriversBusyTitle"] = "正在安装或扫描驱动程序";
+            _zhDict["HwTGateDriversBusyDetail"] = "请等待“驱动程序”选项卡中的操作完成后再运行交互式测试。";
+            _zhDict["HwTGateBgWuDriversTitle"] = "后台 Windows 更新正在下载或安装驱动程序";
+            _zhDict["HwTGateBgWuDriversDetailFmt"] = "后台 Windows 更新正在处理驱动程序（剩余驱动：{0}）。驱动安装完成后将自动解锁交互式测试。";
+            _zhDict["HwTGateRebootReqTitle"] = "需要重启系统以激活驱动程序 (Code 14)";
+            _zhDict["HwTGateRebootReqDetail"] = "部分已安装的驱动程序需要重启计算机后，外设才能准备好进行交互式测试。";
+            _zhDict["WinPrePhase6MissingAppsConfirmTitle"] = "WIS 实际检查 — 第 6 阶段前缺少关键软件";
+            _zhDict["WinPrePhase6MissingAppsConfirmBody"] = "完成前警告（第 6 阶段）：\n\n磁盘上缺少以下关键软件：\n• {0}\n\n第 6 阶段将永久删除维修 Wi-Fi 配置文件（防泄漏清理），之后将无法再从 NAS 下载软件！\n\n• 点击“否”（推荐）留在第 6 阶段之前并安装软件（在“常用软件”选项卡点击 ↻ 重试）。\n• 仅当您确定要在缺少这些软件的情况下结束维修时才点击“是”（设备将被标记为 NEEDS_ATTENTION / NEEDS_SERVICE）。";
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

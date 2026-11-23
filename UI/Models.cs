@@ -2741,14 +2741,38 @@ namespace WIS.UI
             if (string.IsNullOrWhiteSpace(val)) return true;
             string s = val.Trim();
             if (s.Length < 2) return true;
+            if (s.EndsWith("...", StringComparison.Ordinal) || s.EndsWith("…", StringComparison.Ordinal)) return true;
             if (string.Equals(s, "N/A", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "NA", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "Učitavanje...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "Ucitavanje...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "加载中...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "正在加载配置...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "读取中...", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "检测中...", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "None", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "Unknown", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "Default string", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "To be filled by O.E.M.", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "System Serial Number", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(s, "System Product Name", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "0", StringComparison.OrdinalIgnoreCase)) return true;
             if (string.Equals(s, "123456789", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.StartsWith("Učitavanje", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Ucitavanje", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Detekcija", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Očitavanje", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Loading", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Detecting", StringComparison.OrdinalIgnoreCase) ||
+                s.StartsWith("Nepoznat", StringComparison.OrdinalIgnoreCase) ||
+                s.IndexOf("加载中", StringComparison.Ordinal) >= 0 ||
+                s.IndexOf("正在加载", StringComparison.Ordinal) >= 0 ||
+                s.IndexOf("读取中", StringComparison.Ordinal) >= 0 ||
+                s.IndexOf("检测中", StringComparison.Ordinal) >= 0 ||
+                s.IndexOf("未知", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
             return false;
         }
 
@@ -5266,6 +5290,17 @@ namespace WIS.UI
             }
         }
 
+        private readonly object _appsSnapshotLock = new object();
+        private Dictionary<string, string> _appsSnapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        public Dictionary<string, string> GetAppsStatusSnapshot()
+        {
+            lock (_appsSnapshotLock)
+            {
+                return new Dictionary<string, string>(_appsSnapshot, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+
         public void UpdateAppsSummary()
         {
             int total = Apps.Count;
@@ -5274,9 +5309,14 @@ namespace WIS.UI
             int skipped = 0;
             int error = 0;
             int waiting = 0;
+            var snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var a in Apps)
             {
+                if (a != null && !string.IsNullOrEmpty(a.Id))
+                {
+                    snapshot[a.Id] = a.Status ?? "WAIT";
+                }
                 switch (a.Status)
                 {
                     case "OK": completed++; break;
@@ -5284,11 +5324,19 @@ namespace WIS.UI
                     case "SKIPPED":
                     case "SKIPPED_DONE":
                     case "SKIPPED_USER":
+                    case "SKIP":
                         skipped++; break;
                     case "WARN":
-                    case "ERROR": error++; break;
+                    case "ERROR":
+                    case "FAIL":
+                        error++; break;
                     default: waiting++; break;
                 }
+            }
+
+            lock (_appsSnapshotLock)
+            {
+                _appsSnapshot = snapshot;
             }
 
             AppsTotalCount = total;
