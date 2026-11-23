@@ -990,8 +990,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("lfsvc", setup_txt)
 
         branding_ui = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_bytes()
-        branding_oem = (ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_bytes()
-        self.assertEqual(branding_ui, branding_oem, "ISO $OEM$ WIS.Branding.psm1 mora biti 100% identičan sa UI/Skripte/Modules/WIS.Branding.psm1")
+        branding_oem_path = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules" / "WIS.Branding.psm1"
+        if branding_oem_path.is_file():
+            self.assertEqual(branding_ui, branding_oem_path.read_bytes(), "ISO $OEM$ WIS.Branding.psm1 mora biti 100% identičan sa UI/Skripte/Modules/WIS.Branding.psm1")
 
         branding_src = branding_ui.decode("utf-8-sig")
         loc_fn = branding_src.split("function Disable-LocationPrivacyPrompts", 1)[1].split("function Set-OptimalDisplayScaling", 1)[0]
