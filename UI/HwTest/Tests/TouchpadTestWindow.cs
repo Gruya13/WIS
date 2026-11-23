@@ -163,7 +163,9 @@ namespace WIS.HwTest.Tests
             OnRequestUefiBiosReboot = onRequestUefiBiosReboot;
             _showBiosRebootHint = showBiosRebootHint;
 
-            Title = _hasTrackPoint ? "WIS — Test TrackPointa" : "WIS — Test Touchpada";
+            Title = _hasTrackPoint
+                ? HwTestLocalization.Pick("WIS — Test TrackPointa", "WIS — 指点杆 (TrackPoint) 测试")
+                : HwTestLocalization.Pick("WIS — Test Touchpada", "WIS — 触控板 (Touchpad) 测试");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
@@ -171,9 +173,11 @@ namespace WIS.HwTest.Tests
 
             Result = _hasTrackPoint
                 ? new TestItemResult("trackpoint", "TrackPoint",
-                    "Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)")
+                    HwTestLocalization.Pick("Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)",
+                        "检测红色 TrackPoint 指点杆移动（4 个目标）及上方按键（左键、中键/滚轮、右键）"))
                 : new TestItemResult("touchpad", "Touchpad",
-                    "Ispitivanje praćenja pokazivača, levog/desnog klika i skrola sa dva prsta");
+                    HwTestLocalization.Pick("Ispitivanje praćenja pokazivača, levog/desnog klika i skrola sa dva prsta",
+                        "检测触控板光标移动、左右键点击及双指滚动"));
 
             _targets = new List<Ellipse>();
             _visitedTargets = new HashSet<int>();
@@ -193,8 +197,10 @@ namespace WIS.HwTest.Tests
             _instructions = new TextBlock
             {
                 Text = _hasTrackPoint
-                    ? "🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)"
-                    : "👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana",
+                    ? HwTestLocalization.Pick("🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)",
+                        "🔴 请使用红色 TrackPoint 指点杆将光标移过 4 个红色目标（请勿触碰触控板！）")
+                    : HwTestLocalization.Pick("👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana",
+                        "👉 请使用触控板将光标移过屏幕四角上的 4 个圆圈"),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
@@ -205,10 +211,10 @@ namespace WIS.HwTest.Tests
             WrapPanel spTasks = new WrapPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 7, 0, 0) };
             if (_hasTrackPoint)
             {
-                _statusMove = CreateBadge("1. TrackPoint kretanje (4 mete): 0/4");
-                _statusTpLeft = CreateBadge("2. TrackPoint levi: ⏳");
-                _statusMiddle = CreateBadge("3. TrackPoint srednji / Scroll: ⏳");
-                _statusTpRight = CreateBadge("4. TrackPoint desni: ⏳");
+                _statusMove = CreateBadge(HwTestLocalization.Pick("1. TrackPoint kretanje (4 mete): 0/4", "1. 指点杆移动（4 个目标）: 0/4"));
+                _statusTpLeft = CreateBadge(HwTestLocalization.Pick("2. TrackPoint levi: ⏳", "2. 指点杆左键: ⏳"));
+                _statusMiddle = CreateBadge(HwTestLocalization.Pick("3. TrackPoint srednji / Scroll: ⏳", "3. 指点杆中键 / 滚动: ⏳"));
+                _statusTpRight = CreateBadge(HwTestLocalization.Pick("4. TrackPoint desni: ⏳", "4. 指点杆右键: ⏳"));
                 spTasks.Children.Add(_statusMove);
                 spTasks.Children.Add(_statusTpLeft);
                 spTasks.Children.Add(_statusMiddle);
@@ -216,10 +222,10 @@ namespace WIS.HwTest.Tests
             }
             else
             {
-                _statusMove = CreateBadge("1. Kretanje (4 ugla): 0/4");
-                _statusLeft = CreateBadge("2. Levi klik: ⏳");
-                _statusRight = CreateBadge("3. Desni klik: ⏳");
-                _statusScroll = CreateBadge("4. Skrol (2 prsta): ⏳");
+                _statusMove = CreateBadge(HwTestLocalization.Pick("1. Kretanje (4 ugla): 0/4", "1. 光标移动（4 个角落）: 0/4"));
+                _statusLeft = CreateBadge(HwTestLocalization.Pick("2. Levi klik: ⏳", "2. 左键点击: ⏳"));
+                _statusRight = CreateBadge(HwTestLocalization.Pick("3. Desni klik: ⏳", "3. 右键点击: ⏳"));
+                _statusScroll = CreateBadge(HwTestLocalization.Pick("4. Skrol (2 prsta): ⏳", "4. 双指滚动: ⏳"));
                 spTasks.Children.Add(_statusMove);
                 spTasks.Children.Add(_statusLeft);
                 spTasks.Children.Add(_statusRight);
@@ -229,7 +235,8 @@ namespace WIS.HwTest.Tests
 
             _biosHintBanner = new TextBlock
             {
-                Text = "⚠️ Uređaj je onemogućen u BIOS podešavanjima ili nije aktivan u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                Text = HwTestLocalization.Pick("⚠️ Uređaj je onemogućen u BIOS podešavanjima ili nije aktivan u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                    "⚠️ 设备已在 BIOS 设置中禁用或在 Windows 中未激活（HP: F10, Lenovo: F1, Dell: F2）。"),
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
                 FontSize = 12.5,
                 FontWeight = FontWeights.SemiBold,
@@ -278,7 +285,7 @@ namespace WIS.HwTest.Tests
 
             _btnBiosReboot = new Button
             {
-                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Content = HwTestLocalization.Pick("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", "🔧 重启进入 UEFI BIOS（之后继续 WIS）"),
                 Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -293,7 +300,7 @@ namespace WIS.HwTest.Tests
             {
                 Button btnManualMiddle = new Button
                 {
-                    Content = "✓ Srednji taster radi (Scroll mod)",
+                    Content = HwTestLocalization.Pick("✓ Srednji taster radi (Scroll mod)", "✓ 中键正常（滚动模式）"),
                     Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                     Foreground = Brushes.White,
                     FontWeight = FontWeights.SemiBold,
@@ -305,7 +312,7 @@ namespace WIS.HwTest.Tests
 
                 Button btnMiddleFail = new Button
                 {
-                    Content = "✗ Srednji TrackPoint taster NE RADI (FAIL)",
+                    Content = HwTestLocalization.Pick("✗ Srednji TrackPoint taster NE RADI (FAIL)", "✗ TrackPoint 中键故障 (FAIL)"),
                     Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                     Foreground = Brushes.White,
                     FontWeight = FontWeights.Bold,
@@ -318,9 +325,9 @@ namespace WIS.HwTest.Tests
             Button btnTouchpadFail = new Button
             {
                 Content = _hasTrackPoint
-                    ? "✗ Prijavi kvar TrackPointa (FAIL) [F9]"
-                    : "✗ Prijavi kvar touchpada (FAIL) [F9]",
-                ToolTip = "Prijavi kvar hardvera (prečica: F9 ili Ctrl+F)",
+                    ? HwTestLocalization.Pick("✗ Prijavi kvar TrackPointa (FAIL) [F9]", "✗ 报告 TrackPoint 故障 (FAIL) [F9]")
+                    : HwTestLocalization.Pick("✗ Prijavi kvar touchpada (FAIL) [F9]", "✗ 报告触控板故障 (FAIL) [F9]"),
+                ToolTip = HwTestLocalization.Pick("Prijavi kvar hardvera (prečica: F9 ili Ctrl+F)", "报告硬件故障（快捷键: F9 或 Ctrl+F）"),
                 Background = new SolidColorBrush(Color.FromRgb(185, 38, 48)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -395,14 +402,16 @@ namespace WIS.HwTest.Tests
                 {
                     if (_hasTrackPoint && _hwInfo.TrackPointDisabledInBios && !string.IsNullOrEmpty(_hwInfo.TrackPointBiosStatus))
                     {
-                        _biosHintBanner.Text = string.Format(
+                        _biosHintBanner.Text = HwTestLocalization.PickFormat(
                             "⚠️ TrackPoint je onemogućen u BIOS-u ({0}) — restartujte u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2).",
+                            "⚠️ TrackPoint 已在 BIOS 中禁用 ({0}) — 请重启进入 UEFI BIOS（HP: F10, Lenovo: F1, Dell: F2）。",
                             _hwInfo.TrackPointBiosStatus);
                     }
                     else if (!_hasTrackPoint && _hwInfo.TouchpadDisabledInBios && !string.IsNullOrEmpty(_hwInfo.TouchpadBiosStatus))
                     {
-                        _biosHintBanner.Text = string.Format(
+                        _biosHintBanner.Text = HwTestLocalization.PickFormat(
                             "⚠️ Touchpad je onemogućen u BIOS-u ({0}) — restartujte u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2).",
+                            "⚠️ 触控板已在 BIOS 中禁用 ({0}) — 请重启进入 UEFI BIOS（HP: F10, Lenovo: F1, Dell: F2）。",
                             _hwInfo.TouchpadBiosStatus);
                     }
                 }
@@ -420,8 +429,9 @@ namespace WIS.HwTest.Tests
             if (OnRequestUefiBiosReboot == null)
             {
                 MessageBox.Show(
-                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili uređaj.",
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili uređaj.",
+                        "请重启电脑并进入 UEFI BIOS 设置（HP: F10, Lenovo: F1, Dell: F2）以启用设备。"),
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 SafeCloseDialog(false);
@@ -534,7 +544,7 @@ namespace WIS.HwTest.Tests
             });
             spTitle.Children.Add(new TextBlock
             {
-                Text = "TrackPoint tasteri (gornja 3 tastera iznad touchpada)",
+                Text = HwTestLocalization.Pick("TrackPoint tasteri (gornja 3 tastera iznad touchpada)", "TrackPoint 按键（触控板上方的 3 个物理按键）"),
                 Foreground = Brushes.White,
                 FontSize = 14,
                 FontWeight = FontWeights.Bold,
@@ -544,7 +554,8 @@ namespace WIS.HwTest.Tests
 
             sp.Children.Add(new TextBlock
             {
-                Text = "Srednji taster: kliknite SREDNJI, ili ga DRŽITE + pomerite crveni TrackPoint gore/dole (Scroll mod)",
+                Text = HwTestLocalization.Pick("Srednji taster: kliknite SREDNJI, ili ga DRŽITE + pomerite crveni TrackPoint gore/dole (Scroll mod)",
+                    "中键测试：直接点击中键，或按住中键并上下推动红色指点杆（滚动模式）"),
                 Foreground = new SolidColorBrush(Color.FromRgb(185, 195, 210)),
                 FontSize = 11.5,
                 TextAlignment = TextAlignment.Center,
@@ -554,9 +565,9 @@ namespace WIS.HwTest.Tests
             });
 
             StackPanel spBtns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
-            _tpBtnLeft = CreateTpButtonVisual("TP LEVI", 122);
-            _tpBtnMiddle = CreateTpButtonVisual("TP SREDNJI", 122);
-            _tpBtnRight = CreateTpButtonVisual("TP DESNI", 122);
+            _tpBtnLeft = CreateTpButtonVisual(HwTestLocalization.Pick("TP LEVI", "TP 左键"), 122);
+            _tpBtnMiddle = CreateTpButtonVisual(HwTestLocalization.Pick("TP SREDNJI", "TP 中键"), 122);
+            _tpBtnRight = CreateTpButtonVisual(HwTestLocalization.Pick("TP DESNI", "TP 右键"), 122);
             _tpBtnLeft.Margin = new Thickness(0, 0, 8, 0);
             _tpBtnMiddle.Margin = new Thickness(0, 0, 8, 0);
             spBtns.Children.Add(_tpBtnLeft);
@@ -572,7 +583,7 @@ namespace WIS.HwTest.Tests
             };
             Button btnBoxPass = new Button
             {
-                Content = "✓ Srednji taster radi (Scroll / driver mod)",
+                Content = HwTestLocalization.Pick("✓ Srednji taster radi (Scroll / driver mod)", "✓ 中键正常（滚动 / 驱动模式）"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontSize = 12,
@@ -585,7 +596,7 @@ namespace WIS.HwTest.Tests
 
             Button btnBoxFail = new Button
             {
-                Content = "✗ Srednji TrackPoint taster NE RADI (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Srednji TrackPoint taster NE RADI (FAIL)", "✗ TrackPoint 中键故障 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                 Foreground = Brushes.White,
                 FontSize = 12,
@@ -646,29 +657,29 @@ namespace WIS.HwTest.Tests
 
             if (_hasTrackPoint)
             {
-                _instructions.Text = "⛔ Detektovan Touchpad / USB miš — koristite isključivo crveni TrackPoint!";
+                _instructions.Text = HwTestLocalization.Pick("⛔ Detektovan Touchpad / USB miš — koristite isključivo crveni TrackPoint!", "⛔ 检测到触控板或外接鼠标 — 请仅使用红色 TrackPoint 指点杆！");
                 if (_antiCheatSubHint != null)
                 {
                     if (blockedSource == "TOUCHSCREEN")
-                        _antiCheatSubHint.Text = "⛔ Touchscreen dodir nije dozvoljen — koristite isključivo crveni TrackPoint!";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⛔ Touchscreen dodir nije dozvoljen — koristite isključivo crveni TrackPoint!", "⛔ 不允许使用触控屏 — 请仅使用红色 TrackPoint 指点杆！");
                     else if (blockedSource == "EXTERNAL_MOUSE")
-                        _antiCheatSubHint.Text = "⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.", "⛔ 测试不允许使用外接 USB/蓝牙鼠标 — 如需报告故障请使用底部按钮或按 F9。");
                     else
-                        _antiCheatSubHint.Text = "⚠️ Koristite crveni TrackPoint džojstik, ne touchpad!";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⚠️ Koristite crveni TrackPoint džojstik, ne touchpad!", "⚠️ 请使用红色 TrackPoint 指点杆，不要使用触控板！");
                     _antiCheatSubHint.Visibility = Visibility.Visible;
                 }
             }
             else
             {
-                _instructions.Text = "⛔ Detektovan USB miš / TrackPoint — koristite isključivo Touchpad!";
+                _instructions.Text = HwTestLocalization.Pick("⛔ Detektovan USB miš / TrackPoint — koristite isključivo Touchpad!", "⛔ 检测到外接鼠标或指点杆 — 请仅使用触控板！");
                 if (_antiCheatSubHint != null)
                 {
                     if (blockedSource == "TOUCHSCREEN")
-                        _antiCheatSubHint.Text = "⛔ Touchscreen dodir nije dozvoljen — koristite isključivo Touchpad!";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⛔ Touchscreen dodir nije dozvoljen — koristite isključivo Touchpad!", "⛔ 不允许使用触控屏 — 请仅使用触控板！");
                     else if (blockedSource == "TRACKPOINT")
-                        _antiCheatSubHint.Text = "⛔ TrackPoint nije dozvoljen u testu touchpada — koristite isključivo Touchpad!";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⛔ TrackPoint nije dozvoljen u testu touchpada — koristite isključivo Touchpad!", "⛔ 触控板测试中不允许使用指点杆 — 请仅使用触控板！");
                     else
-                        _antiCheatSubHint.Text = "⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.";
+                        _antiCheatSubHint.Text = HwTestLocalization.Pick("⛔ Spoljni USB/Bluetooth miš nije dozvoljen za test — za prijavu kvara koristite footer dugme ili F9.", "⛔ 测试不允许使用外接 USB/蓝牙鼠标 — 如需报告故障请使用底部按钮或按 F9。");
                     _antiCheatSubHint.Visibility = Visibility.Visible;
                 }
             }
@@ -798,14 +809,14 @@ namespace WIS.HwTest.Tests
             }
 
             _statusMove.Text = _hasTrackPoint
-                ? string.Format("1. TrackPoint kretanje (4 mete): {0}/4", _visitedTargets.Count)
-                : string.Format("1. Kretanje (4 ugla): {0}/4", _visitedTargets.Count);
+                ? HwTestLocalization.PickFormat("1. TrackPoint kretanje (4 mete): {0}/4", "1. 指点杆移动（4 个目标）: {0}/4", _visitedTargets.Count)
+                : HwTestLocalization.PickFormat("1. Kretanje (4 ugla): {0}/4", "1. 光标移动（4 个角落）: {0}/4", _visitedTargets.Count);
             if (_visitedTargets.Count >= 4)
             {
                 _statusMove.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
                 _statusMove.Text = _hasTrackPoint
-                    ? "1. TrackPoint kretanje (4 mete): ✓ Prošlo"
-                    : "1. Kretanje (4 ugla): ✓ Prošlo";
+                    ? HwTestLocalization.Pick("1. TrackPoint kretanje (4 mete): ✓ Prošlo", "1. 指点杆移动（4 个目标）: ✓ 通过")
+                    : HwTestLocalization.Pick("1. Kretanje (4 ugla): ✓ Prošlo", "1. 光标移动（4 个角落）: ✓ 通过");
                 UpdateNextInstruction();
                 CheckAllPassed();
             }
@@ -904,7 +915,7 @@ namespace WIS.HwTest.Tests
             if (!_leftClickDone)
             {
                 _leftClickDone = true;
-                _statusLeft.Text = "2. Levi klik: ✓ Prošlo";
+                _statusLeft.Text = HwTestLocalization.Pick("2. Levi klik: ✓ Prošlo", "2. 左键点击: ✓ 通过");
                 _statusLeft.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
             UpdateNextInstruction();
@@ -917,7 +928,7 @@ namespace WIS.HwTest.Tests
             if (!_rightClickDone)
             {
                 _rightClickDone = true;
-                _statusRight.Text = "3. Desni klik: ✓ Prošlo";
+                _statusRight.Text = HwTestLocalization.Pick("3. Desni klik: ✓ Prošlo", "3. 右键点击: ✓ 通过");
                 _statusRight.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
             UpdateNextInstruction();
@@ -930,10 +941,10 @@ namespace WIS.HwTest.Tests
             _tpLeftDone = true;
             if (_statusTpLeft != null)
             {
-                _statusTpLeft.Text = "2. TrackPoint levi: ✓ Prošlo";
+                _statusTpLeft.Text = HwTestLocalization.Pick("2. TrackPoint levi: ✓ Prošlo", "2. 指点杆左键: ✓ 通过");
                 _statusTpLeft.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
-            HighlightTpButton(_tpBtnLeft, "TP LEVI ✓");
+            HighlightTpButton(_tpBtnLeft, HwTestLocalization.Pick("TP LEVI ✓", "TP 左键 ✓"));
             HwTestLogger.Info("TOUCHPAD", "TrackPoint levi klik potvrđen: " + source);
             ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
@@ -946,10 +957,10 @@ namespace WIS.HwTest.Tests
             _tpRightDone = true;
             if (_statusTpRight != null)
             {
-                _statusTpRight.Text = "4. TrackPoint desni: ✓ Prošlo";
+                _statusTpRight.Text = HwTestLocalization.Pick("4. TrackPoint desni: ✓ Prošlo", "4. 指点杆右键: ✓ 通过");
                 _statusTpRight.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
-            HighlightTpButton(_tpBtnRight, "TP DESNI ✓");
+            HighlightTpButton(_tpBtnRight, HwTestLocalization.Pick("TP DESNI ✓", "TP 右键 ✓"));
             HwTestLogger.Info("TOUCHPAD", "TrackPoint desni klik potvrđen: " + source);
             ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
@@ -991,10 +1002,10 @@ namespace WIS.HwTest.Tests
             _middleClickDone = true;
             if (_statusMiddle != null)
             {
-                _statusMiddle.Text = "3. TrackPoint srednji / Scroll: ✓ Prošlo";
+                _statusMiddle.Text = HwTestLocalization.Pick("3. TrackPoint srednji / Scroll: ✓ Prošlo", "3. 指点杆中键 / 滚动: ✓ 通过");
                 _statusMiddle.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
             }
-            HighlightTpButton(_tpBtnMiddle, "TP SREDNJI ✓");
+            HighlightTpButton(_tpBtnMiddle, HwTestLocalization.Pick("TP SREDNJI ✓", "TP 中键 ✓"));
             HwTestLogger.Info("TOUCHPAD", "TrackPoint srednji klik potvrđen: " + source);
             ClearTrackPointTouchpadWarning();
             UpdateNextInstruction();
@@ -1034,16 +1045,16 @@ namespace WIS.HwTest.Tests
 
             if (_scrollUpDone && _scrollDownDone)
             {
-                _statusScroll.Text = "4. Skrol (2 prsta): ✓ Prošlo (Gore i Dole)";
+                _statusScroll.Text = HwTestLocalization.Pick("4. Skrol (2 prsta): ✓ Prošlo (Gore i Dole)", "4. 双指滚动: ✓ 通过（上下均已验证）");
                 _statusScroll.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
                 UpdateNextInstruction();
                 CheckAllPassed();
             }
             else
             {
-                _statusScroll.Text = string.Format("4. Skrol (2 prsta): {0}{1}",
-                    _scrollUpDone ? "▲ Gore OK " : "▲ Gore čeka ",
-                    _scrollDownDone ? "▼ Dole OK" : "▼ Dole čeka");
+                _statusScroll.Text = HwTestLocalization.PickFormat("4. Skrol (2 prsta): {0}{1}", "4. 双指滚动: {0}{1}",
+                    _scrollUpDone ? HwTestLocalization.Pick("▲ Gore OK ", "▲ 向上正常 ") : HwTestLocalization.Pick("▲ Gore čeka ", "▲ 等待向上 "),
+                    _scrollDownDone ? HwTestLocalization.Pick("▼ Dole OK", "▼ 向下正常") : HwTestLocalization.Pick("▼ Dole čeka", "▼ 等待向下"));
             }
         }
 
@@ -1055,38 +1066,40 @@ namespace WIS.HwTest.Tests
             {
                 if (_visitedTargets.Count < 4)
                 {
-                    _instructions.Text = "🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)";
+                    _instructions.Text = HwTestLocalization.Pick("🔴 Pomerite kursor crvenim TrackPoint džojstikom kroz 4 crvene mete (ne dirajte touchpad!)",
+                        "🔴 请使用红色 TrackPoint 指点杆将光标移过 4 个红色目标（请勿触碰触控板！）");
                 }
                 else if (!_tpLeftDone)
                 {
-                    _instructions.Text = "🔴 Pritisnite LEVI gornji taster TrackPoint-a (iznad touchpada)";
+                    _instructions.Text = HwTestLocalization.Pick("🔴 Pritisnite LEVI gornji taster TrackPoint-a (iznad touchpada)", "🔴 请按下 TrackPoint 左上按键（触控板上方）");
                 }
                 else if (!_tpRightDone)
                 {
-                    _instructions.Text = "🔴 Pritisnite DESNI gornji taster TrackPoint-a (iznad touchpada)";
+                    _instructions.Text = HwTestLocalization.Pick("🔴 Pritisnite DESNI gornji taster TrackPoint-a (iznad touchpada)", "🔴 请按下 TrackPoint 右上按键（触控板上方）");
                 }
                 else if (!_middleClickDone)
                 {
-                    _instructions.Text = "🔴 SREDNJI TrackPoint taster: kliknite ga ili ga DRŽITE + pomerite crveni džojstik gore/dole (Scroll mod)";
+                    _instructions.Text = HwTestLocalization.Pick("🔴 SREDNJI TrackPoint taster: kliknite ga ili ga DRŽITE + pomerite crveni džojstik gore/dole (Scroll mod)",
+                        "🔴 TrackPoint 中键：请直接点击中键，或按住中键并上下推动红色指点杆（滚动模式）");
                 }
                 return;
             }
 
             if (_visitedTargets.Count < 4)
             {
-                _instructions.Text = "👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana";
+                _instructions.Text = HwTestLocalization.Pick("👉 Pomerite pokazivač touchpada kroz 4 kruga u uglovima ekrana", "👉 请使用触控板将光标移过屏幕四角上的 4 个圆圈");
             }
             else if (!_leftClickDone)
             {
-                _instructions.Text = "👉 Pritisnite LEVI klik na touchpadu";
+                _instructions.Text = HwTestLocalization.Pick("👉 Pritisnite LEVI klik na touchpadu", "👉 请按下触控板左键");
             }
             else if (!_rightClickDone)
             {
-                _instructions.Text = "👉 Pritisnite DESNI klik na touchpadu (dva prsta tap ili desni ugao)";
+                _instructions.Text = HwTestLocalization.Pick("👉 Pritisnite DESNI klik na touchpadu (dva prsta tap ili desni ugao)", "👉 请按下触控板右键（双指轻点或右下角按压）");
             }
             else if (!_scrollUpDone || !_scrollDownDone)
             {
-                _instructions.Text = "👉 Prevucite dva prsta preko touchpada GORE i DOLE (gest skrola)";
+                _instructions.Text = HwTestLocalization.Pick("👉 Prevucite dva prsta preko touchpada GORE i DOLE (gest skrola)", "👉 请用双指在触控板上向上和向下滑动（双指滚动手势）");
             }
         }
 
@@ -2420,17 +2433,17 @@ namespace WIS.HwTest.Tests
             List<string> failed = new List<string>();
             if (_hasTrackPoint)
             {
-                if (_visitedTargets.Count < 4) failed.Add("TrackPoint kretanje (4 mete)");
-                if (!_tpLeftDone) failed.Add("Levi TrackPoint taster");
-                if (forceIncludeMiddle || !_middleClickDone) failed.Add("Srednji TrackPoint taster");
-                if (!_tpRightDone) failed.Add("Desni TrackPoint taster");
+                if (_visitedTargets.Count < 4) failed.Add(HwTestLocalization.Pick("TrackPoint kretanje (4 mete)", "指点杆移动（4 个目标）"));
+                if (!_tpLeftDone) failed.Add(HwTestLocalization.Pick("Levi TrackPoint taster", "TrackPoint 左键"));
+                if (forceIncludeMiddle || !_middleClickDone) failed.Add(HwTestLocalization.Pick("Srednji TrackPoint taster", "TrackPoint 中键"));
+                if (!_tpRightDone) failed.Add(HwTestLocalization.Pick("Desni TrackPoint taster", "TrackPoint 右键"));
             }
             else
             {
-                if (_visitedTargets.Count < 4) failed.Add("Kretanje kursora (4 ugla)");
-                if (!_leftClickDone) failed.Add("Levi klik");
-                if (!_rightClickDone) failed.Add("Desni klik");
-                if (!(_scrollUpDone && _scrollDownDone)) failed.Add("Skrol (2 prsta)");
+                if (_visitedTargets.Count < 4) failed.Add(HwTestLocalization.Pick("Kretanje kursora (4 ugla)", "光标移动（4 个角落）"));
+                if (!_leftClickDone) failed.Add(HwTestLocalization.Pick("Levi klik", "左键点击"));
+                if (!_rightClickDone) failed.Add(HwTestLocalization.Pick("Desni klik", "右键点击"));
+                if (!(_scrollUpDone && _scrollDownDone)) failed.Add(HwTestLocalization.Pick("Skrol (2 prsta)", "双指滚动"));
             }
             return failed;
         }
@@ -2452,8 +2465,8 @@ namespace WIS.HwTest.Tests
             List<string> failed = CollectFailedComponents(true);
             bool allOtherTpOk = (_visitedTargets.Count >= 4 && _tpLeftDone && _tpRightDone);
             string reason = allOtherTpOk
-                ? "Kvar: Srednji TrackPoint taster ne radi (TrackPoint kretanje 4/4, levi i desni taster su ispravni)"
-                : "Kvar TrackPointa — ne radi: " + string.Join(", ", failed.ToArray());
+                ? HwTestLocalization.Pick("Kvar: Srednji TrackPoint taster ne radi (TrackPoint kretanje 4/4, levi i desni taster su ispravni)", "故障：TrackPoint 中键无响应（指点杆移动 4/4、左键和右键正常）")
+                : (HwTestLocalization.Pick("Kvar TrackPointa — ne radi: ", "TrackPoint 故障 — 异常项: ") + string.Join(", ", failed.ToArray()));
             FinishWithFailReason(failed, reason);
         }
 
@@ -2462,9 +2475,13 @@ namespace WIS.HwTest.Tests
             List<string> failed = CollectFailedComponents(false);
             if (failed.Count == 0)
             {
-                failed.Add(_hasTrackPoint ? "TrackPoint (prijavio serviser)" : "Touchpad (prijavio serviser)");
+                failed.Add(_hasTrackPoint
+                    ? HwTestLocalization.Pick("TrackPoint (prijavio serviser)", "TrackPoint（技术员报告）")
+                    : HwTestLocalization.Pick("Touchpad (prijavio serviser)", "触控板（技术员报告）"));
             }
-            string reason = (_hasTrackPoint ? "Kvar TrackPointa — ne radi: " : "Kvar touchpada — ne radi: ") + string.Join(", ", failed.ToArray());
+            string reason = (_hasTrackPoint
+                ? HwTestLocalization.Pick("Kvar TrackPointa — ne radi: ", "TrackPoint 故障 — 异常项: ")
+                : HwTestLocalization.Pick("Kvar touchpada — ne radi: ", "触控板故障 — 异常项: ")) + string.Join(", ", failed.ToArray());
             FinishWithFailReason(failed, reason);
         }
 

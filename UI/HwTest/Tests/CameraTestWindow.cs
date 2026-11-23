@@ -148,16 +148,20 @@ namespace WIS.HwTest.Tests
             if (_mode == CameraTestMode.IrOnly)
             {
                 _webcamName = "";
-                _irCameraName = string.IsNullOrEmpty(cameraName) ? "IR Kamera" : cameraName;
-                Result = new TestItemResult("ir_camera", "IR kamera (Windows Hello)", "Ispitivanje IR senzora kamere (Windows Hello / prepoznavanje lica)");
-                Title = "WIS — Test IR Kamere";
+                _irCameraName = string.IsNullOrEmpty(cameraName) ? HwTestLocalization.Pick("IR Kamera", "红外摄像头") : cameraName;
+                Result = new TestItemResult("ir_camera",
+                    HwTestLocalization.Pick("IR kamera (Windows Hello)", "红外摄像头 (Windows Hello)"),
+                    HwTestLocalization.Pick("Ispitivanje IR senzora kamere (Windows Hello / prepoznavanje lica)", "检测红外摄像头传感器（Windows Hello 人脸识别）"));
+                Title = HwTestLocalization.Pick("WIS — Test IR Kamere", "WIS — 红外摄像头测试");
             }
             else
             {
-                _webcamName = string.IsNullOrEmpty(cameraName) ? "Web Kamera" : cameraName;
+                _webcamName = string.IsNullOrEmpty(cameraName) ? HwTestLocalization.Pick("Web Kamera", "网络摄像头") : cameraName;
                 _irCameraName = "";
-                Result = new TestItemResult("camera", "Web kamera (QR kod)", "Ispitivanje RGB web kamere očitavanjem QR koda");
-                Title = "WIS — Test Web Kamere";
+                Result = new TestItemResult("camera",
+                    HwTestLocalization.Pick("Web kamera (QR kod)", "摄像头（二维码识别）"),
+                    HwTestLocalization.Pick("Ispitivanje RGB web kamere očitavanjem QR koda", "通过识别二维码测试 RGB 摄像头"));
+                Title = HwTestLocalization.Pick("WIS — Test Web Kamere", "WIS — 摄像头测试");
             }
 
             WindowStyle = WindowStyle.None;
@@ -184,8 +188,8 @@ namespace WIS.HwTest.Tests
             _statusText = new TextBlock
             {
                 Text = (_mode == CameraTestMode.IrOnly)
-                    ? "👁️ TEST IR KAMERE (WINDOWS HELLO / LICE)"
-                    : "📷 Usmerite odštampani QR kod (WIS-CAMTEST-v1) ispred kamere...",
+                    ? HwTestLocalization.Pick("👁️ TEST IR KAMERE (WINDOWS HELLO / LICE)", "👁️ 红外摄像头测试（Windows Hello / 人脸识别）")
+                    : HwTestLocalization.Pick("📷 Usmerite odštampani QR kod (WIS-CAMTEST-v1) ispred kamere...", "📷 请将打印的二维码 (WIS-CAMTEST-v1) 对准摄像头..."),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176))
@@ -195,8 +199,8 @@ namespace WIS.HwTest.Tests
             _subTitleText = new TextBlock
             {
                 Text = (_mode == CameraTestMode.IrOnly)
-                    ? ("IR senzor: " + _irCameraName)
-                    : string.Format("Uređaj: {0}", _webcamName),
+                    ? (HwTestLocalization.Pick("IR senzor: ", "红外传感器: ") + _irCameraName)
+                    : HwTestLocalization.PickFormat("Uređaj: {0}", "设备: {0}", _webcamName),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(160, 160, 170)),
                 Margin = new Thickness(0, 4, 0, 0)
@@ -205,7 +209,8 @@ namespace WIS.HwTest.Tests
 
             _biosHintBanner = new TextBlock
             {
-                Text = "⚠️ Kamera je onemogućena u BIOS podešavanjima ili nije aktivna u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                Text = HwTestLocalization.Pick("⚠️ Kamera je onemogućena u BIOS podešavanjima ili nije aktivna u Windowsu (HP: F10, Lenovo: F1, Dell: F2).",
+                    "⚠️ 摄像头已在 BIOS 中禁用或在 Windows 中未激活（HP: F10, Lenovo: F1, Dell: F2）。"),
                 FontSize = 12.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 193, 7)),
@@ -278,7 +283,7 @@ namespace WIS.HwTest.Tests
                 };
                 TextBlock tbGuide = new TextBlock
                 {
-                    Text = "Postavite QR kod ovde",
+                    Text = HwTestLocalization.Pick("Postavite QR kod ovde", "请将二维码置于此处"),
                     FontSize = 17,
                     FontWeight = FontWeights.Bold,
                     Foreground = System.Windows.Media.Brushes.White,
@@ -295,7 +300,7 @@ namespace WIS.HwTest.Tests
                 // Banner za detekciju QR koda
                 _qrDetectionBanner = new TextBlock
                 {
-                    Text = "✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1",
+                    Text = HwTestLocalization.Pick("✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1", "✓ 二维码识别成功: WIS-CAMTEST-v1"),
                     FontSize = 22,
                     FontWeight = FontWeights.ExtraBold,
                     Foreground = System.Windows.Media.Brushes.White,
@@ -326,7 +331,7 @@ namespace WIS.HwTest.Tests
                 StackPanel spIr = new StackPanel { MinWidth = 420 };
                 _irScanText = new TextBlock
                 {
-                    Text = "👁️ IR SKENIRANJE LICA: Pogledajte pravo u kameru...",
+                    Text = HwTestLocalization.Pick("👁️ IR SKENIRANJE LICA: Pogledajte pravo u kameru...", "👁️ 红外人脸扫描: 请直视摄像头..."),
                     FontSize = 16,
                     FontWeight = FontWeights.Bold,
                     Foreground = System.Windows.Media.Brushes.White,
@@ -361,7 +366,7 @@ namespace WIS.HwTest.Tests
 
             _btnBiosReboot = new Button
             {
-                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Content = HwTestLocalization.Pick("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", "🔧 重启进入 UEFI BIOS（之后继续 WIS）"),
                 Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(217, 119, 6)),
                 Foreground = System.Windows.Media.Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -376,7 +381,7 @@ namespace WIS.HwTest.Tests
             {
                 _btnConfirmIr = new Button
                 {
-                    Content = "✓ Potvrdi IR kameru (PASS)",
+                    Content = HwTestLocalization.Pick("✓ Potvrdi IR kameru (PASS)", "✓ 确认红外摄像头正常 (PASS)"),
                     Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 167, 69)),
                     Foreground = System.Windows.Media.Brushes.White,
                     FontWeight = FontWeights.Bold,
@@ -395,27 +400,27 @@ namespace WIS.HwTest.Tests
 
                 _btnFailIr = new Button
                 {
-                    Content = "✗ IR senzor ne radi (FAIL)",
+                    Content = HwTestLocalization.Pick("✗ IR senzor ne radi (FAIL)", "✗ 红外传感器故障 (FAIL)"),
                     Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 50, 62)),
                     Foreground = System.Windows.Media.Brushes.White,
                     FontWeight = FontWeights.Bold,
                     Padding = new Thickness(16, 8, 16, 8),
                     Visibility = Visibility.Visible
                 };
-                _btnFailIr.Click += (s, e) => FinishFail("IR kamera ne očitava lice ili ne daje sliku (prijavio serviser)");
+                _btnFailIr.Click += (s, e) => FinishFail(HwTestLocalization.Pick("IR kamera ne očitava lice ili ne daje sliku (prijavio serviser)", "红外摄像头无法识别人脸或无图像（技术员报告）"));
                 spF.Children.Add(_btnFailIr);
             }
             else
             {
                 _btnFailRgb = new Button
                 {
-                    Content = "✗ Kamera ne radi / loša slika (FAIL)",
+                    Content = HwTestLocalization.Pick("✗ Kamera ne radi / loša slika (FAIL)", "✗ 摄像头故障 / 画面异常 (FAIL)"),
                     Background = new SolidColorBrush(System.Windows.Media.Color.FromRgb(210, 50, 62)),
                     Foreground = System.Windows.Media.Brushes.White,
                     FontWeight = FontWeights.Bold,
                     Padding = new Thickness(16, 8, 16, 8)
                 };
-                _btnFailRgb.Click += (s, e) => FinishFail("Kamera ne daje ispravnu sliku ili ne radi (prijavio serviser)");
+                _btnFailRgb.Click += (s, e) => FinishFail(HwTestLocalization.Pick("Kamera ne daje ispravnu sliku ili ne radi (prijavio serviser)", "摄像头无画面或图像异常（技术员报告）"));
                 spF.Children.Add(_btnFailRgb);
             }
 
@@ -461,8 +466,9 @@ namespace WIS.HwTest.Tests
             if (OnRequestUefiBiosReboot == null)
             {
                 MessageBox.Show(
-                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili kameru.",
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili kameru.",
+                        "请重启电脑并进入 UEFI BIOS 设置（HP: F10, Lenovo: F1, Dell: F2）以启用摄像头。"),
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 SafeCloseDialog(false);
@@ -651,8 +657,8 @@ namespace WIS.HwTest.Tests
                 }
                 if (hrStart != 0)
                 {
-                    string msg = string.Format("MFStartup neuspešan (HRESULT=0x{0:X8})", hrStart);
-                    HwTestLogger.Error("CAMERA", msg);
+                    string msg = HwTestLocalization.PickFormat("MFStartup neuspešan (HRESULT=0x{0:X8})", "MFStartup 失败 (HRESULT=0x{0:X8})", hrStart);
+                    HwTestLogger.Error("CAMERA", string.Format("MFStartup neuspešan (HRESULT=0x{0:X8})", hrStart));
                     UpdateUiStatus("⚠ " + msg, System.Windows.Media.Color.FromRgb(220, 53, 69));
                     return;
                 }
@@ -972,8 +978,8 @@ namespace WIS.HwTest.Tests
 
                         if (pixelKind == VideoPixelKind.Unknown)
                         {
-                            string msg = string.Format("Kamera '{0}' ne podržava nijedan prepoznat nekomprimovan video format.", activeName);
-                            HwTestLogger.Error("CAMERA", msg);
+                            string msg = HwTestLocalization.PickFormat("Kamera '{0}' ne podržava nijedan prepoznat nekomprimovan video format.", "摄像头“{0}”不支持任何已识别的非压缩视频格式。", activeName);
+                            HwTestLogger.Error("CAMERA", string.Format("Kamera '{0}' ne podržava nijedan prepoznat nekomprimovan video format.", activeName));
                             UpdateUiStatus("⚠ " + msg, System.Windows.Media.Color.FromRgb(220, 53, 69));
                             return;
                         }
@@ -1005,8 +1011,8 @@ namespace WIS.HwTest.Tests
                             wantIr ? "IR" : "RGB", activeName, width, height, fmtLabel));
 
                         UpdateSubTitleUi(wantIr
-                            ? string.Format("IR senzor: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel)
-                            : string.Format("Uređaj: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel));
+                            ? HwTestLocalization.PickFormat("IR senzor: {0} [{1}x{2} {3}]", "红外传感器: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel)
+                            : HwTestLocalization.PickFormat("Uređaj: {0} [{1}x{2} {3}]", "设备: {0} [{1}x{2} {3}]", activeName, width, height, fmtLabel));
 
                         Dispatcher.BeginInvoke(new Action(() => {
                             _currentVideoWidth = width;
@@ -1094,7 +1100,8 @@ namespace WIS.HwTest.Tests
                                                     Dispatcher.BeginInvoke(new Action(() => {
                                                         if (!wantIr && !_qrPassed)
                                                         {
-                                                            _statusText.Text = string.Format("📷 Slika aktivna ({0}x{1}) — Pokažite QR kod (WIS-CAMTEST-v1) u kvadrat na ekranu", width, height);
+                                                            _statusText.Text = HwTestLocalization.PickFormat("📷 Slika aktivna ({0}x{1}) — Pokažite QR kod (WIS-CAMTEST-v1) u kvadrat na ekranu",
+                                                                "📷 画面已就绪 ({0}x{1}) — 请将二维码 (WIS-CAMTEST-v1) 对准屏幕方框内", width, height);
                                                         }
                                                     }));
                                                 }
@@ -1232,7 +1239,7 @@ namespace WIS.HwTest.Tests
             catch (Exception ex)
             {
                 HwTestLogger.Error("CAMERA", "Greška u kamera modulu: " + ex.Message + " | " + ex.StackTrace);
-                UpdateUiStatus("⚠ Greška kamere: " + ex.Message, System.Windows.Media.Color.FromRgb(220, 53, 69));
+                UpdateUiStatus(HwTestLocalization.Pick("⚠ Greška kamere: ", "⚠ 摄像头错误: ") + ex.Message, System.Windows.Media.Color.FromRgb(220, 53, 69));
             }
             finally
             {
@@ -1678,7 +1685,7 @@ namespace WIS.HwTest.Tests
 
             if (_qrDetectionBanner != null)
             {
-                _qrDetectionBanner.Text = "✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1";
+                _qrDetectionBanner.Text = HwTestLocalization.Pick("✓ QR KOD USPEŠNO OČITAN: WIS-CAMTEST-v1", "✓ 二维码识别成功: WIS-CAMTEST-v1");
                 _qrDetectionBanner.Visibility = Visibility.Visible;
             }
             if (_qrGuideBox != null)
@@ -1688,10 +1695,10 @@ namespace WIS.HwTest.Tests
             }
             if (_qrGuideLabel != null)
             {
-                _qrGuideLabel.Text = "✓ QR VERIFIKOVAN";
+                _qrGuideLabel.Text = HwTestLocalization.Pick("✓ QR VERIFIKOVAN", "✓ 二维码已验证");
                 _qrGuideLabel.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 244, 197));
             }
-            _statusText.Text = "✓ Odlično! QR kod verifikovan. Automatski završetak testa...";
+            _statusText.Text = HwTestLocalization.Pick("✓ Odlično! QR kod verifikovan. Automatski završetak testa...", "✓ 很好！二维码已验证，正在自动完成测试...");
             _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 167, 69));
             StartAutoPassTimer();
         }
@@ -1733,7 +1740,7 @@ namespace WIS.HwTest.Tests
 
             if (confirmed)
             {
-                _statusText.Text = "✓ IR LICE USPEŠNO OČITANO! Automatski PASS IR kamere...";
+                _statusText.Text = HwTestLocalization.Pick("✓ IR LICE USPEŠNO OČITANO! Automatski PASS IR kamere...", "✓ 红外人脸识别成功！自动通过红外摄像头测试...");
                 _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(40, 205, 65));
                 if (_irScanBanner != null)
                 {
@@ -1742,7 +1749,7 @@ namespace WIS.HwTest.Tests
                 }
                 if (_irScanText != null)
                 {
-                    _irScanText.Text = string.Format("✓ CRTE LICA POTVRĐENE ({0}/{1}) — AUTOMATSKI PASS!", confirmCount, RequiredIrFaceFrames);
+                    _irScanText.Text = HwTestLocalization.PickFormat("✓ CRTE LICA POTVRĐENE ({0}/{1}) — AUTOMATSKI PASS!", "✓ 人脸特征已确认 ({0}/{1}) — 自动通过！", confirmCount, RequiredIrFaceFrames);
                     _irScanText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(166, 244, 197));
                 }
                 if (_autoPassTimer == null)
@@ -1752,21 +1759,21 @@ namespace WIS.HwTest.Tests
             }
             else if (lm != null)
             {
-                _statusText.Text = string.Format("👁️ IR SKENIRANJE LICA ({0}/{1}): Lice detektovano — zadržite pogled...", confirmCount, RequiredIrFaceFrames);
+                _statusText.Text = HwTestLocalization.PickFormat("👁️ IR SKENIRANJE LICA ({0}/{1}): Lice detektovano — zadržite pogled...", "👁️ 红外人脸扫描 ({0}/{1}): 已检测到人脸 — 请保持注视...", confirmCount, RequiredIrFaceFrames);
                 _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(78, 201, 176));
                 if (_irScanText != null)
                 {
-                    _irScanText.Text = string.Format("👁️ Očitavam crte lica ({0}/{1}) [{2}]...", confirmCount, RequiredIrFaceFrames, lm.DetectorSource);
+                    _irScanText.Text = HwTestLocalization.PickFormat("👁️ Očitavam crte lica ({0}/{1}) [{2}]...", "👁️ 正在读取人脸特征 ({0}/{1}) [{2}]...", confirmCount, RequiredIrFaceFrames, lm.DetectorSource);
                     _irScanText.Foreground = System.Windows.Media.Brushes.White;
                 }
             }
             else
             {
-                _statusText.Text = "👁️ TEST IR KAMERE: Stanite ispred kamere — tražim crte lica...";
+                _statusText.Text = HwTestLocalization.Pick("👁️ TEST IR KAMERE: Stanite ispred kamere — tražim crte lica...", "👁️ 红外摄像头测试: 请正对摄像头 — 正在搜索人脸...");
                 _statusText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 193, 7));
                 if (_irScanText != null)
                 {
-                    _irScanText.Text = "🔍 Približite lice na 40-70 cm ispred IR kamere...";
+                    _irScanText.Text = HwTestLocalization.Pick("🔍 Približite lice na 40-70 cm ispred IR kamere...", "🔍 请将面部保持在红外摄像头前 40-70 厘米处...");
                     _irScanText.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 215, 100));
                 }
             }

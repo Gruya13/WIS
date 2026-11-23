@@ -510,12 +510,174 @@ function Set-AcrobatDefaultPDF {
     } catch {}
 }
 
+function Get-WindowsLicenseStatus {
+    <#
+    .SYNOPSIS
+        Vraća detaljan status licenciranja operativnog sistema Windows (WMI/CIM SoftwareLicensingProduct + slmgr.vbs /xpr fallback).
+    #>
+    [CmdletBinding()]
+    param()
+
+    $statusObj = [PSCustomObject]@{
+        Activated           = $false
+        Method              = "NONE"
+        Edition             = ""
+        SkuName             = ""
+        PartialProductKey   = ""
+        LicenseStatus       = -1
+        LicenseStatusText   = ""
+        LicenseStatusReason = ""
+        Oa3xPresent         = $false
+        Oa3xDescription     = ""
+    }
+
+    try {
+        $osInfo = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if (-not $osInfo) {
+            $osInfo = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction SilentlyContinue
+        }
+        if ($osInfo -and -not [string]::IsNullOrWhiteSpace([string]$osInfo.Caption)) {
+            $statusObj.Edition = ([string]$osInfo.Caption).Trim()
+        }
+    } catch {}
+
+    if ([string]::IsNullOrWhiteSpace($statusObj.Edition)) {
+        try {
+            $cv = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" -ErrorAction SilentlyContinue
+            if ($cv) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$cv.ProductName)) {
+                    $statusObj.Edition = ([string]$cv.ProductName).Trim()
+                } elseif (-not [string]::IsNullOrWhiteSpace([string]$cv.EditionID)) {
+                    $statusObj.Edition = ([string]$cv.EditionID).Trim()
+                }
+            }
+        } catch {}
+    }
+
+    try {
+        $sls = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction SilentlyContinue
+        if (-not $sls) {
+            $sls = Get-WmiObject -Class SoftwareLicensingService -ErrorAction SilentlyContinue
+        }
+        if ($sls) {
+            $statusObj.Oa3xPresent = (-not [string]::IsNullOrWhiteSpace([string]$sls.OA3xOriginalProductKey))
+            if (-not [string]::IsNullOrWhiteSpace([string]$sls.OA3xOriginalProductKeyDescription)) {
+                $statusObj.Oa3xDescription = ([string]$sls.OA3xOriginalProductKeyDescription).Trim()
+            }
+        }
+    } catch {}
+
+    # 1. Primarna WMI/CIM provera SoftwareLicensingProduct za Windows (ApplicationID = 55c92734-d682-4d71-98e3-d6ec3f16059f)
+    $winAppId = "55c92734-d682-4d71-98e3-d6ec3f16059f"
+    $wmiFallback = $null
+    try {
+        $winLics = @(Get-CimInstance -ClassName SoftwareLicensingProduct -Filter "ApplicationID = '$winAppId'" -ErrorAction SilentlyContinue |
+            Where-Object { $null -ne $_.PartialProductKey -and -not [string]::IsNullOrWhiteSpace([string]$_.PartialProductKey) })
+        if ($winLics.Count -eq 0) {
+            $winLics = @(Get-WmiObject -Class SoftwareLicensingProduct -Filter "ApplicationID = '$winAppId'" -ErrorAction SilentlyContinue |
+                Where-Object { $null -ne $_.PartialProductKey -and -not [string]::IsNullOrWhiteSpace([string]$_.PartialProductKey) })
+        }
+
+        $licensedSku = $winLics | Where-Object { [int]$_.LicenseStatus -eq 1 } | Select-Object -First 1
+        if ($licensedSku) {
+            $statusObj.Activated = $true
+            $statusObj.Method = "WMI_SPP"
+            $statusObj.SkuName = if ($licensedSku.Name) { [string]$licensedSku.Name } else { [string]$licensedSku.Description }
+            $statusObj.PartialProductKey = [string]$licensedSku.PartialProductKey
+            $statusObj.LicenseStatus = 1
+            $statusObj.LicenseStatusText = "Licensed"
+            if ($null -ne $licensedSku.LicenseStatusReason -and [uint32]$licensedSku.LicenseStatusReason -ne 0) {
+                $statusObj.LicenseStatusReason = ('0x{0:X8}' -f [uint32]$licensedSku.LicenseStatusReason)
+            }
+            return $statusObj
+        }
+
+        if ($winLics.Count -gt 0) {
+            $firstWin = $winLics | Select-Object -First 1
+            $licCode = [int]$firstWin.LicenseStatus
+            $licLabel = switch ($licCode) {
+                0 { "Unlicensed" }
+                1 { "Licensed" }
+                2 { "OOBGrace" }
+                3 { "OOTGrace" }
+                4 { "NonGenuineGrace" }
+                5 { "Notification" }
+                6 { "ExtendedGrace" }
+                default { "Status_$licCode" }
+            }
+            $reasonHex = ""
+            if ($null -ne $firstWin.LicenseStatusReason -and [uint32]$firstWin.LicenseStatusReason -ne 0) {
+                $reasonHex = ('0x{0:X8}' -f [uint32]$firstWin.LicenseStatusReason)
+            }
+            $wmiFallback = [PSCustomObject]@{
+                SkuName             = if ($firstWin.Name) { [string]$firstWin.Name } else { [string]$firstWin.Description }
+                PartialProductKey   = [string]$firstWin.PartialProductKey
+                LicenseStatus       = $licCode
+                LicenseStatusText   = $licLabel
+                LicenseStatusReason = $reasonHex
+            }
+        }
+    } catch {}
+
+    # 2. Fallback: slmgr.vbs /xpr preko Invoke-CscriptWithTimeout (25s)
+    $slmgrPath = "C:\Windows\System32\slmgr.vbs"
+    if (Test-Path -LiteralPath $slmgrPath -PathType Leaf -ErrorAction SilentlyContinue) {
+        try {
+            $xprRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/xpr") -TimeoutSec 25
+            $xprOut = Protect-WisLicenseLogText -Text (([string]$xprRes.Output -replace '\r?\n', ' ').Trim())
+            if ($xprRes.TimedOut) {
+                if ($wmiFallback) {
+                    $statusObj.Method = "WMI_SPP"
+                    $statusObj.SkuName = $wmiFallback.SkuName
+                    $statusObj.PartialProductKey = $wmiFallback.PartialProductKey
+                    $statusObj.LicenseStatus = $wmiFallback.LicenseStatus
+                    $statusObj.LicenseStatusText = $wmiFallback.LicenseStatusText
+                    $statusObj.LicenseStatusReason = $wmiFallback.LicenseStatusReason
+                } else {
+                    $statusObj.Method = "SLMGR_TIMEOUT"
+                    $statusObj.LicenseStatusText = "slmgr.vbs /xpr timeout (25s)"
+                }
+                return $statusObj
+            }
+
+            if ($xprOut -match '(?i)(permanently activated|volume activation will expire|is activated|trajno aktiviran|aktiviran)' -and
+                $xprOut -notmatch '(?i)(not activated|nije aktiviran|notification|grace)') {
+                $statusObj.Activated = $true
+                $statusObj.Method = "SLMGR_XPR"
+                if ($wmiFallback) {
+                    $statusObj.SkuName = $wmiFallback.SkuName
+                    $statusObj.PartialProductKey = $wmiFallback.PartialProductKey
+                }
+                $statusObj.LicenseStatus = 1
+                $statusObj.LicenseStatusText = if ($xprOut) { $xprOut } else { "Activated" }
+                return $statusObj
+            }
+
+            if (-not $wmiFallback -and $xprOut) {
+                $statusObj.Method = "SLMGR_XPR"
+                $statusObj.LicenseStatusText = $xprOut
+                return $statusObj
+            }
+        } catch {}
+    }
+
+    if ($wmiFallback) {
+        $statusObj.Activated = $false
+        $statusObj.Method = "WMI_SPP"
+        $statusObj.SkuName = $wmiFallback.SkuName
+        $statusObj.PartialProductKey = $wmiFallback.PartialProductKey
+        $statusObj.LicenseStatus = $wmiFallback.LicenseStatus
+        $statusObj.LicenseStatusText = $wmiFallback.LicenseStatusText
+        $statusObj.LicenseStatusReason = $wmiFallback.LicenseStatusReason
+    }
+
+    return $statusObj
+}
+
 function Test-WindowsActivated {
     try {
-        $res = (cscript //nologo C:\Windows\System32\slmgr.vbs /xpr 2>$null) -join " "
-        if ($res -match "permanently activated|volume activation will expire|is activated|trajno aktiviran|aktiviran") {
-            return $true
-        }
+        $st = Get-WindowsLicenseStatus
+        return [bool]($st -and $st.Activated)
     } catch {}
     return $false
 }
@@ -549,19 +711,25 @@ function Test-OfficeInstalled {
 function Protect-WisLicenseLogText {
     <#
     .SYNOPSIS
-        Maskira 25-karakterne product ključeve u tekstu radi bezbednog logovanja.
+        Maskira 25-karakterne product ključeve (i opcione KMS hostove) u tekstu radi bezbednog logovanja.
     #>
     [CmdletBinding()]
     param(
         [AllowEmptyString()]
         [AllowNull()]
-        [string]$Text = ""
+        [string]$Text = "",
+        [string[]]$SensitiveHosts = @()
     )
 
     if ([string]::IsNullOrEmpty($Text)) {
         return ""
     }
     $masked = $Text -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+    foreach ($sh in $SensitiveHosts) {
+        if (-not [string]::IsNullOrWhiteSpace($sh)) {
+            $masked = $masked -replace [regex]::Escape($sh.Trim()), '***KMS_HOST_MASKIRANO***'
+        }
+    }
     return $masked
 }
 
@@ -970,18 +1138,24 @@ function Get-WisLicensingSettingsLocal {
     [CmdletBinding()]
     param()
 
+    $normalizeLicMode = {
+        param([string]$RawMode)
+        $m = if ($RawMode) { $RawMode.Trim() } else { "" }
+        switch -Regex ($m) {
+            '(?i)^kms$'          { "Kms" }
+            '(?i)^mak$'          { "Mak" }
+            '(?i)^externalhook$' { "ExternalHook" }
+            '(?i)^skip$'         { "Skip" }
+            default              { "Auto" }
+        }
+    }
+
     if (Get-Command Get-ServisLicensingSettings -ErrorAction SilentlyContinue) {
         try {
             $coreLic = Get-ServisLicensingSettings
             if ($coreLic) {
                 $rawCoreMode = if ($coreLic.PSObject.Properties['OfficeActivationMode']) { [string]$coreLic.OfficeActivationMode } else { "Auto" }
-                $normCoreMode = switch -Regex ($rawCoreMode.Trim()) {
-                    '(?i)^kms$'          { "Kms" }
-                    '(?i)^mak$'          { "Mak" }
-                    '(?i)^externalhook$' { "ExternalHook" }
-                    '(?i)^skip$'         { "Skip" }
-                    default              { "Auto" }
-                }
+                $normCoreMode = & $normalizeLicMode $rawCoreMode
                 $portVal = 1688
                 if ($coreLic.PSObject.Properties['OfficeKmsPort'] -and $coreLic.OfficeKmsPort) {
                     try {
@@ -989,13 +1163,28 @@ function Get-WisLicensingSettingsLocal {
                         if ($parsedPort -gt 0 -and $parsedPort -le 65535) { $portVal = $parsedPort }
                     } catch {}
                 }
+
+                $rawWinMode = if ($coreLic.PSObject.Properties['WindowsActivationMode']) { [string]$coreLic.WindowsActivationMode } else { "Auto" }
+                $normWinMode = & $normalizeLicMode $rawWinMode
+                $winPortVal = 1688
+                if ($coreLic.PSObject.Properties['WindowsKmsPort'] -and $coreLic.WindowsKmsPort) {
+                    try {
+                        $parsedWinPort = [int]$coreLic.WindowsKmsPort
+                        if ($parsedWinPort -gt 0 -and $parsedWinPort -le 65535) { $winPortVal = $parsedWinPort }
+                    } catch {}
+                }
+
                 return [PSCustomObject]@{
-                    Found                = [bool]$coreLic.Found
-                    IniPath              = [string]$coreLic.IniPath
-                    OfficeActivationMode = $normCoreMode
-                    OfficeKmsHost        = if ($coreLic.PSObject.Properties['OfficeKmsHost']) { ([string]$coreLic.OfficeKmsHost).Trim() } else { "" }
-                    OfficeKmsPort        = $portVal
-                    OfficeProductKey     = if ($coreLic.PSObject.Properties['OfficeProductKey']) { ([string]$coreLic.OfficeProductKey).Trim() } else { "" }
+                    Found                 = [bool]$coreLic.Found
+                    IniPath               = [string]$coreLic.IniPath
+                    OfficeActivationMode  = $normCoreMode
+                    OfficeKmsHost         = if ($coreLic.PSObject.Properties['OfficeKmsHost']) { ([string]$coreLic.OfficeKmsHost).Trim() } else { "" }
+                    OfficeKmsPort         = $portVal
+                    OfficeProductKey      = if ($coreLic.PSObject.Properties['OfficeProductKey']) { ([string]$coreLic.OfficeProductKey).Trim() } else { "" }
+                    WindowsActivationMode = $normWinMode
+                    WindowsKmsHost        = if ($coreLic.PSObject.Properties['WindowsKmsHost']) { ([string]$coreLic.WindowsKmsHost).Trim() } else { "" }
+                    WindowsKmsPort        = $winPortVal
+                    WindowsProductKey     = if ($coreLic.PSObject.Properties['WindowsProductKey']) { ([string]$coreLic.WindowsProductKey).Trim() } else { "" }
                 }
             }
         } catch {}
@@ -1005,6 +1194,10 @@ function Get-WisLicensingSettingsLocal {
     $officeKmsHost = ""
     $officeKmsPort = 1688
     $officeProductKey = ""
+    $windowsActivationMode = "Auto"
+    $windowsKmsHost = ""
+    $windowsKmsPort = 1688
+    $windowsProductKey = ""
     $foundSection = $false
 
     $licIniCandidates = @(
@@ -1038,24 +1231,31 @@ function Get-WisLicensingSettingsLocal {
                 }
                 if ($inLicensingSection -and $line -match '^\s*([^=]+)=(.*)$') {
                     $k = $matches[1].Trim()
-                    $v = $matches[2].Trim()
+                    $v = ($matches[2] -replace '[;#].*$', '').Trim()
                     if ($k -ieq "OfficeActivationMode" -and -not [string]::IsNullOrWhiteSpace($v)) {
-                        $officeActivationMode = switch -Regex ($v) {
-                            '(?i)^kms$'          { "Kms" }
-                            '(?i)^mak$'          { "Mak" }
-                            '(?i)^externalhook$' { "ExternalHook" }
-                            '(?i)^skip$'         { "Skip" }
-                            default              { "Auto" }
-                        }
-                    } elseif ($k -ieq "OfficeKmsHost" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $officeActivationMode = & $normalizeLicMode $v
+                    } elseif ($k -ieq "OfficeKmsHost" -and -not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME") {
                         $officeKmsHost = $v
                     } elseif ($k -ieq "OfficeKmsPort" -and -not [string]::IsNullOrWhiteSpace($v)) {
                         try {
                             $pNum = [int]$v
                             if ($pNum -gt 0 -and $pNum -le 65535) { $officeKmsPort = $pNum }
                         } catch {}
-                    } elseif ($k -ieq "OfficeProductKey" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                    } elseif ($k -ieq "OfficeProductKey" -and -not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME" -and $v -ne "promeni_kljuc") {
+                        # Strogo zabranjeno logovanje vrednosti OfficeProductKey
                         $officeProductKey = $v
+                    } elseif ($k -ieq "WindowsActivationMode" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $windowsActivationMode = & $normalizeLicMode $v
+                    } elseif ($k -ieq "WindowsKmsHost" -and -not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME") {
+                        $windowsKmsHost = $v
+                    } elseif ($k -ieq "WindowsKmsPort" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        try {
+                            $pwNum = [int]$v
+                            if ($pwNum -gt 0 -and $pwNum -le 65535) { $windowsKmsPort = $pwNum }
+                        } catch {}
+                    } elseif ($k -ieq "WindowsProductKey" -and -not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME" -and $v -ne "promeni_kljuc") {
+                        # Strogo zabranjeno logovanje vrednosti WindowsProductKey
+                        $windowsProductKey = $v
                     }
                 }
             }
@@ -1063,12 +1263,16 @@ function Get-WisLicensingSettingsLocal {
     }
 
     return [PSCustomObject]@{
-        Found                = $foundSection
-        IniPath              = if ($licIniPath) { [string]$licIniPath } else { "" }
-        OfficeActivationMode = $officeActivationMode
-        OfficeKmsHost        = $officeKmsHost
-        OfficeKmsPort        = [int]$officeKmsPort
-        OfficeProductKey     = $officeProductKey
+        Found                 = $foundSection
+        IniPath               = if ($licIniPath) { [string]$licIniPath } else { "" }
+        OfficeActivationMode  = $officeActivationMode
+        OfficeKmsHost         = $officeKmsHost
+        OfficeKmsPort         = [int]$officeKmsPort
+        OfficeProductKey      = $officeProductKey
+        WindowsActivationMode = $windowsActivationMode
+        WindowsKmsHost        = $windowsKmsHost
+        WindowsKmsPort        = [int]$windowsKmsPort
+        WindowsProductKey     = $windowsProductKey
     }
 }
 
@@ -1085,13 +1289,22 @@ function Write-WisLicenseStatusFile {
         [string]$OfficeActivationMode = "Auto",
         [string]$OfficeLicenseMethod = "NONE",
         [string]$OfficeLicenseDetail = "",
-        [string]$LocalSetupDir = "C:\setup"
+        [string]$LocalSetupDir = "C:\setup",
+        [bool]$WindowsOa3Present = $false,
+        [string]$WindowsEdition = "",
+        [string]$WindowsLicenseMethod = "NONE",
+        [string]$WindowsLicenseDetail = ""
     )
 
     $safeDetail = Protect-WisLicenseLogText -Text $OfficeLicenseDetail
+    $safeWinDetail = Protect-WisLicenseLogText -Text $WindowsLicenseDetail
     $tsIso = (Get-Date).ToString("o")
     $statusMap = [ordered]@{
         windows_activated      = [bool]$WindowsActivated
+        windows_oa3_present    = [bool]$WindowsOa3Present
+        windows_edition        = [string]$WindowsEdition
+        windows_license_method = [string]$WindowsLicenseMethod
+        windows_license_detail = [string]$safeWinDetail
         office_installed       = [bool]$OfficeInstalled
         office_activated       = [bool]$OfficeActivated
         office_activation_mode = [string]$OfficeActivationMode
@@ -1451,11 +1664,14 @@ function Get-WisAppPresence {
         }
 
         '(?i)^(Activation|WindowsActivation|OfficeActivation)$' {
-            $winAct = Test-WindowsActivated
+            $winStatusObj = Get-WindowsLicenseStatus
+            $winAct = [bool]($winStatusObj -and $winStatusObj.Activated)
             $hasOffice = Test-OfficeInstalled
             $licCfg = Get-WisLicensingSettingsLocal
             $licMode = if ($licCfg -and $licCfg.OfficeActivationMode) { [string]$licCfg.OfficeActivationMode } else { "Auto" }
+            $winLicMode = if ($licCfg -and $licCfg.WindowsActivationMode) { [string]$licCfg.WindowsActivationMode } else { "Auto" }
             $officeSkipped = ($licMode -ieq "Skip")
+            $winSkipped = ($winLicMode -ieq "Skip")
 
             $offStatus = if ($hasOffice) { Get-OfficeLicenseStatus } else { $null }
             $offAct = if ($hasOffice) { [bool]($offStatus -and $offStatus.Activated) } else { $true }
@@ -1465,13 +1681,14 @@ function Get-WisAppPresence {
             $result.OfficeActivated      = $offAct
             $result.OfficeActivationMode = $licMode
 
-            if ($winAct -and ($offAct -or $officeSkipped)) {
+            if (($winAct -or $winSkipped) -and ($offAct -or $officeSkipped)) {
+                $winTxt = if ($winAct) { "Windows je trajno licenciran i aktiviran" } else { "Windows aktivacija preskočena (WindowsActivationMode=Skip)" }
                 $msg = if (-not $hasOffice) {
-                    "Windows je trajno licenciran i aktiviran (Office nije instaliran)"
+                    "$winTxt (Office nije instaliran)"
                 } elseif ($offAct) {
-                    "Windows i Microsoft Office su trajno licencirani i aktivirani"
+                    if ($winAct) { "Windows i Microsoft Office su trajno licencirani i aktivirani" } else { "$winTxt; Microsoft Office aktiviran" }
                 } else {
-                    "Windows je trajno licenciran i aktiviran (Office aktivacija preskočena: OfficeActivationMode=Skip)"
+                    "$winTxt (Office aktivacija preskočena: OfficeActivationMode=Skip)"
                 }
                 $result.Installed = $true
                 $result.Done      = $true
@@ -1479,7 +1696,33 @@ function Get-WisAppPresence {
                 $result.Reason    = $msg
             } else {
                 $parts = @()
-                if (-not $winAct) { $parts += "Windows nije aktiviran" }
+                if (-not $winAct -and -not $winSkipped) {
+                    $winDetailInfo = ""
+                    if ($winStatusObj) {
+                        if (-not [string]::IsNullOrWhiteSpace($winStatusObj.LicenseStatusReason)) {
+                            $winDetailInfo = "$($winStatusObj.LicenseStatusText) $($winStatusObj.LicenseStatusReason)"
+                        } elseif (-not [string]::IsNullOrWhiteSpace($winStatusObj.LicenseStatusText)) {
+                            $winDetailInfo = $winStatusObj.LicenseStatusText
+                        }
+                    }
+                    if ([string]::IsNullOrWhiteSpace($winDetailInfo) -and (Test-Path -LiteralPath "C:\setup\license-status.json" -ErrorAction SilentlyContinue)) {
+                        try {
+                            $lsRawW = Get-Content -LiteralPath "C:\setup\license-status.json" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                            if ($lsRawW) {
+                                $lsObjW = ConvertFrom-Json -InputObject $lsRawW -ErrorAction SilentlyContinue
+                                if ($lsObjW -and $lsObjW.windows_license_detail) {
+                                    $winDetailInfo = Protect-WisLicenseLogText -Text ([string]$lsObjW.windows_license_detail)
+                                }
+                            }
+                        } catch {}
+                    }
+                    $winDetailInfo = Protect-WisLicenseLogText -Text $winDetailInfo
+                    if (-not [string]::IsNullOrWhiteSpace($winDetailInfo)) {
+                        $parts += "Windows nije aktiviran ($winDetailInfo)"
+                    } else {
+                        $parts += "Windows nije aktiviran"
+                    }
+                }
                 if ($hasOffice -and -not $offAct -and -not $officeSkipped) {
                     $offDetailInfo = ""
                     if ($offStatus) {
@@ -1537,6 +1780,7 @@ function Test-AllServisProgramsInstalled {
     if (-not $dotnetRes.Installed)  { $missingList.Add("Microsoft .NET Runtime") }
     if ($bbRes.Required -and -not $bbRes.Installed) { $missingList.Add("BatteryBar (Laptop)") }
 
+    $winLicStatus = Get-WindowsLicenseStatus
     $offLicStatus = if ($officeRes.Installed) { Get-OfficeLicenseStatus } else { $null }
 
     $results = @{
@@ -1546,7 +1790,14 @@ function Test-AllServisProgramsInstalled {
         Office               = $officeRes
         DotNet               = $dotnetRes
         BatteryBar           = $bbRes
-        WindowsActivation    = @{ Activated = (Test-WindowsActivated) }
+        WindowsActivation    = @{
+            Activated           = if ($winLicStatus) { [bool]$winLicStatus.Activated } else { $false }
+            Method              = if ($winLicStatus) { [string]$winLicStatus.Method } else { "NONE" }
+            Edition             = if ($winLicStatus) { [string]$winLicStatus.Edition } else { "" }
+            Oa3xPresent         = if ($winLicStatus) { [bool]$winLicStatus.Oa3xPresent } else { $false }
+            LicenseStatusText   = if ($winLicStatus) { [string]$winLicStatus.LicenseStatusText } else { "" }
+            LicenseStatusReason = if ($winLicStatus) { [string]$winLicStatus.LicenseStatusReason } else { "" }
+        }
         OfficeActivation     = @{
             Activated         = if ($offLicStatus) { [bool]$offLicStatus.Activated } else { $false }
             Method            = if ($offLicStatus) { [string]$offLicStatus.Method } else { "NotInstalled" }
@@ -3838,11 +4089,21 @@ function Invoke-WindowsOfficeActivation {
     $officeProductKey = if ($licSettings -and $licSettings.OfficeProductKey) { ([string]$licSettings.OfficeProductKey).Trim() } else { "" }
     $officeSkipped = ($officeActivationMode -ieq "Skip")
 
+    $winActivationMode = if ($licSettings -and $licSettings.WindowsActivationMode) { [string]$licSettings.WindowsActivationMode } else { "Auto" }
+    $winKmsHost = if ($licSettings -and $licSettings.WindowsKmsHost) { ([string]$licSettings.WindowsKmsHost).Trim() } else { "" }
+    $winKmsPort = if ($licSettings -and $licSettings.WindowsKmsPort -gt 0) { [int]$licSettings.WindowsKmsPort } else { 1688 }
+    $winProductKey = if ($licSettings -and $licSettings.WindowsProductKey) { ([string]$licSettings.WindowsProductKey).Trim() } else { "" }
+    $winSkipped = ($winActivationMode -ieq "Skip")
+
+    $sensitiveKmsHosts = @($winKmsHost, $officeKmsHost) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         $cfgFoundTxt = if ($licSettings -and $licSettings.Found) { "Da ($($licSettings.IniPath))" } else { "Ne (podrazumevano)" }
-        $kmsTxt = if ($officeKmsHost) { "${officeKmsHost}:$officeKmsPort" } else { "nije podešen" }
+        $kmsTxt = if ($officeKmsHost) { "konfigurisan (port $officeKmsPort, host maskiran)" } else { "nije podešen" }
         $keyTxt = if ($officeProductKey.Length -ge 25) { "konfigurisan (maskiran)" } else { "nije podešen" }
-        Write-ServisLog "Konfiguracija [Licensing]: Pronađeno=$cfgFoundTxt | OfficeActivationMode=$officeActivationMode | KMS=$kmsTxt | ProductKey=$keyTxt" -Level "INFO" -Component "License"
+        $winKmsTxt = if ($winKmsHost) { "konfigurisan (port $winKmsPort, host maskiran)" } else { "nije podešen" }
+        $winKeyTxt = if ($winProductKey.Length -ge 25) { "konfigurisan (maskiran)" } else { "nije podešen" }
+        Write-ServisLog "Konfiguracija [Licensing]: Pronađeno=$cfgFoundTxt | OfficeMode=$officeActivationMode (KMS=$kmsTxt, Key=$keyTxt) | WindowsMode=$winActivationMode (KMS=$winKmsTxt, Key=$winKeyTxt)" -Level "INFO" -Component "License"
     }
 
     # 3. Provera i buđenje Windows Software Protection servisa (sppsvc) pre slmgr.vbs / OSPP.VBS poziva
@@ -3864,26 +4125,148 @@ function Invoke-WindowsOfficeActivation {
         }
     } catch {}
 
-    # 4. Očitavanje BIOS OA3x OEM ključa ako Windows još nije aktiviran
-    $winActive = Test-WindowsActivated
+    # 4. Windows aktivacija (OA3x BIOS ključ, digitalna licenca /ato, [Licensing] KMS/MAK)
+    $winStatus = Get-WindowsLicenseStatus
+    $winActive = [bool]($winStatus -and $winStatus.Activated)
+    $winOa3Present = [bool]($winStatus -and $winStatus.Oa3xPresent)
+    $winEdition = if ($winStatus -and $winStatus.Edition) { [string]$winStatus.Edition } else { "" }
+    $winOa3Desc = if ($winStatus -and $winStatus.Oa3xDescription) { [string]$winStatus.Oa3xDescription } else { "" }
+    $winAppliedMethod = ""
+    $winLastErrorCode = ""
+    $winLastErrorDesc = ""
+    $winEditionMismatch = $false
+
     if (-not $winActive) {
-        try {
-            $sls = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction SilentlyContinue
-            if ($sls -and -not [string]::IsNullOrWhiteSpace($sls.OA3xOriginalProductKey)) {
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Detektovan ugrađeni UEFI/BIOS OA3x OEM ključ. Primenjujem sistemsku Windows licencu..." -Level "INFO" -Component "License"
-                }
-                $slmgrPath = "C:\Windows\System32\slmgr.vbs"
-                $ipkRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ipk", $sls.OA3xOriginalProductKey) -TimeoutSec 25
-                $atoRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ato") -TimeoutSec 25
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    $ipkTxt = if ($ipkRes.Output) { ($ipkRes.Output -replace '\r?\n', ' ').Trim() } else { "bez izlaza" }
-                    $atoTxt = if ($atoRes.Output) { ($atoRes.Output -replace '\r?\n', ' ').Trim() } else { "bez izlaza" }
-                    Write-ServisLog "Windows OA3x rezultat: /ipk ExitCode=$($ipkRes.ExitCode) ($ipkTxt) | /ato ExitCode=$($atoRes.ExitCode) ($atoTxt)" -Level "INFO" -Component "License"
-                }
-                $winActive = Test-WindowsActivated
+        if ($winSkipped) {
+            $winAppliedMethod = "Skip"
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "WindowsActivationMode=Skip je aktivan — preskačem aktivaciju Windows-a po konfiguraciji." -Level "INFO" -Component "License"
             }
-        } catch {}
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                if ($Global:WisPreserveCurrentPhase -eq $true) {
+                    Send-IpcLog -Message "Windows aktivacija preskočena (WindowsActivationMode=Skip)." -Level "INFO" -Tag "[License]"
+                } else {
+                    Send-IpcLog -Message "Windows aktivacija preskočena (WindowsActivationMode=Skip)." -Level "INFO" -Tag "[License]" -Phase 4
+                }
+            }
+        } elseif ($winActivationMode -in @("Auto", "Kms", "Mak")) {
+            $slmgrPath = "C:\Windows\System32\slmgr.vbs"
+            $attemptedSlmgrAto = $false
+
+            # (a) OA3x ugrađeni UEFI/BIOS OEM ključ (uz proveru neslaganja edicije)
+            if ($winActivationMode -in @("Auto", "Mak")) {
+                try {
+                    $sls = Get-CimInstance -ClassName SoftwareLicensingService -ErrorAction SilentlyContinue
+                    if (-not $sls) {
+                        $sls = Get-WmiObject -Class SoftwareLicensingService -ErrorAction SilentlyContinue
+                    }
+                    if ($sls -and -not [string]::IsNullOrWhiteSpace($sls.OA3xOriginalProductKey)) {
+                        $winOa3Present = $true
+                        if (-not [string]::IsNullOrWhiteSpace([string]$sls.OA3xOriginalProductKeyDescription)) {
+                            $winOa3Desc = ([string]$sls.OA3xOriginalProductKeyDescription).Trim()
+                        }
+                        if ($winOa3Desc -and $winEdition) {
+                            $oa3Norm = $winOa3Desc.ToLowerInvariant()
+                            $edNorm = $winEdition.ToLowerInvariant()
+                            $oa3IsHome = ($oa3Norm -match '\b(home|core)\b')
+                            $oa3IsPro  = ($oa3Norm -match '\b(pro|professional)\b')
+                            $edIsHome  = ($edNorm -match '\b(home|core)\b')
+                            $edIsPro   = ($edNorm -match '\b(pro|professional|enterprise|education)\b')
+                            if (($oa3IsHome -and $edIsPro) -or ($oa3IsPro -and $edIsHome)) {
+                                $winEditionMismatch = $true
+                                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                    Write-ServisLog "UPOZORENJE: Detektovano neslaganje Windows edicije ($winEdition) i ugrađenog BIOS OA3x ključa ($winOa3Desc)!" -Level "WARN" -Component "License"
+                                }
+                            }
+                        }
+
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Detektovan ugrađeni UEFI/BIOS OA3x OEM ključ. Primenjujem sistemsku Windows licencu..." -Level "INFO" -Component "License"
+                        }
+                        $winAppliedMethod = "OA3x"
+                        $ipkRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ipk", $sls.OA3xOriginalProductKey) -TimeoutSec 25
+                        $atoRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ato") -TimeoutSec 25
+                        $attemptedSlmgrAto = $true
+
+                        $oa3CombinedOut = Protect-WisLicenseLogText -Text ((@($ipkRes.Output, $atoRes.Output) -join " ") -replace '\r?\n', ' ').Trim()
+                        if ($oa3CombinedOut -match '(0x[0-9A-Fa-f]{8})') {
+                            $winLastErrorCode = $matches[1]
+                        }
+                        if ($atoRes.Output) {
+                            $winLastErrorDesc = Protect-WisLicenseLogText -Text (([string]$atoRes.Output -replace '\r?\n', ' ').Trim())
+                        }
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            $ipkTxt = if ($ipkRes.Output) { Protect-WisLicenseLogText -Text (([string]$ipkRes.Output -replace '\r?\n', ' ').Trim()) } else { "bez izlaza" }
+                            $atoTxt = if ($atoRes.Output) { Protect-WisLicenseLogText -Text (([string]$atoRes.Output -replace '\r?\n', ' ').Trim()) } else { "bez izlaza" }
+                            Write-ServisLog "Windows OA3x rezultat: /ipk ExitCode=$($ipkRes.ExitCode) ($ipkTxt) | /ato ExitCode=$($atoRes.ExitCode) ($atoTxt)" -Level "INFO" -Component "License"
+                        }
+                        $winStatus = Get-WindowsLicenseStatus
+                        $winActive = [bool]($winStatus -and $winStatus.Activated)
+                    }
+                } catch {}
+            }
+
+            # (b) Ako nema OA3x ili Windows još nije aktiviran: primena [Licensing] KMS/MAK parametara + obavezni slmgr.vbs /ato (za digitalnu licencu)
+            if (-not $winActive) {
+                $appliedWinCfg = $false
+                if (($winActivationMode -in @("Auto", "Kms")) -and -not [string]::IsNullOrWhiteSpace($winKmsHost)) {
+                    if ($winKmsHost -match '^[A-Za-z0-9._:-]+$') {
+                        $winAppliedMethod = "KMS"
+                        $appliedWinCfg = $true
+                        $skmsTarget = "${winKmsHost}:${winKmsPort}"
+                        $skmsRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/skms", $skmsTarget) -TimeoutSec 25
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            $skmsMsg = Protect-WisLicenseLogText -Text (([string]$skmsRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
+                            Write-ServisLog "Primenjen Windows KMS host iz [Licensing]: /skms ExitCode=$($skmsRes.ExitCode) ($skmsMsg)" -Level "INFO" -Component "License"
+                        }
+                    } else {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Ignorisan nevalidan WindowsKmsHost u [Licensing] konfiguraciji (dozvoljeni su samo A-Za-z0-9._:-)." -Level "WARN" -Component "License"
+                        }
+                    }
+                }
+
+                if (($winActivationMode -in @("Auto", "Mak")) -and -not [string]::IsNullOrWhiteSpace($winProductKey) -and $winProductKey.Length -ge 25) {
+                    if ($winProductKey -match '^[A-Za-z0-9-]+$') {
+                        $winAppliedMethod = if ($winAppliedMethod) { "$winAppliedMethod+MAK" } else { "MAK" }
+                        $appliedWinCfg = $true
+                        $wIpkRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ipk", $winProductKey) -TimeoutSec 25
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            $wIpkMsg = Protect-WisLicenseLogText -Text (([string]$wIpkRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
+                            Write-ServisLog "Primenjen Windows MAK/Volume ključ iz [Licensing]: /ipk ExitCode=$($wIpkRes.ExitCode) ($wIpkMsg)" -Level "INFO" -Component "License"
+                        }
+                    } else {
+                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                            Write-ServisLog "Ignorisan nevalidan WindowsProductKey format u [Licensing] konfiguraciji (dozvoljeni su samo A-Za-z0-9-)." -Level "WARN" -Component "License"
+                        }
+                    }
+                }
+
+                if ((-not $attemptedSlmgrAto) -or $appliedWinCfg) {
+                    if (-not $winAppliedMethod) {
+                        $winAppliedMethod = "SLMGR_ATO"
+                    }
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Pokrećem slmgr.vbs /ato proveru Windows licence (digitalna ili konfigurisana licenca, Mod=$winActivationMode)..." -Level "INFO" -Component "License"
+                    }
+                    $wAtoRes = Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @("/ato") -TimeoutSec 25
+                    $wAtoOut = Protect-WisLicenseLogText -Text (([string]$wAtoRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
+                    if ($wAtoOut -match '(0x[0-9A-Fa-f]{8})') {
+                        $winLastErrorCode = $matches[1]
+                    }
+                    if ($wAtoOut) {
+                        $winLastErrorDesc = $wAtoOut
+                    } elseif ($wAtoRes.TimedOut) {
+                        $winLastErrorDesc = "slmgr.vbs /ato prekoračio timeout (25s)"
+                    }
+                    if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                        Write-ServisLog "Windows /ato rezultat: ExitCode=$($wAtoRes.ExitCode) ($winLastErrorDesc)" -Level $(if ($wAtoRes.Success) { "INFO" } else { "WARN" }) -Component "License"
+                    }
+                    $winStatus = Get-WindowsLicenseStatus
+                    $winActive = [bool]($winStatus -and $winStatus.Activated)
+                }
+            }
+        }
     }
 
     $offStatus = if ($hasOffice) { Get-OfficeLicenseStatus } else { $null }
@@ -3926,9 +4309,9 @@ function Invoke-WindowsOfficeActivation {
                     $sethstRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/sethst:$officeKmsHost") -TimeoutSec 25
                     $setprtRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/setprt:$officeKmsPort") -TimeoutSec 25
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        $shMsg = ($sethstRes.Output -replace '\r?\n', ' ').Trim()
-                        $spMsg = ($setprtRes.Output -replace '\r?\n', ' ').Trim()
-                        Write-ServisLog "Primenjen Office KMS host (${officeKmsHost}:$officeKmsPort): /sethst ExitCode=$($sethstRes.ExitCode) ($shMsg) | /setprt ExitCode=$($setprtRes.ExitCode) ($spMsg)" -Level "INFO" -Component "License"
+                        $shMsg = Protect-WisLicenseLogText -Text (([string]$sethstRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
+                        $spMsg = Protect-WisLicenseLogText -Text (([string]$setprtRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
+                        Write-ServisLog "Primenjen Office KMS host iz [Licensing] (port $officeKmsPort): /sethst ExitCode=$($sethstRes.ExitCode) ($shMsg) | /setprt ExitCode=$($setprtRes.ExitCode) ($spMsg)" -Level "INFO" -Component "License"
                     }
                 } else {
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
@@ -3942,7 +4325,7 @@ function Invoke-WindowsOfficeActivation {
                     $appliedAttemptMethod = if ($appliedAttemptMethod) { "$appliedAttemptMethod+MAK" } else { "MAK" }
                     $inpRes = Invoke-CscriptWithTimeout -ScriptPath $ospp -Arguments @("/inpkey:$officeProductKey") -TimeoutSec 25
                     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                        $inpMsg = ($inpRes.Output -replace '\r?\n', ' ').Trim()
+                        $inpMsg = Protect-WisLicenseLogText -Text (([string]$inpRes.Output -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
                         Write-ServisLog "Primenjen Office MAK/Volume ključ iz [Licensing]: /inpkey ExitCode=$($inpRes.ExitCode) ($inpMsg)" -Level "INFO" -Component "License"
                     }
                 } else {
@@ -3962,7 +4345,7 @@ function Invoke-WindowsOfficeActivation {
                 $lastOsppErrorCode = $matches[1].Trim()
             }
             if ($actOut -match '(?mi)ERROR DESCRIPTION:\s*(.+)') {
-                $lastOsppErrorDesc = Protect-WisLicenseLogText -Text $matches[1].Trim()
+                $lastOsppErrorDesc = Protect-WisLicenseLogText -Text $matches[1].Trim() -SensitiveHosts $sensitiveKmsHosts
             }
             $actSuccMatch = ($actOut -match '(?i)Product activation successful')
 
@@ -3974,7 +4357,7 @@ function Invoke-WindowsOfficeActivation {
                 } elseif ($lastOsppErrorCode) {
                     "OSPP.VBS /act greška: $lastOsppErrorCode $(if ($lastOsppErrorDesc) { '(' + $lastOsppErrorDesc + ')' } else { '' })"
                 } else {
-                    $cleanAct = ($actOut -replace '\r?\n', ' ').Trim()
+                    $cleanAct = Protect-WisLicenseLogText -Text (([string]$actOut -replace '\r?\n', ' ').Trim()) -SensitiveHosts $sensitiveKmsHosts
                     if ($cleanAct.Length -gt 240) { $cleanAct = $cleanAct.Substring(0, 240) + "..." }
                     "OSPP.VBS /act ExitCode=$($actRes.ExitCode): $cleanAct"
                 }
@@ -3992,7 +4375,9 @@ function Invoke-WindowsOfficeActivation {
     }
 
     # 6. Eksterni radionički hook (Programi\Licensing i Programi\CustomScripts) + NAS Sync fallback
-    $needsExternalHook = ((-not $winActive) -or ($hasOffice -and -not $offActive -and -not $officeSkipped)) -and ($officeActivationMode -in @("Auto", "ExternalHook"))
+    $winNeedsHook = (-not $winActive) -and (-not $winSkipped) -and ($winActivationMode -in @("Auto", "ExternalHook"))
+    $offNeedsHook = ($hasOffice -and -not $offActive -and -not $officeSkipped) -and ($officeActivationMode -in @("Auto", "ExternalHook"))
+    $needsExternalHook = $winNeedsHook -or $offNeedsHook
     if ($needsExternalHook) {
         $hookBaseDirs = [System.Collections.Generic.List[string]]::new()
         foreach ($candBase in @($ProgramiDir, "C:\setup\Programi")) {
@@ -4057,32 +4442,36 @@ function Invoke-WindowsOfficeActivation {
         }
 
         if ($discoveredHooks.LicensingHookPath) {
-            $appliedAttemptMethod = "ExternalHook"
+            if ($offNeedsHook) { $appliedAttemptMethod = "ExternalHook" }
+            if ($winNeedsHook) { $winAppliedMethod = "ExternalHook" }
             $hookRes = Invoke-ServisExternalLicensingHook -ScriptPath $discoveredHooks.LicensingHookPath -ProgramiDir $ProgramiDir -OfficeInstalled $hasOffice -WinActivated $winActive -OffActivated $offActive -TimeoutSec 180
             $lastHookExitCode = $hookRes.ExitCode
             $lastHookTail = $hookRes.TailSummary
             Start-Sleep -Seconds 2
-            $winActive = Test-WindowsActivated
+            $winStatus = Get-WindowsLicenseStatus
+            $winActive = [bool]($winStatus -and $winStatus.Activated)
             if ($hasOffice -and -not $officeSkipped) {
                 $offStatus = Get-OfficeLicenseStatus
                 $offActive = [bool]($offStatus -and $offStatus.Activated)
             }
         }
 
-        $stillNeedsHook = (-not $winActive) -or ($hasOffice -and -not $offActive -and -not $officeSkipped)
+        $stillNeedsHook = ((-not $winActive) -and (-not $winSkipped) -and ($winActivationMode -in @("Auto", "ExternalHook"))) -or ($hasOffice -and -not $offActive -and -not $officeSkipped -and ($officeActivationMode -in @("Auto", "ExternalHook")))
         if ($stillNeedsHook -and $discoveredHooks.CustomScriptFiles.Count -gt 0) {
-            $appliedAttemptMethod = "ExternalHook"
+            if ($offNeedsHook -and -not $offActive) { $appliedAttemptMethod = "ExternalHook" }
+            if ($winNeedsHook -and -not $winActive) { $winAppliedMethod = "ExternalHook" }
             foreach ($sc in $discoveredHooks.CustomScriptFiles) {
                 $csRes = Invoke-ServisExternalLicensingHook -ScriptPath $sc.FullName -ProgramiDir $ProgramiDir -OfficeInstalled $hasOffice -WinActivated $winActive -OffActivated $offActive -TimeoutSec 180
                 $lastHookExitCode = $csRes.ExitCode
                 $lastHookTail = $csRes.TailSummary
                 Start-Sleep -Seconds 2
-                $winActive = Test-WindowsActivated
+                $winStatus = Get-WindowsLicenseStatus
+                $winActive = [bool]($winStatus -and $winStatus.Activated)
                 if ($hasOffice -and -not $officeSkipped) {
                     $offStatus = Get-OfficeLicenseStatus
                     $offActive = [bool]($offStatus -and $offStatus.Activated)
                 }
-                if ($winActive -and ((-not $hasOffice) -or $officeSkipped -or $offActive)) {
+                if (($winActive -or $winSkipped) -and ((-not $hasOffice) -or $officeSkipped -or $offActive)) {
                     break
                 }
             }
@@ -4096,13 +4485,65 @@ function Invoke-WindowsOfficeActivation {
     }
 
     # 7. Završna evaluacija i strukturirani podaci (bez ključeva)
-    $winActive = Test-WindowsActivated
+    $winStatus = Get-WindowsLicenseStatus
+    $winActive = [bool]($winStatus -and $winStatus.Activated)
+    if ($winStatus) {
+        if ($winStatus.Oa3xPresent) { $winOa3Present = $true }
+        if (-not [string]::IsNullOrWhiteSpace($winStatus.Edition)) { $winEdition = [string]$winStatus.Edition }
+    }
     if ($hasOffice) {
         $offStatus = Get-OfficeLicenseStatus
         $offActive = [bool]($offStatus -and $offStatus.Activated)
     } else {
         $offStatus = $null
         $offActive = $true
+    }
+
+    $winMethod = "NONE"
+    $winDetail = ""
+    if ($winActive) {
+        $winMethod = if ($winAppliedMethod) { $winAppliedMethod } elseif ($winStatus -and $winStatus.Method -and $winStatus.Method -ne "NONE") { [string]$winStatus.Method } else { "Activated" }
+        $wSkuPart = if ($winStatus -and $winStatus.SkuName) { [string]$winStatus.SkuName } elseif ($winEdition) { $winEdition } else { "Windows" }
+        $wStatPart = if ($winStatus -and $winStatus.LicenseStatusText) { [string]$winStatus.LicenseStatusText } else { "Licensed" }
+        $winDetail = Protect-WisLicenseLogText -Text "$wSkuPart ($wStatPart)"
+    } elseif ($winSkipped) {
+        $winMethod = "Skip"
+        $winDetail = "Windows aktivacija preskočena (WindowsActivationMode=Skip)"
+    } else {
+        $winMethod = if ($winStatus -and $winStatus.Method -and $winStatus.Method -ne "NONE") { [string]$winStatus.Method } elseif ($winAppliedMethod) { $winAppliedMethod } else { "NONE" }
+        $wDetailParts = [System.Collections.Generic.List[string]]::new()
+        if ($winEditionMismatch) {
+            $wDetailParts.Add("Neslaganje edicije (OS='$winEdition' vs OA3x='$winOa3Desc')")
+        }
+        if (-not $winOa3Present) {
+            $wDetailParts.Add("BIOS OA3x ključ nije pronađen")
+        }
+        $winErrEff = if ($winStatus -and -not [string]::IsNullOrWhiteSpace($winStatus.LicenseStatusReason)) {
+            [string]$winStatus.LicenseStatusReason
+        } elseif (-not [string]::IsNullOrWhiteSpace($winLastErrorCode)) {
+            $winLastErrorCode
+        } else {
+            ""
+        }
+        if ($winErrEff) {
+            $wDetailParts.Add("SLMGR $winErrEff")
+        }
+        if ($winLastErrorDesc) {
+            $wDetailParts.Add($winLastErrorDesc)
+        } elseif ($winStatus -and -not [string]::IsNullOrWhiteSpace($winStatus.LicenseStatusText)) {
+            $wDetailParts.Add([string]$winStatus.LicenseStatusText)
+        }
+        if ($winNeedsHook -and $null -ne $lastHookExitCode) {
+            $wHookInfo = "ExternalHook ExitCode=$lastHookExitCode"
+            if ($lastHookTail) { $wHookInfo += " ($lastHookTail)" }
+            $wDetailParts.Add($wHookInfo)
+        } elseif (-not $winKmsHost -and ($winProductKey.Length -lt 25) -and -not $winOa3Present) {
+            $wDetailParts.Add("nema podešenog Windows KMS/MAK ključa u [Licensing] niti eksternog hooka")
+        }
+        $winDetail = Protect-WisLicenseLogText -Text ($wDetailParts -join " — ") -SensitiveHosts $sensitiveKmsHosts
+        if ([string]::IsNullOrWhiteSpace($winDetail)) {
+            $winDetail = "Windows nije aktiviran (Mod=$winActivationMode)"
+        }
     }
 
     $officeMethod = "NONE"
@@ -4143,18 +4584,23 @@ function Invoke-WindowsOfficeActivation {
         } elseif (-not $officeKmsHost -and ($officeProductKey.Length -lt 25)) {
             $detailParts.Add("nema podešenog KMS hosta/ključa u [Licensing] niti eksternog hooka")
         }
-        $officeDetail = Protect-WisLicenseLogText -Text ($detailParts -join " — ")
+        $officeDetail = Protect-WisLicenseLogText -Text ($detailParts -join " — ") -SensitiveHosts $sensitiveKmsHosts
         if ([string]::IsNullOrWhiteSpace($officeDetail)) {
             $officeDetail = "Office nije aktiviran (Mod=$officeActivationMode)"
         }
     }
 
+    $effectiveWinOk = $winActive -or $winSkipped
     $effectiveOfficeOk = (-not $hasOffice) -or $offActive -or $officeSkipped
-    $overallSuccess = $winActive -and $effectiveOfficeOk
+    $overallSuccess = $effectiveWinOk -and $effectiveOfficeOk
 
     $setupTargetDir = if ($Global:LocalSetupDir) { $Global:LocalSetupDir } else { "C:\setup" }
     $writtenStatus = Write-WisLicenseStatusFile `
         -WindowsActivated ([bool]$winActive) `
+        -WindowsOa3Present ([bool]$winOa3Present) `
+        -WindowsEdition $winEdition `
+        -WindowsLicenseMethod $winMethod `
+        -WindowsLicenseDetail $winDetail `
         -OfficeInstalled ([bool]$hasOffice) `
         -OfficeActivated ([bool]$offActive) `
         -OfficeActivationMode $officeActivationMode `
@@ -4165,6 +4611,10 @@ function Invoke-WindowsOfficeActivation {
     if (Get-Command Write-DiagnosticEvent -ErrorAction SilentlyContinue) {
         Write-DiagnosticEvent -Event "LICENSE_CHECK_RESULT" -App "License" -Status $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Data ([ordered]@{
             windows_activated      = [bool]$winActive
+            windows_oa3_present    = [bool]$winOa3Present
+            windows_edition        = [string]$winEdition
+            windows_license_method = [string]$winMethod
+            windows_license_detail = [string]$writtenStatus.windows_license_detail
             office_installed       = [bool]$hasOffice
             office_activated       = [bool]$offActive
             office_activation_mode = [string]$officeActivationMode
@@ -4175,7 +4625,21 @@ function Invoke-WindowsOfficeActivation {
     }
 
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-        Write-ServisLog "Status sistemskih licenci: WindowsActivated=$winActive, OfficeInstalled=$hasOffice, OfficeActivated=$offActive, Mode=$officeActivationMode, Method=$officeMethod, Detail=$($writtenStatus.office_license_detail)" -Level $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Component "License"
+        Write-ServisLog "Status sistemskih licenci: WindowsActivated=$winActive (OA3x=$winOa3Present, WinMethod=$winMethod, WinDetail=$($writtenStatus.windows_license_detail)), OfficeInstalled=$hasOffice, OfficeActivated=$offActive, Mode=$officeActivationMode, Method=$officeMethod, Detail=$($writtenStatus.office_license_detail)" -Level $(if ($overallSuccess) { 'SUCCESS' } else { 'WARN' }) -Component "License"
+    }
+
+    if (-not $winActive -and -not $winSkipped) {
+        $winActionMsg = "Windows nije aktiviran: $($writtenStatus.windows_license_detail)"
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog $winActionMsg -Level "WARN" -Component "License"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            if ($Global:WisPreserveCurrentPhase -eq $true) {
+                Send-IpcLog -Message $winActionMsg -Level "WARN" -Tag "[License]"
+            } else {
+                Send-IpcLog -Message $winActionMsg -Level "WARN" -Tag "[License]" -Phase 4
+            }
+        }
     }
 
     if ($hasOffice -and -not $offActive -and -not $officeSkipped) {
@@ -4196,7 +4660,8 @@ function Invoke-WindowsOfficeActivation {
         $uiLicMsg = if ($overallSuccess) {
             if ($officeSkipped -and $hasOffice) { "Windows licenca potvrđena (Office: Skip)" } else { "OEM i sistemske licence potvrđene" }
         } else {
-            "Potrebna provera licence ($($writtenStatus.office_license_detail))"
+            $errPreview = if (-not $winActive -and -not $winSkipped) { $writtenStatus.windows_license_detail } else { $writtenStatus.office_license_detail }
+            "Potrebna provera licence ($errPreview)"
         }
         Update-ServisUI -AppId "License" -AppStatus $(if ($overallSuccess) { "OK" } else { "WARN" }) -StatusMessage $uiLicMsg
     }
@@ -4210,8 +4675,15 @@ function Invoke-WindowsOfficeActivation {
     } else {
         "[!] Nije aktiviran ($($writtenStatus.office_license_detail))"
     }
+    $winDashTxt = if ($winActive) {
+        "[OK] Licenciran"
+    } elseif ($winSkipped) {
+        "[OK] Preskočeno (Skip)"
+    } else {
+        "[!] Nije aktiviran ($($writtenStatus.windows_license_detail))"
+    }
     $actLogs = @(
-        "Zavrsni Windows status: $(if ($winActive) { '[OK] Licenciran' } else { '[!] Nije aktiviran' })",
+        "Zavrsni Windows status: $winDashTxt",
         "Zavrsni Office status:  $officeDashTxt"
     )
     if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
@@ -5596,7 +6068,12 @@ function Invoke-Phase4Apps {
     $licStatusFile = Join-Path $LocalSetupDir "license-status.json"
     if ($stepActivation.State -eq "SKIPPED_DONE" -and -not (Test-Path -LiteralPath $licStatusFile -ErrorAction SilentlyContinue)) {
         try {
-            $skipWinAct = Test-WindowsActivated
+            $skipWinSt = Get-WindowsLicenseStatus
+            $skipWinAct = [bool]($skipWinSt -and $skipWinSt.Activated)
+            $skipWinOa3 = [bool]($skipWinSt -and $skipWinSt.Oa3xPresent)
+            $skipWinEd = if ($skipWinSt -and $skipWinSt.Edition) { [string]$skipWinSt.Edition } else { "" }
+            $skipWinMethod = if ($skipWinSt -and $skipWinSt.Method) { [string]$skipWinSt.Method } else { "NONE" }
+            $skipWinDetail = if ($skipWinSt -and $skipWinSt.SkuName) { "$($skipWinSt.SkuName) ($($skipWinSt.LicenseStatusText))" } elseif ($skipWinSt -and $skipWinSt.LicenseStatusText) { [string]$skipWinSt.LicenseStatusText } else { "Već licencirano" }
             $skipHasOff = Test-OfficeInstalled
             $skipOffSt = if ($skipHasOff) { Get-OfficeLicenseStatus } else { $null }
             $skipOffAct = if ($skipHasOff) { [bool]($skipOffSt -and $skipOffSt.Activated) } else { $true }
@@ -5604,7 +6081,7 @@ function Invoke-Phase4Apps {
             $skipMode = if ($skipCfg -and $skipCfg.OfficeActivationMode) { [string]$skipCfg.OfficeActivationMode } else { "Auto" }
             $skipMethod = if (-not $skipHasOff) { "NotInstalled" } elseif ($skipOffAct -and $skipOffSt) { [string]$skipOffSt.Method } elseif ($skipMode -ieq "Skip") { "Skip" } else { "NONE" }
             $skipDetailTxt = if ($stepActivation.Reason) { [string]$stepActivation.Reason } else { "Već licencirano" }
-            $null = Write-WisLicenseStatusFile -WindowsActivated $skipWinAct -OfficeInstalled $skipHasOff -OfficeActivated $skipOffAct -OfficeActivationMode $skipMode -OfficeLicenseMethod $skipMethod -OfficeLicenseDetail $skipDetailTxt -LocalSetupDir $LocalSetupDir
+            $null = Write-WisLicenseStatusFile -WindowsActivated $skipWinAct -WindowsOa3Present $skipWinOa3 -WindowsEdition $skipWinEd -WindowsLicenseMethod $skipWinMethod -WindowsLicenseDetail $skipWinDetail -OfficeInstalled $skipHasOff -OfficeActivated $skipOffAct -OfficeActivationMode $skipMode -OfficeLicenseMethod $skipMethod -OfficeLicenseDetail $skipDetailTxt -LocalSetupDir $LocalSetupDir
         } catch {}
     }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
@@ -5779,6 +6256,7 @@ Export-ModuleMember -Function `
     Remove-WinRARDesktopShortcut, `
     Create-ServisShortcuts, `
     Set-AcrobatDefaultPDF, `
+    Get-WindowsLicenseStatus, `
     Test-WindowsActivated, `
     Test-OfficeInstalled, `
     Protect-WisLicenseLogText, `

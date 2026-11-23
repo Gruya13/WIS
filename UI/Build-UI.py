@@ -154,6 +154,7 @@ def main():
         str(hwtest_dir / "Interop" / "NativeMethods.cs"),
         str(hwtest_dir / "Core" / "ResultModel.cs"),
         str(hwtest_dir / "Core" / "HwTestLogger.cs"),
+        str(hwtest_dir / "Core" / "HwTestLocalization.cs"),
         str(hwtest_dir / "Core" / "ModelProfileClient.cs"),
         str(hwtest_dir / "Core" / "HardwareProbe.cs"),
         str(hwtest_dir / "Core" / "FactorySpecProbe.cs"),

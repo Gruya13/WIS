@@ -87,6 +87,7 @@ namespace WIS.HwTest.Core
         public bool? FactoryKeyboardNumpad { get; set; }
         public string FactoryKeyboardDesc { get; set; }
         public bool? FactoryKeyboardBacklight { get; set; }
+        public string FactoryKeyboardBacklightEvidence { get; set; }
         public bool? HasKeyboardBacklight { get; set; }
         public bool KeyboardBacklightBiosDisabled { get; set; }
         public string KeyboardBacklightEvidence { get; set; }
@@ -100,6 +101,7 @@ namespace WIS.HwTest.Core
         {
             RecommendedLayout = "laptop-tkl-ansi";
             FactoryKeyboardDesc = "";
+            FactoryKeyboardBacklightEvidence = "";
             KeyboardBacklightEvidence = "";
             EstimatedUsbPortCount = 3;
             StylusPenName = "";
@@ -1043,15 +1045,9 @@ namespace WIS.HwTest.Core
                 if (disabled)
                 {
                     res.KeyboardBacklightBiosDisabled = true;
-                    if (!res.HasKeyboardBacklight.HasValue) res.HasKeyboardBacklight = true;
-                    res.KeyboardBacklightEvidence = "BIOS: " + formatted;
                 }
-                else
-                {
-                    res.HasKeyboardBacklight = true;
-                    if (string.IsNullOrEmpty(res.KeyboardBacklightEvidence))
-                        res.KeyboardBacklightEvidence = "BIOS: " + formatted;
-                }
+                // HP_BIOSSetting / Lenovo_BiosSetting / DCIM_BIOSEnumeration cesto postoje i na non-backlit plocama;
+                // samo belezimo u BiosAuditNotes (gore) i disabled warning, bez postavljanja HasKeyboardBacklight = true.
             }
         }
 
@@ -1180,11 +1176,13 @@ namespace WIS.HwTest.Core
                             res.BiosAuditNotes.Add("PnP ACPI/PM: " + devId + (string.IsNullOrEmpty(name) ? "" : " (" + name + ")"));
                         }
 
-                        if (upperName.Contains("BACKLIGHT") ||
-                            upperName.Contains("ILLUMINATED") ||
-                            upperName.Contains("RGB KEYBOARD") ||
-                            upperId.Contains("DELLABCE") ||
-                            upperId.Contains("LEN0071"))
+                        if ((upperName.Contains("BACKLIGHT") ||
+                             upperName.Contains("BACKLIT") ||
+                             upperName.Contains("ILLUMINATED") ||
+                             upperName.Contains("RGB KEYBOARD")) &&
+                            !upperName.Contains("DISPLAY") &&
+                            !upperName.Contains("SCREEN") &&
+                            !upperName.Contains("MONITOR"))
                         {
                             res.HasKeyboardBacklight = true;
                             if (string.IsNullOrEmpty(res.KeyboardBacklightEvidence))
@@ -1215,17 +1213,16 @@ namespace WIS.HwTest.Core
             }
 
             string mfg = (res.Manufacturer ?? "").ToUpperInvariant();
-            if (mfg.Contains("LENOVO") && string.IsNullOrEmpty(res.KeyboardBacklightEvidence))
+            if (mfg.Contains("LENOVO"))
             {
                 try
                 {
                     using (ManagementClass lenClass = new ManagementClass(@"root\WMI", "Lenovo_SetKeyboardBacklightStatus", null))
                     {
                         lenClass.Get();
-                        res.HasKeyboardBacklight = true;
-                        if (string.IsNullOrEmpty(res.KeyboardBacklightEvidence))
+                        if (res.BiosAuditNotes.Count < 45)
                         {
-                            res.KeyboardBacklightEvidence = "Lenovo WMI: Lenovo_SetKeyboardBacklightStatus";
+                            res.BiosAuditNotes.Add("Lenovo WMI klasa prisutna (ne dokazuje LED hardver): Lenovo_SetKeyboardBacklightStatus");
                         }
                     }
                 }
@@ -1237,7 +1234,7 @@ namespace WIS.HwTest.Core
                 res.HasKeyboardBacklight = false;
                 if (string.IsNullOrEmpty(res.KeyboardBacklightEvidence))
                 {
-                    res.KeyboardBacklightEvidence = "Desktop sistem (bez ugrađenog pozadinskog osvetljenja)";
+                    res.KeyboardBacklightEvidence = HwTestLocalization.Pick("Desktop sistem (bez ugrađenog pozadinskog osvetljenja)", "台式机系统(无内置背光)");
                 }
             }
         }
@@ -1343,17 +1340,60 @@ namespace WIS.HwTest.Core
 
             try
             {
-                uint[] queries = new uint[] { 0x01u, 0x32u };
-                foreach (uint q in queries)
+                uint inVal = 0x01u;
+                uint outVal = 0;
+                uint bytesRet = 0;
+                if (NativeMethods.DeviceIoControl(hDev, 0x83102144u, ref inVal, 4u, ref outVal, 4u, out bytesRet, IntPtr.Zero) &&
+                    bytesRet == 4u &&
+                    (outVal & 0x80000000u) == 0u)
                 {
-                    uint inVal = q;
-                    uint outVal = 0;
-                    uint bytesRet = 0;
-                    if (NativeMethods.DeviceIoControl(hDev, 0x83102144u, ref inVal, 4u, ref outVal, 4u, out bytesRet, IntPtr.Zero))
+                    if ((outVal & 0x01u) != 0u)
                     {
-                        detail = string.Format("EnergyDrv (0x83102144, q=0x{0:X}, res=0x{1:X})", q, outVal);
+                        detail = string.Format("EnergyDrv (0x83102144, q=0x01, res=0x{0:X})", outVal);
                         return true;
                     }
+                    // q=0x01 vraca eksplicitnu capability masku (res=0x0 znaci da osvetljenje nije podrzano)
+                    return false;
+                }
+
+                inVal = 0x32u;
+                outVal = 0;
+                bytesRet = 0;
+                if (NativeMethods.DeviceIoControl(hDev, 0x83102144u, ref inVal, 4u, ref outVal, 4u, out bytesRet, IntPtr.Zero) &&
+                    bytesRet == 4u &&
+                    (outVal & 0x80000000u) == 0u &&
+                    (outVal & 0x01u) != 0u)
+                {
+                    detail = string.Format("EnergyDrv (0x83102144, q=0x32, res=0x{0:X})", outVal);
+                    return true;
+                }
+            }
+            catch { }
+            finally
+            {
+                NativeMethods.CloseHandle(hDev);
+            }
+
+            return false;
+        }
+
+        public static bool TryReadLenovoEnergyDrvBacklightRaw(out uint rawState)
+        {
+            rawState = 0u;
+            IntPtr hDev = OpenKernelDeviceHandle(@"\\.\EnergyDrv");
+            if (hDev == IntPtr.Zero) return false;
+
+            try
+            {
+                uint inVal = 0x32u;
+                uint outVal = 0;
+                uint bytesRet = 0;
+                if (NativeMethods.DeviceIoControl(hDev, 0x83102144u, ref inVal, 4u, ref outVal, 4u, out bytesRet, IntPtr.Zero) &&
+                    bytesRet == 4u &&
+                    (outVal & 0x80000000u) == 0u)
+                {
+                    rawState = outVal;
+                    return true;
                 }
             }
             catch { }

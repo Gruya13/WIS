@@ -68,12 +68,16 @@ namespace WIS.HwTest.Tests
         {
             _hwInfo = hwInfo;
             OnRequestUefiBiosReboot = onRequestUefiBiosReboot;
-            _sensorName = string.IsNullOrEmpty(sensorName) ? "Biometrijski čitač otiska prsta" : sensorName;
+            _sensorName = string.IsNullOrEmpty(sensorName)
+                ? HwTestLocalization.Pick("Biometrijski čitač otiska prsta", "生物识别指纹传感器")
+                : sensorName;
             _initialUnitId = unitId;
 
-            Result = new TestItemResult("fingerprint", "Čitač otiska prsta", "Provera odziva biometrijskog senzora otiska prsta");
+            Result = new TestItemResult("fingerprint",
+                HwTestLocalization.Pick("Čitač otiska prsta", "指纹识别器"),
+                HwTestLocalization.Pick("Provera odziva biometrijskog senzora otiska prsta", "检测生物识别指纹传感器响应"));
 
-            Title = "WIS — Test Čitača Otiska Prsta";
+            Title = HwTestLocalization.Pick("WIS — Test Čitača Otiska Prsta", "WIS — 指纹识别器测试");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
@@ -92,14 +96,15 @@ namespace WIS.HwTest.Tests
             StackPanel spH = new StackPanel();
             spH.Children.Add(new TextBlock
             {
-                Text = "🖐️ TEST ČITAČA OTISKA PRSTA (FINGERPRINT)",
+                Text = HwTestLocalization.Pick("🖐️ TEST ČITAČA OTISKA PRSTA (FINGERPRINT)", "🖐️ 指纹识别器测试 (FINGERPRINT)"),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             });
             spH.Children.Add(new TextBlock
             {
-                Text = string.Format("Senzor: {0}{1}",
+                Text = HwTestLocalization.PickFormat("Senzor: {0}{1}",
+                    "传感器: {0}{1}",
                     _sensorName,
                     _initialUnitId > 0 ? string.Format(" (WBF Unit ID: {0})", _initialUnitId) : ""),
                 FontSize = 13,
@@ -146,7 +151,7 @@ namespace WIS.HwTest.Tests
 
             _statusText = new TextBlock
             {
-                Text = "Prislonite bilo koji prst na čitač otiska prsta...",
+                Text = HwTestLocalization.Pick("Prislonite bilo koji prst na čitač otiska prsta...", "请将任意手指轻触指纹传感器..."),
                 FontSize = 20,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -158,7 +163,7 @@ namespace WIS.HwTest.Tests
 
             _detailText = new TextBlock
             {
-                Text = "Povezivanje sa Windows Biometric Framework (WinBio) servisom...",
+                Text = HwTestLocalization.Pick("Povezivanje sa Windows Biometric Framework (WinBio) servisom...", "正在连接 Windows 生物识别框架 (WinBio) 服务..."),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(170, 175, 185)),
                 TextAlignment = TextAlignment.Center,
@@ -175,7 +180,7 @@ namespace WIS.HwTest.Tests
 
             _btnPass = new Button
             {
-                Content = "✓ Potvrdi (PASS)",
+                Content = HwTestLocalization.Pick("✓ Potvrdi (PASS)", "✓ 确认通过 (PASS)"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -188,19 +193,19 @@ namespace WIS.HwTest.Tests
 
             _btnFail = new Button
             {
-                Content = "✗ Senzor ne radi (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Senzor ne radi (FAIL)", "✗ 传感器故障 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
                 Padding = new Thickness(16, 10, 16, 10),
                 Margin = new Thickness(0, 0, 12, 0)
             };
-            _btnFail.Click += (s, e) => FinishFail("Tehničar označio da čitač otiska prsta ne reaguje / ne radi");
+            _btnFail.Click += (s, e) => FinishFail(HwTestLocalization.Pick("Tehničar označio da čitač otiska prsta ne reaguje / ne radi", "技术员标记指纹传感器无响应或故障"));
             spBtns.Children.Add(_btnFail);
 
             _btnRetry = new Button
             {
-                Content = "↻ Testiraj ponovo",
+                Content = HwTestLocalization.Pick("↻ Testiraj ponovo", "↻ 重新测试"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 Padding = new Thickness(16, 10, 16, 10),
@@ -211,7 +216,7 @@ namespace WIS.HwTest.Tests
 
             _btnSwitchMode = new Button
             {
-                Content = "🔄 Režim: LocateSensor",
+                Content = HwTestLocalization.Pick("🔄 Režim: LocateSensor", "🔄 模式: LocateSensor"),
                 Background = new SolidColorBrush(Color.FromRgb(75, 82, 95)),
                 Foreground = Brushes.White,
                 Padding = new Thickness(14, 10, 14, 10)
@@ -239,8 +244,11 @@ namespace WIS.HwTest.Tests
             StackPanel spBios = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
             spBios.Children.Add(new TextBlock
             {
-                Text = "⚠️ Čitač otiska prsta je onemogućen u BIOS-u ili nedostaje u Windowsu uprkos fabričkom BOM-u.\n" +
-                       "Uđite u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2), omogućite čitač i sačuvajte — WIS nastavlja gde je stao.",
+                Text = HwTestLocalization.Pick(
+                    "⚠️ Čitač otiska prsta je onemogućen u BIOS-u ili nedostaje u Windowsu uprkos fabričkom BOM-u.\n" +
+                    "Uđite u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2), omogućite čitač i sačuvajte — WIS nastavlja gde je stao.",
+                    "⚠️ 尽管出厂 BOM 包含指纹模块，但其在 BIOS 中被禁用或在 Windows 中缺失。\n" +
+                    "请进入 UEFI BIOS（HP: F10, Lenovo: F1, Dell: F2）启用指纹识别器并保存 — WIS 将自动继续当前测试。"),
                 FontSize = 12.5,
                 Foreground = new SolidColorBrush(Color.FromRgb(253, 230, 138)),
                 TextAlignment = TextAlignment.Center,
@@ -249,7 +257,7 @@ namespace WIS.HwTest.Tests
             });
             _btnBiosReboot = new Button
             {
-                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Content = HwTestLocalization.Pick("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", "🔧 重启进入 UEFI BIOS（之后继续 WIS）"),
                 Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -307,8 +315,9 @@ namespace WIS.HwTest.Tests
             if (OnRequestUefiBiosReboot == null)
             {
                 MessageBox.Show(
-                    "Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili čitač otiska prsta.",
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Restartujte računar i uđite u UEFI BIOS podešavanja (HP: F10, Lenovo: F1, Dell: F2) kako biste uključili čitač otiska prsta.",
+                        "请重启电脑并进入 UEFI BIOS 设置（HP: F10, Lenovo: F1, Dell: F2）以启用指纹识别器。"),
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 SafeCloseDialog(false);
@@ -360,9 +369,9 @@ namespace WIS.HwTest.Tests
             _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 204));
             _sensorIconText.Text = "👆";
             _statusText.Foreground = Brushes.White;
-            _statusText.Text = "Prislonite bilo koji prst na čitač otiska prsta...";
-            _detailText.Text = string.Format("Pokrećem WinBio sesiju ({0})...", GetModeDisplayName(_startMode));
-            _btnSwitchMode.Content = string.Format("🔄 Režim: {0}", GetModeDisplayName(_startMode));
+            _statusText.Text = HwTestLocalization.Pick("Prislonite bilo koji prst na čitač otiska prsta...", "请将任意手指轻触指纹传感器...");
+            _detailText.Text = HwTestLocalization.PickFormat("Pokrećem WinBio sesiju ({0})...", "正在启动 WinBio 会话 ({0})...", GetModeDisplayName(_startMode));
+            _btnSwitchMode.Content = HwTestLocalization.PickFormat("🔄 Režim: {0}", "🔄 模式: {0}", GetModeDisplayName(_startMode));
 
             StartListener();
         }
@@ -571,9 +580,10 @@ namespace WIS.HwTest.Tests
                             _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
                             _sensorIconText.Text = "🔒";
                             _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                            _statusText.Text = "UREĐAJ JE ONEMOGUĆEN U PODEŠAVANJIMA BIOS-a!";
-                            _detailText.Text = string.Format(
+                            _statusText.Text = HwTestLocalization.Pick("UREĐAJ JE ONEMOGUĆEN U PODEŠAVANJIMA BIOS-a!", "该设备已在 BIOS 设置中禁用！");
+                            _detailText.Text = HwTestLocalization.PickFormat(
                                 "BIOS postavka: {0}.\nUđite u BIOS (HP: F10, Lenovo: F1, Dell: F2), omogućite čitač otiska prsta (Enable) i sačuvajte podešavanja.",
+                                "BIOS 设置: {0}。\n请进入 BIOS（HP: F10, Lenovo: F1, Dell: F2），启用指纹识别器 (Enable) 并保存设置。",
                                 _hwInfo.FingerprintBiosStatus);
                             ShowBiosRebootHint = true;
                         }));
@@ -601,9 +611,10 @@ namespace WIS.HwTest.Tests
                         _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
                         _sensorIconText.Text = "⚠️";
                         _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                        _statusText.Text = "Windows Biometric Service (WBF) ne vidi aktivan senzor";
-                        _detailText.Text = string.Format(
+                        _statusText.Text = HwTestLocalization.Pick("Windows Biometric Service (WBF) ne vidi aktivan senzor", "Windows 生物识别服务 (WBF) 未检测到活动传感器");
+                        _detailText.Text = HwTestLocalization.PickFormat(
                             "PnP: '{0}'{1}. Proverite Device Manager (nedostaje WBDI drajver) ili BIOS podešavanje za Fingerprint (HP: F10, Lenovo: F1, Dell: F2).",
+                            "PnP: '{0}'{1}。请检查设备管理器（可能缺少 WBDI 驱动）或 BIOS 中的指纹设置（HP: F10, Lenovo: F1, Dell: F2）。",
                             _sensorName, extraDiag);
                         if (hasBomOrBiosWarning)
                         {
@@ -654,8 +665,8 @@ namespace WIS.HwTest.Tests
                             watchdog.Change(switchTimeoutMs, Timeout.Infinite);
 
                             Dispatcher.BeginInvoke(new Action(() => {
-                                _btnSwitchMode.Content = "🔄 Režim: " + modeLabel;
-                                _detailText.Text = string.Format("Aktivna sesija [{0}] ({1}) — dodirnite senzor prstom...", modeLabel, unitDesc);
+                                _btnSwitchMode.Content = HwTestLocalization.Pick("🔄 Režim: ", "🔄 模式: ") + modeLabel;
+                                _detailText.Text = HwTestLocalization.PickFormat("Aktivna sesija [{0}] ({1}) — dodirnite senzor prstom...", "当前会话 [{0}] ({1}) — 请用手指轻触传感器...", modeLabel, unitDesc);
                             }));
 
                             uint locatedUnit = 0;
@@ -671,7 +682,7 @@ namespace WIS.HwTest.Tests
                                 _captureMethod = "WinBioLocateSensor_System";
                                 _verifiedUnitId = locatedUnit;
                                 HwTestLogger.Info("FINGERPRINT", string.Format("WinBioLocateSensor(System) PASS: unit={0}", locatedUnit));
-                                NotifySuccess(unitDesc, locatedUnit, string.Format("Senzor #{0} uspešno detektovao prst (System LocateSensor).", locatedUnit));
+                                NotifySuccess(unitDesc, locatedUnit, HwTestLocalization.PickFormat("Senzor #{0} uspešno detektovao prst (System LocateSensor).", "传感器 #{0} 已成功检测到手指 (System LocateSensor)。", locatedUnit));
                                 return;
                             }
                             if (hrLoc == NativeMethods.WINBIO_E_CANCELED && _timedOutForSwitch)
@@ -703,8 +714,8 @@ namespace WIS.HwTest.Tests
                             watchdog.Change(switchTimeoutMs, Timeout.Infinite);
 
                             Dispatcher.BeginInvoke(new Action(() => {
-                                _btnSwitchMode.Content = "🔄 Režim: " + modeLabel;
-                                _detailText.Text = string.Format("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", modeLabel, unitDesc);
+                                _btnSwitchMode.Content = HwTestLocalization.Pick("🔄 Režim: ", "🔄 模式: ") + modeLabel;
+                                _detailText.Text = HwTestLocalization.PickFormat("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", "当前会话 [{0}] ({1}) — 请将手指轻按在指纹传感器上...", modeLabel, unitDesc);
                             }));
 
                             uint locatedUnit = 0;
@@ -720,7 +731,7 @@ namespace WIS.HwTest.Tests
                                 _captureMethod = "WinBioLocateSensor_Private";
                                 _verifiedUnitId = locatedUnit;
                                 HwTestLogger.Info("FINGERPRINT", string.Format("WinBioLocateSensor(Private) PASS: unit={0}", locatedUnit));
-                                NotifySuccess(unitDesc, locatedUnit, string.Format("Senzor #{0} uspešno detektovao prst (Private LocateSensor).", locatedUnit));
+                                NotifySuccess(unitDesc, locatedUnit, HwTestLocalization.PickFormat("Senzor #{0} uspešno detektovao prst (Private LocateSensor).", "传感器 #{0} 已成功检测到手指 (Private LocateSensor)。", locatedUnit));
                                 return;
                             }
                             if (hrLoc == NativeMethods.WINBIO_E_CANCELED && _timedOutForSwitch)
@@ -750,8 +761,8 @@ namespace WIS.HwTest.Tests
                         {
                             lock (_sessionLock) { _sessionHandle = ses; }
                             Dispatcher.BeginInvoke(new Action(() => {
-                                _btnSwitchMode.Content = "🔄 Režim: " + modeLabel;
-                                _detailText.Text = string.Format("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", modeLabel, unitDesc);
+                                _btnSwitchMode.Content = HwTestLocalization.Pick("🔄 Režim: ", "🔄 模式: ") + modeLabel;
+                                _detailText.Text = HwTestLocalization.PickFormat("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", "当前会话 [{0}] ({1}) — 请将手指轻按在指纹传感器上...", modeLabel, unitDesc);
                             }));
 
                             IntPtr idBuf = Marshal.AllocHGlobal(128);
@@ -777,7 +788,7 @@ namespace WIS.HwTest.Tests
                                         _verifiedUnitId = unitId;
                                         CloseActiveSession();
                                         HwTestLogger.Info("FINGERPRINT", string.Format("WinBioIdentify PASS: hr=0x{0:X8} unit={1}", hrIdent, unitId));
-                                        NotifySuccess(unitDesc, unitId, string.Format("Senzor #{0} uspešno očitao prst (WBF Identify).", unitId));
+                                        NotifySuccess(unitDesc, unitId, HwTestLocalization.PickFormat("Senzor #{0} uspešno očitao prst (WBF Identify).", "传感器 #{0} 已成功读取指纹 (WBF Identify)。", unitId));
                                         return;
                                     }
                                     else if (hrIdent == NativeMethods.WINBIO_E_BAD_CAPTURE)
@@ -789,8 +800,8 @@ namespace WIS.HwTest.Tests
                                             _btnPass.IsEnabled = true;
                                             _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                                             _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                                            _statusText.Text = "Dodir detektovan! Prislonite prst mirno radi čistog očitavanja...";
-                                            _detailText.Text = string.Format("Senzor je reagovao na prst (RejectDetail=0x{0:X}). Možete ponoviti ili kliknuti PASS.", rejectDetail);
+                                            _statusText.Text = HwTestLocalization.Pick("Dodir detektovan! Prislonite prst mirno radi čistog očitavanja...", "已检测到触摸！请保持手指静止以获取清晰指纹...");
+                                            _detailText.Text = HwTestLocalization.PickFormat("Senzor je reagovao na prst (RejectDetail=0x{0:X}). Možete ponoviti ili kliknuti PASS.", "传感器已响应触摸 (RejectDetail=0x{0:X})。您可重试或直接点击 PASS。", rejectDetail);
                                         }));
                                     }
                                     else if (hrIdent == NativeMethods.WINBIO_E_CANCELED && _timedOutForSwitch)
@@ -835,8 +846,8 @@ namespace WIS.HwTest.Tests
                         {
                             lock (_sessionLock) { _sessionHandle = ses; }
                             Dispatcher.BeginInvoke(new Action(() => {
-                                _btnSwitchMode.Content = "🔄 Režim: " + modeLabel;
-                                _detailText.Text = string.Format("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", modeLabel, unitDesc);
+                                _btnSwitchMode.Content = HwTestLocalization.Pick("🔄 Režim: ", "🔄 模式: ") + modeLabel;
+                                _detailText.Text = HwTestLocalization.PickFormat("Aktivna sesija [{0}] ({1}) — prislonite prst na čitač...", "当前会话 [{0}] ({1}) — 请将手指轻按在指纹传感器上...", modeLabel, unitDesc);
                             }));
 
                             byte[] purposes = new byte[] { NativeMethods.WINBIO_NO_PURPOSE_AVAILABLE, NativeMethods.WINBIO_PURPOSE_VERIFY };
@@ -880,7 +891,7 @@ namespace WIS.HwTest.Tests
                                             _sampleSizeBytes = bytesCount;
                                             CloseActiveSession();
                                             HwTestLogger.Info("FINGERPRINT", string.Format("{0} PASS: unit={1} bytes={2}", _captureMethod, unitId, bytesCount));
-                                            NotifySuccess(unitDesc, unitId, string.Format("Senzor #{0} očitao biometrijski uzorak ({1} B).", unitId, bytesCount));
+                                            NotifySuccess(unitDesc, unitId, HwTestLocalization.PickFormat("Senzor #{0} očitao biometrijski uzorak ({1} B).", "传感器 #{0} 已读取生物特征样本 ({1} B)。", unitId, bytesCount));
                                             return;
                                         }
                                         else if (hrCap == NativeMethods.WINBIO_E_BAD_CAPTURE)
@@ -892,8 +903,8 @@ namespace WIS.HwTest.Tests
                                                 _btnPass.IsEnabled = true;
                                                 _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                                                 _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                                                _statusText.Text = "Dodir detektovan! Prislonite ceo prst mirno radi čistog očitavanja...";
-                                                _detailText.Text = string.Format("Senzor je reagovao na prst (RejectDetail=0x{0:X}). Možete ponoviti ili odmah kliknuti PASS.", rejectDetail);
+                                                _statusText.Text = HwTestLocalization.Pick("Dodir detektovan! Prislonite ceo prst mirno radi čistog očitavanja...", "已检测到触摸！请将手指平放静止以获取清晰图像...");
+                                                _detailText.Text = HwTestLocalization.PickFormat("Senzor je reagovao na prst (RejectDetail=0x{0:X}). Možete ponoviti ili odmah kliknuti PASS.", "传感器已响应触摸 (RejectDetail=0x{0:X})。您可重试或直接点击 PASS。", rejectDetail);
                                             }));
                                         }
                                         else if (hrCap == NativeMethods.WINBIO_E_CANCELED && _timedOutForSwitch)
@@ -941,8 +952,9 @@ namespace WIS.HwTest.Tests
                         _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(220, 53, 69));
                         _sensorIconText.Text = "⚠️";
                         _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                        _statusText.Text = string.Format("{0} greška (0x{1:X8})", string.IsNullOrEmpty(lastErrorName) ? "WinBio" : lastErrorName, lastErrorHr);
-                        _detailText.Text = "Nijedan WBF režim nije uspeo da otvori sesiju. Kliknite 'Testiraj ponovo' ili označite FAIL ako senzor ne reaguje.";
+                        _statusText.Text = HwTestLocalization.PickFormat("{0} greška (0x{1:X8})", "{0} 错误 (0x{1:X8})", string.IsNullOrEmpty(lastErrorName) ? "WinBio" : lastErrorName, lastErrorHr);
+                        _detailText.Text = HwTestLocalization.Pick("Nijedan WBF režim nije uspeo da otvori sesiju. Kliknite 'Testiraj ponovo' ili označite FAIL ako senzor ne reaguje.",
+                            "所有 WBF 模式均未能打开会话。请点击“重新测试”，若传感器仍无响应请标记为 FAIL。");
                     }));
                 }
             }
@@ -950,8 +962,8 @@ namespace WIS.HwTest.Tests
             {
                 HwTestLogger.Error("FINGERPRINT", "winbio.dll nije dostupan na ovom Windows sistemu");
                 Dispatcher.BeginInvoke(new Action(() => {
-                    _statusText.Text = "winbio.dll nije dostupan na sistemu";
-                    _detailText.Text = "Windows Biometric Framework nije instaliran.";
+                    _statusText.Text = HwTestLocalization.Pick("winbio.dll nije dostupan na sistemu", "系统中找不到 winbio.dll");
+                    _detailText.Text = HwTestLocalization.Pick("Windows Biometric Framework nije instaliran.", "Windows 生物识别框架未安装。");
                 }));
             }
             catch (Exception ex)
@@ -974,8 +986,8 @@ namespace WIS.HwTest.Tests
                 _sensorBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(40, 167, 69));
                 _sensorIconText.Text = "✓";
                 _statusText.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
-                _statusText.Text = "✓ ČITAČ OTISKA PRSTA RADI!";
-                _detailText.Text = msg + string.Format(" ({0}) — automatski zaključujem za 1.5s...", unitDesc);
+                _statusText.Text = HwTestLocalization.Pick("✓ ČITAČ OTISKA PRSTA RADI!", "✓ 指纹识别器工作正常！");
+                _detailText.Text = msg + HwTestLocalization.PickFormat(" ({0}) — automatski zaključujem za 1.5s...", " ({0}) — 1.5 秒后自动通过...", unitDesc);
                 _btnPass.IsEnabled = true;
 
                 StartAutoPassTimer();

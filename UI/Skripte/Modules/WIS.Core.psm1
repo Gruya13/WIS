@@ -631,6 +631,10 @@ function Get-ServisLicensingSettings {
     $kmsHost = ""
     $kmsPort = 1688
     $productKey = ""
+    $winMode = "Auto"
+    $winKmsHost = ""
+    $winKmsPort = 1688
+    $winProductKey = ""
 
     $validModes = @{
         "auto"         = "Auto"
@@ -685,6 +689,28 @@ function Get-ServisLicensingSettings {
                         if (-not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME" -and $v -ne "promeni_kljuc") {
                             $productKey = $v
                         }
+                    } elseif ($k -ieq "WindowsActivationMode" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $vLowerW = $v.ToLowerInvariant()
+                        if ($validModes.ContainsKey($vLowerW)) {
+                            $winMode = $validModes[$vLowerW]
+                        } else {
+                            Write-ServisLog "Nepoznata vrednost WindowsActivationMode='$v' u [Licensing]; vracam na podrazumevano 'Auto'." -Level "WARN" -Component "License"
+                            $winMode = "Auto"
+                        }
+                    } elseif ($k -ieq "WindowsKmsHost") {
+                        if (-not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME") {
+                            $winKmsHost = $v
+                        }
+                    } elseif ($k -ieq "WindowsKmsPort" -and -not [string]::IsNullOrWhiteSpace($v)) {
+                        $parsedWinPort = 0
+                        if ([int]::TryParse($v, [ref]$parsedWinPort) -and $parsedWinPort -ge 1 -and $parsedWinPort -le 65535) {
+                            $winKmsPort = $parsedWinPort
+                        }
+                    } elseif ($k -ieq "WindowsProductKey") {
+                        # Strogo zabranjeno logovanje vrednosti WindowsProductKey
+                        if (-not [string]::IsNullOrWhiteSpace($v) -and $v -ne "CHANGE_ME" -and $v -ne "promeni_kljuc") {
+                            $winProductKey = $v
+                        }
                     }
                 }
             }
@@ -694,12 +720,16 @@ function Get-ServisLicensingSettings {
     }
 
     return [PSCustomObject]@{
-        Found                = [bool]$found
-        IniPath              = $iniPath
-        OfficeActivationMode = $mode
-        OfficeKmsHost        = $kmsHost
-        OfficeKmsPort        = [int]$kmsPort
-        OfficeProductKey     = $productKey
+        Found                 = [bool]$found
+        IniPath               = $iniPath
+        OfficeActivationMode  = $mode
+        OfficeKmsHost         = $kmsHost
+        OfficeKmsPort         = [int]$kmsPort
+        OfficeProductKey      = $productKey
+        WindowsActivationMode = $winMode
+        WindowsKmsHost        = $winKmsHost
+        WindowsKmsPort        = [int]$winKmsPort
+        WindowsProductKey     = $winProductKey
     }
 }
 

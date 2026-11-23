@@ -189,6 +189,32 @@ foreach ($pol in $policies) {
     }
 }
 
+$locPolKey = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors'
+if (Test-Path $locPolKey) {
+    try {
+        $dlProp = Get-ItemProperty -Path $locPolKey -Name 'DisableLocation' -ErrorAction SilentlyContinue
+        if ($null -ne $dlProp -and $null -ne $dlProp.DisableLocation -and [int]$dlProp.DisableLocation -eq 1) {
+            Remove-ItemProperty -Path $locPolKey -Name 'DisableLocation' -Force -ErrorAction SilentlyContinue
+            Write-Log 'Uklonjena zaostala polisa LocationAndSensors\DisableLocation=1.' 'SUCCESS' 'Registry'
+        }
+    } catch {}
+}
+
+try {
+    $lfsvcReg = 'HKLM:\SYSTEM\CurrentControlSet\Services\lfsvc'
+    if (Test-Path $lfsvcReg) {
+        $lfStart = (Get-ItemProperty -Path $lfsvcReg -Name 'Start' -ErrorAction SilentlyContinue).Start
+        if ($null -ne $lfStart -and [int]$lfStart -eq 4) {
+            & sc.exe config lfsvc start= demand >$null 2>&1
+            Write-Log 'Servis lfsvc vracen iz Disabled u Manual (demand).' 'SUCCESS' 'Registry'
+        }
+    }
+    $lfSvcObj = Get-Service -Name 'lfsvc' -ErrorAction SilentlyContinue
+    if ($lfSvcObj -and $lfSvcObj.Status -ne 'Running') {
+        Start-Service -Name 'lfsvc' -ErrorAction SilentlyContinue
+    }
+} catch {}
+
 Write-Log 'Konfigurisanje SMB klijenta za nesiguran Guest pristup i onemogucavanje obaveznog SMB potpisivanja (Win 11 24H2 kompatibilnost)...' 'STEP' 'Registry'
 & reg.exe add 'HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters' /v 'AllowInsecureGuestAuth' /t REG_DWORD /d 1 /f >$null 2>&1
 $smbExit1 = $LASTEXITCODE
@@ -200,16 +226,41 @@ if ($smbExit1 -eq 0 -and $smbExit2 -eq 0) {
     Register-CriticalFailure ('Neuspesno postavljanje kriticnih SMB parametara u registru (Exit1={0}, Exit2={1}).' -f $smbExit1, $smbExit2) 'Registry'
 }
 
-Write-Log 'Sprecavanje automatskog otvaranja Start Menija i animacija pri prvom logovanju...' 'STEP' 'Registry'
+Write-Log 'Sprecavanje automatskog otvaranja Start Menija i animacija pri prvom logovanju + omogucavanje Location pristupa (ConsentStore=Allow)...' 'STEP' 'Registry'
 & reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' /v 'EnableFirstLogonAnimation' /t REG_DWORD /d 0 /f >$null 2>&1
 $animExit = $LASTEXITCODE
-& reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location' /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
+$locSubKey = 'Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location'
+& reg.exe add "HKLM\$locSubKey" /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
+& reg.exe add "HKLM\$locSubKey" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+& reg.exe add "HKLM\$locSubKey\NonPackaged" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+& reg.exe add "HKCU\$locSubKey" /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
+& reg.exe add "HKCU\$locSubKey" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+& reg.exe add "HKCU\$locSubKey\NonPackaged" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+
+try {
+    $loadedSids = Get-ChildItem -Path 'Registry::HKEY_USERS' -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSChildName -match '^S-1-5-21-' -and $_.PSChildName -notlike '*_Classes' }
+    foreach ($sidNode in $loadedSids) {
+        $sidRegPath = "HKU\$($sidNode.PSChildName)\$locSubKey"
+        & reg.exe add $sidRegPath /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
+        & reg.exe add $sidRegPath /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+        & reg.exe add "$sidRegPath\NonPackaged" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+    }
+} catch {}
+
 & reg.exe load 'HKU\DefaultUser' 'C:\Users\Default\NTUSER.DAT' >$null 2>&1
-& reg.exe add 'HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' /v 'StartShownOnUpgrade' /t REG_DWORD /d 1 /f >$null 2>&1
-& reg.exe add 'HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location' /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
-& reg.exe unload 'HKU\DefaultUser' >$null 2>&1
+if ($LASTEXITCODE -eq 0) {
+    try {
+        & reg.exe add 'HKU\DefaultUser\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' /v 'StartShownOnUpgrade' /t REG_DWORD /d 1 /f >$null 2>&1
+        & reg.exe add "HKU\DefaultUser\$locSubKey" /v 'ShowGlobalPrompts' /t REG_DWORD /d 0 /f >$null 2>&1
+        & reg.exe add "HKU\DefaultUser\$locSubKey" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+        & reg.exe add "HKU\DefaultUser\$locSubKey\NonPackaged" /v 'Value' /t REG_SZ /d 'Allow' /f >$null 2>&1
+    } finally {
+        & reg.exe unload 'HKU\DefaultUser' >$null 2>&1
+    }
+}
 if ($animExit -eq 0) {
-    Write-Log 'Polise StartShownOnUpgrade=1 (DefaultUser), ShowGlobalPrompts=0 (Location popup off) i EnableFirstLogonAnimation=0 primenjene.' 'SUCCESS' 'Registry'
+    Write-Log 'Polise StartShownOnUpgrade=1 (DefaultUser), Location ConsentStore=Allow (HKLM/HKCU/HKU/DefaultUser), ShowGlobalPrompts=0 i EnableFirstLogonAnimation=0 primenjene.' 'SUCCESS' 'Registry'
 } else {
     Register-CriticalFailure ('Neuspesno postavljanje kriticne polise EnableFirstLogonAnimation (ExitCode={0}).' -f $animExit) 'Registry'
 }

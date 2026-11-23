@@ -254,6 +254,37 @@ namespace WIS.HwTest.Core
             return SendPostOrQueue("/api/model-profile/usb", payload);
         }
 
+        public bool PostUsbOverride(
+            string modelName,
+            int portCount,
+            int targetPorts,
+            int detectedPorts,
+            List<string> physicalPortLocations,
+            int chargerPortsCount,
+            int maxTypeCCap,
+            bool manualOverride,
+            string serialNumber,
+            string by = "serviser_autolearn")
+        {
+            string resolvedBy = !string.IsNullOrEmpty(by)
+                ? by
+                : (manualOverride ? "serviser" : "serviser_autolearn");
+            Dictionary<string, object> payload = new Dictionary<string, object>
+            {
+                { "model", modelName },
+                { "port_count", portCount },
+                { "target_ports", targetPorts },
+                { "detected_ports", detectedPorts },
+                { "physical_port_locations", physicalPortLocations ?? new List<string>() },
+                { "charger_ports_count", chargerPortsCount },
+                { "max_typec_cap", maxTypeCCap },
+                { "manual_override", manualOverride },
+                { "serial", serialNumber ?? "" },
+                { "by", resolvedBy }
+            };
+            return SendPostOrQueue("/api/model-profile/usb", payload);
+        }
+
         private bool SendPostOrQueue(string endpoint, Dictionary<string, object> payload)
         {
             string json = SimpleJson.Serialize(payload);

@@ -21,8 +21,11 @@ namespace WIS.HwTest.Tests
     {
         private readonly ModelProfileClient _profileClient;
         private readonly string _modelName;
+        private readonly string _serialNumber;
         private int _targetPortCount = 3;
         private readonly HashSet<string> _detectedPortLocations;
+        private readonly HashSet<string> _physicalPortLocations;
+        private bool _userManuallyAdjustedTarget = false;
 
         private TextBlock _progressText;
         private ProgressBar _progressBar;
@@ -56,6 +59,8 @@ namespace WIS.HwTest.Tests
         private bool _waitingForChargerReplug = false;
         private DateTime _chargerDisconnectedUtc = DateTime.MinValue;
         private int _chargerPlugCount = 0;
+        private int _maxTypeCChargerCap = 0;
+        private bool _cachedTypeCCapInitialized = false;
         private bool? _cachedHasTypeCController = null;
         private bool _isClosingOrDone = false;
 
@@ -78,16 +83,25 @@ namespace WIS.HwTest.Tests
         public TestItemResult Result { get; private set; }
 
         public UsbPortTestWindow(string modelName, int? prefilledCount, ModelProfileClient profileClient)
+            : this(modelName, prefilledCount, profileClient, "")
+        {
+        }
+
+        public UsbPortTestWindow(string modelName, int? prefilledCount, ModelProfileClient profileClient, string serialNumber)
         {
             _modelName = modelName ?? "Generic";
+            _serialNumber = serialNumber ?? "";
             _profileClient = profileClient;
             if (prefilledCount.HasValue && prefilledCount.Value > 0)
                 _targetPortCount = prefilledCount.Value;
 
-            Result = new TestItemResult("usb", "USB portovi", "Ispitivanje svih fizičkih USB portova uzastopnim ubacivanjem fleš diska");
+            Result = new TestItemResult("usb",
+                HwTestLocalization.Pick("USB portovi", "USB 接口"),
+                HwTestLocalization.Pick("Ispitivanje svih fizičkih USB portova uzastopnim ubacivanjem fleš diska", "通过依次插入 U 盘测试所有物理 USB 接口"));
             _detectedPortLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _physicalPortLocations = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            Title = "WIS — Test USB Portova";
+            Title = HwTestLocalization.Pick("WIS — Test USB Portova", "WIS — USB 接口测试");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
@@ -111,7 +125,7 @@ namespace WIS.HwTest.Tests
             StackPanel spH = new StackPanel();
             TextBlock title = new TextBlock
             {
-                Text = "🔌 TEST USB PORTOVA",
+                Text = HwTestLocalization.Pick("🔌 TEST USB PORTOVA", "🔌 USB 接口测试"),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
@@ -120,7 +134,8 @@ namespace WIS.HwTest.Tests
 
             TextBlock sub = new TextBlock
             {
-                Text = "Ubacite bilo koji USB fleš disk redom u svaki USB port na računaru (sačekajte detekciju pre prelaska na sledeći)",
+                Text = HwTestLocalization.Pick("Ubacite bilo koji USB fleš disk redom u svaki USB port na računaru (sačekajte detekciju pre prelaska na sledeći)",
+                    "请将任意 U 盘依次插入电脑的每个 USB 接口（等待识别后再换下一个接口）"),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 170)),
                 Margin = new Thickness(0, 4, 0, 0)
@@ -132,7 +147,7 @@ namespace WIS.HwTest.Tests
             StackPanel spTarget = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
             TextBlock lblTarget = new TextBlock
             {
-                Text = "Ukupan broj USB portova na kućištu:",
+                Text = HwTestLocalization.Pick("Ukupan broj USB portova na kućištu:", "机身 USB 接口总数:"),
                 Foreground = Brushes.White,
                 FontSize = 13,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -156,6 +171,7 @@ namespace WIS.HwTest.Tests
             {
                 if (_targetPortCount > 1)
                 {
+                    _userManuallyAdjustedTarget = true;
                     _targetPortCount--;
                     _txtPortCount.Text = _targetPortCount.ToString();
                 }
@@ -178,6 +194,7 @@ namespace WIS.HwTest.Tests
                 int val;
                 if (int.TryParse(_txtPortCount.Text.Trim(), out val) && val > 0)
                 {
+                    _userManuallyAdjustedTarget = true;
                     _targetPortCount = val;
                     UpdateProgress();
                 }
@@ -200,6 +217,7 @@ namespace WIS.HwTest.Tests
             {
                 if (_targetPortCount < 20)
                 {
+                    _userManuallyAdjustedTarget = true;
                     _targetPortCount++;
                     _txtPortCount.Text = _targetPortCount.ToString();
                 }
@@ -225,7 +243,7 @@ namespace WIS.HwTest.Tests
             StackPanel spC = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
             _progressText = new TextBlock
             {
-                Text = "Detektovano: 0 / 3 porta",
+                Text = HwTestLocalization.PickFormat("Detektovano: 0 / {0} porta", "已检测到: 0 / {0} 个接口", _targetPortCount),
                 FontSize = 26,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -249,7 +267,7 @@ namespace WIS.HwTest.Tests
 
             _chargerStatusText = new TextBlock
             {
-                Text = "⚡ Status punjača: proveravam USB-C / PD napajanje...",
+                Text = HwTestLocalization.Pick("⚡ Status punjača: proveravam USB-C / PD napajanje...", "⚡ 充电器状态: 正在检测 USB-C / PD 供电..."),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(180, 195, 215)),
                 TextAlignment = TextAlignment.Center,
@@ -260,7 +278,8 @@ namespace WIS.HwTest.Tests
 
             _usbDeviceStatusText = new TextBlock
             {
-                Text = "🔌 Ubacite USB fleš ili bilo koji USB uređaj u prvi port (isti uređaj testira sve portove).",
+                Text = HwTestLocalization.Pick("🔌 Ubacite USB fleš ili bilo koji USB uređaj u prvi port (isti uređaj testira sve portove).",
+                    "🔌 请将 U 盘或任意 USB 设备插入第一个接口（可用同一设备测试所有接口）。"),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(165, 215, 255)),
@@ -272,7 +291,7 @@ namespace WIS.HwTest.Tests
 
             _btnConfirmSharedPort = new Button
             {
-                Content = "➕ Priznaj priključeni uređaj kao novi port",
+                Content = HwTestLocalization.Pick("➕ Priznaj priključeni uređaj kao novi port", "➕ 将当前连接的设备确认为新接口"),
                 Background = new SolidColorBrush(Color.FromRgb(230, 145, 25)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -286,7 +305,7 @@ namespace WIS.HwTest.Tests
 
             _btnAdjustTargetToDetected = new Button
             {
-                Content = "🎯 Uređaj fizički ima manje portova? Podesi cilj na detektovane",
+                Content = HwTestLocalization.Pick("🎯 Uređaj fizički ima manje portova? Podesi cilj na detektovane", "🎯 设备物理接口数量更少？将目标调整为已检测数量"),
                 Background = new SolidColorBrush(Color.FromRgb(45, 95, 155)),
                 Foreground = Brushes.White,
                 FontSize = 12.5,
@@ -300,6 +319,7 @@ namespace WIS.HwTest.Tests
             {
                 if (_detectedPortLocations.Count > 0)
                 {
+                    _userManuallyAdjustedTarget = true;
                     _targetPortCount = _detectedPortLocations.Count;
                     _txtPortCount.Text = _targetPortCount.ToString();
                     UpdateProgress();
@@ -326,7 +346,7 @@ namespace WIS.HwTest.Tests
 
             _btnUsbEasterEgg = new Button
             {
-                Content = "Preskoči test",
+                Content = HwTestLocalization.Pick("Preskoči test", "跳过测试"),
                 Background = new SolidColorBrush(Color.FromRgb(75, 80, 92)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.SemiBold,
@@ -342,7 +362,7 @@ namespace WIS.HwTest.Tests
 
             _btnPass = new Button
             {
-                Content = "✓ Potvrdi (PASS)",
+                Content = HwTestLocalization.Pick("✓ Potvrdi (PASS)", "✓ 确认通过 (PASS)"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -355,7 +375,7 @@ namespace WIS.HwTest.Tests
 
             Button btnUsbFail = new Button
             {
-                Content = "✗ Neispravan USB port (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Neispravan USB port (FAIL)", "✗ USB 接口故障 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -842,10 +862,13 @@ namespace WIS.HwTest.Tests
 
             if (!string.IsNullOrEmpty(_pendingSharedPortKey))
             {
-                string devLabel = string.IsNullOrEmpty(_pendingSharedDeviceName) ? "USB uređaj" : _pendingSharedDeviceName;
+                string devLabel = string.IsNullOrEmpty(_pendingSharedDeviceName)
+                    ? HwTestLocalization.Pick("USB uređaj", "USB 设备")
+                    : _pendingSharedDeviceName;
                 _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                _usbDeviceStatusText.Text = string.Format(
+                _usbDeviceStatusText.Text = HwTestLocalization.PickFormat(
                     "⚠️ '{0}' je ponovo uboden, ali kontroler prijavljuje istu putanju kao prethodni port. Ako je ovo drugi port, kliknite dugme ispod:",
+                    "⚠️ “{0}”已重新插入，但控制器报告了与上一个接口相同的路径。如果这是另一个物理接口，请点击下方按钮：",
                     devLabel);
                 if (_btnConfirmSharedPort != null) _btnConfirmSharedPort.Visibility = Visibility.Visible;
                 return;
@@ -853,28 +876,39 @@ namespace WIS.HwTest.Tests
 
             if (_btnConfirmSharedPort != null) _btnConfirmSharedPort.Visibility = Visibility.Collapsed;
 
+            if (_detectedPortLocations.Count > _targetPortCount)
+            {
+                _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
+                _usbDeviceStatusText.Text = HwTestLocalization.PickFormat(
+                    "✨ Otkriven dodatni fizički port ({0}/{1}) — profil modela će automatski naučiti {0} portova nakon PASS.",
+                    "✨ 检测到额外物理接口 ({0}/{1}) — 点击 PASS 后机型配置将自动学习为 {0} 个接口。",
+                    _detectedPortLocations.Count, _targetPortCount);
+                return;
+            }
+
             if (_currentlyAttachedDevices.Count > 0)
             {
                 if (_detectedPortLocations.Count >= _targetPortCount)
                 {
                     _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-                    _usbDeviceStatusText.Text = string.Format("✅ Svi ciljani USB portovi ({0}/{1}) su uspešno detektovani!", _detectedPortLocations.Count, _targetPortCount);
+                    _usbDeviceStatusText.Text = HwTestLocalization.PickFormat("✅ Svi ciljani USB portovi ({0}/{1}) su uspešno detektovani!", "✅ 所有目标 USB 接口 ({0}/{1}) 已成功检测到！", _detectedPortLocations.Count, _targetPortCount);
                 }
                 else
                 {
                     _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(165, 215, 255));
-                    _usbDeviceStatusText.Text = "🔄 Uređaj je u portu — sada ga IZVUCITE i ubacite u SLEDEĆI USB port!";
+                    _usbDeviceStatusText.Text = HwTestLocalization.Pick("🔄 Uređaj je u portu — sada ga IZVUCITE i ubacite u SLEDEĆI USB port!", "🔄 设备已插入接口 — 现在请拔出并插入下一个 USB 接口！");
                 }
             }
             else if (_totalReplugEvents > 0)
             {
                 _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-                _usbDeviceStatusText.Text = "✅ Uređaj izvučen — spremno! Ubacite ga u sledeći USB port...";
+                _usbDeviceStatusText.Text = HwTestLocalization.Pick("✅ Uređaj izvučen — spremno! Ubacite ga u sledeći USB port...", "✅ 设备已拔出 — 就绪！请将其插入下一个 USB 接口...");
             }
             else
             {
                 _usbDeviceStatusText.Foreground = new SolidColorBrush(Color.FromRgb(180, 195, 215));
-                _usbDeviceStatusText.Text = "🔌 Ubacite USB fleš ili bilo koji USB uređaj u prvi port (isti uređaj testira sve portove).";
+                _usbDeviceStatusText.Text = HwTestLocalization.Pick("🔌 Ubacite USB fleš ili bilo koji USB uređaj u prvi port (isti uređaj testira sve portove).",
+                    "🔌 请将 U 盘或任意 USB 设备插入第一个接口（可用同一设备测试所有接口）。");
             }
         }
 
@@ -1211,6 +1245,10 @@ namespace WIS.HwTest.Tests
                                 {
                                     if (_detectedPortLocations.Add(cand.RawPortKey))
                                     {
+                                        if (cand.IsStrongLocation && IsDeterministicPhysicalLocation(cand.RawPortKey))
+                                        {
+                                            _physicalPortLocations.Add(cand.RawPortKey);
+                                        }
                                         _pendingSharedPortKey = null;
                                         _pendingSharedDeviceName = null;
                                         AddPortEntry(entryDisplay);
@@ -1254,6 +1292,17 @@ namespace WIS.HwTest.Tests
             });
         }
 
+        private static bool IsDeterministicPhysicalLocation(string rawKey)
+        {
+            if (string.IsNullOrEmpty(rawKey)) return false;
+            string up = rawKey.ToUpperInvariant();
+            return (up.Contains("PCIROOT(") || up.Contains("ACPI(")) &&
+                   up.Contains("#USB(") &&
+                   !up.Contains("#REPLUG-") &&
+                   !up.Contains("#PORT_") &&
+                   !up.StartsWith(AutoChargerPortKey, StringComparison.OrdinalIgnoreCase);
+        }
+
         private void CheckUsbCChargerPort()
         {
             try
@@ -1265,29 +1314,36 @@ namespace WIS.HwTest.Tests
                 bool batteryCharging = hasBattery && ((ps.BatteryFlag & 8) != 0);
                 bool acOnline = (ps.ACLineStatus == 1) || batteryCharging;
 
-                if (!_cachedHasTypeCController.HasValue)
-                    _cachedHasTypeCController = HasUsbTypeCController();
-                bool hasTypeCController = _cachedHasTypeCController.Value;
+                if (!_cachedTypeCCapInitialized)
+                {
+                    bool detectedTypeC;
+                    _maxTypeCChargerCap = DetectTypeCControllerCap(out detectedTypeC);
+                    _cachedHasTypeCController = detectedTypeC;
+                    _cachedTypeCCapInitialized = true;
+                }
+                bool hasTypeCController = _cachedHasTypeCController.HasValue && _cachedHasTypeCController.Value;
 
                 if (!_chargerStateInitialized)
                 {
                     _chargerStateInitialized = true;
                     _lastAcOnline = acOnline;
 
-                    if (acOnline && (hasBattery || hasTypeCController))
+                    if (acOnline && hasTypeCController && _chargerPlugCount < _maxTypeCChargerCap)
                     {
-                        RegisterChargerPort(hasTypeCController, false);
+                        RegisterChargerPort(true, false);
                     }
                     else if (hasTypeCController)
                     {
                         SetChargerStatusText(
-                            "⚡ Punjač nije priključen — ako laptop podržava USB-C punjenje, možete testirati C portove punjačem.",
+                            HwTestLocalization.Pick("⚡ Punjač nije priključen — ako laptop podržava USB-C punjenje, možete testirati C portove punjačem.",
+                                "⚡ 未连接充电器 — 如果笔记本支持 USB-C 充电，您也可以使用充电器测试 Type-C 接口。"),
                             Color.FromRgb(180, 195, 215));
                     }
                     else
                     {
                         SetChargerStatusText(
-                            "🔌 Ubacite USB fleš disk redom u svaki USB port.",
+                            HwTestLocalization.Pick("🔌 Standardno napajanje (nema USB-C PD kontrolera) — ubacite USB fleš disk redom u svaki USB port.",
+                                "🔌 标准电源供电（无 USB-C PD 控制器）— 请将 U 盘依次插入每个 USB 接口。"),
                             Color.FromRgb(180, 195, 215));
                     }
                     return;
@@ -1300,10 +1356,11 @@ namespace WIS.HwTest.Tests
                     _waitingForChargerReplug = true;
                     _chargerDisconnectedUtc = DateTime.UtcNow;
 
-                    if (hasTypeCController)
+                    if (hasTypeCController && _chargerPlugCount < _maxTypeCChargerCap)
                     {
                         SetChargerStatusText(
-                            "⚡ Punjač otkačen — priključite USB-C punjač u sledeći C port...",
+                            HwTestLocalization.Pick("⚡ Punjač otkačen — priključite USB-C punjač u sledeći C port...",
+                                "⚡ 充电器已拔出 — 请将 USB-C 充电器插入下一个 Type-C 接口..."),
                             Color.FromRgb(255, 193, 7));
                         HwTestLogger.Info("USB", string.Format(
                             "Punjač otkačen (ACLine={0}, BatteryFlag=0x{1:X2}) — čekam prebacivanje na drugi C port.",
@@ -1316,15 +1373,16 @@ namespace WIS.HwTest.Tests
                 if (!_lastAcOnline && acOnline)
                 {
                     _lastAcOnline = true;
-                    if (!(hasBattery || hasTypeCController)) return;
+                    if (!hasTypeCController) return;
 
-                    if (_chargerPlugCount == 0)
+                    if (_chargerPlugCount == 0 && _chargerPlugCount < _maxTypeCChargerCap)
                     {
                         _waitingForChargerReplug = false;
-                        RegisterChargerPort(hasTypeCController, false);
+                        RegisterChargerPort(true, false);
                     }
-                    else if (_waitingForChargerReplug && hasTypeCController &&
+                    else if (_waitingForChargerReplug &&
                              (DateTime.UtcNow - _chargerDisconnectedUtc).TotalMilliseconds >= 250 &&
+                             _chargerPlugCount < _maxTypeCChargerCap &&
                              _chargerPlugCount < _targetPortCount)
                     {
                         _waitingForChargerReplug = false;
@@ -1340,33 +1398,38 @@ namespace WIS.HwTest.Tests
 
         private void RegisterChargerPort(bool hasTypeCController, bool isReplug)
         {
+            if (!hasTypeCController) return;
+            if (_maxTypeCChargerCap > 0 && _chargerPlugCount >= _maxTypeCChargerCap) return;
+
             _chargerPlugCount++;
             string portKey = string.Format("{0}#{1}", AutoChargerPortKey, _chargerPlugCount);
             if (_detectedPortLocations.Contains(portKey)) return;
 
             _detectedPortLocations.Add(portKey);
-            string label;
-            if (hasTypeCController)
-            {
-                label = isReplug
-                    ? string.Format("USB-C / PD Port za punjenje #{0} (Punjač prebačen i ponovo detektovan)", _chargerPlugCount)
-                    : string.Format("USB-C / PD Port za punjenje #{0} (Punjač priključen — verifikovan)", _chargerPlugCount);
-            }
-            else
-            {
-                label = string.Format("USB / Port za punjenje #{0} (Punjač priključen — automatski verifikovan)", _chargerPlugCount);
-            }
+            string label = isReplug
+                ? HwTestLocalization.PickFormat("USB-C / PD Port za punjenje #{0} (Punjač prebačen i ponovo detektovan)", "USB-C / PD 充电接口 #{0}（充电器已换口并重新识别）", _chargerPlugCount)
+                : HwTestLocalization.PickFormat("USB-C / PD Port za punjenje #{0} (Punjač priključen — verifikovan)", "USB-C / PD 充电接口 #{0}（充电器已连接 — 已验证）", _chargerPlugCount);
 
             AddPortEntry(label);
             UpdateProgress();
             HwTestLogger.Info("USB", string.Format(
-                "Verifikovan port za punjenje #{0} (Replug={1}, TypeC={2})",
-                _chargerPlugCount, isReplug, hasTypeCController));
+                "Verifikovan port za punjenje #{0}/{1} (Replug={2}, TypeC={3})",
+                _chargerPlugCount, _maxTypeCChargerCap, isReplug, hasTypeCController));
 
-            if (hasTypeCController)
+            if (_chargerPlugCount < _maxTypeCChargerCap)
             {
                 SetChargerStatusText(
-                    string.Format("✓ USB-C punjač detektovan (#{0}). Ako imate još USB-C portova za punjenje, izvucite i prebacite punjač na sledeći C port.", _chargerPlugCount),
+                    HwTestLocalization.PickFormat("✓ USB-C punjač detektovan (#{0}/{1}). Ako imate još USB-C portova za punjenje, izvucite i prebacite punjač na sledeći C port.",
+                        "✓ 已检测到 USB-C 充电器 (#{0}/{1})。如还有其他支持充电的 Type-C 接口，请拔出并插入下一个接口。",
+                        _chargerPlugCount, _maxTypeCChargerCap),
+                    Color.FromRgb(120, 225, 160));
+            }
+            else
+            {
+                SetChargerStatusText(
+                    HwTestLocalization.PickFormat("✓ USB-C punjač detektovan ({0}/{1} PD slot(a)). Ostale USB portove testirajte USB fleš diskom.",
+                        "✓ 已检测到 USB-C 充电器 ({0}/{1} 个 PD 插槽)。请使用 U 盘测试其余 USB 接口。",
+                        _chargerPlugCount, _maxTypeCChargerCap),
                     Color.FromRgb(120, 225, 160));
             }
         }
@@ -1380,8 +1443,10 @@ namespace WIS.HwTest.Tests
             }
         }
 
-        private bool HasUsbTypeCController()
+        private int DetectTypeCControllerCap(out bool hasTypeCController)
         {
+            hasTypeCController = false;
+            HashSet<string> pnpControllers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             try
             {
                 using (ManagementObjectSearcher s = new ManagementObjectSearcher(
@@ -1389,12 +1454,63 @@ namespace WIS.HwTest.Tests
                 {
                     foreach (ManagementObject obj in s.Get())
                     {
-                        return true;
+                        string name = (obj["Name"] ?? "").ToString().Trim();
+                        string devId = (obj["DeviceID"] ?? "").ToString().Trim();
+                        string upName = name.ToUpperInvariant();
+                        if (upName.Contains("NETWORKING") || upName.Contains("BRIDGE") ||
+                            upName.Contains("DEVICE ROUTER") || upName.Contains("P2P") || upName.Contains("AUDIO"))
+                        {
+                            continue;
+                        }
+                        string token = !string.IsNullOrEmpty(devId) ? devId : name;
+                        if (!string.IsNullOrEmpty(token))
+                        {
+                            pnpControllers.Add(token);
+                        }
                     }
                 }
             }
             catch { }
-            return false;
+
+            hasTypeCController = (pnpControllers.Count > 0);
+            if (!hasTypeCController) return 0;
+
+            int smbiosTypeCPorts = 0;
+            HashSet<string> seenDesignators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using (ManagementObjectSearcher ps = new ManagementObjectSearcher(
+                    "SELECT ExternalReferenceDesignator FROM Win32_PortConnector"))
+                {
+                    foreach (ManagementObject pObj in ps.Get())
+                    {
+                        string ext = (pObj["ExternalReferenceDesignator"] ?? "").ToString().Trim().ToUpperInvariant();
+                        if (string.IsNullOrEmpty(ext) || ext == "NONE" || ext == "NOT SPECIFIED") continue;
+                        if (ext.Contains("INTERNAL") || ext.Contains("DOCK") || ext.Contains("ONELINK")) continue;
+                        if (ext.Contains("TYPE-C") || ext.Contains("TYPE C") || ext.Contains("USB-C") || ext.Contains("THUNDERBOLT"))
+                        {
+                            if (seenDesignators.Add(ext))
+                            {
+                                smbiosTypeCPorts++;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (smbiosTypeCPorts > 0)
+            {
+                return Math.Min(smbiosTypeCPorts, 4);
+            }
+            return Math.Max(1, Math.Min(pnpControllers.Count, 2));
+        }
+
+        private bool HasUsbTypeCController()
+        {
+            bool hasCtrl;
+            DetectTypeCControllerCap(out hasCtrl);
+            return hasCtrl;
         }
 
         private string QueryUsbLocation(string pnpDeviceId)
@@ -1431,7 +1547,7 @@ namespace WIS.HwTest.Tests
             };
             TextBlock tb = new TextBlock
             {
-                Text = string.Format("✓ Port #{0} uspešno prepoznan: {1}", _detectedPortLocations.Count, portKey),
+                Text = HwTestLocalization.PickFormat("✓ Port #{0} uspešno prepoznan: {1}", "✓ 接口 #{0} 已成功识别: {1}", _detectedPortLocations.Count, portKey),
                 Foreground = Brushes.White,
                 FontSize = 13,
                 TextTrimming = TextTrimming.CharacterEllipsis
@@ -1444,7 +1560,7 @@ namespace WIS.HwTest.Tests
         {
             _progressBar.Maximum = _targetPortCount;
             _progressBar.Value = _detectedPortLocations.Count;
-            _progressText.Text = string.Format("Detektovano: {0} / {1} porta", _detectedPortLocations.Count, _targetPortCount);
+            _progressText.Text = HwTestLocalization.PickFormat("Detektovano: {0} / {1} porta", "已检测到: {0} / {1} 个接口", _detectedPortLocations.Count, _targetPortCount);
 
             if (_detectedPortLocations.Count >= _targetPortCount)
             {
@@ -1461,8 +1577,9 @@ namespace WIS.HwTest.Tests
                 {
                     if (_detectedPortLocations.Count >= 1)
                     {
-                        _btnAdjustTargetToDetected.Content = string.Format(
+                        _btnAdjustTargetToDetected.Content = HwTestLocalization.PickFormat(
                             "🎯 Uređaj ima samo {0} USB porta? Podesi cilj na {0} (umesto {1}) i omogući PASS",
+                            "🎯 设备只有 {0} 个 USB 接口？将目标调整为 {0}（原为 {1}）并允许 PASS",
                             _detectedPortLocations.Count, _targetPortCount);
                         _btnAdjustTargetToDetected.Visibility = Visibility.Visible;
                     }
@@ -1471,6 +1588,11 @@ namespace WIS.HwTest.Tests
                         _btnAdjustTargetToDetected.Visibility = Visibility.Collapsed;
                     }
                 }
+            }
+
+            if (_baselineCaptured && _usbDeviceStatusText != null)
+            {
+                UpdateSingleDeviceStatusUi();
             }
         }
 
@@ -1529,10 +1651,25 @@ namespace WIS.HwTest.Tests
             if (_isClosingOrDone) return;
             _isClosingOrDone = true;
 
-            // Ažuriraj broj portova na ServisHub-u ako je promenjen ili definisan
-            if (_profileClient != null && _targetPortCount > 0)
+            int reportedPortCount = _userManuallyAdjustedTarget
+                ? _targetPortCount
+                : Math.Max(_targetPortCount, _detectedPortLocations.Count);
+            string overrideBy = _userManuallyAdjustedTarget ? "serviser" : "serviser_autolearn";
+
+            // Ažuriraj profil modela na ServisHub-u (auto-learn ili ručno podešen cilj)
+            if (_profileClient != null && reportedPortCount > 0)
             {
-                _profileClient.PostUsbOverride(_modelName, _targetPortCount);
+                _profileClient.PostUsbOverride(
+                    _modelName,
+                    reportedPortCount,
+                    _targetPortCount,
+                    _detectedPortLocations.Count,
+                    new List<string>(_physicalPortLocations),
+                    _chargerPlugCount,
+                    _maxTypeCChargerCap,
+                    _userManuallyAdjustedTarget,
+                    _serialNumber,
+                    overrideBy);
             }
 
             Result.Status = TestStatus.Pass;
@@ -1540,6 +1677,10 @@ namespace WIS.HwTest.Tests
             Result.Details["target_ports"] = _targetPortCount;
             Result.Details["detected_ports"] = _detectedPortLocations.Count;
             Result.Details["port_locations"] = new List<string>(_detectedPortLocations);
+            Result.Details["physical_port_locations"] = new List<string>(_physicalPortLocations);
+            Result.Details["charger_ports_count"] = _chargerPlugCount;
+            Result.Details["max_typec_cap"] = _maxTypeCChargerCap;
+            Result.Details["manual_override"] = _userManuallyAdjustedTarget;
 
             SafeCloseDialog(true);
         }
@@ -1551,10 +1692,14 @@ namespace WIS.HwTest.Tests
 
             Result.Status = TestStatus.Fail;
             Result.Attempts = 1;
-            Result.Reason = string.Format("Neispravan USB port: detektovano {0}/{1} portova", _detectedPortLocations.Count, _targetPortCount);
+            Result.Reason = HwTestLocalization.PickFormat("Neispravan USB port: detektovano {0}/{1} portova", "USB 接口故障: 仅检测到 {0}/{1} 个接口", _detectedPortLocations.Count, _targetPortCount);
             Result.Details["target_ports"] = _targetPortCount;
             Result.Details["detected_ports"] = _detectedPortLocations.Count;
             Result.Details["port_locations"] = new List<string>(_detectedPortLocations);
+            Result.Details["physical_port_locations"] = new List<string>(_physicalPortLocations);
+            Result.Details["charger_ports_count"] = _chargerPlugCount;
+            Result.Details["max_typec_cap"] = _maxTypeCChargerCap;
+            Result.Details["manual_override"] = _userManuallyAdjustedTarget;
 
             SafeCloseDialog(false);
         }

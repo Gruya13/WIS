@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Microsoft.Win32;
 using WIS.HwTest;
 using WIS.HwTest.Core;
@@ -26,6 +27,11 @@ namespace WIS.UI
         private bool _phase5LastThermalCritical = false;
         private bool _phase5LastCancelled = false;
         private volatile bool _phase5UefiRebootInProgress = false;
+        private volatile bool _phase5EmergencySkipAuthorized = false;
+        private int _phase6DispatchGuard = 0;
+        private DateTime _lastPendingAlertSoundUtc = DateTime.MinValue;
+        private bool _isSequentialPeripheralRunActive = false;
+        private DateTime _lastHwTestReportSavedUtc = DateTime.MinValue;
 
         private static bool IsPlaceholderIdentity(string val)
         {
@@ -111,6 +117,7 @@ namespace WIS.UI
                     HwTestLogger.Initialize(client.HubBaseUrl);
                     _embeddedHwTestShell = new HwTestShell(@"C:\setup\hwtest-result.json", model, serial, mfg, sku, client);
                     _embeddedHwTestShell.SetUefiBiosRebootHandler(HandlePhase5UefiBiosRebootRequest);
+                    _embeddedHwTestShell.PendingInteractiveTestsRequired += OnPendingInteractiveTestsRequired;
                 }
 
                 if (_hwTestTabItem == null)
@@ -163,6 +170,7 @@ namespace WIS.UI
             {
                 if (_embeddedHwTestShell != null)
                 {
+                    try { _embeddedHwTestShell.PendingInteractiveTestsRequired -= OnPendingInteractiveTestsRequired; } catch { }
                     _embeddedHwTestShell.ShutdownEmbedded();
                 }
             }
@@ -179,23 +187,475 @@ namespace WIS.UI
 
         private bool ForceSkipEmbeddedPhase5()
         {
+            return ForceSkipEmbeddedPhase5(null);
+        }
+
+        private bool ForceSkipEmbeddedPhase5(string customReason)
+        {
             if (_phase5UefiRebootInProgress) return false;
-            ManualResetEvent ev;
-            lock (_phase5HwSyncLock)
-            {
-                ev = _phase5HwCompletedEvent;
-            }
-            if (ev == null || _embeddedHwTestShell == null) return false;
+            if (_embeddedHwTestShell == null) return false;
 
             try
             {
+                _phase5EmergencySkipAuthorized = true;
                 _phase5LastCancelled = true;
-                _embeddedHwTestShell.ForceCompletePhase5SkipPending();
+                if (!string.IsNullOrWhiteSpace(customReason))
+                {
+                    _embeddedHwTestShell.ForceCompletePhase5SkipPending(customReason.Trim());
+                }
+                else
+                {
+                    _embeddedHwTestShell.ForceCompletePhase5SkipPending();
+                }
                 return true;
             }
             catch
             {
                 return false;
+            }
+        }
+
+        private static List<string> ReadPendingInteractiveTestsFromReportFile()
+        {
+            var list = new List<string>();
+            try
+            {
+                string path = @"C:\setup\hwtest-result.json";
+                if (!File.Exists(path)) return list;
+
+                string json = File.ReadAllText(path, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json)) return list;
+
+                JsonNode root = JsonHelper.Parse(json);
+                if (root == null || !root.IsObject) return list;
+
+                JsonNode testsNode = root["tests"];
+                if (testsNode == null || !testsNode.IsArray) return list;
+
+                for (int i = 0; i < testsNode.Count; i++)
+                {
+                    JsonNode t = testsNode[i];
+                    if (t == null || !t.IsObject) continue;
+                    bool isAuto = t["automated"].AsBool(true);
+                    if (isAuto) continue;
+
+                    string status = t["status"].AsString("").Trim().ToUpperInvariant();
+                    if (status == "PENDING" || status == "RUNNING" || string.IsNullOrEmpty(status))
+                    {
+                        string title = t["title"].AsString("");
+                        if (string.IsNullOrEmpty(title)) title = t["id"].AsString("Interaktivni test");
+                        list.Add(title);
+                    }
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        private List<string> GetPendingInteractiveHwTestNames()
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+                {
+                    return new List<string>();
+                }
+            }
+            catch { }
+
+            if (_embeddedHwTestShell != null)
+            {
+                try
+                {
+                    if (Dispatcher != null && !Dispatcher.CheckAccess() && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        List<string> invoked = null;
+                        Dispatcher.Invoke((Action)(() =>
+                        {
+                            if (_embeddedHwTestShell != null)
+                            {
+                                invoked = _embeddedHwTestShell.GetPendingInteractiveTestNames();
+                            }
+                        }));
+                        if (invoked != null) return invoked;
+                    }
+                    else
+                    {
+                        List<string> direct = _embeddedHwTestShell.GetPendingInteractiveTestNames();
+                        if (direct != null) return direct;
+                    }
+                }
+                catch { }
+            }
+
+            if (File.Exists(@"C:\setup\hwtest-result.json"))
+            {
+                return ReadPendingInteractiveTestsFromReportFile();
+            }
+
+            if (ViewModel != null && ViewModel.IsLaptop && !ViewModel.IsHwTestFinished)
+            {
+                return new List<string> { "Obavezni interaktivni testovi periferija (Faza 5)" };
+            }
+
+            return new List<string>();
+        }
+
+        private bool HasUnfinishedInteractiveHwTests()
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+                {
+                    return false;
+                }
+            }
+            catch { }
+
+            if (_phase5EmergencySkipAuthorized)
+            {
+                return false;
+            }
+
+            if (_embeddedHwTestShell != null)
+            {
+                try
+                {
+                    if (Dispatcher != null && !Dispatcher.CheckAccess() && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        bool hasUnfinished = false;
+                        Dispatcher.Invoke((Action)(() =>
+                        {
+                            if (_embeddedHwTestShell != null)
+                            {
+                                hasUnfinished = _embeddedHwTestShell.HasUnfinishedInteractiveTests();
+                            }
+                        }));
+                        return hasUnfinished;
+                    }
+                    return _embeddedHwTestShell.HasUnfinishedInteractiveTests();
+                }
+                catch { }
+            }
+
+            if (File.Exists(@"C:\setup\hwtest-result.json"))
+            {
+                return ReadPendingInteractiveTestsFromReportFile().Count > 0;
+            }
+
+            return (ViewModel != null && ViewModel.IsLaptop && !ViewModel.IsHwTestFinished);
+        }
+
+        private void PlayPendingTestsAttentionSound()
+        {
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastPendingAlertSoundUtc).TotalSeconds < 2.0) return;
+            _lastPendingAlertSoundUtc = now;
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Console.Beep(880, 140);
+                    Thread.Sleep(70);
+                    Console.Beep(1046, 180);
+                    Thread.Sleep(70);
+                    Console.Beep(880, 140);
+                }
+                catch
+                {
+                    try { System.Media.SystemSounds.Exclamation.Play(); } catch { }
+                }
+            });
+        }
+
+        private void OnPendingInteractiveTestsRequired(List<string> pendingNames)
+        {
+            if (_phase5UefiRebootInProgress || _phase5EmergencySkipAuthorized) return;
+            if (Dispatcher == null || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+
+            Dispatcher.BeginInvoke((Action)(() =>
+            {
+                if (_phase5UefiRebootInProgress || _phase5EmergencySkipAuthorized) return;
+
+                List<string> currentPending = (pendingNames != null && pendingNames.Count > 0)
+                    ? pendingNames
+                    : GetPendingInteractiveHwTestNames();
+
+                if (currentPending == null || currentPending.Count == 0)
+                {
+                    HidePendingInteractiveTestsWarning();
+                    return;
+                }
+
+                if (ViewModel != null)
+                {
+                    ViewModel.IsCompleted = false;
+                    ViewModel.SubPhase = string.Format(LocalizationService.Get("HwTPendingInteractiveSubPhase", "Čekaju obavezni interaktivni testovi ({0})..."), currentPending.Count);
+                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("HwTAutoDonePendingInteractive", "⚠️ Automatski proces je završen — preostalo {0} obaveznih interaktivnih testova u Fazi 5."), currentPending.Count);
+                    ViewModel.AddLog("WARN", "Hardver", string.Format(
+                        "Automatski proces je završen; obavezni interaktivni testovi čekaju servisera ({0}): {1}",
+                        currentPending.Count,
+                        string.Join(", ", currentPending.ToArray())));
+                }
+
+                ShowPendingInteractiveTestsWarning(currentPending, true, true);
+            }));
+        }
+
+        private void StartPendingInteractiveTestsFromUi()
+        {
+            if (_isSequentialPeripheralRunActive) return;
+
+            EnsureEmbeddedHwTestTab();
+            if (_embeddedHwTestShell == null)
+            {
+                MessageBox.Show(
+                    LocalizationService.Get("HwTModuleUnavailable", "Ugrađeni modul za hardversko testiranje nije dostupan."),
+                    LocalizationService.Get("HwTTitle", "WIS Hardverski testovi"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning);
+                return;
+            }
+
+            HidePendingInteractiveTestsOverlayOnly();
+            if (MainTabControl != null && _hwTestTabItem != null)
+            {
+                MainTabControl.SelectedItem = _hwTestTabItem;
+            }
+
+            Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background, (Action)(() =>
+            {
+                if (_isSequentialPeripheralRunActive || _embeddedHwTestShell == null) return;
+                _isSequentialPeripheralRunActive = true;
+                DateTime beforeRunUtc = DateTime.UtcNow;
+                try
+                {
+                    _embeddedHwTestShell.RunSequentialPeripheralTests();
+                }
+                catch (Exception ex)
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog("WARN", "Hardver", "Greška pri pokretanju interaktivnih testova: " + ex.Message);
+                    }
+                }
+                finally
+                {
+                    _isSequentialPeripheralRunActive = false;
+                }
+
+                if (_phase5UefiRebootInProgress || _phase5EmergencySkipAuthorized) return;
+
+                List<string> remaining = GetPendingInteractiveHwTestNames();
+                if (remaining.Count > 0)
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.SubPhase = string.Format(LocalizationService.Get("HwTRemainingInteractiveSubPhase", "Preostalo interaktivnih testova: {0}"), remaining.Count);
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("HwTTestingStoppedRemaining", "⚠️ Testiranje prekinuto — preostalo još {0} obaveznih interaktivnih testova."), remaining.Count);
+                        ViewModel.AddLog("WARN", "Hardver", string.Format(
+                            "Interaktivno testiranje zaustavljeno pre kraja; preostalo {0} testova: {1}",
+                            remaining.Count,
+                            string.Join(", ", remaining.ToArray())));
+                    }
+                    ShowPendingInteractiveTestsWarning(remaining, true, true);
+                }
+                else
+                {
+                    HidePendingInteractiveTestsWarning();
+                    // Ako RunSequentialPeripheralTests() nije automatski sačuvao izveštaj (zavisno od stanja workflowa),
+                    // OnEmbeddedHwTestReportSaved će okinuti čim se izveštaj snimi; ako nije u poslednjih par sekundi, podseti servisera.
+                    if (_lastHwTestReportSavedUtc < beforeRunUtc && ViewModel != null)
+                    {
+                        ViewModel.AddLog("INFO", "Hardver", "Svi interaktivni testovi su završeni — čuvam hardverski izveštaj...");
+                    }
+                }
+            }));
+        }
+
+        private string ShowEmergencySkipReasonDialog()
+        {
+            var dlg = new Window
+            {
+                Title = LocalizationService.Get("HwTEmergencySkipDialogTitle", "Obavezan razlog vanrednog preskakanja (Faza 5)"),
+                Width = 540,
+                Height = 290,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this,
+                ResizeMode = ResizeMode.NoResize,
+                ShowInTaskbar = false,
+                Background = MainViewModel.CreateFrozenBrush(30, 30, 32),
+                Foreground = Brushes.White
+            };
+
+            var root = new Grid { Margin = new Thickness(18) };
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+            var titleTb = new TextBlock
+            {
+                Text = LocalizationService.Get("HwTEmergencySkipHeader", "⚠️ VANREDNO PRESKAKANJE OBAVEZNIH TESTOVA"),
+                FontSize = 14,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(245, 158, 11),
+                Margin = new Thickness(0, 0, 0, 8)
+            };
+            Grid.SetRow(titleTb, 0);
+            root.Children.Add(titleTb);
+
+            var descTb = new TextBlock
+            {
+                Text = LocalizationService.Get("HwTEmergencySkipDesc", "Unesite jasan servisni razlog zašto se preostali interaktivni testovi preskaču (npr. neispravan ekran, kvar tastature, čeka zamenu dela). Uređaj će na ServiceHub-u biti označen kao NEEDS_SERVICE:"),
+                FontSize = 12,
+                Foreground = MainViewModel.CreateFrozenBrush(220, 220, 224),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 10)
+            };
+            Grid.SetRow(descTb, 1);
+            root.Children.Add(descTb);
+
+            var reasonBox = new TextBox
+            {
+                Background = MainViewModel.CreateFrozenBrush(20, 20, 22),
+                Foreground = Brushes.White,
+                CaretBrush = Brushes.White,
+                BorderBrush = MainViewModel.CreateFrozenBrush(217, 119, 6),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(8, 6, 8, 6),
+                FontSize = 12.5,
+                TextWrapping = TextWrapping.Wrap,
+                AcceptsReturn = false,
+                MaxLength = 300,
+                VerticalContentAlignment = VerticalAlignment.Top
+            };
+            Grid.SetRow(reasonBox, 2);
+            root.Children.Add(reasonBox);
+
+            var errTb = new TextBlock
+            {
+                Text = LocalizationService.Get("HwTEmergencySkipValidation", "Obavezan unos (minimalno 5 karaktera)."),
+                FontSize = 11,
+                Foreground = MainViewModel.CreateFrozenBrush(248, 113, 113),
+                Margin = new Thickness(0, 6, 0, 10)
+            };
+            Grid.SetRow(errTb, 3);
+            root.Children.Add(errTb);
+
+            var btnPanel = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+
+            var btnCancel = new Button
+            {
+                Content = LocalizationService.Get("HwTCancel", "Odustani"),
+                IsCancel = true,
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                Foreground = Brushes.White,
+                BorderBrush = MainViewModel.CreateFrozenBrush(78, 78, 86),
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(14, 7, 14, 7),
+                Margin = new Thickness(0, 0, 8, 0),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+
+            var btnConfirm = new Button
+            {
+                Content = LocalizationService.Get("HwTEmergencySkipConfirmBtn", "Potvrdi vanredno preskakanje"),
+                IsDefault = true,
+                IsEnabled = false,
+                Background = MainViewModel.CreateFrozenBrush(185, 28, 28),
+                Foreground = Brushes.White,
+                BorderBrush = MainViewModel.CreateFrozenBrush(239, 68, 68),
+                BorderThickness = new Thickness(1),
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(14, 7, 14, 7),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+
+            string confirmedReason = null;
+            reasonBox.TextChanged += delegate
+            {
+                string trimmed = (reasonBox.Text ?? "").Trim();
+                bool valid = trimmed.Length >= 5;
+                btnConfirm.IsEnabled = valid;
+                errTb.Visibility = valid ? Visibility.Collapsed : Visibility.Visible;
+            };
+            btnConfirm.Click += delegate
+            {
+                string trimmed = (reasonBox.Text ?? "").Trim();
+                if (trimmed.Length < 5)
+                {
+                    errTb.Visibility = Visibility.Visible;
+                    return;
+                }
+                confirmedReason = trimmed;
+                dlg.DialogResult = true;
+                dlg.Close();
+            };
+
+            btnPanel.Children.Add(btnCancel);
+            btnPanel.Children.Add(btnConfirm);
+            Grid.SetRow(btnPanel, 4);
+            root.Children.Add(btnPanel);
+
+            dlg.Content = root;
+            dlg.Loaded += delegate { reasonBox.Focus(); };
+
+            bool? res = dlg.ShowDialog();
+            return (res == true && !string.IsNullOrWhiteSpace(confirmedReason)) ? confirmedReason : null;
+        }
+
+        private void RequestEmergencySkipPhase5WithConfirmation()
+        {
+            if (_phase5UefiRebootInProgress) return;
+
+            List<string> pending = GetPendingInteractiveHwTestNames();
+            string pendingSummary = pending.Count > 0
+                ? string.Join(", ", pending.ToArray())
+                : "Interaktivni testovi periferija";
+
+            MessageBoxResult confirm = MessageBox.Show(
+                this,
+                string.Format(
+                    LocalizationService.Get("HwTEmergencySkipConfirmBody",
+                        "UPOZORENJE: Preostali obavezni interaktivni testovi ({0}):\n{1}\n\n" +
+                        "Vanredno preskakanje je dozvoljeno ISKLJUČIVO ako uređaj ima fizički kvar ili ne može proći test:\n" +
+                        "• Svi neurađeni testovi biće označeni kao SKIP.\n" +
+                        "• Uređaj NEĆE dobiti status READY na ServiceHub-u (biće označen kao NEEDS_SERVICE).\n" +
+                        "• Razlog preskakanja je obavezan i upisuje se u izveštaj.\n\n" +
+                        "Da li ste sigurni da želite da nastavite vanredno preskakanje?"),
+                    pending.Count,
+                    pendingSummary),
+                LocalizationService.Get("HwTEmergencySkipConfirmTitle", "WIS — Vanredno preskakanje Faze 5"),
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (confirm != MessageBoxResult.Yes) return;
+
+            string reason = ShowEmergencySkipReasonDialog();
+            if (string.IsNullOrWhiteSpace(reason)) return;
+
+            HidePendingInteractiveTestsWarning();
+            if (ViewModel != null)
+            {
+                ViewModel.AddLog("WARN", "Korisnik", "Vanredno servisno preskakanje Faze 5 — Razlog: " + reason);
+            }
+
+            if (!ForceSkipEmbeddedPhase5(reason))
+            {
+                MessageBox.Show(
+                    this,
+                    LocalizationService.Get("HwTEmergencySkipNotReady", "Vanredno preskakanje nije moglo biti izvršeno jer test modul nije spreman."),
+                    LocalizationService.Get("HwTErrorTitle", "WIS Greška"),
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
         }
 
@@ -208,9 +668,110 @@ namespace WIS.UI
             return 0;
         }
 
+        private static void CountInteractiveStatusesInRunResult(HwTestRunResult runResult, out int pendingInteractive, out int skippedInteractive)
+        {
+            pendingInteractive = 0;
+            skippedInteractive = 0;
+            if (runResult == null || runResult.Tests == null) return;
+
+            for (int i = 0; i < runResult.Tests.Count; i++)
+            {
+                Dictionary<string, object> item = runResult.Tests[i];
+                if (item == null) continue;
+
+                bool isAuto = true;
+                object autoObj;
+                if (item.TryGetValue("automated", out autoObj) && autoObj != null)
+                {
+                    if (autoObj is bool) isAuto = (bool)autoObj;
+                    else bool.TryParse(Convert.ToString(autoObj), out isAuto);
+                }
+                if (isAuto) continue;
+
+                string status = item.ContainsKey("status") && item["status"] != null
+                    ? Convert.ToString(item["status"]).Trim().ToUpperInvariant()
+                    : "";
+                if (status == "PENDING" || status == "RUNNING" || string.IsNullOrEmpty(status))
+                {
+                    pendingInteractive++;
+                }
+                else if (status == "SKIP")
+                {
+                    skippedInteractive++;
+                }
+            }
+        }
+
+        private void SyncBacklitKeyboardVerdictFromRunResult(HwTestRunResult runResult)
+        {
+            if (runResult == null || runResult.Tests == null) return;
+            try
+            {
+                for (int i = 0; i < runResult.Tests.Count; i++)
+                {
+                    Dictionary<string, object> item = runResult.Tests[i];
+                    if (item == null) continue;
+                    string id = item.ContainsKey("id") && item["id"] != null ? Convert.ToString(item["id"]) : "";
+                    if (!string.Equals(id, "keyboard", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string kbdStatus = item.ContainsKey("status") && item["status"] != null
+                        ? Convert.ToString(item["status"]).Trim().ToUpperInvariant()
+                        : "";
+                    string kbdReason = item.ContainsKey("reason") && item["reason"] != null
+                        ? Convert.ToString(item["reason"])
+                        : "";
+
+                    string blPassed = "";
+                    string blReason = "";
+                    object detailsObj;
+                    if (item.TryGetValue("details", out detailsObj) && detailsObj is Dictionary<string, object>)
+                    {
+                        var details = (Dictionary<string, object>)detailsObj;
+                        object bpObj;
+                        if (details.TryGetValue("backlight_passed", out bpObj) && bpObj != null)
+                        {
+                            blPassed = Convert.ToString(bpObj).Trim().ToLowerInvariant();
+                        }
+                        object brObj;
+                        if (details.TryGetValue("backlight_reason", out brObj) && brObj != null)
+                        {
+                            blReason = Convert.ToString(brObj).Trim();
+                        }
+                    }
+
+                    if (blPassed == "true")
+                    {
+                        ApplyBacklitKeyboardVerdict(true, !string.IsNullOrEmpty(blReason) ? blReason : LocalizationService.Get("HwTBacklitConfirmed", "Potvrđeno u Fazi 5 (Test tastature)"));
+                    }
+                    else if (blPassed == "no_hardware")
+                    {
+                        ApplyBacklitKeyboardVerdict(false, !string.IsNullOrEmpty(blReason) ? blReason : LocalizationService.Get("HwTBacklitNone", "Model nema pozadinsko osvetljenje (potvrđeno u Fazi 5)"));
+                    }
+                    else if (blPassed == "false")
+                    {
+                        ApplyBacklitKeyboardVerdict(true, !string.IsNullOrEmpty(blReason) ? blReason : LocalizationService.Get("HwTBacklitFaulty", "Svetleća tastatura prisutna (neispravna u Fazi 5)"));
+                    }
+                    else if ((blPassed == "n/a" || string.IsNullOrEmpty(blPassed)) && kbdStatus == "PASS")
+                    {
+                        string evTxt = !string.IsNullOrEmpty(blReason) ? blReason : kbdReason;
+                        if (!string.IsNullOrEmpty(evTxt) &&
+                            (evTxt.IndexOf("nema", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             evTxt.IndexOf("non-backlit", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             evTxt.IndexOf("without", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            ApplyBacklitKeyboardVerdict(false, evTxt);
+                        }
+                    }
+                    break;
+                }
+            }
+            catch { }
+        }
+
         private void OnEmbeddedHwTestReportSaved(HwTestRunResult runResult)
         {
             if (runResult == null || runResult.Summary == null) return;
+            _lastHwTestReportSavedUtc = DateTime.UtcNow;
 
             string overall = runResult.Summary.ContainsKey("overall") && runResult.Summary["overall"] != null
                 ? Convert.ToString(runResult.Summary["overall"])
@@ -223,29 +784,45 @@ namespace WIS.UI
             int totalApplicable = pass + fail + skip;
             if (totalApplicable <= 0) totalApplicable = pass + fail + skip + na;
 
+            int pendingInteractive;
+            int skippedInteractive;
+            CountInteractiveStatusesInRunResult(runResult, out pendingInteractive, out skippedInteractive);
+
             Dispatcher.BeginInvoke((Action)(() =>
             {
+                SyncBacklitKeyboardVerdictFromRunResult(runResult);
+
+                bool allInteractiveDone = (pendingInteractive == 0) && !HasUnfinishedInteractiveHwTests();
+                bool hasIncompleteSkip = (skippedInteractive > 0);
+                string displayOverall = (hasIncompleteSkip && string.Equals(overall, "PASS_WITH_SKIP", StringComparison.OrdinalIgnoreCase))
+                    ? "NEPOTPUNO (SKIP)"
+                    : overall;
+
                 if (ViewModel != null)
                 {
-                    ViewModel.IsHwTestFinished = true;
-                    ViewModel.HwTestOverallStatus = overall;
+                    ViewModel.IsHwTestFinished = allInteractiveDone || _phase5EmergencySkipAuthorized;
+                    ViewModel.HwTestOverallStatus = displayOverall;
                     ViewModel.HwTestSummaryText = fail > 0
                         ? string.Format("{0}/{1} PASS, {2} FAIL, {3} SKIP", pass, totalApplicable, fail, skip)
                         : string.Format("{0}/{1} PASS, {2} SKIP", pass, totalApplicable, skip);
 
-                    if (overall == "PASS" || overall == "PASS_WITH_SKIP")
-                    {
-                        ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(40, 167, 69);
-                    }
-                    else if (overall == "FAIL")
+                    if (fail > 0)
                     {
                         ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(220, 53, 69);
                     }
+                    else if (hasIncompleteSkip)
+                    {
+                        ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(230, 126, 34);
+                    }
+                    else if (overall == "PASS" || overall == "PASS_WITH_SKIP")
+                    {
+                        ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(40, 167, 69);
+                    }
 
                     ViewModel.AddLog(
-                        overall == "FAIL" ? "WARN" : "SUCCESS",
+                        (fail > 0 || hasIncompleteSkip) ? "WARN" : "SUCCESS",
                         "Hardver",
-                        string.Format("Hardverski test završen: {0} ({1}/{2} PASS, {3} SKIP, {4} FAIL)", overall, pass, totalApplicable, skip, fail)
+                        string.Format("Hardverski test završen: {0} ({1}/{2} PASS, {3} SKIP, {4} FAIL)", displayOverall, pass, totalApplicable, skip, fail)
                     );
                 }
 
@@ -261,6 +838,67 @@ namespace WIS.UI
                 });
 
                 EnsureHwTestButtons();
+
+                if (allInteractiveDone || _phase5EmergencySkipAuthorized)
+                {
+                    HidePendingInteractiveTestsWarning();
+
+                    bool phase6AlreadyCompleted = _phase6ScriptCompletedSuccessfully ||
+                                                  (ViewModel != null && (ViewModel.IsServiceFinished || ViewModel.CurrentPhase >= 6));
+
+                    if (!phase6AlreadyCompleted)
+                    {
+                        bool waitLoopActive = false;
+                        lock (_phase5HwSyncLock)
+                        {
+                            waitLoopActive = (_phase5HwCompletedEvent != null);
+                        }
+
+                        if (!waitLoopActive && _isMasterMode &&
+                            Interlocked.CompareExchange(ref _phase6DispatchGuard, 1, 0) == 0)
+                        {
+                            ThreadPool.QueueUserWorkItem(delegate
+                            {
+                                try
+                                {
+                                    ExecutePhase(6);
+                                }
+                                catch { }
+                            });
+                        }
+                    }
+                    else if (pendingInteractive == 0 && skippedInteractive == 0 && _telemetryService != null)
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("INFO", "Telemetry", "Svi interaktivni testovi su naknadno završeni — šaljem ažurirani izveštaj na ServiceHub...");
+                            ViewModel.DeploymentStatus = "READY";
+                            ViewModel.RebuildOverviewAlerts();
+                        }
+                        _telemetryService.ReuploadUpdatedReportAfterHwTestAsync((ok, info) =>
+                        {
+                            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                            {
+                                Dispatcher.BeginInvoke((Action)(() =>
+                                {
+                                    if (ViewModel != null)
+                                    {
+                                        ViewModel.AddLog(
+                                            ok ? "SUCCESS" : "WARN",
+                                            "Telemetry",
+                                            ok
+                                                ? "Ažurirani hardverski izveštaj je uspešno ponovo poslat na ServiceHub: " + info
+                                                : "Re-upload ažuriranog izveštaja na ServiceHub nije uspeo: " + info);
+                                    }
+                                }));
+                            }
+                        });
+                    }
+                }
+                else
+                {
+                    ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), false, false);
+                }
             }));
         }
 
@@ -308,10 +946,6 @@ namespace WIS.UI
 
                 stepItem.Status = string.IsNullOrEmpty(state) ? "WAIT" : state;
                 stepItem.Reason = reason ?? "";
-                if (targetPhase.IsActive)
-                {
-                    targetPhase.IsExpanded = true;
-                }
                 ViewModel.RefreshProgressBars();
             });
         }
@@ -352,8 +986,8 @@ namespace WIS.UI
                     ViewModel.AddLog("WARN", "Hardver", string.Format(
                         "Pokrenut restart u UEFI BIOS za test '{0}' (sačuvana Faza {1} i hwtest-checkpoint.json).",
                         safeTestId, resumePhase));
-                    ViewModel.SubPhase = string.Format("Restart u UEFI BIOS ({0})...", safeTestId);
-                    ViewModel.LiveStatus = "Restartujem u UEFI BIOS — WIS nastavlja automatski po povratku...";
+                    ViewModel.SubPhase = string.Format(LocalizationService.Get("HwTBiosRestartSubPhase", "Restart u UEFI BIOS ({0})..."), safeTestId);
+                    ViewModel.LiveStatus = LocalizationService.Get("HwTBiosRestartLiveStatus", "Restartujem u UEFI BIOS — WIS nastavlja automatski po povratku...");
                 }
             }
             catch { }
@@ -408,10 +1042,11 @@ namespace WIS.UI
                 catch { }
 
                 MessageBox.Show(
-                    "Direktan ulazak u UEFI firmware (/r /fw) nije uspeo na ovom računaru.\n\n" +
-                    "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
-                    "HP: F10 | Lenovo: F1 | Dell: F2",
-                    "Ručni ulazak u BIOS",
+                    LocalizationService.Get("HwTManualBiosBody",
+                        "Direktan ulazak u UEFI firmware (/r /fw) nije uspeo na ovom računaru.\n\n" +
+                        "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
+                        "HP: F10 | Lenovo: F1 | Dell: F2"),
+                    LocalizationService.Get("HwTManualBiosTitle", "Ručni ulazak u BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
 
@@ -434,6 +1069,9 @@ namespace WIS.UI
 
         private void ExecutePhase5IntegratedHwTest()
         {
+            _phase5EmergencySkipAuthorized = false;
+            Interlocked.Exchange(ref _phase6DispatchGuard, 0);
+
             ManualResetEvent waitEvent = new ManualResetEvent(false);
             lock (_phase5HwSyncLock)
             {
@@ -476,17 +1114,41 @@ namespace WIS.UI
             if (!tabReady)
             {
                 RunAutomatedPhase5StressFallback();
-                ExecutePhase(6);
+
+                bool isLaptopFallback = (ViewModel != null && ViewModel.IsLaptop);
+                if (isLaptopFallback || HasUnfinishedInteractiveHwTests())
+                {
+                    lock (_phase5HwSyncLock)
+                    {
+                        _phase5HwCompletedEvent = null;
+                    }
+                    try { waitEvent.Dispose(); } catch { }
+
+                    Dispatcher.BeginInvoke((Action)(() =>
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("ERROR", "Hardver", "Ugrađeni tab Hardverski testovi nije dostupan na laptopu — prelazak u Fazu 6 je blokiran dok se testovi ne završe.");
+                            ViewModel.LiveStatus = LocalizationService.Get("HwTNotStartedWarning", "⚠️ Hardverski testovi nisu pokrenuti! Kliknite 'Ponovi Fazu 5' ili pokrenite testove pre završetka.");
+                            SetFailedPhase(5);
+                        }
+                    }));
+                    return;
+                }
+
+                if (Interlocked.CompareExchange(ref _phase6DispatchGuard, 1, 0) == 0)
+                {
+                    ExecutePhase(6);
+                }
                 return;
             }
 
             int timeoutMs = GetPhaseTimeoutMinutes(5) * 60 * 1000;
-            int manualWaitLimitMs = 24 * 60 * 60 * 1000; // Noćno čekanje servisera za ručne testove do 24h
             int elapsedAutoMs = 0;
-            int elapsedManualMs = 0;
             bool signaled = false;
+            bool autoTimedOut = false;
 
-            while (!signaled && elapsedAutoMs < timeoutMs && elapsedManualMs < manualWaitLimitMs)
+            while (!signaled)
             {
                 if (_phase5UefiRebootInProgress) break;
                 signaled = waitEvent.WaitOne(500);
@@ -494,10 +1156,15 @@ namespace WIS.UI
 
                 bool waitingManual = false;
                 try { waitingManual = (_embeddedHwTestShell != null && _embeddedHwTestShell.IsWaitingForManualTests); } catch { }
-                if (waitingManual)
-                    elapsedManualMs += 500;
-                else
+                if (!waitingManual)
+                {
                     elapsedAutoMs += 500;
+                    if (elapsedAutoMs >= timeoutMs)
+                    {
+                        autoTimedOut = true;
+                        break;
+                    }
+                }
 
                 try
                 {
@@ -507,7 +1174,22 @@ namespace WIS.UI
                     {
                         if (File.Exists(cancelMarker)) File.Delete(cancelMarker);
                         if (File.Exists(skipMarker)) File.Delete(skipMarker);
-                        ForceSkipEmbeddedPhase5();
+
+                        bool isLaptopOrManual = waitingManual || HasUnfinishedInteractiveHwTests() || (ViewModel != null && ViewModel.IsLaptop);
+                        if (!isLaptopOrManual)
+                        {
+                            ForceSkipEmbeddedPhase5();
+                        }
+                        else
+                        {
+                            Dispatcher.BeginInvoke((Action)(() =>
+                            {
+                                if (ViewModel != null)
+                                {
+                                    ViewModel.AddLog("WARN", "TaskRunner", "Tihi .skip/.cancel marker je ignorisan u Fazi 5 jer uređaj ima obavezne interaktivne testove (koristite isključivo 'Vanredno preskoči...' uz unos razloga).");
+                                }
+                            }));
+                        }
                     }
                 }
                 catch { }
@@ -523,13 +1205,44 @@ namespace WIS.UI
                 return;
             }
 
-            if (!signaled)
+            if (!signaled && autoTimedOut)
             {
+                bool hasPendingOrLaptop = HasUnfinishedInteractiveHwTests() || (ViewModel != null && ViewModel.IsLaptop);
+                if (hasPendingOrLaptop)
+                {
+                    lock (_phase5HwSyncLock)
+                    {
+                        _phase5HwCompletedEvent = null;
+                    }
+                    try { waitEvent.Dispose(); } catch { }
+
+                    try
+                    {
+                        if (_embeddedHwTestShell != null)
+                        {
+                            _embeddedHwTestShell.CancelPhase5Workflow();
+                        }
+                    }
+                    catch { }
+
+                    Dispatcher.BeginInvoke((Action)(() =>
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("ERROR", "TaskRunner", "Automatski deo Faze 5 (stres/dijagnostika) prekoračio je vremenski limit od 45 minuta — obavezni interaktivni testovi nisu preskočeni i Faza 6 je zaustavljena.");
+                            ViewModel.LiveStatus = LocalizationService.Get("HwTPhase5TimeoutWarning", "⚠️ Faza 5 zaustavljena (timeout automatskog testa). Ponovite Fazu 5 ili dovršite interaktivne testove.");
+                            SetFailedPhase(5);
+                        }
+                        ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                    }));
+                    return;
+                }
+
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     if (ViewModel != null)
                     {
-                        ViewModel.AddLog("WARN", "TaskRunner", "Faza 5 (Hardverski testovi) je dostigla vremenski limit — snimam dosadašnji izveštaj i prelazim na Fazu 6.");
+                        ViewModel.AddLog("WARN", "TaskRunner", "Faza 5 (Desktop bez interaktivnih testova) je dostigla vremenski limit — snimam dosadašnji izveštaj i prelazim na Fazu 6.");
                     }
                 }));
                 ForceSkipEmbeddedPhase5();
@@ -571,7 +1284,23 @@ namespace WIS.UI
                 RecordThermalOverheatNote();
             }
 
-            ExecutePhase(6);
+            if (HasUnfinishedInteractiveHwTests() && !_phase5EmergencySkipAuthorized)
+            {
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog("WARN", "Hardver", "Prelazak u Fazu 6 je zadržan dok se svi obavezni interaktivni testovi ne završe.");
+                    }
+                    ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                }));
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref _phase6DispatchGuard, 1, 0) == 0)
+            {
+                ExecutePhase(6);
+            }
         }
     }
 }

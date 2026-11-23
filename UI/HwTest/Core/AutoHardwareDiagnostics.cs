@@ -153,20 +153,20 @@ namespace WIS.HwTest.Core
         #region 0. BIOS, TPM 2.0 i PnP Audit
         public TestItemResult RunSecurityAndFirmwareCheck(HardwareProbeResult hwInfo)
         {
-            TestItemResult res = new TestItemResult("auto_security", "BIOS, TPM 2.0 i PnP Drajveri",
-                "Provera BIOS lozinke, Computrace statusa, TPM 2.0 čipa, OA3 licence i žutih uzvičnika u Device Manageru");
+            TestItemResult res = new TestItemResult("auto_security", HwTestLocalization.Pick("BIOS, TPM 2.0 i PnP Drajveri", "BIOS、TPM 2.0 与 PnP 驱动"),
+                HwTestLocalization.Pick("Provera BIOS lozinke, Computrace statusa, TPM 2.0 čipa, OA3 licence i žutih uzvičnika u Device Manageru", "检测 BIOS 密码、Computrace 状态、TPM 2.0 芯片、OA3 许可证以及设备管理器中的黄色感叹号设备"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
             bool biosPassLocked = false;
-            string biosPassDetail = "Otključan (bez lozinke)";
+            string biosPassDetail = HwTestLocalization.Pick("Otključan (bez lozinke)", "未锁定(无密码)");
             bool computraceActive = false;
-            string computraceStatus = "Neaktivan / Nije detektovan";
+            string computraceStatus = HwTestLocalization.Pick("Neaktivan / Nije detektovan", "未激活 / 未检测到");
             bool tpmPresent = false;
             bool tpmEnabled = false;
             bool tpmActivated = false;
             string tpmVersion = "";
-            string secureBootStr = "Nepoznat";
+            string secureBootStr = HwTestLocalization.Pick("Nepoznat", "未知");
             bool hasOa3Key = false;
             List<string> pnpErrorDevices = new List<string>();
             List<string> pendingFirmwareReboots = new List<string>();
@@ -191,7 +191,7 @@ namespace WIS.HwTest.Core
                                     if ((state & 0x07u) != 0u)
                                     {
                                         biosPassLocked = true;
-                                        biosPassDetail = string.Format("ZAKLJUČAN (Lenovo PasswordState={0})", state);
+                                        biosPassDetail = HwTestLocalization.PickFormat("ZAKLJUČAN (Lenovo PasswordState={0})", "已锁定 (Lenovo PasswordState={0})", state);
                                     }
                                     break;
                                 }
@@ -276,7 +276,7 @@ namespace WIS.HwTest.Core
                                 if (isSet == 1)
                                 {
                                     biosPassLocked = true;
-                                    biosPassDetail = "ZAKLJUČAN (Dell " + (string.IsNullOrEmpty(aName) ? "BIOS Password" : aName) + ")";
+                                    biosPassDetail = HwTestLocalization.Pick("ZAKLJUČAN (Dell ", "已锁定 (Dell ") + (string.IsNullOrEmpty(aName) ? "BIOS Password" : aName) + ")";
                                 }
                             }
                         }
@@ -377,7 +377,7 @@ namespace WIS.HwTest.Core
                             if (val != null)
                             {
                                 int sb = Convert.ToInt32(val);
-                                secureBootStr = (sb == 1) ? "Uključen (Enabled)" : "Isključen (Disabled)";
+                                secureBootStr = (sb == 1) ? HwTestLocalization.Pick("Uključen (Enabled)", "已开启 (Enabled)") : HwTestLocalization.Pick("Isključen (Disabled)", "已关闭 (Disabled)");
                             }
                         }
                     }
@@ -429,7 +429,7 @@ namespace WIS.HwTest.Core
                                 name.IndexOf("Firmware", StringComparison.OrdinalIgnoreCase) >= 0);
                             if (isPendingFirmwareReboot)
                             {
-                                pendingFirmwareReboots.Add(string.Format("{0} [Code 14 - čeka restart]", name));
+                                pendingFirmwareReboots.Add(HwTestLocalization.PickFormat("{0} [Code 14 - čeka restart]", "{0} [Code 14 - 等待重启]", name));
                                 continue;
                             }
 
@@ -441,10 +441,10 @@ namespace WIS.HwTest.Core
 
                 bool tpmOk = tpmPresent && tpmEnabled && tpmActivated;
                 string tpmStatusStr = !tpmPresent
-                    ? "Nije detektovan / Isključen u BIOS-u"
+                    ? HwTestLocalization.Pick("Nije detektovan / Isključen u BIOS-u", "未检测到 / 已在 BIOS 中关闭")
                     : (tpmOk
-                        ? string.Format("Aktivan ({0})", string.IsNullOrEmpty(tpmVersion) ? "OK" : ("v" + tpmVersion))
-                        : string.Format("Prisutan ali neaktivan (Enabled={0}, Activated={1})", tpmEnabled, tpmActivated));
+                        ? HwTestLocalization.PickFormat("Aktivan ({0})", "已激活 ({0})", string.IsNullOrEmpty(tpmVersion) ? "OK" : ("v" + tpmVersion))
+                        : HwTestLocalization.PickFormat("Prisutan ali neaktivan (Enabled={0}, Activated={1})", "存在但未激活 (Enabled={0}, Activated={1})", tpmEnabled, tpmActivated));
 
                 res.Details["bios_password_locked"] = biosPassLocked;
                 res.Details["bios_password_state"] = biosPassDetail;
@@ -452,16 +452,16 @@ namespace WIS.HwTest.Core
                 res.Details["computrace_status"] = computraceStatus;
                 res.Details["tpm_status"] = tpmStatusStr;
                 res.Details["secure_boot"] = secureBootStr;
-                res.Details["oa3_oem_key"] = hasOa3Key ? "Prisutan u BIOS-u (OA3)" : "Nije pronađen";
+                res.Details["oa3_oem_key"] = hasOa3Key ? HwTestLocalization.Pick("Prisutan u BIOS-u (OA3)", "BIOS 中存在 (OA3)") : HwTestLocalization.Pick("Nije pronađen", "未找到");
                 res.Details["pnp_error_count"] = pnpErrorDevices.Count;
-                res.Details["pnp_errors"] = pnpErrorDevices.Count > 0 ? string.Join(" | ", pnpErrorDevices.ToArray()) : "Nema grešaka (0)";
+                res.Details["pnp_errors"] = pnpErrorDevices.Count > 0 ? string.Join(" | ", pnpErrorDevices.ToArray()) : HwTestLocalization.Pick("Nema grešaka (0)", "无错误 (0)");
                 res.Details["pending_firmware_reboot_count"] = pendingFirmwareReboots.Count;
                 res.Details["pending_firmware_reboot"] = pendingFirmwareReboots.Count > 0 ? string.Join(" | ", pendingFirmwareReboots.ToArray()) : "";
 
-                string tpmBadge = tpmOk ? (string.IsNullOrEmpty(tpmVersion) ? "OK" : ("v" + tpmVersion)) : "Neaktivan";
-                res.MetricSummary = string.Format("BIOS: {0} | Computrace: {1} | TPM: {2} | PnP greške: {3}",
-                    biosPassLocked ? "ZAKLJUČAN" : "Otključan",
-                    computraceActive ? "AKTIVAN" : "OK",
+                string tpmBadge = tpmOk ? (string.IsNullOrEmpty(tpmVersion) ? "OK" : ("v" + tpmVersion)) : HwTestLocalization.Pick("Neaktivan", "未激活");
+                res.MetricSummary = HwTestLocalization.PickFormat("BIOS: {0} | Computrace: {1} | TPM: {2} | PnP greške: {3}", "BIOS: {0} | Computrace: {1} | TPM: {2} | PnP 错误: {3}",
+                    biosPassLocked ? HwTestLocalization.Pick("ZAKLJUČAN", "已锁定") : HwTestLocalization.Pick("Otključan", "未锁定"),
+                    computraceActive ? HwTestLocalization.Pick("AKTIVAN", "已激活") : "OK",
                     tpmBadge,
                     pnpErrorDevices.Count);
 
@@ -471,7 +471,7 @@ namespace WIS.HwTest.Core
                     List<string> criticals = new List<string>();
                     if (biosPassLocked) criticals.Add(biosPassDetail);
                     if (computraceActive) criticals.Add(computraceStatus);
-                    res.Reason = "KRITIČNO: " + string.Join("; ", criticals.ToArray());
+                    res.Reason = HwTestLocalization.Pick("KRITIČNO: ", "严重: ") + string.Join("; ", criticals.ToArray());
                 }
                 else if (pnpErrorDevices.Count > 0 || !tpmOk)
                 {
@@ -479,27 +479,27 @@ namespace WIS.HwTest.Core
                     res.HasWarning = true;
                     List<string> warns = new List<string>();
                     if (pnpErrorDevices.Count > 0)
-                        warns.Add(string.Format("Device Manager ima {0} uređaj(a) sa greškom: {1}", pnpErrorDevices.Count, string.Join(", ", pnpErrorDevices.ToArray())));
+                        warns.Add(HwTestLocalization.PickFormat("Device Manager ima {0} uređaj(a) sa greškom: {1}", "设备管理器中有 {0} 个设备报错: {1}", pnpErrorDevices.Count, string.Join(", ", pnpErrorDevices.ToArray())));
                     if (!tpmOk)
-                        warns.Add("TPM 2.0 nije aktivan (" + tpmStatusStr + ")");
-                    res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
+                        warns.Add(HwTestLocalization.Pick("TPM 2.0 nije aktivan (", "TPM 2.0 未激活 (") + tpmStatusStr + ")");
+                    res.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", warns.ToArray());
                 }
                 else
                 {
                     res.Status = TestStatus.Pass;
                     res.HasWarning = false;
                     string fwNote = pendingFirmwareReboots.Count > 0
-                        ? (", Firmware update čeka restart: " + string.Join(", ", pendingFirmwareReboots.ToArray()))
+                        ? (HwTestLocalization.Pick(", Firmware update čeka restart: ", ",固件更新等待重启: ") + string.Join(", ", pendingFirmwareReboots.ToArray()))
                         : "";
-                    res.Reason = string.Format("BIOS otključan, {0}, TPM {1}, Device Manager čist (0 grešaka){2}",
-                        hasOa3Key ? "OA3 licenca prisutna" : "bez OA3 ključa", tpmBadge, fwNote);
+                    res.Reason = HwTestLocalization.PickFormat("BIOS otključan, {0}, TPM {1}, Device Manager čist (0 grešaka){2}", "BIOS 未锁定,{0},TPM {1},设备管理器正常 (0 个错误){2}",
+                        hasOa3Key ? HwTestLocalization.Pick("OA3 licenca prisutna", "OA3 许可证存在") : HwTestLocalization.Pick("bez OA3 ključa", "无 OA3 密钥"), tpmBadge, fwNote);
                 }
             }
             catch (Exception ex)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = "Greška bezbednosne / PnP provere: " + ex.Message;
-                res.MetricSummary = "Greška očitavanja";
+                res.Reason = HwTestLocalization.Pick("Greška bezbednosne / PnP provere: ", "安全 / PnP 检测出错: ") + ex.Message;
+                res.MetricSummary = HwTestLocalization.Pick("Greška očitavanja", "读取出错");
             }
 
             sw.Stop();
@@ -552,7 +552,7 @@ namespace WIS.HwTest.Core
                 if (lockedVal)
                 {
                     biosPassLocked = true;
-                    biosPassDetail = string.Format("ZAKLJUČAN ({0}={1})", key, val);
+                    biosPassDetail = HwTestLocalization.PickFormat("ZAKLJUČAN ({0}={1})", "已锁定 ({0}={1})", key, val);
                 }
             }
 
@@ -563,7 +563,7 @@ namespace WIS.HwTest.Core
                     if (!uv.Contains("DISABLE") && !uv.Contains("DEACTIVATE") && !uv.Contains("INACTIVE"))
                     {
                         computraceActive = true;
-                        computraceStatus = string.Format("AKTIVAN ({0}={1})", key, val);
+                        computraceStatus = HwTestLocalization.PickFormat("AKTIVAN ({0}={1})", "已激活 ({0}={1})", key, val);
                     }
                 }
                 else if (uv.Contains("PERMANENTLY DISABLE") || uv.Contains("DISABLED"))
@@ -592,7 +592,7 @@ namespace WIS.HwTest.Core
         #region 1. Baterija i napajanje
         public TestItemResult RunBatteryCheck()
         {
-            TestItemResult res = new TestItemResult("auto_battery", "Baterija i napajanje", "Provera zdravlja baterije, kapaciteta (Design vs Full Charge) i AC punjača");
+            TestItemResult res = new TestItemResult("auto_battery", HwTestLocalization.Pick("Baterija i napajanje", "电池与电源"), HwTestLocalization.Pick("Provera zdravlja baterije, kapaciteta (Design vs Full Charge) i AC punjača", "检测电池健康度、容量 (设计容量 vs 满充容量) 以及 AC 充电器"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
@@ -741,8 +741,8 @@ namespace WIS.HwTest.Core
                 if (!hasWmiBattery && noSysBattery)
                 {
                     res.Status = TestStatus.NotApplicable;
-                    res.Reason = "Uređaj nema bateriju (Desktop računar ili baterija nije povezana)";
-                    res.MetricSummary = acOnline ? "AC napajanje aktivno | Nema baterije" : "Nema baterije";
+                    res.Reason = HwTestLocalization.Pick("Uređaj nema bateriju (Desktop računar ili baterija nije povezana)", "设备没有电池 (台式机或电池未连接)");
+                    res.MetricSummary = acOnline ? HwTestLocalization.Pick("AC napajanje aktivno | Nema baterije", "AC 电源已接通 | 无电池") : HwTestLocalization.Pick("Nema baterije", "无电池");
                     res.Details["ac_online"] = acOnline;
                     res.Details["battery_present"] = false;
                     sw.Stop();
@@ -772,9 +772,9 @@ namespace WIS.HwTest.Core
                 bool acNotChargingWarn = acOnline && hasBatteryStatusRate && chargePct >= 0 && chargePct < 88 && chargeWatts <= 0.1 && !isCharging;
 
                 string ratePart = "";
-                if (chargeWatts > 0.1) ratePart = string.Format(" | Puni: {0:0.0}W", chargeWatts);
-                else if (dischargeWatts > 0.1) ratePart = string.Format(" | Troši: {0:0.0}W", dischargeWatts);
-                else if (acOnline && hasBatteryStatusRate) ratePart = " | Punjenje: 0.0W";
+                if (chargeWatts > 0.1) ratePart = HwTestLocalization.PickFormat(" | Puni: {0:0.0}W", " | 充电: {0:0.0}W", chargeWatts);
+                else if (dischargeWatts > 0.1) ratePart = HwTestLocalization.PickFormat(" | Troši: {0:0.0}W", " | 放电: {0:0.0}W", dischargeWatts);
+                else if (acOnline && hasBatteryStatusRate) ratePart = HwTestLocalization.Pick(" | Punjenje: 0.0W", " | 充电: 0.0W");
                 string voltPart = voltageV > 1.0 ? string.Format(" ({0:0.0}V)", voltageV) : "";
 
                 if (designMwh > 0 && fullMwh > 0)
@@ -784,64 +784,64 @@ namespace WIS.HwTest.Core
                     res.Details["health_percent"] = healthPct;
                     res.Details["wear_percent"] = wearPct;
 
-                    string cyclePart = (cycleCount >= 0) ? string.Format(" | Ciklusi: {0}", cycleCount) : "";
-                    string chargePart = (chargePct >= 0) ? string.Format(" | Napunjenost: {0}%", chargePct) : "";
-                    res.MetricSummary = string.Format("Zdravlje: {0:0}% ({1:0.0}/{2:0.0} Wh) | Wear: {3:0}%{4}{5}{6}{7} | AC: {8}",
+                    string cyclePart = (cycleCount >= 0) ? HwTestLocalization.PickFormat(" | Ciklusi: {0}", " | 循环次数: {0}", cycleCount) : "";
+                    string chargePart = (chargePct >= 0) ? HwTestLocalization.PickFormat(" | Napunjenost: {0}%", " | 电量: {0}%", chargePct) : "";
+                    res.MetricSummary = HwTestLocalization.PickFormat("Zdravlje: {0:0}% ({1:0.0}/{2:0.0} Wh) | Wear: {3:0}%{4}{5}{6}{7} | AC: {8}", "健康度: {0:0}% ({1:0.0}/{2:0.0} Wh) | 损耗: {3:0}%{4}{5}{6}{7} | AC: {8}",
                         healthPct, fullMwh / 1000.0, designMwh / 1000.0, wearPct, cyclePart, chargePart,
-                        ratePart, voltPart, acOnline ? "Online" : "Baterija");
+                        ratePart, voltPart, acOnline ? HwTestLocalization.Pick("Online", "在线") : HwTestLocalization.Pick("Baterija", "电池"));
 
                     if (criticalStatus || healthPct < 40.0)
                     {
                         res.Status = TestStatus.Fail;
                         res.Reason = criticalStatus
-                            ? string.Format("Kritičan WMI status baterije ({0}), zdravlje {1:0}%", batteryStatusText, healthPct)
-                            : string.Format("Baterija je istrošena (zdravlje {0:0}% < 40% minimuma)", healthPct);
+                            ? HwTestLocalization.PickFormat("Kritičan WMI status baterije ({0}), zdravlje {1:0}%", "电池 WMI 状态严重异常 ({0}),健康度 {1:0}%", batteryStatusText, healthPct)
+                            : HwTestLocalization.PickFormat("Baterija je istrošena (zdravlje {0:0}% < 40% minimuma)", "电池已损耗 (健康度 {0:0}% < 最低 40%)", healthPct);
                     }
                     else if (healthPct < 65.0 || acNotChargingWarn)
                     {
                         res.Status = TestStatus.Pass;
                         res.HasWarning = true;
                         List<string> bw = new List<string>();
-                        if (healthPct < 65.0) bw.Add(string.Format("Smanjen kapacitet baterije (zdravlje {0:0}%, wear {1:0}%)", healthPct, wearPct));
-                        if (acNotChargingWarn) bw.Add(string.Format("Punjač je priključen ({0}%), ali baterija ne prima struju (ChargeRate 0 W)", chargePct));
-                        res.Reason = "UPOZORENJE: " + string.Join("; ", bw.ToArray());
+                        if (healthPct < 65.0) bw.Add(HwTestLocalization.PickFormat("Smanjen kapacitet baterije (zdravlje {0:0}%, wear {1:0}%)", "电池容量下降 (健康度 {0:0}%,损耗 {1:0}%)", healthPct, wearPct));
+                        if (acNotChargingWarn) bw.Add(HwTestLocalization.PickFormat("Punjač je priključen ({0}%), ali baterija ne prima struju (ChargeRate 0 W)", "充电器已连接 ({0}%),但电池不充电 (ChargeRate 0 W)", chargePct));
+                        res.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", bw.ToArray());
                     }
                     else
                     {
                         res.Status = TestStatus.Pass;
                         res.HasWarning = false;
-                        res.Reason = string.Format("Baterija ispravna (zdravlje {0:0}%{1})", healthPct,
-                            chargeWatts > 0.1 ? string.Format(", punjenje {0:0.0}W", chargeWatts) : "");
+                        res.Reason = HwTestLocalization.PickFormat("Baterija ispravna (zdravlje {0:0}%{1})", "电池正常 (健康度 {0:0}%{1})", healthPct,
+                            chargeWatts > 0.1 ? HwTestLocalization.PickFormat(", punjenje {0:0.0}W", ",充电 {0:0.0}W", chargeWatts) : "");
                     }
                 }
                 else
                 {
-                    res.MetricSummary = string.Format("{0} | Napunjenost: {1}%{2}{3} | AC: {4} (kapacitet nedostupan)",
-                        string.IsNullOrEmpty(batteryName) ? "Baterija" : batteryName,
+                    res.MetricSummary = HwTestLocalization.PickFormat("{0} | Napunjenost: {1}%{2}{3} | AC: {4} (kapacitet nedostupan)", "{0} | 电量: {1}%{2}{3} | AC: {4} (无法获取容量)",
+                        string.IsNullOrEmpty(batteryName) ? HwTestLocalization.Pick("Baterija", "电池") : batteryName,
                         chargePct >= 0 ? chargePct.ToString() : "?",
                         ratePart, voltPart,
-                        acOnline ? "Online" : "Baterija");
+                        acOnline ? HwTestLocalization.Pick("Online", "在线") : HwTestLocalization.Pick("Baterija", "电池"));
 
                     if (criticalStatus)
                     {
                         res.Status = TestStatus.Fail;
-                        res.Reason = "Kritičan status baterije: " + batteryStatusText;
+                        res.Reason = HwTestLocalization.Pick("Kritičan status baterije: ", "电池状态严重异常: ") + batteryStatusText;
                     }
                     else
                     {
                         res.Status = TestStatus.Pass;
                         res.HasWarning = true;
                         res.Reason = acNotChargingWarn
-                            ? "UPOZORENJE: Firmware ne prijavljuje Design/Full kapacitet i AC ne puni bateriju (0 W)"
-                            : "UPOZORENJE: Firmware ne prijavljuje Design/Full kapacitet baterije preko WMI";
+                            ? HwTestLocalization.Pick("UPOZORENJE: Firmware ne prijavljuje Design/Full kapacitet i AC ne puni bateriju (0 W)", "警告: 固件未上报设计/满充容量,且 AC 未给电池充电 (0 W)")
+                            : HwTestLocalization.Pick("UPOZORENJE: Firmware ne prijavljuje Design/Full kapacitet baterije preko WMI", "警告: 固件未通过 WMI 上报电池设计/满充容量");
                     }
                 }
             }
             catch (Exception ex)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = "Greška pri očitavanju baterije: " + ex.Message;
-                res.MetricSummary = "Greška očitavanja";
+                res.Reason = HwTestLocalization.Pick("Greška pri očitavanju baterije: ", "读取电池出错: ") + ex.Message;
+                res.MetricSummary = HwTestLocalization.Pick("Greška očitavanja", "读取出错");
             }
 
             sw.Stop();
@@ -853,7 +853,7 @@ namespace WIS.HwTest.Core
         #region 2. Mreža (Wi-Fi / LAN & ServisHub)
         public TestItemResult RunNetworkCheck(ModelProfileClient profileClient)
         {
-            TestItemResult res = new TestItemResult("auto_network", "Mreža (Wi-Fi / LAN & Hub)", "Provera mrežnih adaptera, link brzine, gateway-a i veze sa ServisHub serverom");
+            TestItemResult res = new TestItemResult("auto_network", HwTestLocalization.Pick("Mreža (Wi-Fi / LAN & Hub)", "网络 (Wi-Fi / LAN 与 Hub)"), HwTestLocalization.Pick("Provera mrežnih adaptera, link brzine, gateway-a i veze sa ServisHub serverom", "检测网络适配器、链路速率、网关以及与 ServisHub 服务器的连接"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
@@ -877,12 +877,12 @@ namespace WIS.HwTest.Core
                     {
                         foreach (ManagementObject mo in col)
                         {
-                            string name = mo["Name"] != null ? mo["Name"].ToString() : "Nepoznat adapter";
+                            string name = mo["Name"] != null ? mo["Name"].ToString() : HwTestLocalization.Pick("Nepoznat adapter", "未知适配器");
                             if (IsVirtualAdapterName(name)) continue;
                             uint err = mo["ConfigManagerErrorCode"] != null ? Convert.ToUInt32(mo["ConfigManagerErrorCode"]) : 0;
                             if (err != 0 && err != 22) // 22 = Disabled by user, ostalo je stvaran kvar drajvera
                             {
-                                pnpErrors.Add(string.Format("{0} (Code {1})", name, err));
+                                pnpErrors.Add(HwTestLocalization.PickFormat("{0} (Code {1})", "{0} (Code {1})", name, err));
                             }
                         }
                     }
@@ -945,8 +945,8 @@ namespace WIS.HwTest.Core
                     catch { }
 
                     string stateStr = up
-                        ? string.Format("Povezan ({0} Mbps{1})", mbps, string.IsNullOrEmpty(ipv4) ? "" : ", " + ipv4)
-                        : "Nije povezan";
+                        ? HwTestLocalization.PickFormat("Povezan ({0} Mbps{1})", "已连接 ({0} Mbps{1})", mbps, string.IsNullOrEmpty(ipv4) ? "" : ", " + ipv4)
+                        : HwTestLocalization.Pick("Nije povezan", "未连接");
 
                     ifaceSummaries.Add(string.Format("{0}: {1}", ni.Description, stateStr));
                     if (isWifi)
@@ -954,13 +954,13 @@ namespace WIS.HwTest.Core
                         wifiCount++;
                         if (up) wifiUp = true;
                         if (wifiInfo == "Nema" || up)
-                            wifiInfo = up ? string.Format("{0} Mbps", mbps) : "Spreman";
+                            wifiInfo = up ? string.Format("{0} Mbps", mbps) : HwTestLocalization.Pick("Spreman", "就绪");
                     }
                     else if (isLan)
                     {
                         lanCount++;
                         if (lanInfo == "Nema" || up)
-                            lanInfo = up ? string.Format("{0} Mbps", mbps) : "Spreman";
+                            lanInfo = up ? string.Format("{0} Mbps", mbps) : HwTestLocalization.Pick("Spreman", "就绪");
                     }
                 }
 
@@ -970,7 +970,7 @@ namespace WIS.HwTest.Core
                     : "http://192.168.170.254:8080";
                 bool hubOk = false;
                 long hubMs = -1;
-                string hubStatusMsg = "Nedostupan";
+                string hubStatusMsg = HwTestLocalization.Pick("Nedostupan", "不可用");
 
                 if (anyUp)
                 {
@@ -998,7 +998,7 @@ namespace WIS.HwTest.Core
                     }
                     catch (Exception hex)
                     {
-                        hubStatusMsg = "Nedostupan (" + hex.Message + ")";
+                        hubStatusMsg = HwTestLocalization.Pick("Nedostupan (", "不可用 (") + hex.Message + ")";
                     }
                 }
 
@@ -1114,7 +1114,7 @@ namespace WIS.HwTest.Core
                 {
                     if (hwRadioOff || swRadioOff)
                     {
-                        wifiSigTxt = hwRadioOff ? " (RF Kill HW OFF)" : " (Radio SW OFF)";
+                        wifiSigTxt = hwRadioOff ? HwTestLocalization.Pick(" (RF Kill HW OFF)", " (RF Kill 硬件已关闭)") : HwTestLocalization.Pick(" (Radio SW OFF)", " (无线软件已关闭)");
                     }
                     else if (wifiMaxSignalPct > 0 || wifiVisibleNetworks > 0 || wifiBssidCount > 0)
                     {
@@ -1126,18 +1126,18 @@ namespace WIS.HwTest.Core
                         {
                             svcPart = serviceSsidFound
                                 ? string.Format(", AP:{0}%", serviceSignalPct)
-                                : ", AP:nije vidljiv";
+                                : HwTestLocalization.Pick(", AP:nije vidljiv", ",AP: 不可见");
                         }
                         wifiSigTxt = string.Format(" ({0}%{1}, {2} BSSID [{3}]{4})",
                             wifiMaxSignalPct, rssiPart, wifiBssidCount > 0 ? wifiBssidCount : wifiVisibleNetworks, bandPart, svcPart);
                     }
                     else if (locationBlockedWifiScan)
                     {
-                        wifiSigTxt = " (Location blokira skeniranje)";
+                        wifiSigTxt = HwTestLocalization.Pick(" (Location blokira skeniranje)", " (定位权限阻止扫描)");
                     }
                 }
-                string btBadge = btPresent ? (btOk ? "OK" : "GREŠKA") : "Nema";
-                res.MetricSummary = string.Format("Wi-Fi: {0}{1} | LAN: {2} | BT: {3} | Hub: {4}",
+                string btBadge = btPresent ? (btOk ? "OK" : HwTestLocalization.Pick("GREŠKA", "错误")) : "Nema";
+                res.MetricSummary = HwTestLocalization.PickFormat("Wi-Fi: {0}{1} | LAN: {2} | BT: {3} | Hub: {4}", "Wi-Fi: {0}{1} | LAN: {2} | BT: {3} | Hub: {4}",
                     wifiInfo, wifiSigTxt, lanInfo, btBadge, anyUp ? hubStatusMsg : "Offline");
 
                 bool radioOff = (wifiCount > 0 && (hwRadioOff || swRadioOff));
@@ -1156,18 +1156,18 @@ namespace WIS.HwTest.Core
                 {
                     res.Status = TestStatus.Fail;
                     List<string> failParts = new List<string>();
-                    if (pnpErrors.Count > 0) failParts.Add("Greška mrežnog drajvera: " + string.Join(", ", pnpErrors.ToArray()));
-                    if (btPresent && !btOk) failParts.Add("Bluetooth greška: " + btSummary);
-                    if (hwRadioOff) failParts.Add("Wi-Fi hardverski radio prekidač (RF Kill) je isključen");
-                    if (swRadioOff) failParts.Add("Wi-Fi softverski radio je isključen (Airplane mode / Wi-Fi OFF)");
+                    if (pnpErrors.Count > 0) failParts.Add(HwTestLocalization.Pick("Greška mrežnog drajvera: ", "网络驱动错误: ") + string.Join(", ", pnpErrors.ToArray()));
+                    if (btPresent && !btOk) failParts.Add(HwTestLocalization.Pick("Bluetooth greška: ", "蓝牙错误: ") + btSummary);
+                    if (hwRadioOff) failParts.Add(HwTestLocalization.Pick("Wi-Fi hardverski radio prekidač (RF Kill) je isključen", "Wi-Fi 硬件无线开关 (RF Kill) 已关闭"));
+                    if (swRadioOff) failParts.Add(HwTestLocalization.Pick("Wi-Fi softverski radio je isključen (Airplane mode / Wi-Fi OFF)", "Wi-Fi 软件无线已关闭 (飞行模式 / Wi-Fi OFF)"));
                     if (noWifiSignalFail && !radioOff)
-                        failParts.Add("Wi-Fi adapter je prisutan, ali vidi 0 Wi-Fi mreža nakon aktivnog skeniranja (otkačene antene ili neispravan RF modul)");
+                        failParts.Add(HwTestLocalization.Pick("Wi-Fi adapter je prisutan, ali vidi 0 Wi-Fi mreža nakon aktivnog skeniranja (otkačene antene ili neispravan RF modul)", "Wi-Fi 适配器存在,但主动扫描后看不到任何 Wi-Fi 网络 (天线脱落或射频模块故障)"));
                     res.Reason = string.Join("; ", failParts.ToArray());
                 }
                 else if (wifiCount == 0 && lanCount == 0)
                 {
                     res.Status = TestStatus.Fail;
-                    res.Reason = "Nije pronađen nijedan fizički Wi-Fi ili LAN adapter (fali drajver ili kvar kartice)";
+                    res.Reason = HwTestLocalization.Pick("Nije pronađen nijedan fizički Wi-Fi ili LAN adapter (fali drajver ili kvar kartice)", "未找到任何物理 Wi-Fi 或 LAN 适配器 (缺少驱动或网卡故障)");
                 }
                 else if (weakWifiAntenna || missing5GhzBand || missingServiceSsid || wifiScanBlockedWarn || !anyUp || !hubOk)
                 {
@@ -1175,24 +1175,24 @@ namespace WIS.HwTest.Core
                     res.HasWarning = true;
                     List<string> warns = new List<string>();
                     if (wifiScanBlockedWarn)
-                        warns.Add("Windows Location politika blokira Wi-Fi skeniranje (DisableLocation / ERROR_ACCESS_DENIED) — provera okolnih Wi-Fi mreža nije moguća bez Location pristupa");
+                        warns.Add(HwTestLocalization.Pick("Windows Location politika blokira Wi-Fi skeniranje (DisableLocation / ERROR_ACCESS_DENIED) — provera okolnih Wi-Fi mreža nije moguća bez Location pristupa", "Windows 定位策略阻止了 Wi-Fi 扫描 (DisableLocation / ERROR_ACCESS_DENIED) — 没有定位权限无法检测周围 Wi-Fi 网络"));
                     if (weakServiceSignal)
-                        warns.Add(string.Format("Slab signal servisnog AP-a '{0}' ({1}%{2}) — proverite Main/Aux kablove antene",
-                            serviceSsid, serviceSignalPct, serviceHasRssi ? string.Format(" / {0} dBm", serviceRssiDbm) : ""));
+                        warns.Add(HwTestLocalization.PickFormat("Slab signal servisnog AP-a '{0}' ({1}%{2}) — proverite Main/Aux kablove antene", "服务 AP '{0}' 信号弱 ({1}%{2}) — 请检查天线 Main/Aux 线缆",
+                            serviceSsid, serviceSignalPct, serviceHasRssi ? HwTestLocalization.PickFormat(" / {0} dBm", " / {0} dBm", serviceRssiDbm) : ""));
                     else if (weakSurroundingSignal)
-                        warns.Add(string.Format("Slab Wi-Fi prijem ({0}%{1}, {2} mreža) — proverite Main/Aux kablove antene",
-                            wifiMaxSignalPct, wifiHasRssi ? string.Format(" / {0} dBm", wifiMaxRssiDbm) : "", wifiVisibleNetworks));
+                        warns.Add(HwTestLocalization.PickFormat("Slab Wi-Fi prijem ({0}%{1}, {2} mreža) — proverite Main/Aux kablove antene", "Wi-Fi 接收信号弱 ({0}%{1}, {2} 个网络) — 请检查天线 Main/Aux 线缆",
+                            wifiMaxSignalPct, wifiHasRssi ? HwTestLocalization.PickFormat(" / {0} dBm", " / {0} dBm", wifiMaxRssiDbm) : "", wifiVisibleNetworks));
                     if (missing5GhzBand)
-                        warns.Add("Dual-band Wi-Fi kartica vidi samo 2.4 GHz mreže (0 mreža na 5 GHz) — proverite konektore antene");
+                        warns.Add(HwTestLocalization.Pick("Dual-band Wi-Fi kartica vidi samo 2.4 GHz mreže (0 mreža na 5 GHz) — proverite konektore antene", "双频 Wi-Fi 网卡只能看到 2.4 GHz 网络 (5 GHz 为 0 个) — 请检查天线接口"));
                     if (missingServiceSsid)
-                        warns.Add(string.Format("Servisni SSID '{0}' nije pronađen u rezultatima skeniranja", serviceSsid));
+                        warns.Add(HwTestLocalization.PickFormat("Servisni SSID '{0}' nije pronađen u rezultatima skeniranja", "扫描结果中未找到服务 SSID '{0}'", serviceSsid));
                     if (!anyUp)
-                        warns.Add("Mrežni adapteri su ispravni, ali računar nije povezan ni na Wi-Fi ni na LAN");
+                        warns.Add(HwTestLocalization.Pick("Mrežni adapteri su ispravni, ali računar nije povezan ni na Wi-Fi ni na LAN", "网络适配器正常,但电脑未连接 Wi-Fi 或 LAN"));
                     else if (!hubOk && gwPingMs < 0)
-                        warns.Add("Link je aktivan, ali gateway i ServisHub nisu odgovorili na proveru");
+                        warns.Add(HwTestLocalization.Pick("Link je aktivan, ali gateway i ServisHub nisu odgovorili na proveru", "链路已连通,但网关和 ServisHub 均未响应检测"));
                     else if (!hubOk)
-                        warns.Add("Mreža radi (gateway " + gwPingMs + " ms), ali ServisHub nije dostupan");
-                    res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
+                        warns.Add(HwTestLocalization.Pick("Mreža radi (gateway ", "网络正常 (网关 ") + gwPingMs + HwTestLocalization.Pick(" ms), ali ServisHub nije dostupan", " ms),但 ServisHub 不可用"));
+                    res.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", warns.ToArray());
                 }
                 else
                 {
@@ -1201,21 +1201,21 @@ namespace WIS.HwTest.Core
                     string apInfo = (!string.IsNullOrEmpty(serviceSsid) && serviceSsidFound)
                         ? string.Format(", AP '{0}' {1}%", serviceSsid, serviceSignalPct)
                         : "";
-                    res.Reason = string.Format("Mreža, Wi-Fi antena ({0}%{1}, 2.4G:{2}/5G:{3}{4}){5} i ServisHub dostupni ({6} ms)",
+                    res.Reason = HwTestLocalization.PickFormat("Mreža, Wi-Fi antena ({0}%{1}, 2.4G:{2}/5G:{3}{4}){5} i ServisHub dostupni ({6} ms)", "网络、Wi-Fi 天线 ({0}%{1}, 2.4G:{2}/5G:{3}{4}){5} 与 ServisHub 均正常 ({6} ms)",
                         wifiMaxSignalPct,
                         wifiHasRssi ? string.Format("/{0}dBm", wifiMaxRssiDbm) : "",
                         wifi24GhzCount,
                         wifi5GhzCount,
                         apInfo,
-                        btPresent ? ", Bluetooth OK" : "",
+                        btPresent ? HwTestLocalization.Pick(", Bluetooth OK", ",蓝牙正常") : "",
                         hubMs);
                 }
             }
             catch (Exception ex)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = "Greška mrežne provere: " + ex.Message;
-                res.MetricSummary = "Greška provere";
+                res.Reason = HwTestLocalization.Pick("Greška mrežne provere: ", "网络检测出错: ") + ex.Message;
+                res.MetricSummary = HwTestLocalization.Pick("Greška provere", "检测出错");
             }
 
             sw.Stop();
@@ -1720,16 +1720,17 @@ namespace WIS.HwTest.Core
                 if (!hwRadioOff && !swRadioOff && (bssidCount == 0 || bss == null || !bss.ApiSucceeded || bss.AccessDenied))
                 {
                     string output = RunNetshStdout("wlan show networks mode=bssid", 1800);
-                    if (IsNetshLocationBlockedMessage(output))
-                    {
-                        netshLocationBlocked = true;
-                        HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show networks blokiran od strane Windows Location politike.");
-                    }
                     int netshVisible = 0;
                     int netshMaxPct = 0;
                     ParseNetshNetworksOutput(output, ref netshVisible, ref netshMaxPct);
                     if (netshVisible > visibleNetworks) visibleNetworks = netshVisible;
                     if (netshMaxPct > maxSignalPct) maxSignalPct = netshMaxPct;
+
+                    if (netshVisible == 0 && bssidCount == 0 && IsNetshLocationBlockedMessage(output))
+                    {
+                        netshLocationBlocked = true;
+                        HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show networks blokiran od strane Windows Location politike.");
+                    }
 
                     if (bssidCount == 0)
                     {
@@ -1754,7 +1755,7 @@ namespace WIS.HwTest.Core
                     string ifaceOut = RunNetshStdout("wlan show interfaces", 1500);
                     if (!string.IsNullOrEmpty(ifaceOut))
                     {
-                        if (IsNetshLocationBlockedMessage(ifaceOut))
+                        if (bssidCount == 0 && visibleNetworks == 0 && IsNetshLocationBlockedMessage(ifaceOut))
                         {
                             netshLocationBlocked = true;
                             HwTestLogger.Warn("WIFI_SCAN", "netsh wlan show interfaces blokiran od strane Windows Location politike.");
@@ -1832,7 +1833,7 @@ namespace WIS.HwTest.Core
         {
             btPresent = false;
             btOk = true;
-            btSummary = "Nije detektovan";
+            btSummary = HwTestLocalization.Pick("Nije detektovan", "未检测到");
             string primaryName = "";
             string firstError = "";
 
@@ -1864,7 +1865,7 @@ namespace WIS.HwTest.Core
                         {
                             btOk = false;
                             if (string.IsNullOrEmpty(firstError))
-                                firstError = string.Format("{0} (Code {1})", string.IsNullOrEmpty(name) ? "Bluetooth" : name, err);
+                                firstError = HwTestLocalization.PickFormat("{0} (Code {1})", "{0} (Code {1})", string.IsNullOrEmpty(name) ? "Bluetooth" : name, err);
                         }
                     }
                 }
@@ -1874,7 +1875,7 @@ namespace WIS.HwTest.Core
             if (btPresent)
             {
                 btSummary = btOk
-                    ? ("Aktivan (" + (string.IsNullOrEmpty(primaryName) ? "Bluetooth" : primaryName) + ")")
+                    ? (HwTestLocalization.Pick("Aktivan (", "已激活 (") + (string.IsNullOrEmpty(primaryName) ? "Bluetooth" : primaryName) + ")")
                     : firstError;
             }
         }
@@ -1893,7 +1894,7 @@ namespace WIS.HwTest.Core
         #region 3. Disk / SSD / NVMe (Pasivno SMART + Aktivni Benchmark)
         public TestItemResult RunDiskPassiveCheck()
         {
-            TestItemResult res = new TestItemResult("auto_disk", "Disk / SSD / NVMe", "SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark");
+            TestItemResult res = new TestItemResult("auto_disk", HwTestLocalization.Pick("Disk / SSD / NVMe", "磁盘 / SSD / NVMe"), HwTestLocalization.Pick("SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark", "SMART 健康状态、剩余寿命 (损耗 %)、温度以及快速读/写基准测试"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
             PopulateDiskHealthDetails(res, true);
@@ -1904,7 +1905,7 @@ namespace WIS.HwTest.Core
 
         public TestItemResult RunDiskBenchmark(Action<string> onProgress, CancelFlag cancel)
         {
-            TestItemResult res = new TestItemResult("auto_disk", "Disk / SSD / NVMe", "SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark");
+            TestItemResult res = new TestItemResult("auto_disk", HwTestLocalization.Pick("Disk / SSD / NVMe", "磁盘 / SSD / NVMe"), HwTestLocalization.Pick("SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark", "SMART 健康状态、剩余寿命 (损耗 %)、温度以及快速读/写基准测试"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
@@ -1912,7 +1913,7 @@ namespace WIS.HwTest.Core
             bool smartFail = (res.Status == TestStatus.Fail);
             bool smartWarn = res.HasWarning;
             string smartReason = res.Reason;
-            string primaryModel = res.Details.ContainsKey("primary_model") ? res.Details["primary_model"].ToString() : "Sistemski disk";
+            string primaryModel = res.Details.ContainsKey("primary_model") ? res.Details["primary_model"].ToString() : HwTestLocalization.Pick("Sistemski disk", "系统磁盘");
             string mediaKind = res.Details.ContainsKey("primary_media") ? res.Details["primary_media"].ToString() : "SSD";
             int? wearPct = res.Details.ContainsKey("wear_percent") ? (int?)Convert.ToInt32(res.Details["wear_percent"]) : null;
             int? tempC = res.Details.ContainsKey("temp_c") ? (int?)Convert.ToInt32(res.Details["temp_c"]) : null;
@@ -1946,7 +1947,7 @@ namespace WIS.HwTest.Core
                     for (int i = 0; i < writeBuf.Length; i++)
                         writeBuf[i] = (byte)((i * 31 + 7) & 0xFF);
 
-                    if (onProgress != null) onProgress(string.Format("Upis {0} MB na {1}...", testSizeMb, rootDrive));
+                    if (onProgress != null) onProgress(HwTestLocalization.PickFormat("Upis {0} MB na {1}...", "正在向 {1} 写入 {0} MB...", testSizeMb, rootDrive));
 
                     // 1. Sekvencijalni Write (WriteThrough zaobilazi OS lazy-write cache)
                     Stopwatch wsw = Stopwatch.StartNew();
@@ -1958,7 +1959,7 @@ namespace WIS.HwTest.Core
                             fs.Write(writeBuf, 0, chunkBytes);
                             if ((m % 32) == 0 && onProgress != null)
                             {
-                                onProgress(string.Format("Seq Write: {0}/{1} MB", m + 1, testSizeMb));
+                                onProgress(HwTestLocalization.PickFormat("Seq Write: {0}/{1} MB", "顺序写入: {0}/{1} MB", m + 1, testSizeMb));
                             }
                         }
                         fs.Flush(true);
@@ -1967,25 +1968,25 @@ namespace WIS.HwTest.Core
                     writeMBs = Math.Round(testSizeMb / Math.Max(0.05, wsw.Elapsed.TotalSeconds), 1);
 
                     // 2. Sekvencijalni Read bez OS file cache (FILE_FLAG_NO_BUFFERING)
-                    if (onProgress != null) onProgress(string.Format("Čitanje {0} MB (No-Buffering)...", testSizeMb));
+                    if (onProgress != null) onProgress(HwTestLocalization.PickFormat("Čitanje {0} MB (No-Buffering)...", "正在读取 {0} MB (No-Buffering)...", testSizeMb));
                     readMBs = MeasureUnbufferedSequentialRead(tempFile, testSizeMb, onProgress, cancel);
 
                     // 3. Kratki 4K Random Read test (800 čitanja = ~3.1 MB)
-                    if (onProgress != null) onProgress("4K Random Read test...");
+                    if (onProgress != null) onProgress(HwTestLocalization.Pick("4K Random Read test...", "4K 随机读取测试..."));
                     rand4kIops = MeasureUnbuffered4KRandomRead(tempFile, testSizeMb, 800, cancel);
 
                     benchExecuted = true;
                 }
                 else
                 {
-                    benchErr = "Premalo slobodnog prostora na " + rootDrive + " (< 400 MB) za benchmark upisa";
+                    benchErr = HwTestLocalization.PickFormat("Premalo slobodnog prostora na {0} (< 400 MB) za benchmark upisa", "{0} 可用空间不足 (< 400 MB),无法进行写入基准测试", rootDrive);
                 }
             }
             catch (OperationCanceledException)
             {
                 res.Status = TestStatus.Skip;
-                res.Reason = "Benchmark diska je prekinut od strane korisnika";
-                res.MetricSummary = "Prekinuto";
+                res.Reason = HwTestLocalization.Pick("Benchmark diska je prekinut od strane korisnika", "磁盘基准测试已被用户中断");
+                res.MetricSummary = HwTestLocalization.Pick("Prekinuto", "已中断");
                 sw.Stop();
                 res.DurationSeconds = (int)Math.Ceiling(sw.Elapsed.TotalSeconds);
                 return res;
@@ -2019,11 +2020,11 @@ namespace WIS.HwTest.Core
             if (tempC.HasValue) res.Details["temp_c"] = tempC.Value;
             if (!string.IsNullOrEmpty(benchErr)) res.Details["bench_error"] = benchErr;
 
-            string healthTxt = wearPct.HasValue ? string.Format("Zdravlje: {0}%", Math.Max(0, 100 - wearPct.Value)) : "SMART OK";
+            string healthTxt = wearPct.HasValue ? HwTestLocalization.PickFormat("Zdravlje: {0}%", "健康度: {0}%", Math.Max(0, 100 - wearPct.Value)) : HwTestLocalization.Pick("SMART OK", "SMART 正常");
             string tempTxt = tempC.HasValue ? string.Format(" | {0}°C", tempC.Value) : "";
             string speedTxt = benchExecuted
-                ? string.Format(" | R/W: {0:0}/{1:0} MB/s ({2:0} IOPS)", readMBs, writeMBs, rand4kIops)
-                : (!string.IsNullOrEmpty(benchErr) ? " | Bench preskočen" : "");
+                ? HwTestLocalization.PickFormat(" | R/W: {0:0}/{1:0} MB/s ({2:0} IOPS)", " | 读/写: {0:0}/{1:0} MB/s ({2:0} IOPS)", readMBs, writeMBs, rand4kIops)
+                : (!string.IsNullOrEmpty(benchErr) ? HwTestLocalization.Pick(" | Bench preskočen", " | 已跳过基准测试") : "");
             res.MetricSummary = string.Format("{0} ({1}) | {2}{3}{4}", ShortModel(primaryModel, 26), mediaKind, healthTxt, tempTxt, speedTxt);
 
             bool isHdd = mediaKind.IndexOf("HDD", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -2035,10 +2036,10 @@ namespace WIS.HwTest.Core
                 res.Status = TestStatus.Fail;
                 res.Reason = smartReason;
             }
-            else if (!benchExecuted && !string.IsNullOrEmpty(benchErr) && benchErr.IndexOf("Premalo", StringComparison.OrdinalIgnoreCase) < 0)
+            else if (!benchExecuted && !string.IsNullOrEmpty(benchErr) && benchErr.IndexOf("Premalo", StringComparison.OrdinalIgnoreCase) < 0 && benchErr.IndexOf("空间不足", StringComparison.Ordinal) < 0)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = "I/O greška tokom testa diska: " + benchErr;
+                res.Reason = HwTestLocalization.Pick("I/O greška tokom testa diska: ", "磁盘测试期间发生 I/O 错误: ") + benchErr;
             }
             else if (smartWarn || highTemp || lowSpeed || !benchExecuted)
             {
@@ -2046,16 +2047,16 @@ namespace WIS.HwTest.Core
                 res.HasWarning = true;
                 List<string> warns = new List<string>();
                 if (smartWarn && !string.IsNullOrEmpty(smartReason)) warns.Add(smartReason);
-                if (highTemp) warns.Add(string.Format("Visoka temperatura diska ({0}°C >= 70°C)", tempC.Value));
-                if (lowSpeed) warns.Add(string.Format("Niska brzina prenosa za {0} (R {1:0} / W {2:0} MB/s)", mediaKind, readMBs, writeMBs));
+                if (highTemp) warns.Add(HwTestLocalization.PickFormat("Visoka temperatura diska ({0}°C >= 70°C)", "磁盘温度过高 ({0}°C >= 70°C)", tempC.Value));
+                if (lowSpeed) warns.Add(HwTestLocalization.PickFormat("Niska brzina prenosa za {0} (R {1:0} / W {2:0} MB/s)", "{0} 传输速度偏低 (读 {1:0} / 写 {2:0} MB/s)", mediaKind, readMBs, writeMBs));
                 if (!benchExecuted && !string.IsNullOrEmpty(benchErr)) warns.Add(benchErr);
-                res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
+                res.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", warns.ToArray());
             }
             else
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = false;
-                res.Reason = string.Format("Disk zdrav ({0}), R/W {1:0}/{2:0} MB/s", healthTxt, readMBs, writeMBs);
+                res.Reason = HwTestLocalization.PickFormat("Disk zdrav ({0}), R/W {1:0}/{2:0} MB/s", "磁盘正常 ({0}),读/写 {1:0}/{2:0} MB/s", healthTxt, readMBs, writeMBs);
             }
 
             sw.Stop();
@@ -2159,7 +2160,7 @@ namespace WIS.HwTest.Core
                         }
 
                         int w;
-                        string wTxt = wearByDeviceId.TryGetValue(did, out w) ? string.Format(", Zdravlje {0}%", Math.Max(0, 100 - w)) : "";
+                        string wTxt = wearByDeviceId.TryGetValue(did, out w) ? HwTestLocalization.PickFormat(", Zdravlje {0}%", ",健康度 {0}%", Math.Max(0, 100 - w)) : "";
                         int t;
                         string tTxt = tempByDeviceId.TryGetValue(did, out t) ? string.Format(", {0}°C", t) : "";
                         diskLines.Add(string.Format("{0} ({1}, {2:0} GB, {3}{4}{5})", name, mKind, sizeGb, healthName, wTxt, tTxt));
@@ -2193,7 +2194,7 @@ namespace WIS.HwTest.Core
                                 anyCritical = true;
                                 issues.Add(model + ": Win32 Status = " + st);
                             }
-                            diskLines.Add(string.Format("{0} ({1:0} GB, Status {2})", model, sizeBytes / (1024.0 * 1024.0 * 1024.0), st));
+                            diskLines.Add(HwTestLocalization.PickFormat("{0} ({1:0} GB, Status {2})", "{0} ({1:0} GB, 状态 {2})", model, sizeBytes / (1024.0 * 1024.0 * 1024.0), st));
                         }
                     }
                 }
@@ -2212,7 +2213,7 @@ namespace WIS.HwTest.Core
                         {
                             predictFail = true;
                             anyCritical = true;
-                            issues.Add("SMART PredictFailure = TRUE (disk je pred otkazom!)");
+                            issues.Add(HwTestLocalization.Pick("SMART PredictFailure = TRUE (disk je pred otkazom!)", "SMART PredictFailure = TRUE (磁盘即将故障!)"));
                         }
                     }
                 }
@@ -2234,26 +2235,26 @@ namespace WIS.HwTest.Core
             if (totalUncorrected > 0)
             {
                 anyCritical = true;
-                issues.Add(string.Format("Detektovano {0} neispravljivih Read/Write grešaka", totalUncorrected));
+                issues.Add(HwTestLocalization.PickFormat("Detektovano {0} neispravljivih Read/Write grešaka", "检测到 {0} 个无法纠正的读/写错误", totalUncorrected));
             }
             if (worstWear.HasValue && worstWear.Value >= 90)
             {
                 anyCritical = true;
-                issues.Add(string.Format("SSD istrošenost kritična (Wear {0}%, preostalo {1}%)", worstWear.Value, Math.Max(0, 100 - worstWear.Value)));
+                issues.Add(HwTestLocalization.PickFormat("SSD istrošenost kritična (Wear {0}%, preostalo {1}%)", "SSD 损耗严重 (Wear {0}%,剩余 {1}%)", worstWear.Value, Math.Max(0, 100 - worstWear.Value)));
             }
             else if (worstWear.HasValue && worstWear.Value >= 75)
             {
                 anyWarn = true;
-                issues.Add(string.Format("Visoka istrošenost SSD-a (Wear {0}%, preostalo {1}%)", worstWear.Value, Math.Max(0, 100 - worstWear.Value)));
+                issues.Add(HwTestLocalization.PickFormat("Visoka istrošenost SSD-a (Wear {0}%, preostalo {1}%)", "SSD 损耗较高 (Wear {0}%,剩余 {1}%)", worstWear.Value, Math.Max(0, 100 - worstWear.Value)));
             }
 
             if (maxTemp.HasValue && maxTemp.Value >= 70)
             {
                 anyWarn = true;
-                issues.Add(string.Format("Visoka temperatura diska ({0}°C)", maxTemp.Value));
+                issues.Add(HwTestLocalization.PickFormat("Visoka temperatura diska ({0}°C)", "磁盘温度过高 ({0}°C)", maxTemp.Value));
             }
 
-            res.Details["primary_model"] = string.IsNullOrEmpty(primaryModel) ? "Sistemski disk" : primaryModel;
+            res.Details["primary_model"] = string.IsNullOrEmpty(primaryModel) ? HwTestLocalization.Pick("Sistemski disk", "系统磁盘") : primaryModel;
             res.Details["primary_media"] = primaryMedia;
             res.Details["disks_summary"] = string.Join(" | ", diskLines.ToArray());
             res.Details["smart_predict_fail"] = predictFail;
@@ -2263,9 +2264,9 @@ namespace WIS.HwTest.Core
 
             if (passiveOnly)
             {
-                string healthTxt = worstWear.HasValue ? string.Format("Zdravlje: {0}%", Math.Max(0, 100 - worstWear.Value)) : "SMART OK";
+                string healthTxt = worstWear.HasValue ? HwTestLocalization.PickFormat("Zdravlje: {0}%", "健康度: {0}%", Math.Max(0, 100 - worstWear.Value)) : HwTestLocalization.Pick("SMART OK", "SMART 正常");
                 string tempTxt = maxTemp.HasValue ? string.Format(" | {0}°C", maxTemp.Value) : "";
-                res.MetricSummary = string.Format("{0} ({1}) | {2}{3} | Benchmark čeka pokretanje",
+                res.MetricSummary = HwTestLocalization.PickFormat("{0} ({1}) | {2}{3} | Benchmark čeka pokretanje", "{0} ({1}) | {2}{3} | 等待运行基准测试",
                     ShortModel(res.Details["primary_model"].ToString(), 26), primaryMedia, healthTxt, tempTxt);
 
                 if (anyCritical)
@@ -2276,7 +2277,7 @@ namespace WIS.HwTest.Core
                 else if (anyWarn)
                 {
                     res.HasWarning = true;
-                    res.Reason = "UPOZORENJE (SMART): " + string.Join("; ", issues.ToArray());
+                    res.Reason = HwTestLocalization.Pick("UPOZORENJE (SMART): ", "警告 (SMART): ") + string.Join("; ", issues.ToArray());
                     // Status ostaje Pending dok se ne pokrene i brzinski benchmark, osim ako je Fail
                 }
             }
@@ -2325,7 +2326,7 @@ namespace WIS.HwTest.Core
                             break;
                         totalBytesRead += readBytes;
                         if ((m % 32) == 0 && onProgress != null)
-                            onProgress(string.Format("Seq Read: {0}/{1} MB", m + 1, totalMb));
+                            onProgress(HwTestLocalization.PickFormat("Seq Read: {0}/{1} MB", "顺序读取: {0}/{1} MB", m + 1, totalMb));
                     }
                     sw.Stop();
                     double mb = totalBytesRead / (1024.0 * 1024.0);
@@ -2405,7 +2406,7 @@ namespace WIS.HwTest.Core
         #region 4. RAM (Kapacitet, slotovi i Write/Read Pattern Test)
         public TestItemResult RunRamPassiveSummary()
         {
-            TestItemResult res = new TestItemResult("auto_ram", "Radna memorija (RAM)", "Detekcija modula/brzine i write/read verifikacija integriteta memorije");
+            TestItemResult res = new TestItemResult("auto_ram", HwTestLocalization.Pick("Radna memorija (RAM)", "内存 (RAM)"), HwTestLocalization.Pick("Detekcija modula/brzine i write/read verifikacija integriteta memorije", "检测内存条/频率,并通过写/读验证内存完整性"));
             res.IsAutomated = true;
             PopulateRamInventory(res);
             return res;
@@ -2479,8 +2480,8 @@ namespace WIS.HwTest.Core
 
             string memTypeName = DecodeMemoryType(smbiosType);
             string slotLabel = totalSlots > 0
-                ? string.Format("{0}/{1} slota", dimmList.Count, totalSlots)
-                : string.Format("{0} modula", dimmList.Count);
+                ? HwTestLocalization.PickFormat("{0}/{1} slota", "{0}/{1} 个插槽", dimmList.Count, totalSlots)
+                : HwTestLocalization.PickFormat("{0} modula", "{0} 条内存", dimmList.Count);
 
             res.Details["total_gb"] = totalGb;
             res.Details["avail_mb"] = availPhysMb;
@@ -2490,14 +2491,14 @@ namespace WIS.HwTest.Core
             res.Details["memory_type"] = memTypeName;
             res.Details["dimms"] = string.Join(" | ", dimmList.ToArray());
 
-            res.MetricSummary = string.Format("{0:0.#} GB {1}{2} ({3}) | Slobodno: {4:0.0} GB | Čeka pattern test",
+            res.MetricSummary = HwTestLocalization.PickFormat("{0:0.#} GB {1}{2} ({3}) | Slobodno: {4:0.0} GB | Čeka pattern test", "{0:0.#} GB {1}{2} ({3}) | 可用: {4:0.0} GB | 等待图案测试",
                 totalGb, memTypeName, maxSpeedMhz > 0 ? ("-" + maxSpeedMhz) : "",
                 slotLabel, availPhysMb / 1024.0);
         }
 
         public TestItemResult RunRamCheck(Action<string> onProgress, CancelFlag cancel)
         {
-            TestItemResult res = new TestItemResult("auto_ram", "Radna memorija (RAM)", "Detekcija modula/brzine i write/read verifikacija integriteta memorije");
+            TestItemResult res = new TestItemResult("auto_ram", HwTestLocalization.Pick("Radna memorija (RAM)", "内存 (RAM)"), HwTestLocalization.Pick("Detekcija modula/brzine i write/read verifikacija integriteta memorije", "检测内存条/频率,并通过写/读验证内存完整性"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
@@ -2569,15 +2570,15 @@ namespace WIS.HwTest.Core
                     GC.Collect(2, GCCollectionMode.Forced, true);
 
                     if (onProgress != null)
-                        onProgress(string.Format("RAM Pattern: {0}/{1} MB ({2} grešaka)", testedMb, totalBlocks * blockMb, bitErrors));
+                        onProgress(HwTestLocalization.PickFormat("RAM Pattern: {0}/{1} MB ({2} grešaka)", "RAM 图案测试: {0}/{1} MB ({2} 个错误)", testedMb, totalBlocks * blockMb, bitErrors));
                 }
                 ioSw.Stop();
             }
             catch (OperationCanceledException)
             {
                 res.Status = TestStatus.Skip;
-                res.Reason = "RAM test je prekinut od strane korisnika";
-                res.MetricSummary = "Prekinuto";
+                res.Reason = HwTestLocalization.Pick("RAM test je prekinut od strane korisnika", "RAM 测试已被用户中断");
+                res.MetricSummary = HwTestLocalization.Pick("Prekinuto", "已中断");
                 sw.Stop();
                 res.DurationSeconds = (int)Math.Ceiling(sw.Elapsed.TotalSeconds);
                 return res;
@@ -2588,7 +2589,7 @@ namespace WIS.HwTest.Core
                 if (testedMb < 32)
                 {
                     res.Status = TestStatus.Fail;
-                    res.Reason = "Nedovoljno slobodne memorije za izvršavanje RAM testa";
+                    res.Reason = HwTestLocalization.Pick("Nedovoljno slobodne memorije za izvršavanje RAM testa", "可用内存不足,无法执行 RAM 测试");
                     res.MetricSummary = "Out of Memory";
                     sw.Stop();
                     res.DurationSeconds = (int)Math.Ceiling(sw.Elapsed.TotalSeconds);
@@ -2599,8 +2600,8 @@ namespace WIS.HwTest.Core
             {
                 ioSw.Stop();
                 res.Status = TestStatus.Fail;
-                res.Reason = "Greška tokom RAM testa: " + ex.Message;
-                res.MetricSummary = "Greška testa";
+                res.Reason = HwTestLocalization.Pick("Greška tokom RAM testa: ", "RAM 测试期间出错: ") + ex.Message;
+                res.MetricSummary = HwTestLocalization.Pick("Greška testa", "测试出错");
                 sw.Stop();
                 res.DurationSeconds = (int)Math.Ceiling(sw.Elapsed.TotalSeconds);
                 return res;
@@ -2612,27 +2613,27 @@ namespace WIS.HwTest.Core
             res.Details["bandwidth_gbs"] = bwGbs;
 
             string slotLabel = totalSlots > 0
-                ? string.Format("{0}/{1} slota", dimmCount, totalSlots)
-                : string.Format("{0} modula", dimmCount);
-            res.MetricSummary = string.Format("{0:0.#} GB {1}{2} ({3}) | Testirano: {4} MB ({5:0.0} GB/s) | {6} grešaka",
+                ? HwTestLocalization.PickFormat("{0}/{1} slota", "{0}/{1} 个插槽", dimmCount, totalSlots)
+                : HwTestLocalization.PickFormat("{0} modula", "{0} 条内存", dimmCount);
+            res.MetricSummary = HwTestLocalization.PickFormat("{0:0.#} GB {1}{2} ({3}) | Testirano: {4} MB ({5:0.0} GB/s) | {6} grešaka", "{0:0.#} GB {1}{2} ({3}) | 已测试: {4} MB ({5:0.0} GB/s) | {6} 个错误",
                 totalGb, memType, speedMhz > 0 ? ("-" + speedMhz) : "", slotLabel, testedMb, bwGbs, bitErrors);
 
             if (bitErrors > 0)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = string.Format("KRITIČNO: Detektovano {0} grešaka memorije tokom Write/Read verifikacije!", bitErrors);
+                res.Reason = HwTestLocalization.PickFormat("KRITIČNO: Detektovano {0} grešaka memorije tokom Write/Read verifikacije!", "严重: 写/读验证期间检测到 {0} 个内存错误!", bitErrors);
             }
             else if (availMb < 192)
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = true;
-                res.Reason = string.Format("UPOZORENJE: Premalo slobodnog RAM-a ({0} MB); testirano samo {1} MB (0 grešaka)", availMb, testedMb);
+                res.Reason = HwTestLocalization.PickFormat("UPOZORENJE: Premalo slobodnog RAM-a ({0} MB); testirano samo {1} MB (0 grešaka)", "警告: 可用 RAM 过少 ({0} MB);仅测试了 {1} MB (0 个错误)", availMb, testedMb);
             }
             else
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = false;
-                res.Reason = string.Format("RAM integritet OK (testirano {0} MB u 3 pattern prolaza, 0 grešaka)", testedMb);
+                res.Reason = HwTestLocalization.PickFormat("RAM integritet OK (testirano {0} MB u 3 pattern prolaza, 0 grešaka)", "RAM 完整性正常 (3 轮图案测试共测试 {0} MB,0 个错误)", testedMb);
             }
 
             sw.Stop();
@@ -2660,7 +2661,7 @@ namespace WIS.HwTest.Core
         #region 5. CPU (Multi-Core Stress, Takt, Throttling & Temperatura)
         public TestItemResult RunCpuPassiveSummary()
         {
-            TestItemResult res = new TestItemResult("auto_cpu", "Procesor (CPU)", "Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature");
+            TestItemResult res = new TestItemResult("auto_cpu", HwTestLocalization.Pick("Procesor (CPU)", "处理器 (CPU)"), HwTestLocalization.Pick("Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature", "多核压力负载,检查频率、热降频与温度"));
             res.IsAutomated = true;
             string name = "Procesor";
             int cores = 0;
@@ -2677,14 +2678,14 @@ namespace WIS.HwTest.Core
             res.Details["base_clock_mhz"] = maxClock;
             if (temp > 0) res.Details["idle_temp_c"] = Math.Round(temp, 1);
 
-            string tStr = temp > 0 ? string.Format(" | Idle: {0:0}°C", temp) : "";
-            res.MetricSummary = string.Format("{0} ({1}C/{2}T){3} | Čeka stres test", ShortModel(name, 30), cores, logical, tStr);
+            string tStr = temp > 0 ? HwTestLocalization.PickFormat(" | Idle: {0:0}°C", " | 空闲: {0:0}°C", temp) : "";
+            res.MetricSummary = HwTestLocalization.PickFormat("{0} ({1}C/{2}T){3} | Čeka stres test", "{0} ({1}C/{2}T){3} | 等待压力测试", ShortModel(name, 30), cores, logical, tStr);
             return res;
         }
 
         public TestItemResult RunCpuStress(Action<string> onProgress, CancelFlag cancel)
         {
-            TestItemResult res = new TestItemResult("auto_cpu", "Procesor (CPU)", "Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature");
+            TestItemResult res = new TestItemResult("auto_cpu", HwTestLocalization.Pick("Procesor (CPU)", "处理器 (CPU)"), HwTestLocalization.Pick("Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature", "多核压力负载,检查频率、热降频与温度"));
             res.IsAutomated = true;
             Stopwatch sw = Stopwatch.StartNew();
 
@@ -2840,7 +2841,7 @@ namespace WIS.HwTest.Core
                     int secLeft = Math.Max(0, durationSec - (int)loopSw.Elapsed.TotalSeconds);
                     string tempLabel = curTemp > 0 ? string.Format("{0:0}°C", curTemp) : "N/A";
                     string clkLabel = curClock > 0 ? string.Format("{0:0} MHz", curClock) : (baseClockMhz + " MHz");
-                    onProgress(string.Format("CPU Stres ({0}T): {1} | {2} | {3}s", threadCount, tempLabel, clkLabel, secLeft));
+                    onProgress(HwTestLocalization.PickFormat("CPU Stres ({0}T): {1} | {2} | {3}s", "CPU 压力测试 ({0}T): {1} | {2} | {3}s", threadCount, tempLabel, clkLabel, secLeft));
                 }
             }
 
@@ -2854,8 +2855,8 @@ namespace WIS.HwTest.Core
             if (userCancelled)
             {
                 res.Status = TestStatus.Skip;
-                res.Reason = "CPU stres test je prekinut od strane korisnika";
-                res.MetricSummary = "Prekinuto";
+                res.Reason = HwTestLocalization.Pick("CPU stres test je prekinut od strane korisnika", "CPU 压力测试已被用户中断");
+                res.MetricSummary = HwTestLocalization.Pick("Prekinuto", "已中断");
                 sw.Stop();
                 res.DurationSeconds = (int)Math.Ceiling(sw.Elapsed.TotalSeconds);
                 return res;
@@ -2894,10 +2895,10 @@ namespace WIS.HwTest.Core
             }
 
             string tempStr = peakTemp > 0
-                ? string.Format("Peak: {0:0}°C", peakTemp)
-                : (staticAcpiZone ? "Temp: N/A (ACPI static)" : "Temp: N/A");
-            string clkStr = meanClockMhz > 0 ? string.Format(" | Takt: {0:0} MHz", meanClockMhz) : string.Format(" | Baza: {0} MHz", baseClockMhz);
-            string fanStr = maxFanRpm > 0 ? string.Format(" | Fan: {0} RPM", maxFanRpm) : "";
+                ? HwTestLocalization.PickFormat("Peak: {0:0}°C", "峰值: {0:0}°C", peakTemp)
+                : (staticAcpiZone ? HwTestLocalization.Pick("Temp: N/A (ACPI static)", "温度: 不可用 (ACPI 静态)") : "Temp: N/A");
+            string clkStr = meanClockMhz > 0 ? HwTestLocalization.PickFormat(" | Takt: {0:0} MHz", " | 频率: {0:0} MHz", meanClockMhz) : HwTestLocalization.PickFormat(" | Baza: {0} MHz", " | 基础频率: {0} MHz", baseClockMhz);
+            string fanStr = maxFanRpm > 0 ? HwTestLocalization.PickFormat(" | Fan: {0} RPM", " | 风扇: {0} RPM", maxFanRpm) : "";
             res.MetricSummary = string.Format("{0} ({1}T) | {2}{3}{4}", ShortModel(cpuName, 24), threadCount, tempStr, clkStr, fanStr);
 
             bool lowCoolTemp = (peakTemp > 0f && peakTemp < 75.0f);
@@ -2911,35 +2912,35 @@ namespace WIS.HwTest.Core
             if (workerCrashCount > 0)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = string.Format("Nestabilnost procesora: {0} radnih niti je prijavilo grešku!", workerCrashCount);
+                res.Reason = HwTestLocalization.PickFormat("Nestabilnost procesora: {0} radnih niti je prijavilo grešku!", "处理器不稳定: {0} 个工作线程报告错误!", workerCrashCount);
             }
             else if (thermalAbort || peakTemp >= 95.0f)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = string.Format("KRITIČNO PREGREVANJE CPU-a: {0:0.0}°C (>= 95°C) — potrebna provera hlađenja/paste!", peakTemp);
+                res.Reason = HwTestLocalization.PickFormat("KRITIČNO PREGREVANJE CPU-a: {0:0.0}°C (>= 95°C) — potrebna provera hlađenja/paste!", "严重: CPU 过热 {0:0.0}°C (>= 95°C) — 需要检查散热器/硅脂!", peakTemp);
             }
             else if (severeThrottle)
             {
                 res.Status = TestStatus.Fail;
-                res.Reason = string.Format("Ekstreman thermal throttling: takt pao na {0:0} MHz (baza {1} MHz) uz {2:0}°C", meanClockMhz, baseClockMhz, peakTemp);
+                res.Reason = HwTestLocalization.PickFormat("Ekstreman thermal throttling: takt pao na {0:0} MHz (baza {1} MHz) uz {2:0}°C", "严重热降频: 频率降至 {0:0} MHz (基础 {1} MHz),温度 {2:0}°C", meanClockMhz, baseClockMhz, peakTemp);
             }
             else if (peakTemp >= 85.0f || moderateThrottle || staticAcpiZone)
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = true;
                 List<string> warns = new List<string>();
-                if (peakTemp >= 85.0f) warns.Add(string.Format("Povišena temperatura pod opterećenjem ({0:0}°C)", peakTemp));
-                if (moderateThrottle) warns.Add(string.Format("Detektovan umereni throttling (takt {0:0}/{1} MHz, throttle {2:0}%)", meanClockMhz, baseClockMhz, maxThrottle));
-                if (staticAcpiZone) warns.Add(string.Format("Statična ACPI zona ({0:0.0}°C) — pravi CPU termalni senzor nedostupan", rawAcpiTemp));
-                res.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
+                if (peakTemp >= 85.0f) warns.Add(HwTestLocalization.PickFormat("Povišena temperatura pod opterećenjem ({0:0}°C)", "负载下温度偏高 ({0:0}°C)", peakTemp));
+                if (moderateThrottle) warns.Add(HwTestLocalization.PickFormat("Detektovan umereni throttling (takt {0:0}/{1} MHz, throttle {2:0}%)", "检测到轻度降频 (频率 {0:0}/{1} MHz,降频 {2:0}%)", meanClockMhz, baseClockMhz, maxThrottle));
+                if (staticAcpiZone) warns.Add(HwTestLocalization.PickFormat("Statična ACPI zona ({0:0.0}°C) — pravi CPU termalni senzor nedostupan", "ACPI 静态温区 ({0:0.0}°C) — 无法获取真实 CPU 温度传感器", rawAcpiTemp));
+                res.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", warns.ToArray());
             }
             else
             {
                 res.Status = TestStatus.Pass;
                 res.HasWarning = false;
                 res.Reason = peakTemp > 0
-                    ? string.Format("CPU stabilan pod 100% opterećenjem ({0} niti, max {1:0}°C)", threadCount, peakTemp)
-                    : string.Format("CPU stabilan pod 100% opterećenjem ({0} niti, 0 grešaka; temp senzor nedostupan)", threadCount);
+                    ? HwTestLocalization.PickFormat("CPU stabilan pod 100% opterećenjem ({0} niti, max {1:0}°C)", "CPU 在 100% 负载下稳定 ({0} 线程,最高 {1:0}°C)", threadCount, peakTemp)
+                    : HwTestLocalization.PickFormat("CPU stabilan pod 100% opterećenjem ({0} niti, 0 grešaka; temp senzor nedostupan)", "CPU 在 100% 负载下稳定 ({0} 线程,0 个错误;温度传感器不可用)", threadCount);
             }
 
             sw.Stop();
@@ -2975,7 +2976,7 @@ namespace WIS.HwTest.Core
         #region 6. GPU Pasivna inventarizacija
         public TestItemResult RunGpuPassiveSummary()
         {
-            TestItemResult res = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
+            TestItemResult res = new TestItemResult("auto_gpu", HwTestLocalization.Pick("Grafika (GPU)", "显卡 (GPU)"), HwTestLocalization.Pick("Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)", "检测驱动、显存 (VRAM) 与 3D 硬件渲染 (WPF Direct3D)"));
             res.IsAutomated = true;
             string primaryGpu;
             string driverVer;
@@ -3002,23 +3003,23 @@ namespace WIS.HwTest.Core
             res.Details["wpf_render_tier"] = tier;
             res.Details["all_adapters"] = allGpus;
 
-            string vramTxt = vramMb > 0 ? string.Format(" | VRAM: {0} MB", vramMb) : "";
-            res.MetricSummary = string.Format("{0}{1} | Tier {2} | Čeka 3D stres", ShortModel(primaryGpu, 26), vramTxt, tier);
+            string vramTxt = vramMb > 0 ? HwTestLocalization.PickFormat(" | VRAM: {0} MB", " | 显存: {0} MB", vramMb) : "";
+            res.MetricSummary = HwTestLocalization.PickFormat("{0}{1} | Tier {2} | Čeka 3D stres", "{0}{1} | Tier {2} | 等待 3D 压力测试", ShortModel(primaryGpu, 26), vramTxt, tier);
 
             if (isBasicAdapter || errCode != 0 || hasAnyBasicDisplay || hasAnyErrorAdapter)
             {
                 res.Status = TestStatus.Fail;
                 if (isBasicAdapter)
                 {
-                    res.Reason = "Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)";
+                    res.Reason = HwTestLocalization.Pick("Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)", "当前使用 Microsoft Basic Display Adapter (缺少显卡驱动!)");
                 }
                 else if (errCode != 0)
                 {
-                    res.Reason = string.Format("Greška GPU uređaja u Device Manager-u (Error Code {0})", errCode);
+                    res.Reason = HwTestLocalization.PickFormat("Greška GPU uređaja u Device Manager-u (Error Code {0})", "设备管理器中 GPU 设备报错 (Error Code {0})", errCode);
                 }
                 else
                 {
-                    res.Reason = string.Format("Sekundarni GPU nema drajver ili ima grešku: {0}", problemAdapters);
+                    res.Reason = HwTestLocalization.PickFormat("Sekundarni GPU nema drajver ili ima grešku: {0}", "第二块 GPU 缺少驱动或报错: {0}", problemAdapters);
                 }
             }
             return res;
@@ -3057,7 +3058,7 @@ namespace WIS.HwTest.Core
 
             if (isBasicAdapter || hasAnyBasicDisplay || errCode != 0 || hasAnyErrorAdapter || renderTier == 0)
             {
-                blockedResult = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
+                blockedResult = new TestItemResult("auto_gpu", HwTestLocalization.Pick("Grafika (GPU)", "显卡 (GPU)"), HwTestLocalization.Pick("Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)", "检测驱动、显存 (VRAM) 与 3D 硬件渲染 (WPF Direct3D)"));
                 blockedResult.IsAutomated = true;
                 blockedResult.Status = TestStatus.Fail;
                 blockedResult.DurationSeconds = 0;
@@ -3075,24 +3076,24 @@ namespace WIS.HwTest.Core
                 blockedResult.Details["gpu_test_blocked_no_driver"] = true;
 
                 string shortGpu = ShortModel(primaryGpu, 26);
-                string vramTxt = vramMb > 0 ? string.Format(" | VRAM: {0} MB", vramMb) : "";
-                blockedResult.MetricSummary = string.Format("{0}{1} | Tier {2} | Blokiran (nema drajver)", shortGpu, vramTxt, renderTier);
+                string vramTxt = vramMb > 0 ? HwTestLocalization.PickFormat(" | VRAM: {0} MB", " | 显存: {0} MB", vramMb) : "";
+                blockedResult.MetricSummary = HwTestLocalization.PickFormat("{0}{1} | Tier {2} | Blokiran (nema drajver)", "{0}{1} | Tier {2} | 已阻止 (无驱动)", shortGpu, vramTxt, renderTier);
 
                 if (isBasicAdapter)
                 {
-                    blockedResult.Reason = "GPU 3D test ne može da se pokrene: aktivan je Microsoft Basic Display Adapter (nedostaje originalni grafički drajver!)";
+                    blockedResult.Reason = HwTestLocalization.Pick("GPU 3D test ne može da se pokrene: aktivan je Microsoft Basic Display Adapter (nedostaje originalni grafički drajver!)", "无法运行 GPU 3D 测试: 当前使用 Microsoft Basic Display Adapter (缺少原厂显卡驱动!)");
                 }
                 else if (errCode != 0)
                 {
-                    blockedResult.Reason = string.Format("GPU 3D test ne može da se pokrene: greška grafičke kartice u Device Manager-u (Error Code {0})", errCode);
+                    blockedResult.Reason = HwTestLocalization.PickFormat("GPU 3D test ne može da se pokrene: greška grafičke kartice u Device Manager-u (Error Code {0})", "无法运行 GPU 3D 测试: 设备管理器中显卡报错 (Error Code {0})", errCode);
                 }
                 else if (hasAnyBasicDisplay || hasAnyErrorAdapter)
                 {
-                    blockedResult.Reason = string.Format("GPU 3D test ne može da se pokrene: sekundarni GPU nema drajver ili ima grešku: {0}", problemAdapters);
+                    blockedResult.Reason = HwTestLocalization.PickFormat("GPU 3D test ne može da se pokrene: sekundarni GPU nema drajver ili ima grešku: {0}", "无法运行 GPU 3D 测试: 第二块 GPU 缺少驱动或报错: {0}", problemAdapters);
                 }
                 else
                 {
-                    blockedResult.Reason = "GPU 3D test ne može da se pokrene: Direct3D hardverska akceleracija nije aktivna (Render Tier 0)!";
+                    blockedResult.Reason = HwTestLocalization.Pick("GPU 3D test ne može da se pokrene: Direct3D hardverska akceleracija nije aktivna (Render Tier 0)!", "无法运行 GPU 3D 测试: Direct3D 硬件加速未启用 (Render Tier 0)!");
                 }
                 return false;
             }
@@ -3122,7 +3123,7 @@ namespace WIS.HwTest.Core
             out bool hasAnyErrorAdapter,
             out string problemAdaptersSummary)
         {
-            primaryName = "Nepoznat GPU";
+            primaryName = HwTestLocalization.Pick("Nepoznat GPU", "未知 GPU");
             driverVersion = "";
             vramMb = 0;
             errorCode = 0;
@@ -3150,7 +3151,7 @@ namespace WIS.HwTest.Core
                         bool isBasic = name.IndexOf("Microsoft Basic", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                        name.IndexOf("Standard VGA", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                        list.Add(string.Format("{0} (Drv: {1}, Err: {2})", name, drv, err));
+                        list.Add(HwTestLocalization.PickFormat("{0} (Drv: {1}, Err: {2})", "{0} (驱动: {1}, Err: {2})", name, drv, err));
                         if (isBasic)
                         {
                             hasAnyBasicDisplay = true;
@@ -3161,7 +3162,7 @@ namespace WIS.HwTest.Core
                         }
                         if (isBasic || err != 0)
                         {
-                            problemList.Add(string.Format("{0} (Err: {1})", name, err));
+                            problemList.Add(HwTestLocalization.PickFormat("{0} (Err: {1})", "{0} (Err: {1})", name, err));
                         }
 
                         // Prioritet dajemo pravoj kartici (ne Basic Display), a ako su obe prave uzimamo prvu ili sa većim VRAM-om

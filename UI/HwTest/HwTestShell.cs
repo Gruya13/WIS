@@ -27,8 +27,10 @@ namespace WIS.HwTest
 
         private readonly List<TestItemResult> _testItems;
         private readonly Dictionary<string, Border> _cardMap;
+        private readonly Dictionary<string, TextBlock> _titleTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TextBlock> _descTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TextBlock> _metricTextMap = new Dictionary<string, TextBlock>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Button> _detailsBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Button> _runBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Button> _biosBtnMap = new Dictionary<string, Button>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Border> _statusIndicatorMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
@@ -61,18 +63,66 @@ namespace WIS.HwTest
 
         // Embedded i Phase 5 orkestracija (WIS v3.0.0)
         private Grid _rootGrid;
+        private TextBlock _headerTitleBlock;
         private TextBlock _subTitleBlock;
+        private TextBlock _autoSectionTitleBlock;
+        private TextBlock _manualSectionTitleBlock;
+        private TextBlock _manualSectionSubBlock;
         private Button _btnFinish;
+        private Button _btnRunAll;
         private bool _isEmbedded = false;
         private Window _hostWindow = null;
         private Action<HwTestRunResult> _onReportSavedCallback = null;
         private bool _passiveChecksStarted = false;
+        private volatile bool _cancelPassiveAutoChecks = false;
+        private Thread _passiveAutoThread = null;
         private volatile bool _phase5WorkflowActive = false;
         private volatile bool _waitingForManualPeripherals = false;
+        private volatile bool _inSequentialPeripheralRun = false;
         private Window _activePeripheralDialog = null;
+        public event Action<List<string>> PendingInteractiveTestsRequired;
         public bool IsWaitingForManualTests
         {
             get { return _phase5WorkflowActive && _waitingForManualPeripherals && !_phase5CompletedNotified; }
+        }
+
+        public List<string> GetPendingInteractiveTestNames()
+        {
+            List<string> pending = new List<string>();
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (!t.IsAutomated && (t.Status == TestStatus.Pending || t.Status == TestStatus.Running))
+                {
+                    pending.Add(t.Title);
+                }
+            }
+            return pending;
+        }
+
+        public bool HasUnfinishedInteractiveTests()
+        {
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (!t.IsAutomated && (t.Status == TestStatus.Pending || t.Status == TestStatus.Running))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void RaisePendingInteractiveTestsRequired()
+        {
+            List<string> pendingNames = GetPendingInteractiveTestNames();
+            if (pendingNames.Count == 0) return;
+
+            Action<List<string>> handler = PendingInteractiveTestsRequired;
+            if (handler != null)
+            {
+                try { handler(pendingNames); } catch { }
+            }
         }
         private Action<string, string, string, string> _phase5StepCallback = null;
         private Action<HwTestRunResult, int, float, float, bool, bool> _phase5FinishedCallback = null;
@@ -174,7 +224,7 @@ namespace WIS.HwTest
             _cardMap = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
             _runStopwatch = Stopwatch.StartNew();
 
-            Title = "WIS — Hardverska Verifikacija Uređaja";
+            Title = HwTestLocalization.Pick("WIS — Hardverska Verifikacija Uređaja", "WIS — 设备硬件检测");
             Width = 1100;
             Height = 780;
             MinWidth = 900;
@@ -214,17 +264,17 @@ namespace WIS.HwTest
             StackPanel spH = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
             TextBlock title = new TextBlock
             {
-                Text = "HARDVERSKA DIJAGNOSTIKA I TESTIRANJE",
+                Text = HwTestLocalization.Pick("HARDVERSKA DIJAGNOSTIKA I TESTIRANJE", "硬件诊断与测试"),
                 FontSize = 14,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
             };
+            _headerTitleBlock = title;
             spH.Children.Add(title);
 
             TextBlock sub = new TextBlock
             {
-                Text = string.Format("Model: {0} | Serijski broj: {1} | Šasija: {2}",
-                    _modelName, _serialNumber, _hwInfo.IsLaptop ? "Laptop" : "Desktop"),
+                Text = BuildSubTitleText(),
                 FontSize = 11,
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 170)),
                 Margin = new Thickness(0, 2, 0, 0)
@@ -259,7 +309,7 @@ namespace WIS.HwTest
 
             _summaryBadge = new TextBlock
             {
-                Text = "⏳ Čeka pokretanje",
+                Text = HwTestLocalization.Pick("⏳ Čeka pokretanje", "⏳ 等待启动"),
                 FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White
@@ -387,7 +437,7 @@ namespace WIS.HwTest
 
             Button btnRunAll = new Button
             {
-                Content = "▶ Pokreni sve testove redom",
+                Content = HwTestLocalization.Pick("▶ Pokreni sve testove redom", "▶ 依次运行全部测试"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontSize = 12,
@@ -396,12 +446,13 @@ namespace WIS.HwTest
                 Cursor = System.Windows.Input.Cursors.Hand
             };
             btnRunAll.Click += (s, e) => RunSequentialTests();
+            _btnRunAll = btnRunAll;
             Grid.SetColumn(btnRunAll, 0);
             fg.Children.Add(btnRunAll);
 
             Button btnFinish = new Button
             {
-                Content = "✓ Završi i sačuvaj izveštaj",
+                Content = HwTestLocalization.Pick("✓ Završi i sačuvaj izveštaj", "✓ 完成并保存报告"),
                 Background = new SolidColorBrush(Color.FromRgb(35, 134, 54)),
                 Foreground = Brushes.White,
                 FontSize = 12,
@@ -424,22 +475,116 @@ namespace WIS.HwTest
             Content = root;
             if (_checkpointRestored && _autoSectionStatus != null)
             {
-                _autoSectionStatus.Text = string.Format(
+                _autoSectionStatus.Text = HwTestLocalization.PickFormat(
                     "♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova.",
+                    "♻️ UEFI BIOS 重启后继续 — 已恢复 {0}/{1} 项已完成的测试。",
                     _checkpointRestoredCount, _checkpointTotalApplicable);
                 _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
             }
             RefreshCardVisibility();
             UpdateSummaryBadge();
 
+            HwTestLocalization.LanguageChanged += OnHwTestLanguageChanged;
             Loaded += (s, e) => StartPassiveAutoChecks();
             Closing += (s, e) =>
             {
+                HwTestLocalization.LanguageChanged -= OnHwTestLanguageChanged;
                 _phase5WorkflowActive = false;
                 if (_runningUiTimer != null) _runningUiTimer.Stop();
                 _autoStressCancel.Cancel();
                 _autoEngine.Dispose();
             };
+        }
+
+        private string BuildSubTitleText()
+        {
+            bool laptop = (_hwInfo != null && _hwInfo.IsLaptop);
+            return HwTestLocalization.PickFormat(
+                "Model: {0} | Serijski broj: {1} | Šasija: {2}",
+                "型号：{0} | 序列号：{1} | 机型：{2}",
+                _modelName, _serialNumber,
+                laptop ? HwTestLocalization.Pick("Laptop", "笔记本电脑") : HwTestLocalization.Pick("Desktop", "台式机"));
+        }
+
+        private void OnHwTestLanguageChanged()
+        {
+            try
+            {
+                if (Dispatcher.CheckAccess())
+                {
+                    RefreshLocalization();
+                }
+                else
+                {
+                    Dispatcher.BeginInvoke(new Action(RefreshLocalization));
+                }
+            }
+            catch { }
+        }
+
+        public void RefreshLocalization()
+        {
+            Title = HwTestLocalization.Pick("WIS — Hardverska Verifikacija Uređaja", "WIS — 设备硬件检测");
+            if (_headerTitleBlock != null)
+                _headerTitleBlock.Text = HwTestLocalization.Pick("HARDVERSKA DIJAGNOSTIKA I TESTIRANJE", "硬件诊断与测试");
+            if (_subTitleBlock != null)
+                _subTitleBlock.Text = BuildSubTitleText();
+            if (_autoSectionTitleBlock != null)
+                _autoSectionTitleBlock.Text = HwTestLocalization.Pick("⚡ AUTOMATSKI TESTOVI", "⚡ 自动测试");
+            if (_manualSectionTitleBlock != null)
+                _manualSectionTitleBlock.Text = HwTestLocalization.Pick("🔧 PERIFERNI TESTOVI SERVISERA", "🔧 技术员外设测试");
+            if (_manualSectionSubBlock != null)
+                _manualSectionSubBlock.Text = HwTestLocalization.Pick("Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja", "物理外设及输入/输出设备的交互式测试");
+            if (_btnRunAll != null)
+                _btnRunAll.Content = HwTestLocalization.Pick("▶ Pokreni sve testove redom", "▶ 依次运行全部测试");
+            if (_btnFinish != null)
+                _btnFinish.Content = HwTestLocalization.Pick("✓ Završi i sačuvaj izveštaj", "✓ 完成并保存报告");
+            if (_btnRunAutoSuite != null)
+            {
+                _btnRunAutoSuite.Content = _autoStressRunning
+                    ? HwTestLocalization.Pick("⏳ Stres u toku...", "⏳ 压力测试进行中...")
+                    : HwTestLocalization.Pick("⚡ Stres paket", "⚡ 压力测试包");
+                _btnRunAutoSuite.ToolTip = HwTestLocalization.Pick("Pokreni sekvencijalni automatski stres paket (Disk, RAM, CPU, GPU)", "依次运行自动压力测试包（磁盘、内存、CPU、GPU）");
+            }
+            if (_autoSectionStatus != null && !string.IsNullOrEmpty(_autoSectionStatus.Text))
+            {
+                _autoSectionStatus.Text = HwTestLocalization.Retranslate(_autoSectionStatus.Text);
+                _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+            }
+            foreach (KeyValuePair<string, Button> kv in _detailsBtnMap)
+            {
+                if (kv.Value != null)
+                {
+                    kv.Value.Content = HwTestLocalization.Pick("Detalji", "详情");
+                    kv.Value.ToolTip = HwTestLocalization.Pick("Otvori detaljan izveštaj testa", "打开该测试的详细报告");
+                }
+            }
+            foreach (KeyValuePair<string, Button> kv in _runBtnMap)
+            {
+                if (kv.Value != null)
+                    kv.Value.ToolTip = HwTestLocalization.Pick("Pokreni ovaj test", "运行此测试");
+            }
+            foreach (KeyValuePair<string, Button> kv in _biosBtnMap)
+            {
+                if (kv.Value != null)
+                    kv.Value.ToolTip = HwTestLocalization.Pick("Restartuj računar u UEFI BIOS podešavanja da biste uključili uređaj (WIS nastavlja gde je stao)", "重启电脑进入 UEFI BIOS 设置以启用该设备（WIS 将从中断处继续）");
+            }
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                t.Title = HwTestLocalization.Retranslate(t.Title);
+                t.Description = HwTestLocalization.Retranslate(t.Description);
+                t.MetricSummary = HwTestLocalization.Retranslate(t.MetricSummary);
+                t.Reason = HwTestLocalization.Retranslate(t.Reason);
+                TextBlock tbTitle;
+                if (_titleTextMap.TryGetValue(t.Id, out tbTitle) && tbTitle != null)
+                    tbTitle.Text = t.Title;
+                Border card;
+                if (_cardMap.TryGetValue(t.Id, out card) && card != null)
+                    UpdateCardVisual(card, t);
+            }
+            RefreshCardVisibility();
+            UpdateSummaryBadge();
         }
 
         private Window GetDialogOwner()
@@ -465,6 +610,7 @@ namespace WIS.HwTest
 
         public void ShutdownEmbedded()
         {
+            HwTestLocalization.LanguageChanged -= OnHwTestLanguageChanged;
             _phase5WorkflowActive = false;
             if (_runningUiTimer != null)
             {
@@ -517,8 +663,7 @@ namespace WIS.HwTest
             {
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    _subTitleBlock.Text = string.Format("Model: {0} | Serijski broj: {1} | Šasija: {2}",
-                        _modelName, _serialNumber, (_hwInfo != null && _hwInfo.IsLaptop) ? "Laptop" : "Desktop");
+                    _subTitleBlock.Text = BuildSubTitleText();
                 }));
             }
         }
@@ -526,39 +671,39 @@ namespace WIS.HwTest
         private void InitTestList()
         {
             // === AUTOMATSKI TESTOVI HARDVERA ===
-            TestItemResult autoDisk = new TestItemResult("auto_disk", "Disk / SSD / NVMe", "SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark");
+            TestItemResult autoDisk = new TestItemResult("auto_disk", HwTestLocalization.Pick("Disk / SSD / NVMe", "磁盘 / SSD / NVMe"), HwTestLocalization.Pick("SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark", "SMART 健康度、剩余寿命（磨损 %）、温度及快速读写基准测试"));
             autoDisk.IsAutomated = true;
-            autoDisk.MetricSummary = "⏳ Očitavam SMART podatke diska...";
+            autoDisk.MetricSummary = HwTestLocalization.Pick("⏳ Očitavam SMART podatke diska...", "⏳ 正在读取磁盘 SMART 数据...");
             _testItems.Add(autoDisk);
 
-            TestItemResult autoCpu = new TestItemResult("auto_cpu", "Procesor (CPU)", "Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature");
+            TestItemResult autoCpu = new TestItemResult("auto_cpu", HwTestLocalization.Pick("Procesor (CPU)", "处理器 (CPU)"), HwTestLocalization.Pick("Multi-core stres opterećenje, kontrola takta, thermal throttling-a i temperature", "多核压力负载、频率、温度降频及温度检测"));
             autoCpu.IsAutomated = true;
-            autoCpu.MetricSummary = "⏳ Očitavam informacije procesora...";
+            autoCpu.MetricSummary = HwTestLocalization.Pick("⏳ Očitavam informacije procesora...", "⏳ 正在读取处理器信息...");
             _testItems.Add(autoCpu);
 
-            TestItemResult autoRam = new TestItemResult("auto_ram", "Radna memorija (RAM)", "Detekcija modula/brzine i write/read verifikacija integriteta memorije");
+            TestItemResult autoRam = new TestItemResult("auto_ram", HwTestLocalization.Pick("Radna memorija (RAM)", "内存 (RAM)"), HwTestLocalization.Pick("Detekcija modula/brzine i write/read verifikacija integriteta memorije", "内存条/频率检测及读写完整性校验"));
             autoRam.IsAutomated = true;
-            autoRam.MetricSummary = "⏳ Očitavam memorijske slotove...";
+            autoRam.MetricSummary = HwTestLocalization.Pick("⏳ Očitavam memorijske slotove...", "⏳ 正在读取内存插槽...");
             _testItems.Add(autoRam);
 
-            TestItemResult autoGpu = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
+            TestItemResult autoGpu = new TestItemResult("auto_gpu", HwTestLocalization.Pick("Grafika (GPU)", "显卡 (GPU)"), HwTestLocalization.Pick("Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)", "检查驱动、显存及 3D 硬件渲染 (WPF Direct3D)"));
             autoGpu.IsAutomated = true;
-            autoGpu.MetricSummary = "⏳ Očitavam grafički adapter...";
+            autoGpu.MetricSummary = HwTestLocalization.Pick("⏳ Očitavam grafički adapter...", "⏳ 正在读取显卡适配器...");
             _testItems.Add(autoGpu);
 
-            TestItemResult autoBat = new TestItemResult("auto_battery", "Baterija i napajanje", "Provera zdravlja baterije, kapaciteta (Design vs Full Charge) i AC punjača");
+            TestItemResult autoBat = new TestItemResult("auto_battery", HwTestLocalization.Pick("Baterija i napajanje", "电池与电源"), HwTestLocalization.Pick("Provera zdravlja baterije, kapaciteta (Design vs Full Charge) i AC punjača", "检查电池健康度、容量（设计容量与满充容量）及电源适配器"));
             autoBat.IsAutomated = true;
-            autoBat.MetricSummary = "⏳ Očitavam status baterije...";
+            autoBat.MetricSummary = HwTestLocalization.Pick("⏳ Očitavam status baterije...", "⏳ 正在读取电池状态...");
             _testItems.Add(autoBat);
 
-            TestItemResult autoNet = new TestItemResult("auto_network", "Mreža (Wi-Fi / LAN & Hub)", "Provera mrežnih adaptera, link brzine, gateway-a i veze sa ServisHub serverom");
+            TestItemResult autoNet = new TestItemResult("auto_network", HwTestLocalization.Pick("Mreža (Wi-Fi / LAN & Hub)", "网络 (Wi-Fi / LAN 与 Hub)"), HwTestLocalization.Pick("Provera mrežnih adaptera, link brzine, gateway-a i veze sa ServisHub serverom", "检查网络适配器、链路速度、网关及与 ServisHub 服务器的连接"));
             autoNet.IsAutomated = true;
-            autoNet.MetricSummary = "⏳ Proveravam mrežne adaptere i ServisHub...";
+            autoNet.MetricSummary = HwTestLocalization.Pick("⏳ Proveravam mrežne adaptere i ServisHub...", "⏳ 正在检查网络适配器和 ServisHub...");
             _testItems.Add(autoNet);
 
-            TestItemResult autoSecurity = new TestItemResult("auto_security", "BIOS, TPM 2.0 i PnP Drajveri", "Provera BIOS lozinke, Computrace statusa, TPM 2.0 čipa, OA3 licence i žutih uzvičnika u Device Manageru");
+            TestItemResult autoSecurity = new TestItemResult("auto_security", HwTestLocalization.Pick("BIOS, TPM 2.0 i PnP Drajveri", "BIOS、TPM 2.0 与 PnP 驱动"), HwTestLocalization.Pick("Provera BIOS lozinke, Computrace statusa, TPM 2.0 čipa, OA3 licence i žutih uzvičnika u Device Manageru", "检查 BIOS 密码、Computrace 状态、TPM 2.0 芯片、OA3 许可证及设备管理器中的黄色感叹号"));
             autoSecurity.IsAutomated = true;
-            autoSecurity.MetricSummary = "⏳ Proveravam BIOS, TPM 2.0 i PnP drajvere...";
+            autoSecurity.MetricSummary = HwTestLocalization.Pick("⏳ Proveravam BIOS, TPM 2.0 i PnP drajvere...", "⏳ 正在检查 BIOS、TPM 2.0 与 PnP 驱动...");
             _testItems.Add(autoSecurity);
 
             // === PERIFERNI TESTOVI SERVISERA ===
@@ -567,39 +712,39 @@ namespace WIS.HwTest
             bool isLaptop = _hwInfo.IsLaptop;
 
             // 1. Ekran (integrisan na laptopu; na Desktopu je eksterni monitor)
-            TestItemResult disp = new TestItemResult("display", "Ekran (mrtvi pikseli)", "Provera matrice ekrana (6 boja + gradijent), WMI osvetljenja i HDMI izlaza");
+            TestItemResult disp = new TestItemResult("display", HwTestLocalization.Pick("Ekran (mrtvi pikseli)", "屏幕检测（坏点/漏光）"), HwTestLocalization.Pick("Provera matrice ekrana (6 boja + gradijent), WMI osvetljenja i HDMI izlaza", "检查屏幕面板（6 种颜色 + 渐变）、WMI 亮度及 HDMI 输出"));
             if (!isLaptop)
             {
                 disp.Status = TestStatus.NotApplicable;
-                disp.Reason = "Nije primenljivo — Desktop računar (eksterni monitor)";
+                disp.Reason = HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterni monitor)", "不适用 — 台式机（外接显示器）");
             }
             _testItems.Add(disp);
 
             // 2. Tastatura (integrisana na laptopu; na Desktopu je eksterna tastatura)
-            TestItemResult kbd = new TestItemResult("keyboard", "Tastatura", "Ispitivanje odziva svih fizičkih tastera i provera zaglavljenih kontakata");
+            TestItemResult kbd = new TestItemResult("keyboard", HwTestLocalization.Pick("Tastatura", "键盘测试"), HwTestLocalization.Pick("Ispitivanje odziva svih fizičkih tastera i provera zaglavljenih kontakata", "检测所有物理按键响应并检查卡键/接触不良"));
             if (!isLaptop)
             {
                 kbd.Status = TestStatus.NotApplicable;
-                kbd.Reason = "Nije primenljivo — Desktop računar (eksterna tastatura)";
+                kbd.Reason = HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterna tastatura)", "不适用 — 台式机（外接键盘）");
             }
             _testItems.Add(kbd);
 
             // 3. Touchpad (razdvojeno od TrackPointa po HWT-05; bez samostalnog BIOS flaga bez HW/BOM potvrde)
             bool tpExpected = isLaptop && (_hwInfo.HasTouchpad || _hwInfo.FactoryTouchpad == true);
             bool tpNeedsBiosAction = tpExpected && (_hwInfo.TouchpadDisabledInBios || (!_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true));
-            string tpDesc = "Test praćenja pokazivača u 4 ugla, levog/desnog klika i skrola sa dva prsta";
+            string tpDesc = HwTestLocalization.Pick("Test praćenja pokazivača u 4 ugla, levog/desnog klika i skrola sa dva prsta", "测试光标在 4 个角的追踪、左/右键点击及双指滚动");
             if (tpExpected && _hwInfo.TouchpadDisabledInBios && !_hwInfo.HasTouchpad)
-                tpDesc = "⚠️ UPOZORENJE: Touchpad je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchpadBiosStatus + ")!";
+                tpDesc = HwTestLocalization.PickFormat("⚠️ UPOZORENJE: Touchpad je ONEMOGUĆEN u BIOS-u ({0})!", "⚠️ 警告：触摸板已在 BIOS 中禁用（{0}）！", _hwInfo.TouchpadBiosStatus);
             else if (tpExpected && !_hwInfo.HasTouchpad && _hwInfo.FactoryTouchpad == true)
-                tpDesc = "⚠️ FABRIČKI PRISUTAN TOUCHPAD — Nije detektovan u Windowsu (proverite UEFI BIOS ili drajver)!";
+                tpDesc = HwTestLocalization.Pick("⚠️ FABRIČKI PRISUTAN TOUCHPAD — Nije detektovan u Windowsu (proverite UEFI BIOS ili drajver)!", "⚠️ 出厂配备触摸板 — Windows 中未检测到（请检查 UEFI BIOS 或驱动）！");
 
-            TestItemResult tp = new TestItemResult("touchpad", "Touchpad", tpDesc);
+            TestItemResult tp = new TestItemResult("touchpad", HwTestLocalization.Pick("Touchpad", "触摸板"), tpDesc);
             if (!tpExpected)
             {
                 tp.Status = TestStatus.NotApplicable;
                 tp.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar (eksterne periferije)"
-                    : "Uređaj fabrički nema touchpad";
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterne periferije)", "不适用 — 台式机（外接外设）")
+                    : HwTestLocalization.Pick("Uređaj fabrički nema touchpad", "设备出厂不带触摸板");
                 if (isLaptop && _hwInfo.TouchpadDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -613,12 +758,12 @@ namespace WIS.HwTest
                 tp.Details["bios_action_recommended"] = true;
                 if (_hwInfo.TouchpadDisabledInBios)
                 {
-                    tp.Reason = "Touchpad onemogućen u BIOS-u: " + _hwInfo.TouchpadBiosStatus;
+                    tp.Reason = HwTestLocalization.PickFormat("Touchpad onemogućen u BIOS-u: {0}", "触摸板已在 BIOS 中禁用：{0}", _hwInfo.TouchpadBiosStatus);
                     tp.Details["bios_disabled"] = true;
                 }
                 else
                 {
-                    tp.Reason = "Touchpad potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu";
+                    tp.Reason = HwTestLocalization.Pick("Touchpad potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu", "出厂 BOM 中确认有触摸板，但 Windows 中未激活");
                     tp.Details["factory_missing_in_os"] = true;
                 }
             }
@@ -627,21 +772,22 @@ namespace WIS.HwTest
             // 4. TrackPoint (zasebna stavka po HWT-05)
             bool trackPointExpected = isLaptop && (_hwInfo.HasTrackPoint || _hwInfo.FactoryTrackPoint == true);
             bool trackPointNeedsBiosAction = trackPointExpected && (_hwInfo.TrackPointDisabledInBios || (!_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true));
-            string trackPointDesc = "Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)";
+            string trackPointDesc = HwTestLocalization.Pick("Provera pomeranja kursora crvenim TrackPoint džojstikom (4 mete) i gornjih tastera (levi, srednji/Scroll, desni)", "使用红色 TrackPoint 指点杆移动光标（4 个目标）并检测上方按键（左键、中键/滚动、右键）");
             if (trackPointExpected && _hwInfo.TrackPointDisabledInBios && !_hwInfo.HasTrackPoint)
-                trackPointDesc = "⚠️ UPOZORENJE: TrackPoint je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TrackPointBiosStatus + ")!";
+                trackPointDesc = HwTestLocalization.PickFormat("⚠️ UPOZORENJE: TrackPoint je ONEMOGUĆEN u BIOS-u ({0})!", "⚠️ 警告：TrackPoint 指点杆已在 BIOS 中禁用（{0}）！", _hwInfo.TrackPointBiosStatus);
             else if (trackPointExpected && !_hwInfo.HasTrackPoint && _hwInfo.FactoryTrackPoint == true)
-                trackPointDesc = "⚠️ FABRIČKI PRISUTAN TRACKPOINT (" + (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence) ? _hwInfo.FactoryTrackPointEvidence : "BOM") + ") — Nije aktivan u Windowsu!";
+                trackPointDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN TRACKPOINT ({0}) — Nije aktivan u Windowsu!", "⚠️ 出厂配备 TrackPoint 指点杆（{0}）— Windows 中未激活！", !string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence) ? _hwInfo.FactoryTrackPointEvidence : "BOM");
 
             TestItemResult trackPoint = new TestItemResult("trackpoint", "TrackPoint", trackPointDesc);
+            trackPoint.Title = HwTestLocalization.Pick("TrackPoint", "TrackPoint 指点杆");
             if (!trackPointExpected)
             {
                 trackPoint.Status = TestStatus.NotApplicable;
                 trackPoint.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar (eksterne periferije)"
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterne periferije)", "不适用 — 台式机（外接外设）")
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence)
-                        ? ("Uređaj nema TrackPoint (" + _hwInfo.FactoryTrackPointEvidence + ")")
-                        : "Uređaj nema TrackPoint džojstik");
+                        ? HwTestLocalization.PickFormat("Uređaj nema TrackPoint ({0})", "设备没有 TrackPoint 指点杆（{0}）", _hwInfo.FactoryTrackPointEvidence)
+                        : HwTestLocalization.Pick("Uređaj nema TrackPoint džojstik", "设备没有 TrackPoint 指点杆"));
                 if (isLaptop && _hwInfo.TrackPointDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -655,12 +801,12 @@ namespace WIS.HwTest
                 trackPoint.Details["bios_action_recommended"] = true;
                 if (_hwInfo.TrackPointDisabledInBios)
                 {
-                    trackPoint.Reason = "TrackPoint onemogućen u BIOS-u: " + _hwInfo.TrackPointBiosStatus;
+                    trackPoint.Reason = HwTestLocalization.PickFormat("TrackPoint onemogućen u BIOS-u: {0}", "TrackPoint 指点杆已在 BIOS 中禁用：{0}", _hwInfo.TrackPointBiosStatus);
                     trackPoint.Details["bios_disabled"] = true;
                 }
                 else
                 {
-                    trackPoint.Reason = "TrackPoint potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu";
+                    trackPoint.Reason = HwTestLocalization.Pick("TrackPoint potvrđen u fabričkom BOM-u, ali nije aktivan u Windowsu", "出厂 BOM 中确认有 TrackPoint 指点杆，但 Windows 中未激活");
                     trackPoint.Details["factory_missing_in_os"] = true;
                     if (!string.IsNullOrEmpty(_hwInfo.FactoryTrackPointEvidence))
                         trackPoint.Details["factory_evidence"] = _hwInfo.FactoryTrackPointEvidence;
@@ -671,24 +817,24 @@ namespace WIS.HwTest
             // 5. Touchscreen (+ Stylus olovka)
             bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.FactoryTouchscreen == true);
             bool tsNeedsBiosAction = tsExpected && (_hwInfo.TouchscreenDisabledInBios || (!_hwInfo.HasTouchscreen && _hwInfo.FactoryTouchscreen == true));
-            string tsTitle = _hwInfo.HasStylusPen ? "Touchscreen + Olovka (Stylus)" : "Ekran na dodir (Touchscreen)";
+            string tsTitle = _hwInfo.HasStylusPen ? HwTestLocalization.Pick("Touchscreen + Olovka (Stylus)", "触摸屏 + 手写笔 (Stylus)") : HwTestLocalization.Pick("Ekran na dodir (Touchscreen)", "触摸屏 (Touchscreen)");
             string tsDesc = _hwInfo.HasStylusPen
-                ? "Prolazak kroz lavirint prstom, multitouch detekcija (+ provera Stylus olovke i pritiska)"
-                : "Prolazak kroz lavirint prstom i multitouch detekcija";
+                ? HwTestLocalization.Pick("Prolazak kroz lavirint prstom, multitouch detekcija (+ provera Stylus olovke i pritiska)", "用手指穿过迷宫、多点触控检测（+ 手写笔及压感检查）")
+                : HwTestLocalization.Pick("Prolazak kroz lavirint prstom i multitouch detekcija", "用手指穿过迷宫及多点触控检测");
             if (tsExpected && _hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
-                tsDesc = "⚠️ FABRIČKI PRISUTAN — Touchscreen je ONEMOGUĆEN u BIOS-u (" + _hwInfo.TouchscreenBiosStatus + ")!";
+                tsDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN — Touchscreen je ONEMOGUĆEN u BIOS-u ({0})!", "⚠️ 出厂配备 — 触摸屏已在 BIOS 中禁用（{0}）！", _hwInfo.TouchscreenBiosStatus);
             else if (tsExpected && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
-                tsDesc = "⚠️ FABRIČKI PRISUTAN (" + (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP") + "), ali nije aktivan u Windowsu!";
+                tsDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN ({0}), ali nije aktivan u Windowsu!", "⚠️ 出厂配备（{0}），但 Windows 中未激活！", !string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP");
 
             TestItemResult ts = new TestItemResult("touchscreen", tsTitle, tsDesc);
             if (!tsExpected)
             {
                 ts.Status = TestStatus.NotApplicable;
                 ts.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar (eksterni monitor)"
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterni monitor)", "不适用 — 台式机（外接显示器）")
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence)
-                        ? ("Ekran nije osetljiv na dodir (" + _hwInfo.FactoryTouchscreenEvidence + ")")
-                        : "Displej fabrički ne podržava unos dodirom");
+                        ? HwTestLocalization.PickFormat("Ekran nije osetljiv na dodir ({0})", "屏幕不支持触控（{0}）", _hwInfo.FactoryTouchscreenEvidence)
+                        : HwTestLocalization.Pick("Displej fabrički ne podržava unos dodirom", "屏幕出厂不支持触控输入"));
                 if (isLaptop && _hwInfo.TouchscreenDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -708,11 +854,11 @@ namespace WIS.HwTest
                     if (_hwInfo.TouchscreenDisabledInBios)
                     {
                         ts.Details["bios_disabled"] = true;
-                        ts.Reason = "Touchscreen onemogućen u BIOS-u: " + _hwInfo.TouchscreenBiosStatus;
+                        ts.Reason = HwTestLocalization.PickFormat("Touchscreen onemogućen u BIOS-u: {0}", "触摸屏已在 BIOS 中禁用：{0}", _hwInfo.TouchscreenBiosStatus);
                     }
                     else
                     {
-                        ts.Reason = "Touchscreen potvrđen u OEM BOM-u, ali nije aktivan u Windowsu";
+                        ts.Reason = HwTestLocalization.Pick("Touchscreen potvrđen u OEM BOM-u, ali nije aktivan u Windowsu", "OEM BOM 中确认有触摸屏，但 Windows 中未激活");
                     }
                 }
             }
@@ -721,38 +867,38 @@ namespace WIS.HwTest
                 ts.HasWarning = true;
                 ts.Details["bios_action_recommended"] = true;
                 ts.Details["bios_disabled"] = true;
-                ts.Reason = "Touchscreen ima BIOS upozorenje: " + _hwInfo.TouchscreenBiosStatus;
+                ts.Reason = HwTestLocalization.PickFormat("Touchscreen ima BIOS upozorenje: {0}", "触摸屏有 BIOS 警告：{0}", _hwInfo.TouchscreenBiosStatus);
             }
             _testItems.Add(ts);
 
             // 6. Zvuk (Zvučnici)
             bool audioExpected = isLaptop && (_hwInfo.HasSpeakers || _hwInfo.FactorySpeakers == true);
-            TestItemResult audio = new TestItemResult("audio", "Zvuk (Levi / Desni kanal)", "Test stereo zvučnika izgovorom nasumičnih cifara na levom i desnom kanalu");
+            TestItemResult audio = new TestItemResult("audio", HwTestLocalization.Pick("Zvuk (Levi / Desni kanal)", "音频（左 / 右声道）"), HwTestLocalization.Pick("Test stereo zvučnika izgovorom nasumičnih cifara na levom i desnom kanalu", "通过左右声道随机播报数字测试立体声扬声器"));
             if (!audioExpected)
             {
                 audio.Status = TestStatus.NotApplicable;
                 audio.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar (eksterni zvučnici)"
-                    : "Uređaj nema detektovane zvučnike";
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar (eksterni zvučnici)", "不适用 — 台式机（外接扬声器）")
+                    : HwTestLocalization.Pick("Uređaj nema detektovane zvučnike", "未检测到设备扬声器");
             }
             _testItems.Add(audio);
 
             // 7. Mikrofon (bez veštačkog fallbacka preko HasWebcam i bez samostalnog BIOS flaga)
             bool micExpected = isLaptop && (_hwInfo.HasMicrophone || _hwInfo.FactoryMicrophone == true);
             bool micNeedsBiosAction = micExpected && (_hwInfo.MicrophoneDisabledInBios || (!_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true));
-            string micDesc = "VU metar nivoa glasa i automatsko preslušavanje snimka";
+            string micDesc = HwTestLocalization.Pick("VU metar nivoa glasa i automatsko preslušavanje snimka", "VU 电平表显示音量并自动回放录音");
             if (micExpected && _hwInfo.MicrophoneDisabledInBios && !_hwInfo.HasMicrophone)
-                micDesc = "⚠️ FABRIČKI PRISUTAN — Mikrofon je ONEMOGUĆEN u BIOS-u (" + _hwInfo.MicrophoneBiosStatus + ")!";
+                micDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN — Mikrofon je ONEMOGUĆEN u BIOS-u ({0})!", "⚠️ 出厂配备 — 麦克风已在 BIOS 中禁用（{0}）！", _hwInfo.MicrophoneBiosStatus);
             else if (micExpected && !_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true)
-                micDesc = "⚠️ FABRIČKI OČEKIVAN MIKROFON — Nije detektovan aktivan capture uređaj u Windowsu!";
+                micDesc = HwTestLocalization.Pick("⚠️ FABRIČKI OČEKIVAN MIKROFON — Nije detektovan aktivan capture uređaj u Windowsu!", "⚠️ 出厂应配备麦克风 — Windows 中未检测到可用的录音设备！");
 
-            TestItemResult mic = new TestItemResult("mic", "Mikrofon", micDesc);
+            TestItemResult mic = new TestItemResult("mic", HwTestLocalization.Pick("Mikrofon", "麦克风"), micDesc);
             if (!micExpected)
             {
                 mic.Status = TestStatus.NotApplicable;
                 mic.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar"
-                    : "Uređaj nema ugrađeni mikrofon";
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar", "不适用 — 台式机")
+                    : HwTestLocalization.Pick("Uređaj nema ugrađeni mikrofon", "设备没有内置麦克风");
                 if (isLaptop && _hwInfo.MicrophoneDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -767,13 +913,13 @@ namespace WIS.HwTest
                 if (_hwInfo.MicrophoneDisabledInBios)
                 {
                     mic.Details["bios_disabled"] = true;
-                    mic.Reason = "Mikrofon onemogućen u BIOS-u: " + _hwInfo.MicrophoneBiosStatus;
+                    mic.Reason = HwTestLocalization.PickFormat("Mikrofon onemogućen u BIOS-u: {0}", "麦克风已在 BIOS 中禁用：{0}", _hwInfo.MicrophoneBiosStatus);
                 }
                 if (!_hwInfo.HasMicrophone && _hwInfo.FactoryMicrophone == true)
                 {
                     mic.Details["factory_missing_in_os"] = true;
                     if (string.IsNullOrEmpty(mic.Reason))
-                        mic.Reason = "Mikrofon potvrđen u OEM BOM-u, ali nije detektovan u Windowsu";
+                        mic.Reason = HwTestLocalization.Pick("Mikrofon potvrđen u OEM BOM-u, ali nije detektovan u Windowsu", "OEM BOM 中确认有麦克风，但 Windows 中未检测到");
                 }
             }
             _testItems.Add(mic);
@@ -781,21 +927,21 @@ namespace WIS.HwTest
             // 8. Web kamera (RGB QR kod — razdvojeno od IR kamere po HWT-06)
             bool camExpected = isLaptop && (_hwInfo.HasWebcam || _hwInfo.WebcamPnpPresent || _hwInfo.FactoryWebcam == true);
             bool camNeedsBiosAction = camExpected && (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasWebcam && _hwInfo.FactoryWebcam == true));
-            string camDesc = "Očitavanje otštampanog QR koda RGB web kamerom (WIS-CAMTEST-v1)";
+            string camDesc = HwTestLocalization.Pick("Očitavanje otštampanog QR koda RGB web kamerom (WIS-CAMTEST-v1)", "使用 RGB 摄像头扫描打印的二维码 (WIS-CAMTEST-v1)");
             if (camExpected && _hwInfo.CameraDisabledInBios && !_hwInfo.HasWebcam)
-                camDesc = "⚠️ FABRIČKI PRISUTNA — Web kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
+                camDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTNA — Web kamera je ONEMOGUĆENA u BIOS-u ({0})!", "⚠️ 出厂配备 — 摄像头已在 BIOS 中禁用（{0}）！", _hwInfo.CameraBiosStatus);
             else if (camExpected && !_hwInfo.HasWebcam && (_hwInfo.FactoryWebcam == true || _hwInfo.WebcamPnpPresent))
-                camDesc = "⚠️ FABRIČKI PRISUTNA KAMERA (" + (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence) ? _hwInfo.FactoryWebcamEvidence : "PnP") + "), ali nije aktivna u Windowsu!";
+                camDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTNA KAMERA ({0}), ali nije aktivna u Windowsu!", "⚠️ 出厂配备摄像头（{0}），但 Windows 中未激活！", !string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence) ? _hwInfo.FactoryWebcamEvidence : "PnP");
 
-            TestItemResult cam = new TestItemResult("camera", "Web kamera (QR kod)", camDesc);
+            TestItemResult cam = new TestItemResult("camera", HwTestLocalization.Pick("Web kamera (QR kod)", "网络摄像头（二维码）"), camDesc);
             if (!camExpected)
             {
                 cam.Status = TestStatus.NotApplicable;
                 cam.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar"
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar", "不适用 — 台式机")
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence)
-                        ? ("Uređaj fabrički nema web kameru (" + _hwInfo.FactoryWebcamEvidence + ")")
-                        : "Web kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
+                        ? HwTestLocalization.PickFormat("Uređaj fabrički nema web kameru ({0})", "设备出厂不带摄像头（{0}）", _hwInfo.FactoryWebcamEvidence)
+                        : HwTestLocalization.Pick("Web kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji", "操作系统和出厂配置中均未找到摄像头"));
                 if (isLaptop && _hwInfo.CameraDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -810,7 +956,7 @@ namespace WIS.HwTest
                 if (_hwInfo.CameraDisabledInBios)
                 {
                     cam.Details["bios_disabled"] = true;
-                    cam.Reason = "Web kamera onemogućena u BIOS-u: " + _hwInfo.CameraBiosStatus;
+                    cam.Reason = HwTestLocalization.PickFormat("Web kamera onemogućena u BIOS-u: {0}", "摄像头已在 BIOS 中禁用：{0}", _hwInfo.CameraBiosStatus);
                 }
                 if (!_hwInfo.HasWebcam && _hwInfo.FactoryWebcam == true)
                 {
@@ -818,7 +964,7 @@ namespace WIS.HwTest
                     if (!string.IsNullOrEmpty(_hwInfo.FactoryWebcamEvidence))
                         cam.Details["factory_evidence"] = _hwInfo.FactoryWebcamEvidence;
                     if (string.IsNullOrEmpty(cam.Reason))
-                        cam.Reason = "Web kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu";
+                        cam.Reason = HwTestLocalization.Pick("Web kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu", "OEM BOM 中确认有摄像头，但 Windows 中未激活");
                 }
             }
             _testItems.Add(cam);
@@ -826,21 +972,22 @@ namespace WIS.HwTest
             // 9. IR kamera (Windows Hello — zasebna stavka po HWT-06)
             bool irCamExpected = isLaptop && (_hwInfo.HasIrCamera || _hwInfo.FactoryIrCamera == true);
             bool irCamNeedsBiosAction = irCamExpected && (_hwInfo.CameraDisabledInBios || (!_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true));
-            string irCamDesc = "Provera IR senzora kamere za Windows Hello (prepoznavanje lica)";
+            string irCamDesc = HwTestLocalization.Pick("Provera IR senzora kamere za Windows Hello (prepoznavanje lica)", "检查 Windows Hello 红外摄像头传感器（人脸识别）");
             if (irCamExpected && _hwInfo.CameraDisabledInBios && !_hwInfo.HasIrCamera)
-                irCamDesc = "⚠️ FABRIČKI PRISUTNA — IR kamera je ONEMOGUĆENA u BIOS-u (" + _hwInfo.CameraBiosStatus + ")!";
+                irCamDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTNA — IR kamera je ONEMOGUĆENA u BIOS-u ({0})!", "⚠️ 出厂配备 — 红外摄像头已在 BIOS 中禁用（{0}）！", _hwInfo.CameraBiosStatus);
             else if (irCamExpected && !_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true)
-                irCamDesc = "⚠️ FABRIČKI PRISUTNA IR KAMERA (" + (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence) ? _hwInfo.FactoryIrCameraEvidence : "BOM") + "), ali nije aktivna u Windowsu!";
+                irCamDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTNA IR KAMERA ({0}), ali nije aktivna u Windowsu!", "⚠️ 出厂配备红外摄像头（{0}），但 Windows 中未激活！", !string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence) ? _hwInfo.FactoryIrCameraEvidence : "BOM");
 
             TestItemResult irCam = new TestItemResult("ir_camera", "IR kamera (Windows Hello)", irCamDesc);
+            irCam.Title = HwTestLocalization.Pick("IR kamera (Windows Hello)", "红外摄像头 (Windows Hello)");
             if (!irCamExpected)
             {
                 irCam.Status = TestStatus.NotApplicable;
                 irCam.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar"
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar", "不适用 — 台式机")
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence)
-                        ? ("Uređaj fabrički nema IR kameru (" + _hwInfo.FactoryIrCameraEvidence + ")")
-                        : "IR kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji");
+                        ? HwTestLocalization.PickFormat("Uređaj fabrički nema IR kameru ({0})", "设备出厂不带红外摄像头（{0}）", _hwInfo.FactoryIrCameraEvidence)
+                        : HwTestLocalization.Pick("IR kamera nije pronađena ni u OS-u ni u fabričkoj konfiguraciji", "操作系统和出厂配置中均未找到红外摄像头"));
             }
             else if (irCamNeedsBiosAction)
             {
@@ -849,7 +996,7 @@ namespace WIS.HwTest
                 if (_hwInfo.CameraDisabledInBios)
                 {
                     irCam.Details["bios_disabled"] = true;
-                    irCam.Reason = "IR kamera onemogućena u BIOS-u: " + _hwInfo.CameraBiosStatus;
+                    irCam.Reason = HwTestLocalization.PickFormat("IR kamera onemogućena u BIOS-u: {0}", "红外摄像头已在 BIOS 中禁用：{0}", _hwInfo.CameraBiosStatus);
                 }
                 if (!_hwInfo.HasIrCamera && _hwInfo.FactoryIrCamera == true)
                 {
@@ -857,38 +1004,38 @@ namespace WIS.HwTest
                     if (!string.IsNullOrEmpty(_hwInfo.FactoryIrCameraEvidence))
                         irCam.Details["factory_evidence"] = _hwInfo.FactoryIrCameraEvidence;
                     if (string.IsNullOrEmpty(irCam.Reason))
-                        irCam.Reason = "IR kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu";
+                        irCam.Reason = HwTestLocalization.Pick("IR kamera potvrđena u OEM BOM-u, ali nije aktivna u Windowsu", "OEM BOM 中确认有红外摄像头，但 Windows 中未激活");
                 }
             }
             _testItems.Add(irCam);
 
             // 10. USB portovi (integrisani na laptopu; na Desktopu nisu obavezni u Fazi 5)
-            TestItemResult usb = new TestItemResult("usb", "USB portovi", "Verifikacija svih spoljnih USB portova ubacivanjem fleš diska");
+            TestItemResult usb = new TestItemResult("usb", HwTestLocalization.Pick("USB portovi", "USB 端口"), HwTestLocalization.Pick("Verifikacija svih spoljnih USB portova ubacivanjem fleš diska", "插入 U 盘逐一验证所有外部 USB 端口"));
             if (!isLaptop)
             {
                 usb.Status = TestStatus.NotApplicable;
-                usb.Reason = "Nije primenljivo — Desktop računar";
+                usb.Reason = HwTestLocalization.Pick("Nije primenljivo — Desktop računar", "不适用 — 台式机");
             }
             _testItems.Add(usb);
 
             // 11. Čitač otiska prsta (OS + OEM BOM po HWT-04; bez !FactoryBomLoaded i samostalnog FingerprintDisabledInBios)
             bool fpExpected = isLaptop && (_hwInfo.HasFingerprint || _hwInfo.FactoryFingerprint == true);
             bool fpNeedsBiosAction = fpExpected && (_hwInfo.FingerprintDisabledInBios || (!_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true));
-            string fpDesc = "Provera odziva biometrijskog senzora otiska prsta preko Windows Biometric API-ja";
+            string fpDesc = HwTestLocalization.Pick("Provera odziva biometrijskog senzora otiska prsta preko Windows Biometric API-ja", "通过 Windows Biometric API 检查指纹传感器响应");
             if (fpExpected && _hwInfo.FingerprintDisabledInBios)
-                fpDesc = "⚠️ UPOZORENJE: Uređaj je ONEMOGUĆEN u podešavanjima BIOS-a (" + _hwInfo.FingerprintBiosStatus + ")!";
+                fpDesc = HwTestLocalization.PickFormat("⚠️ UPOZORENJE: Uređaj je ONEMOGUĆEN u podešavanjima BIOS-a ({0})!", "⚠️ 警告：设备已在 BIOS 设置中禁用（{0}）！", _hwInfo.FingerprintBiosStatus);
             else if (fpExpected && !_hwInfo.HasFingerprint && _hwInfo.FactoryFingerprint == true)
-                fpDesc = "⚠️ FABRIČKI PRISUTAN U OEM BOM-U (" + _hwInfo.FactoryFingerprintEvidence + "), ali nije detektovan u Windowsu!";
+                fpDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN U OEM BOM-U ({0}), ali nije detektovan u Windowsu!", "⚠️ OEM BOM 中出厂配备（{0}），但 Windows 中未检测到！", _hwInfo.FactoryFingerprintEvidence);
 
-            TestItemResult fp = new TestItemResult("fingerprint", "Čitač otiska prsta", fpDesc);
+            TestItemResult fp = new TestItemResult("fingerprint", HwTestLocalization.Pick("Čitač otiska prsta", "指纹识别器"), fpDesc);
             if (!fpExpected)
             {
                 fp.Status = TestStatus.NotApplicable;
                 fp.Reason = !isLaptop
-                    ? "Nije primenljivo — Desktop računar"
+                    ? HwTestLocalization.Pick("Nije primenljivo — Desktop računar", "不适用 — 台式机")
                     : (!string.IsNullOrEmpty(_hwInfo.FactoryFingerprintEvidence)
-                        ? ("Čitač otiska prsta nije fabrički ugrađen (" + _hwInfo.FactoryFingerprintEvidence + ")")
-                        : "Čitač otiska prsta nije pronađen ni u OS-u ni u fabričkoj specifikaciji");
+                        ? HwTestLocalization.PickFormat("Čitač otiska prsta nije fabrički ugrađen ({0})", "指纹识别器非出厂配置（{0}）", _hwInfo.FactoryFingerprintEvidence)
+                        : HwTestLocalization.Pick("Čitač otiska prsta nije pronađen ni u OS-u ni u fabričkoj specifikaciji", "操作系统和出厂规格中均未找到指纹识别器"));
                 if (isLaptop && _hwInfo.FingerprintDisabledInBios)
                 {
                     HwTestLogger.Info("BIOS_AUDIT", string.Format(
@@ -902,7 +1049,7 @@ namespace WIS.HwTest
                 fp.Details["bios_action_recommended"] = true;
                 if (_hwInfo.FingerprintDisabledInBios)
                 {
-                    fp.Reason = "Čitač otiska prsta je onemogućen u BIOS-u: " + _hwInfo.FingerprintBiosStatus;
+                    fp.Reason = HwTestLocalization.PickFormat("Čitač otiska prsta je onemogućen u BIOS-u: {0}", "指纹识别器已在 BIOS 中禁用：{0}", _hwInfo.FingerprintBiosStatus);
                     fp.Details["bios_disabled"] = true;
                     fp.Details["bios_setting"] = _hwInfo.FingerprintBiosStatus;
                 }
@@ -911,7 +1058,7 @@ namespace WIS.HwTest
                     fp.Details["factory_missing_in_os"] = true;
                     fp.Details["factory_evidence"] = _hwInfo.FactoryFingerprintEvidence;
                     if (string.IsNullOrEmpty(fp.Reason))
-                        fp.Reason = "Čitač otiska prsta potvrđen u OEM BOM-u, ali nije detektovan u Windowsu";
+                        fp.Reason = HwTestLocalization.Pick("Čitač otiska prsta potvrđen u OEM BOM-u, ali nije detektovan u Windowsu", "OEM BOM 中确认有指纹识别器，但 Windows 中未检测到");
                 }
             }
             _testItems.Add(fp);
@@ -959,17 +1106,19 @@ namespace WIS.HwTest
 
             if (_factoryBannerText != null)
             {
-                string srcLabel = !string.IsNullOrEmpty(_hwInfo.FactorySummary) ? _hwInfo.FactorySummary : "Lokalna detekcija";
+                string srcLabel = !string.IsNullOrEmpty(_hwInfo.FactorySummary) ? HwTestLocalization.Retranslate(_hwInfo.FactorySummary) : HwTestLocalization.Pick("Lokalna detekcija", "本地检测");
                 if (hiddenCount > 0)
                 {
-                    _factoryBannerText.Text = string.Format(
+                    _factoryBannerText.Text = HwTestLocalization.PickFormat(
                         "🏭 Fabrička provera ({0}): Prikazano {1} testova | Sakriveno (nije prisutno na uređaju): {2}",
+                        "🏭 出厂配置检查（{0}）：显示 {1} 项测试 | 已隐藏（设备上不存在）：{2}",
                         srcLabel, shownCount, string.Join(", ", hiddenTitles.ToArray()));
                 }
                 else
                 {
-                    _factoryBannerText.Text = string.Format(
+                    _factoryBannerText.Text = HwTestLocalization.PickFormat(
                         "🏭 Fabrička provera ({0}): Svi testovi ({1}) su primenjivi za ovaj uređaj",
+                        "🏭 出厂配置检查（{0}）：全部 {1} 项测试均适用于此设备",
                         srcLabel, shownCount);
                 }
             }
@@ -984,8 +1133,8 @@ namespace WIS.HwTest
                 {
                     _btnToggleHidden.Visibility = Visibility.Visible;
                     _btnToggleHidden.Content = _showNotApplicable
-                        ? string.Format("🙈 Sakrij odsutne ({0})", hiddenCount)
-                        : string.Format("👁 Prikaži sakrivene ({0})", hiddenCount);
+                        ? HwTestLocalization.PickFormat("🙈 Sakrij odsutne ({0})", "🙈 隐藏不存在的项（{0}）", hiddenCount)
+                        : HwTestLocalization.PickFormat("👁 Prikaži sakrivene ({0})", "👁 显示已隐藏项（{0}）", hiddenCount);
                 }
             }
         }
@@ -1006,16 +1155,17 @@ namespace WIS.HwTest
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            sp.Children.Add(new TextBlock
+            _autoSectionTitleBlock = new TextBlock
             {
-                Text = "⚡ AUTOMATSKI TESTOVI",
+                Text = HwTestLocalization.Pick("⚡ AUTOMATSKI TESTOVI", "⚡ 自动测试"),
                 FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
-            });
+            };
+            sp.Children.Add(_autoSectionTitleBlock);
             _autoSectionStatus = new TextBlock
             {
-                Text = "Pasivno (Baterija, Mreža, BIOS/TPM/PnP, SMART) + stres (Disk, RAM, CPU, GPU)",
+                Text = HwTestLocalization.Pick("Pasivno (Baterija, Mreža, BIOS/TPM/PnP, SMART) + stres (Disk, RAM, CPU, GPU)", "被动检测（电池、网络、BIOS/TPM/PnP、SMART）+ 压力测试（磁盘、内存、CPU、GPU）"),
                 FontSize = 10,
                 Foreground = new SolidColorBrush(Color.FromRgb(165, 180, 198)),
                 TextTrimming = TextTrimming.CharacterEllipsis,
@@ -1027,8 +1177,8 @@ namespace WIS.HwTest
 
             _btnRunAutoSuite = new Button
             {
-                Content = "⚡ Stres paket",
-                ToolTip = "Pokreni sekvencijalni automatski stres paket (Disk, RAM, CPU, GPU)",
+                Content = HwTestLocalization.Pick("⚡ Stres paket", "⚡ 压力测试包"),
+                ToolTip = HwTestLocalization.Pick("Pokreni sekvencijalni automatski stres paket (Disk, RAM, CPU, GPU)", "依次运行自动压力测试包（磁盘、内存、CPU、GPU）"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontSize = 11,
@@ -1062,26 +1212,28 @@ namespace WIS.HwTest
             g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             StackPanel sp = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-            sp.Children.Add(new TextBlock
+            _manualSectionTitleBlock = new TextBlock
             {
-                Text = "🔧 PERIFERNI TESTOVI SERVISERA",
+                Text = HwTestLocalization.Pick("🔧 PERIFERNI TESTOVI SERVISERA", "🔧 技术员外设测试"),
                 FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(220, 225, 235))
-            });
-            sp.Children.Add(new TextBlock
+            };
+            sp.Children.Add(_manualSectionTitleBlock);
+            _manualSectionSubBlock = new TextBlock
             {
-                Text = "Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja",
+                Text = HwTestLocalization.Pick("Interaktivni testovi fizičkih periferija i ulazno/izlaznih uređaja", "物理外设及输入/输出设备的交互式测试"),
                 FontSize = 10,
                 Foreground = new SolidColorBrush(Color.FromRgb(150, 160, 175)),
                 TextTrimming = TextTrimming.CharacterEllipsis,
                 Margin = new Thickness(0, 2, 0, 0)
-            });
+            };
+            sp.Children.Add(_manualSectionSubBlock);
             g.Children.Add(sp);
 
             _manualSectionCountText = new TextBlock
             {
-                Text = "0/0 završeno",
+                Text = HwTestLocalization.Pick("0/0 završeno", "0/0 已完成"),
                 FontSize = 10.5,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(158, 170, 184)),
@@ -1181,6 +1333,7 @@ namespace WIS.HwTest
                 Foreground = Brushes.White,
                 TextTrimming = TextTrimming.CharacterEllipsis
             };
+            _titleTextMap[t.Id] = tbTitle;
             Grid.SetColumn(tbTitle, 0);
             titleRow.Children.Add(tbTitle);
 
@@ -1261,8 +1414,8 @@ namespace WIS.HwTest
             {
                 Button btnDetails = new Button
                 {
-                    Content = "Detalji",
-                    ToolTip = "Otvori detaljan izveštaj testa",
+                    Content = HwTestLocalization.Pick("Detalji", "详情"),
+                    ToolTip = HwTestLocalization.Pick("Otvori detaljan izveštaj testa", "打开该测试的详细报告"),
                     Background = new SolidColorBrush(Color.FromRgb(50, 56, 70)),
                     Foreground = Brushes.White,
                     FontSize = 10.5,
@@ -1271,13 +1424,14 @@ namespace WIS.HwTest
                     Cursor = System.Windows.Input.Cursors.Hand
                 };
                 btnDetails.Click += (s, e) => OpenAutoDetails(t);
+                _detailsBtnMap[t.Id] = btnDetails;
                 spBtns.Children.Add(btnDetails);
             }
 
             Button btnRun = new Button
             {
                 Content = "▶",
-                ToolTip = "Pokreni ovaj test",
+                ToolTip = HwTestLocalization.Pick("Pokreni ovaj test", "运行此测试"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontSize = 10.5,
@@ -1295,7 +1449,7 @@ namespace WIS.HwTest
                 Button btnBios = new Button
                 {
                     Content = "🔧 UEFI BIOS",
-                    ToolTip = "Restartuj računar u UEFI BIOS podešavanja da biste uključili uređaj (WIS nastavlja gde je stao)",
+                    ToolTip = HwTestLocalization.Pick("Restartuj računar u UEFI BIOS podešavanja da biste uključili uređaj (WIS nastavlja gde je stao)", "重启电脑进入 UEFI BIOS 设置以启用该设备（WIS 将从中断处继续）"),
                     Background = new SolidColorBrush(Color.FromRgb(180, 110, 20)),
                     Foreground = Brushes.White,
                     FontSize = 10.5,
@@ -1596,17 +1750,17 @@ namespace WIS.HwTest
                 {
                     case TestStatus.Pending:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(55, 60, 72));
-                        tbStatus.Text = "ČEKA";
+                        tbStatus.Text = HwTestLocalization.Pick("ČEKA", "等待");
                         break;
                     case TestStatus.Running:
                         statusBorder.Background = new SolidColorBrush(Color.FromRgb(0, 122, 204));
-                        tbStatus.Text = "U TOKU";
+                        tbStatus.Text = HwTestLocalization.Pick("U TOKU", "进行中");
                         break;
                     case TestStatus.Pass:
                         if (t.HasWarning)
                         {
                             statusBorder.Background = new SolidColorBrush(Color.FromRgb(217, 130, 15));
-                            tbStatus.Text = "UPOZ.";
+                            tbStatus.Text = HwTestLocalization.Pick("UPOZ.", "警告");
                         }
                         else
                         {
@@ -1636,8 +1790,8 @@ namespace WIS.HwTest
             {
                 if (_autoStressRunning)
                 {
-                    MessageBox.Show("Automatski stres paket je već u toku. Sačekajte da se završi.",
-                        "Test u toku", MessageBoxButton.OK, MessageBoxImage.Information);
+                    MessageBox.Show(HwTestLocalization.Pick("Automatski stres paket je već u toku. Sačekajte da se završi.", "自动压力测试包正在运行，请等待其完成。"),
+                        HwTestLocalization.Pick("Test u toku", "测试进行中"), MessageBoxButton.OK, MessageBoxImage.Information);
                     return;
                 }
                 if (t.Id == "auto_gpu")
@@ -1699,7 +1853,7 @@ namespace WIS.HwTest
                     int? pCount = (prof != null && prof.UsbPortCount.HasValue && prof.UsbPortCount.Value > 0)
                         ? prof.UsbPortCount
                         : (int?)_hwInfo.EstimatedUsbPortCount;
-                    dlg = new UsbPortTestWindow(_modelName, pCount, _profileClient);
+                    dlg = new UsbPortTestWindow(_modelName, pCount, _profileClient, _serialNumber);
                     break;
                 case "fingerprint":
                     FingerprintTestWindow fpDlg = new FingerprintTestWindow(_hwInfo, RequestUefiBiosReboot);
@@ -1756,6 +1910,11 @@ namespace WIS.HwTest
 
             if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
             UpdateSummaryBadge();
+
+            if (!t.IsAutomated && !_inSequentialPeripheralRun)
+            {
+                CheckAndHandlePhase5InteractiveCompletion();
+            }
         }
 
         private void RunGpuStressTest(TestItemResult t)
@@ -1772,7 +1931,7 @@ namespace WIS.HwTest
             {
                 string blockReason = (blockedResult != null && !string.IsNullOrEmpty(blockedResult.Reason))
                     ? blockedResult.Reason
-                    : "GPU 3D test ne može da se pokrene: nedostaje grafički drajver.";
+                    : HwTestLocalization.Pick("GPU 3D test ne može da se pokrene: nedostaje grafički drajver.", "无法启动 GPU 3D 测试：缺少显卡驱动。");
                 HwTestLogger.Warn("GPU_BLOCKED", blockReason);
                 if (blockedResult != null)
                 {
@@ -1847,49 +2006,68 @@ namespace WIS.HwTest
 
         private void StartPassiveAutoChecks()
         {
-            if (_passiveChecksStarted) return;
+            if (_passiveChecksStarted || _phase5WorkflowActive || _cancelPassiveAutoChecks) return;
             _passiveChecksStarted = true;
             Thread th = new Thread(() =>
             {
                 TestItemResult[] passiveResults = new TestItemResult[7];
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[0] = _autoEngine.RunBatteryCheck(); } catch { }
-                Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[0], true)));
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                    Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[0], true)));
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[1] = _autoEngine.RunNetworkCheck(_profileClient); } catch { }
-                Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[1], true)));
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                    Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[1], true)));
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[2] = _autoEngine.RunDiskPassiveCheck(); } catch { }
-                Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[2], false)));
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                    Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[2], false)));
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[3] = _autoEngine.RunRamPassiveSummary(); } catch { }
-                Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[3], false)));
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                    Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[3], false)));
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[4] = _autoEngine.RunCpuPassiveSummary(); } catch { }
-                Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[4], false)));
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                    Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[4], false)));
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[5] = _autoEngine.RunGpuPassiveSummary(); } catch { }
-                Dispatcher.BeginInvoke(new Action(() =>
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
                 {
-                    ApplyAutoPassiveResult(passiveResults[5], false);
-                    RefreshCardVisibility();
-                    UpdateSummaryBadge();
-                }));
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        ApplyAutoPassiveResult(passiveResults[5], false);
+                        RefreshCardVisibility();
+                        UpdateSummaryBadge();
+                    }));
+                }
 
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
                 try { passiveResults[6] = _autoEngine.RunSecurityAndFirmwareCheck(_hwInfo); } catch { }
-                Dispatcher.BeginInvoke(new Action(() =>
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
                 {
-                    ApplyAutoPassiveResult(passiveResults[6], true);
-                    RefreshCardVisibility();
-                    UpdateSummaryBadge();
-                }));
+                    Dispatcher.BeginInvoke(new Action(() =>
+                    {
+                        ApplyAutoPassiveResult(passiveResults[6], true);
+                        RefreshCardVisibility();
+                        UpdateSummaryBadge();
+                    }));
+                }
             });
             th.IsBackground = true;
+            _passiveAutoThread = th;
             th.Start();
         }
 
         private void ApplyAutoPassiveResult(TestItemResult source, bool isCompletePassiveTest)
         {
-            if (source == null) return;
+            if (source == null || _phase5WorkflowActive || _cancelPassiveAutoChecks) return;
             TestItemResult target = FindItemById(source.Id);
             if (target == null) return;
 
@@ -1945,7 +2123,7 @@ namespace WIS.HwTest
                         {
                             item.Status = TestStatus.Running;
                             if (_autoSectionStatus != null)
-                                _autoSectionStatus.Text = string.Format("🔄 Korak {0}/4: {1} u toku...", stepNum, item.Title);
+                                _autoSectionStatus.Text = HwTestLocalization.PickFormat("🔄 Korak {0}/4: {1} u toku...", "🔄 步骤 {0}/4：{1} 进行中...", stepNum, item.Title);
                             Border c;
                             if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
                             UpdateSummaryBadge();
@@ -1982,7 +2160,7 @@ namespace WIS.HwTest
                             Dispatcher.Invoke(new Action(() =>
                             {
                                 if (_autoSectionStatus != null)
-                                    _autoSectionStatus.Text = "🔄 Korak 4/4: GPU 3D hardverski stres test...";
+                                    _autoSectionStatus.Text = HwTestLocalization.Pick("🔄 Korak 4/4: GPU 3D hardverski stres test...", "🔄 步骤 4/4：GPU 3D 硬件压力测试...");
                                 RunGpuStressTest(gpuItem);
                             }));
                         }
@@ -2018,8 +2196,8 @@ namespace WIS.HwTest
                         if (_autoSectionStatus != null)
                         {
                             _autoSectionStatus.Text = _autoStressCancel.IsCancelled
-                                ? "⏹ Automatski stres paket je zaustavljen."
-                                : "✓ Automatski stres paket je završen. Pregledajte rezultate i nastavite periferne testove.";
+                                ? HwTestLocalization.Pick("⏹ Automatski stres paket je zaustavljen.", "⏹ 自动压力测试包已停止。")
+                                : HwTestLocalization.Pick("✓ Automatski stres paket je završen. Pregledajte rezultate i nastavite periferne testove.", "✓ 自动压力测试包已完成。请查看结果并继续外设测试。");
                         }
                     }));
                 }
@@ -2094,7 +2272,7 @@ namespace WIS.HwTest
             if (_btnRunAutoSuite != null)
             {
                 _btnRunAutoSuite.IsEnabled = !busy;
-                _btnRunAutoSuite.Content = busy ? "⏳ Stres u toku..." : "⚡ Stres paket";
+                _btnRunAutoSuite.Content = busy ? HwTestLocalization.Pick("⏳ Stres u toku...", "⏳ 压力测试进行中...") : HwTestLocalization.Pick("⚡ Stres paket", "⚡ 压力测试包");
                 _btnRunAutoSuite.Background = busy
                     ? new SolidColorBrush(Color.FromRgb(65, 82, 108))
                     : new SolidColorBrush(Color.FromRgb(0, 122, 204));
@@ -2112,10 +2290,16 @@ namespace WIS.HwTest
             if (_autoStressRunning)
             {
                 MessageBox.Show(
-                    "Automatski stres testovi su već u toku. Sačekajte da se završe pre sekvencijalnog pokretanja.",
-                    "Stres test u toku",
+                    HwTestLocalization.Pick("Automatski stres testovi su već u toku. Sačekajte da se završe pre sekvencijalnog pokretanja.", "自动压力测试正在运行，请等待其完成后再依次运行。"),
+                    HwTestLocalization.Pick("Stres test u toku", "压力测试进行中"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
+                return;
+            }
+
+            if (_phase5WorkflowActive && _waitingForManualPeripherals)
+            {
+                RunSequentialPeripheralTests();
                 return;
             }
 
@@ -2235,26 +2419,26 @@ namespace WIS.HwTest
 
             if (_manualSectionCountText != null)
             {
-                _manualSectionCountText.Text = string.Format("{0}/{1} završeno", manualDone, manualTotal);
+                _manualSectionCountText.Text = HwTestLocalization.PickFormat("{0}/{1} završeno", "{0}/{1} 已完成", manualDone, manualTotal);
             }
 
             Brush badgeBg;
             if (fail > 0)
             {
                 badgeBg = new SolidColorBrush(Color.FromRgb(220, 53, 69));
-                _summaryBadge.Text = string.Format("✗ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
+                _summaryBadge.Text = HwTestLocalization.PickFormat("✗ {0} FAIL | {1} PASS | {2} SKIP", "✗ {0} FAIL | {1} PASS | {2} SKIP", fail, pass, skip);
             }
             else if (running > 0)
             {
                 badgeBg = new SolidColorBrush(Color.FromRgb(0, 122, 204));
-                _summaryBadge.Text = string.Format("▶ {0} U TOKU | {1}/{2} završeno", running, completed, applicable);
+                _summaryBadge.Text = HwTestLocalization.PickFormat("▶ {0} U TOKU | {1}/{2} završeno", "▶ {0} 进行中 | {1}/{2} 已完成", running, completed, applicable);
             }
             else if (pending > 0)
             {
                 badgeBg = new SolidColorBrush(Color.FromRgb(217, 150, 15));
                 _summaryBadge.Text = (na > 0)
-                    ? string.Format("⏳ {0}/{1} ({2} odsutno)", completed, applicable, na)
-                    : string.Format("⏳ {0}/{1} završeno", completed, applicable);
+                    ? HwTestLocalization.PickFormat("⏳ {0}/{1} ({2} odsutno)", "⏳ {0}/{1}（{2} 项不存在）", completed, applicable, na)
+                    : HwTestLocalization.PickFormat("⏳ {0}/{1} završeno", "⏳ {0}/{1} 已完成", completed, applicable);
             }
             else
             {
@@ -2262,8 +2446,8 @@ namespace WIS.HwTest
                     ? new SolidColorBrush(Color.FromRgb(217, 130, 15))
                     : new SolidColorBrush(Color.FromRgb(35, 134, 54));
                 _summaryBadge.Text = warn > 0
-                    ? string.Format("! ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", pass, warn, skip)
-                    : string.Format("✓ ZAVRŠENO ({0} PASS, {1} SKIP)", pass, skip);
+                    ? HwTestLocalization.PickFormat("! ZAVRŠENO ({0} PASS, {1} UPOZ., {2} SKIP)", "! 已完成（{0} PASS，{1} 警告，{2} SKIP）", pass, warn, skip)
+                    : HwTestLocalization.PickFormat("✓ ZAVRŠENO ({0} PASS, {1} SKIP)", "✓ 已完成（{0} PASS，{1} SKIP）", pass, skip);
             }
 
             if (_summaryBadgeBorder != null)
@@ -2279,18 +2463,17 @@ namespace WIS.HwTest
                 if (canFinish)
                 {
                     _btnFinish.Opacity = 1.0;
-                    _btnFinish.ToolTip = "Završi testiranje i sačuvaj konačan hardverski izveštaj";
+                    _btnFinish.ToolTip = HwTestLocalization.Pick("Završi testiranje i sačuvaj konačan hardverski izveštaj", "完成测试并保存最终硬件报告");
                 }
                 else if (_autoStressRunning)
                 {
                     _btnFinish.Opacity = 0.55;
-                    _btnFinish.ToolTip = "Završetak je zaključan dok traje automatski stres paket.";
+                    _btnFinish.ToolTip = HwTestLocalization.Pick("Završetak je zaključan dok traje automatski stres paket.", "自动压力测试包运行期间无法完成。");
                 }
                 else
                 {
                     _btnFinish.Opacity = 0.55;
-                    _btnFinish.ToolTip = string.Format(
-                        "Završetak je zaključan dok svi primenljivi testovi ne dobiju PASS ili FAIL (preostalo: {0}).",
+                    _btnFinish.ToolTip = HwTestLocalization.PickFormat("Završetak je zaključan dok svi primenljivi testovi ne dobiju PASS ili FAIL (preostalo: {0}).", "在所有适用测试获得 PASS 或 FAIL 之前无法完成（剩余：{0}）。",
                         remaining);
                 }
             }
@@ -2354,21 +2537,90 @@ namespace WIS.HwTest
                    status == TestStatus.NotApplicable;
         }
 
-        private void RunSequentialPeripheralTests()
+        public void RunSequentialPeripheralTests()
         {
+            if (_autoStressRunning) return;
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(new Action(RunSequentialPeripheralTests));
+                return;
+            }
+
+            _inSequentialPeripheralRun = true;
+            try
+            {
+                for (int i = 0; i < _testItems.Count; i++)
+                {
+                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
+                    TestItemResult t = _testItems[i];
+                    if (!t.IsAutomated && t.Status == TestStatus.Pending)
+                    {
+                        RunSingleTest(t);
+                        if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) break;
+                        if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                        {
+                            // Korisnik je prekinuo ili zatvorio pojedinacni test pre PASS/FAIL ishoda
+                            break;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                _inSequentialPeripheralRun = false;
+            }
+
+            CheckAndHandlePhase5InteractiveCompletion();
+        }
+
+        private void CheckAndHandlePhase5InteractiveCompletion()
+        {
+            if (!_isEmbedded || !_phase5WorkflowActive || !_waitingForManualPeripherals || _autoStressRunning) return;
+            if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
+
+            bool alreadyNotified;
+            lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
+            if (alreadyNotified) return;
+
+            int remainingInteractive = 0;
+            int remainingAny = 0;
+            int periphWarnOrFail = 0;
             for (int i = 0; i < _testItems.Count; i++)
             {
-                if (_uefiBiosRebootRequested || _uefiBiosPromptOpen || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
                 TestItemResult t = _testItems[i];
-                if (!t.IsAutomated && t.Status == TestStatus.Pending)
+                if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
                 {
-                    RunSingleTest(t);
-                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) break;
+                    remainingAny++;
+                    if (!t.IsAutomated) remainingInteractive++;
                 }
+                if (!t.IsAutomated && (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip))
+                {
+                    periphWarnOrFail++;
+                }
+            }
+
+            if (remainingInteractive == 0 && remainingAny == 0)
+            {
+                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), periphWarnOrFail > 0 ? "WARN" : "OK", "");
+                SaveCurrentReport(false, false, "", false);
+            }
+            else if (remainingInteractive > 0)
+            {
+                if (_autoSectionStatus != null)
+                {
+                    _autoSectionStatus.Text = HwTestLocalization.PickFormat("⏳ Preostalo {0} obaveznih interaktivnih testova. Dovršite preostale testove da biste otključali završetak i čuvanje izveštaja.", "⏳ 剩余 {0} 项必选交互式测试。请完成剩余测试以解锁完成并保存报告。",
+                        remainingInteractive);
+                }
+                RaisePendingInteractiveTestsRequired();
             }
         }
 
         public void ForceCompletePhase5SkipPending()
+        {
+            ForceCompletePhase5SkipPending(HwTestLocalization.Pick("Preskočeno u okviru Faze 5", "在阶段 5 中跳过"));
+        }
+
+        public void ForceCompletePhase5SkipPending(string customReason)
         {
             if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
             _autoStressCancel.Cancel();
@@ -2380,6 +2632,10 @@ namespace WIS.HwTest
             }
             if (!shouldFinish) return;
 
+            string effectiveReason = (customReason != null && customReason.Trim().Length > 0)
+                ? customReason.Trim()
+                : HwTestLocalization.Pick("Preskočeno u okviru Faze 5", "在阶段 5 中跳过");
+
             Dispatcher.BeginInvoke(new Action(() =>
             {
                 if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
@@ -2388,8 +2644,25 @@ namespace WIS.HwTest
                 {
                     try { activeDlg.Close(); } catch { }
                 }
-                SaveCurrentReport(false, true, "Preskočeno u okviru Faze 5", true);
+                SaveCurrentReport(false, true, effectiveReason, true);
             }));
+        }
+
+        private static string FormatAutoDiagIssueSummary(string pid, TestItemResult item)
+        {
+            string label = pid == "auto_battery"
+                ? HwTestLocalization.Pick("Baterija", "电池")
+                : (pid == "auto_network" ? HwTestLocalization.Pick("Mreža", "网络") : (pid == "auto_security" ? HwTestLocalization.Pick("Sigurnost", "安全") : (item != null ? item.Title : pid)));
+            string rawReason = (item != null ? (item.Reason ?? "") : "").Trim();
+            if (rawReason.StartsWith("UPOZORENJE:", StringComparison.OrdinalIgnoreCase))
+                rawReason = rawReason.Substring("UPOZORENJE:".Length).Trim();
+            else if (rawReason.StartsWith("KRITIČNO:", StringComparison.OrdinalIgnoreCase))
+                rawReason = rawReason.Substring("KRITIČNO:".Length).Trim();
+            if (string.IsNullOrEmpty(rawReason) && item != null)
+                rawReason = (item.MetricSummary ?? "").Trim();
+            if (string.IsNullOrEmpty(rawReason))
+                rawReason = (item != null && item.Status == TestStatus.Fail) ? "FAIL" : HwTestLocalization.Pick("Upozorenje", "警告");
+            return string.Format("{0}: {1}", label, rawReason);
         }
 
         public void StartPhase5FullWorkflow(
@@ -2399,6 +2672,8 @@ namespace WIS.HwTest
             TestItemResult existingCpu = FindItemById("auto_cpu");
             bool preserveRestoredThermalMetrics = _checkpointRestored && existingCpu != null &&
                                                   _restoredTestIds.Contains("auto_cpu") && IsFinalTestStatus(existingCpu.Status);
+
+            _cancelPassiveAutoChecks = true;
 
             lock (_phase5Lock)
             {
@@ -2426,12 +2701,11 @@ namespace WIS.HwTest
 
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                StartPassiveAutoChecks();
                 if (_autoSectionStatus != null)
                 {
                     _autoSectionStatus.Text = _checkpointRestored
-                        ? string.Format("♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova. Nastavljam Fazu 5...", _checkpointRestoredCount, _checkpointTotalApplicable)
-                        : "🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...";
+                        ? HwTestLocalization.PickFormat("♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova. Nastavljam Fazu 5...", "♻️ UEFI BIOS 重启后继续 — 已恢复 {0}/{1} 项已完成的测试。正在继续阶段 5...", _checkpointRestoredCount, _checkpointTotalApplicable)
+                        : HwTestLocalization.Pick("🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...", "🔄 阶段 5 进行中：正在启动自动诊断和压力测试...");
                 }
             }));
 
@@ -2451,16 +2725,39 @@ namespace WIS.HwTest
                 bool stressWarn = false;
                 try
                 {
-                    // 1. Automatska provera (baterija, mreža, sigurnost)
-                    EmitPhase5Step("P5.AutoDiag", "Automatska provera sistema", "RUNNING", "");
+                    // Otkloni race condition sa inicijalnim StartPassiveAutoChecks() thread-om iz Faze 2
+                    Thread passiveTh = _passiveAutoThread;
+                    if (passiveTh != null && passiveTh.IsAlive)
+                    {
+                        try { passiveTh.Join(2500); } catch { }
+                    }
+
+                    // 1. Automatska provera (baterija, mreža, sigurnost) — UVEK sveže pri ulasku u Fazu 5 (osim ako je restaurirano iz UEFI BIOS checkpointa)
+                    EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"), "RUNNING", "");
                     string[] passiveIds = new string[] { "auto_battery", "auto_network", "auto_security" };
+                    List<string> autoDiagIssues = new List<string>();
                     for (int i = 0; i < passiveIds.Length; i++)
                     {
                         if (_uefiBiosRebootRequested || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
                         string pid = passiveIds[i];
                         TestItemResult item = FindItemById(pid);
-                        if (item != null && !IsFinalTestStatus(item.Status))
+                        if (item == null) continue;
+
+                        bool restoredFromCheckpoint = _checkpointRestored &&
+                                                      _restoredTestIds.Contains(pid) &&
+                                                      IsFinalTestStatus(item.Status);
+                        if (!restoredFromCheckpoint)
                         {
+                            Dispatcher.Invoke(new Action(() =>
+                            {
+                                item.Status = TestStatus.Running;
+                                if (_autoSectionStatus != null)
+                                    _autoSectionStatus.Text = HwTestLocalization.PickFormat("🔄 Faza 5 (Dijagnostika {0}/{1}): {2}...", "🔄 阶段 5（诊断 {0}/{1}）：{2}...", i + 1, passiveIds.Length, item.Title);
+                                Border c;
+                                if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
+                                UpdateSummaryBadge();
+                            }));
+
                             TestItemResult r = ExecuteAutoWorkerById(pid, null);
                             if (r != null)
                             {
@@ -2472,18 +2769,21 @@ namespace WIS.HwTest
                                     RefreshCardVisibility();
                                     UpdateSummaryBadge();
                                 }));
-                                if (r.HasWarning || r.Status == TestStatus.Fail) autoDiagWarn = true;
                             }
                         }
-                        else if (item != null && (item.HasWarning || item.Status == TestStatus.Fail))
+
+                        if (item.HasWarning || item.Status == TestStatus.Fail)
                         {
                             autoDiagWarn = true;
+                            autoDiagIssues.Add(FormatAutoDiagIssueSummary(pid, item));
                         }
                     }
                     if (!_uefiBiosRebootRequested)
                     {
-                        EmitPhase5Step("P5.AutoDiag", "Automatska provera sistema",
-                            _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (autoDiagWarn ? "WARN" : "OK"), "");
+                        string autoDiagReason = string.Join(" | ", autoDiagIssues.ToArray());
+                        EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"),
+                            _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (autoDiagWarn ? "WARN" : "OK"),
+                            autoDiagReason);
                     }
 
                     // 2. Automatski stres paket (Disk, RAM, CPU 30s, GPU 3D)
@@ -2514,18 +2814,18 @@ namespace WIS.HwTest
                             }
                             if (_phase5ThermalCritical)
                             {
-                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "WARN",
-                                    string.Format("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", _phase5PeakCpuTemp));
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "WARN",
+                                    HwTestLocalization.PickFormat("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", "注意：CPU 过热 ({0:F1}°C)", _phase5PeakCpuTemp));
                             }
                             else
                             {
-                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)",
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"),
                                     stressWarn ? "WARN" : "OK", "");
                             }
                         }
                         else
                         {
-                            EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "RUNNING", "");
+                            EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "RUNNING", "");
                             string[] seq = new string[] { "auto_disk", "auto_ram", "auto_cpu" };
                             for (int i = 0; i < seq.Length; i++)
                             {
@@ -2544,7 +2844,7 @@ namespace WIS.HwTest
                                 {
                                     item.Status = TestStatus.Running;
                                     if (_autoSectionStatus != null)
-                                        _autoSectionStatus.Text = string.Format("🔄 Faza 5 ({0}/4): {1} u toku...", stepNum, item.Title);
+                                        _autoSectionStatus.Text = HwTestLocalization.PickFormat("🔄 Faza 5 ({0}/4): {1} u toku...", "🔄 阶段 5 ({0}/4)：{1} 进行中...", stepNum, item.Title);
                                     Border c;
                                     if (_cardMap.TryGetValue(item.Id, out c)) UpdateCardVisual(c, item);
                                     UpdateSummaryBadge();
@@ -2593,12 +2893,11 @@ namespace WIS.HwTest
 
                             if (!_uefiBiosRebootRequested && _phase5ThermalCritical)
                             {
-                                _phase5ThermalNote = string.Format(
-                                    "NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.",
+                                _phase5ThermalNote = HwTestLocalization.PickFormat("NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.", "注意：处理器在压力测试期间达到临界温度 ({0:F1}°C >= 95°C) — 需要清理散热器并更换导热硅脂。",
                                     _phase5PeakCpuTemp);
                                 HwTestLogger.Warn("THERMAL_NOTE", _phase5ThermalNote);
-                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)", "WARN",
-                                    string.Format("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", _phase5PeakCpuTemp));
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "WARN",
+                                    HwTestLocalization.PickFormat("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", "注意：CPU 过热 ({0:F1}°C)", _phase5PeakCpuTemp));
 
                                 TestItemResult gpuSkipItem = FindItemById("auto_gpu");
                                 if (gpuSkipItem != null && gpuSkipItem.Status != TestStatus.Skip && gpuSkipItem.Status != TestStatus.NotApplicable)
@@ -2607,8 +2906,8 @@ namespace WIS.HwTest
                                     {
                                         gpuSkipItem.Status = TestStatus.Skip;
                                         gpuSkipItem.HasWarning = true;
-                                        gpuSkipItem.Reason = string.Format("Preskočeno radi zaštite hardvera jer je CPU dostigao {0:F1}°C (>= 95°C)", _phase5PeakCpuTemp);
-                                        gpuSkipItem.MetricSummary = "Preskočeno (CPU >= 95°C)";
+                                        gpuSkipItem.Reason = HwTestLocalization.PickFormat("Preskočeno radi zaštite hardvera jer je CPU dostigao {0:F1}°C (>= 95°C)", "为保护硬件已跳过，因为 CPU 温度达到 {0:F1}°C (>= 95°C)", _phase5PeakCpuTemp);
+                                        gpuSkipItem.MetricSummary = HwTestLocalization.Pick("Preskočeno (CPU >= 95°C)", "已跳过 (CPU >= 95°C)");
                                         Border gc;
                                         if (_cardMap.TryGetValue(gpuSkipItem.Id, out gc)) UpdateCardVisual(gc, gpuSkipItem);
                                         UpdateSummaryBadge();
@@ -2618,7 +2917,7 @@ namespace WIS.HwTest
                                 Dispatcher.BeginInvoke(new Action(() =>
                                 {
                                     if (_autoSectionStatus != null)
-                                        _autoSectionStatus.Text = string.Format("⚠️ NAPOMENA: CPU se pregrevao ({0:F1}°C >= 95°C) — opterećenje zaustavljeno radi zaštite, nastavljam ostale testove...", _phase5PeakCpuTemp);
+                                        _autoSectionStatus.Text = HwTestLocalization.PickFormat("⚠️ NAPOMENA: CPU se pregrevao ({0:F1}°C >= 95°C) — opterećenje zaustavljeno radi zaštite, nastavljam ostale testove...", "⚠️ 注意：CPU 温度过高 ({0:F1}°C >= 95°C) — 为保护硬件已停止负载，继续其他测试...", _phase5PeakCpuTemp);
                                 }));
                             }
 
@@ -2638,7 +2937,7 @@ namespace WIS.HwTest
                                         Dispatcher.Invoke(new Action(() =>
                                         {
                                             if (_autoSectionStatus != null)
-                                                _autoSectionStatus.Text = "🔄 Faza 5 (4/4): GPU 3D hardverski stres test...";
+                                                _autoSectionStatus.Text = HwTestLocalization.Pick("🔄 Faza 5 (4/4): GPU 3D hardverski stres test...", "🔄 阶段 5 (4/4)：GPU 3D 硬件压力测试...");
                                             RunGpuStressTest(gpuItem);
                                             if (gpuItem.HasWarning || gpuItem.Status == TestStatus.Fail) stressWarn = true;
                                         }));
@@ -2648,7 +2947,7 @@ namespace WIS.HwTest
 
                             if (!_uefiBiosRebootRequested && !_phase5ThermalCritical)
                             {
-                                EmitPhase5Step("P5.Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)",
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"),
                                     _autoStressCancel.IsCancelled ? "SKIPPED_USER" : (stressWarn ? "WARN" : "OK"), "");
                             }
                         }
@@ -2674,20 +2973,30 @@ namespace WIS.HwTest
                     Dispatcher.BeginInvoke(new Action(() =>
                     {
                         if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
-                        SaveCurrentReport(false, true, "Preskočeno od strane servisera", true);
+                        SaveCurrentReport(false, true, HwTestLocalization.Pick("Preskočeno od strane servisera", "技术员已跳过"), true);
                     }));
                     return;
                 }
 
                 // 3. Interaktivni periferijski testovi
                 bool hasPendingManual = false;
+                int manualCompletedCount = 0;
+                int manualWarnOrFail = 0;
                 for (int i = 0; i < _testItems.Count; i++)
                 {
                     TestItemResult t = _testItems[i];
-                    if (!t.IsAutomated && t.Status == TestStatus.Pending)
+                    if (!t.IsAutomated)
                     {
-                        hasPendingManual = true;
-                        break;
+                        if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                        {
+                            hasPendingManual = true;
+                        }
+                        else if (t.Status != TestStatus.NotApplicable)
+                        {
+                            manualCompletedCount++;
+                            if (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip)
+                                manualWarnOrFail++;
+                        }
                     }
                 }
 
@@ -2700,13 +3009,27 @@ namespace WIS.HwTest
                         lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
                         if (alreadyNotified) return;
 
-                        string skipPeriphReason = (_hwInfo != null && !_hwInfo.IsLaptop)
-                            ? "Desktop računar — ručni testovi periferija nisu potrebni"
-                            : "Nema primenljivih periferijskih testova";
-                        EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija", "SKIPPED_DONE", skipPeriphReason);
-                        if (_autoSectionStatus != null)
+                        if (_hwInfo != null && _hwInfo.IsLaptop && manualCompletedCount > 0)
                         {
-                            _autoSectionStatus.Text = "✓ " + skipPeriphReason + " — automatski završavam Fazu 5 i snimam izveštaj.";
+                            EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), manualWarnOrFail > 0 ? "WARN" : "OK", "");
+                            if (_autoSectionStatus != null)
+                            {
+                                _autoSectionStatus.Text = HwTestLocalization.Pick("✓ Svi interaktivni testovi su završeni — automatski završavam Fazu 5 i snimam izveštaj.", "✓ 所有交互式测试已完成 — 正在自动结束阶段 5 并保存报告。");
+                            }
+                        }
+                        else
+                        {
+                            string skipPeriphReason = (_hwInfo != null && !_hwInfo.IsLaptop)
+                                ? HwTestLocalization.Pick("Desktop računar — ručni testovi periferija nisu potrebni", "台式机 — 无需手动外设测试")
+                                : HwTestLocalization.Pick("Nema primenljivih periferijskih testova", "没有适用的外设测试");
+                            EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "SKIPPED_DONE", skipPeriphReason);
+                            if (_autoSectionStatus != null)
+                            {
+                                _autoSectionStatus.Text = HwTestLocalization.PickFormat(
+                                    "✓ {0} — automatski završavam Fazu 5 i snimam izveštaj.",
+                                    "✓ {0} — 正在自动结束阶段 5 并保存报告。",
+                                    skipPeriphReason);
+                            }
                         }
                         UpdateSummaryBadge();
                         SaveCurrentReport(false, false, "", false);
@@ -2714,7 +3037,7 @@ namespace WIS.HwTest
                     return;
                 }
 
-                EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija", "RUNNING", "");
+                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), "RUNNING", "");
                 _waitingForManualPeripherals = true;
                 _autoTestsFinishedUtc = DateTime.UtcNow;
                 ThreadPool.QueueUserWorkItem(delegate
@@ -2730,43 +3053,26 @@ namespace WIS.HwTest
                 Dispatcher.Invoke(new Action(() =>
                 {
                     if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
-                    if (_autoSectionStatus != null)
-                    {
-                        _autoSectionStatus.Text = "✓ Automatski stres završen — pokrećem interaktivne testove periferija...";
-                    }
-                    RunSequentialPeripheralTests();
-
-                    if (_uefiBiosRebootRequested || _uefiBiosPromptOpen) return;
 
                     bool alreadyNotified;
                     lock (_phase5Lock) { alreadyNotified = _phase5CompletedNotified; }
                     if (alreadyNotified) return;
 
-                    int remainingPending = 0;
-                    int periphWarnOrFail = 0;
-                    for (int i = 0; i < _testItems.Count; i++)
+                    List<string> pendingNames = GetPendingInteractiveTestNames();
+                    if (pendingNames.Count == 0)
                     {
-                        TestItemResult t = _testItems[i];
-                        if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
-                            remainingPending++;
-                        if (!t.IsAutomated && (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip))
-                            periphWarnOrFail++;
+                        EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"), manualWarnOrFail > 0 ? "WARN" : "OK", "");
+                        SaveCurrentReport(false, false, "", false);
+                        return;
                     }
 
-                    if (remainingPending == 0)
+                    if (_autoSectionStatus != null)
                     {
-                        EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija", periphWarnOrFail > 0 ? "WARN" : "OK", "");
-                        SaveCurrentReport(false, false, "", false);
+                        _autoSectionStatus.Text = HwTestLocalization.PickFormat("⚠️ Automatski proces je završen — preostalo {0} obaveznih interaktivnih testova ({1}).", "⚠️ 自动流程已完成 — 剩余 {0} 项必选交互式测试（{1}）。",
+                            pendingNames.Count,
+                            string.Join(", ", pendingNames.ToArray()));
                     }
-                    else
-                    {
-                        if (_autoSectionStatus != null)
-                        {
-                            _autoSectionStatus.Text = string.Format(
-                                "⏳ Preostalo {0} testova. Dovršite preostale testove da biste otključali završetak i čuvanje izveštaja.",
-                                remainingPending);
-                        }
-                    }
+                    RaisePendingInteractiveTestsRequired();
                 }));
             });
             th.IsBackground = true;
@@ -2779,8 +3085,10 @@ namespace WIS.HwTest
             if (_autoStressRunning)
             {
                 MessageBox.Show(
-                    "Automatski stres testovi su još uvek u toku.\n\nSačekajte da se stres test završi do kraja pre čuvanja izveštaja.",
-                    "Stres test u toku",
+                    HwTestLocalization.Pick(
+                        "Automatski stres testovi su još uvek u toku.\n\nSačekajte da se stres test završi do kraja pre čuvanja izveštaja.",
+                        "自动压力测试仍在进行中。\n\n请等待压力测试全部完成后再保存报告。"),
+                    HwTestLocalization.Pick("Stres test u toku", "压力测试进行中"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
                 return;
@@ -2799,11 +3107,12 @@ namespace WIS.HwTest
             if (unfinished.Count > 0)
             {
                 MessageBox.Show(
-                    string.Format(
+                    HwTestLocalization.PickFormat(
                         "Nije moguće sačuvati izveštaj dok svi primenljivi testovi nisu završeni (PASS ili FAIL).\n\nPreostali testovi ({0}):\n{1}",
+                        "在所有适用测试完成（PASS 或 FAIL）之前无法保存报告。\n\n剩余测试 ({0})：\n{1}",
                         unfinished.Count,
                         string.Join("\n", unfinished.ToArray())),
-                    "Neizvršeni testovi",
+                    HwTestLocalization.Pick("Neizvršeni testovi", "未完成的测试"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
                 return;
@@ -2832,7 +3141,7 @@ namespace WIS.HwTest
             // Sistemski izuzetak (HWT-02 Odluka A3): isključivo za ForceCompletePhase5SkipPending / sistemski prekid
             if (pending > 0 && autoMarkPendingAsSkip)
             {
-                string skipReason = string.IsNullOrEmpty(defaultSkipReason) ? "Preskočeno u okviru Faze 5" : defaultSkipReason;
+                string skipReason = string.IsNullOrEmpty(defaultSkipReason) ? HwTestLocalization.Pick("Preskočeno u okviru Faze 5", "在阶段 5 中跳过") : defaultSkipReason;
                 for (int i = 0; i < _testItems.Count; i++)
                 {
                     TestItemResult t = _testItems[i];
@@ -2840,7 +3149,13 @@ namespace WIS.HwTest
                     {
                         t.Status = TestStatus.Skip;
                         if (string.IsNullOrEmpty(t.Reason))
+                        {
                             t.Reason = skipReason;
+                        }
+                        else if (t.Reason.IndexOf(skipReason, StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            t.Reason = skipReason + " (" + t.Reason + ")";
+                        }
                         Border card;
                         if (_cardMap.TryGetValue(t.Id, out card)) UpdateCardVisual(card, t);
                     }
@@ -2969,19 +3284,19 @@ namespace WIS.HwTest
             }
             else
             {
-                MessageBox.Show("Nije moguće upisati izveštaj ni u primarnu ni u TEMP putanju.", "Upozorenje", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(HwTestLocalization.Pick("Nije moguće upisati izveštaj ni u primarnu ni u TEMP putanju.", "无法将报告写入主路径或 TEMP 路径。"), HwTestLocalization.Pick("Upozorenje", "警告"), MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
             if (_isEmbedded)
             {
                 if (_phase5WorkflowActive)
                 {
-                    EmitPhase5Step("P5.Peripherals", "Interaktivni testovi periferija",
+                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
                         isCancelled ? "SKIPPED_USER" : ((fail > 0 || warn > 0 || skip > 0) ? "WARN" : "OK"), "");
                 }
                 if (_autoSectionStatus != null)
                 {
-                    _autoSectionStatus.Text = string.Format("✓ Hardverski izveštaj sačuvan ({0}: {1} PASS, {2} SKIP, {3} FAIL).", overall, pass, skip, fail);
+                    _autoSectionStatus.Text = HwTestLocalization.PickFormat("✓ Hardverski izveštaj sačuvan ({0}: {1} PASS, {2} SKIP, {3} FAIL).", "✓ 硬件报告已保存（{0}：{1} PASS，{2} SKIP，{3} FAIL）。", overall, pass, skip, fail);
                 }
                 Action<HwTestRunResult> cb = _onReportSavedCallback;
                 if (cb != null)
@@ -3403,14 +3718,19 @@ namespace WIS.HwTest
             try
             {
                 confirm = MessageBox.Show(
-                    string.Format(
+                    HwTestLocalization.PickFormat(
                         "Računar će biti restartovan direktno u UEFI BIOS podešavanja kako biste uključili uređaj za test '{0}'.\n\n" +
                         "• Svi dosadašnji završeni rezultati i progres Faze 5 biće sačuvani u checkpoint fajlu.\n" +
                         "• Po izlasku iz UEFI BIOS-a, Windows i WIS će se automatski podići i nastaviti tačno gde ste stali.\n" +
                         "• Tipični BIOS tasteri: HP: F10, Lenovo: F1, Dell: F2.\n\n" +
                         "Da li želite da odmah restartujete računar u UEFI BIOS?",
+                        "电脑将直接重启进入 UEFI BIOS 设置，以便为测试“{0}”启用设备。\n\n" +
+                        "• 迄今完成的所有测试结果和阶段 5 进度都将保存在检查点文件中。\n" +
+                        "• 退出 UEFI BIOS 后，Windows 和 WIS 将自动启动并从中断处继续。\n" +
+                        "• 常见 BIOS 热键：HP：F10，Lenovo：F1，Dell：F2。\n\n" +
+                        "是否立即重启电脑进入 UEFI BIOS？",
                         testTitle),
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.YesNo,
                     MessageBoxImage.Question);
                 if (confirm == MessageBoxResult.Yes)
@@ -3490,10 +3810,14 @@ namespace WIS.HwTest
                     "Standalone shutdown.exe /r /fw /t 0 nije uspeo (ExitCode={0}, Err='{1}') — pokrećem fallback /r /t 3 /f.",
                     exitCode, errMsg));
                 MessageBox.Show(
-                    "Direktan ulazak u UEFI firmware (/r /fw) nije podržan na ovom računaru.\n\n" +
-                    "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
-                    "HP: F10 | Lenovo: F1 | Dell: F2",
-                    "Ručni ulazak u BIOS",
+                    HwTestLocalization.Pick(
+                        "Direktan ulazak u UEFI firmware (/r /fw) nije podržan na ovom računaru.\n\n" +
+                        "Računar će se sada restartovati — pritisnite BIOS taster odmah pri paljenju:\n" +
+                        "HP: F10 | Lenovo: F1 | Dell: F2",
+                        "此电脑不支持直接进入 UEFI 固件 (/r /fw)。\n\n" +
+                        "电脑即将重启 — 请在开机时立即按下 BIOS 热键：\n" +
+                        "HP：F10 | Lenovo：F1 | Dell：F2"),
+                    HwTestLocalization.Pick("Ručni ulazak u BIOS", "手动进入 BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
                 try

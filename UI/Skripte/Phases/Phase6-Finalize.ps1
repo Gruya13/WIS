@@ -311,11 +311,58 @@ try {
     } else {
         ""
     }
-    $notesList = if ($thermalNote) { @($thermalNote) } else { @() }
+    $notesList = [System.Collections.Generic.List[string]]::new()
+    if ($thermalNote) {
+        $notesList.Add($thermalNote)
+    }
 
     if (-not $antiLeakVerified) {
         $blockHandover = $true
         $blockReasons.Add("Anti-Leak verifikacija čišćenja tajni nije uspela (anti_leak_verified=false)")
+    }
+
+    # V343-03 Hard Gate: Provera C:\setup\hwtest-result.json pre proglašenja DONE / COMPLETED
+    $hwTestIncomplete = $false
+    $unfinishedInteractiveTests = [System.Collections.Generic.List[string]]::new()
+    $hwTestPendingNote = ""
+    foreach ($hwResCand in @(
+        (Join-Path $LocalSetupDir "hwtest-result.json"),
+        "C:\setup\hwtest-result.json",
+        (Join-Path $SystemLogDir "hwtest-result.json")
+    )) {
+        if ($hwResCand -and (Test-Path -LiteralPath $hwResCand -ErrorAction SilentlyContinue)) {
+            try {
+                $rawHwRes = Get-Content -LiteralPath $hwResCand -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($rawHwRes)) {
+                    $parsedHwRes = ConvertFrom-Json -InputObject $rawHwRes -ErrorAction SilentlyContinue
+                    if ($parsedHwRes -and $parsedHwRes.tests) {
+                        foreach ($tItem in @($parsedHwRes.tests)) {
+                            if ($null -eq $tItem) { continue }
+                            $isAutomated = if ($null -ne $tItem.automated) { [bool]$tItem.automated } else { $false }
+                            $tStatus = if ($tItem.status) { ("$($tItem.status)").ToUpper().Trim() } else { "PENDING" }
+                            if ((-not $isAutomated) -and ($tStatus -in @("SKIP", "PENDING", "RUNNING"))) {
+                                $tLabel = if ($tItem.title) { "$($tItem.title)" } elseif ($tItem.id) { "$($tItem.id)" } else { "Nepoznat test" }
+                                $unfinishedInteractiveTests.Add("$tLabel ($tStatus)")
+                            }
+                        }
+                    }
+                    break
+                }
+            } catch {}
+        }
+    }
+    if ($unfinishedInteractiveTests.Count -gt 0) {
+        $hwTestIncomplete = $true
+        $blockHandover = $true
+        $hwTestPendingNote = "NAPOMENA: Preskočeni ili nezavršeni interaktivni hardverski testovi ($($unfinishedInteractiveTests.Count)): $($unfinishedInteractiveTests -join ', ')"
+        $blockReasons.Add($hwTestPendingNote)
+        $notesList.Add($hwTestPendingNote)
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "UPOZORENJE (V343-03 Hard Gate): Blokiran status DONE/COMPLETED jer postoje nezavršeni interaktivni testovi u hwtest-result.json -> $($unfinishedInteractiveTests -join ', ')" -Level "WARN" -Component "Phase6"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message $hwTestPendingNote -Level "WARN" -Tag "[HwTest]" -Phase 6
+        }
     }
 
     $isSensorUnavailable = ($stressStatus -eq "UNKNOWN") -or (-not $sensorAvailable) -or ($maxCpuTemp -le 0.0)
@@ -335,13 +382,22 @@ try {
                     if ($parsedLic) {
                         $rawDet = if ($parsedLic.office_license_detail) { "$($parsedLic.office_license_detail)".Trim() } else { "" }
                         $safeDet = $rawDet -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
+                        $rawWinDet = if ($parsedLic.windows_license_detail) { "$($parsedLic.windows_license_detail)".Trim() } else { "" }
+                        $safeWinDet = $rawWinDet -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
                         $licWin = [bool]$parsedLic.windows_activated
+                        $licWinOa3 = if ($null -ne $parsedLic.windows_oa3_present) { [bool]$parsedLic.windows_oa3_present } else { $false }
+                        $licWinEd = if ($parsedLic.windows_edition) { "$($parsedLic.windows_edition)".Trim() } else { "" }
+                        $licWinMethod = if ($parsedLic.windows_license_method) { "$($parsedLic.windows_license_method)".Trim() } else { "" }
                         $licOffInst = [bool]$parsedLic.office_installed
                         $licOffAct = [bool]$parsedLic.office_activated
                         $licMode = if ($parsedLic.office_activation_mode) { "$($parsedLic.office_activation_mode)".Trim() } else { "" }
                         $licMethod = if ($parsedLic.office_license_method) { "$($parsedLic.office_license_method)".Trim() } else { "" }
                         $licSummary = [ordered]@{
                             windows_activated      = $licWin
+                            windows_oa3_present    = $licWinOa3
+                            windows_edition        = $licWinEd
+                            windows_license_method = $licWinMethod
+                            windows_license_detail = $safeWinDet
                             office_installed       = $licOffInst
                             office_activated       = $licOffAct
                             office_activation_mode = $licMode
@@ -355,6 +411,7 @@ try {
         }
     }
 
+    $notesArr = @($notesList.ToArray())
     $diagnosticsContract = Get-WisDiagnosticsContract -Status $stressStatus -SensorAvailable $sensorAvailable -MaxCpuTemp $maxCpuTemp -EmergencyAbort $emergencyAbort
     $finalTelemetryData = @{
         diagnostics_status = $diagnosticsContract.diagnostics_status
@@ -365,9 +422,17 @@ try {
         sensor_available = [bool]$sensorAvailable
         anti_leak_verified = [bool]$antiLeakVerified
         handover_ready = (-not $blockHandover)
+        hwtest_incomplete = [bool]$hwTestIncomplete
+    }
+    if ($unfinishedInteractiveTests.Count -gt 0) {
+        $finalTelemetryData["unfinished_interactive_tests"] = @($unfinishedInteractiveTests.ToArray())
     }
     if ($null -ne $licSummary) {
         $finalTelemetryData["windows_activated"] = $licSummary.windows_activated
+        $finalTelemetryData["windows_oa3_present"] = $licSummary.windows_oa3_present
+        $finalTelemetryData["windows_edition"] = $licSummary.windows_edition
+        $finalTelemetryData["windows_license_method"] = $licSummary.windows_license_method
+        $finalTelemetryData["windows_license_detail"] = $licSummary.windows_license_detail
         $finalTelemetryData["office_installed"] = $licSummary.office_installed
         $finalTelemetryData["office_activated"] = $licSummary.office_activated
         $finalTelemetryData["office_activation_mode"] = $licSummary.office_activation_mode
@@ -377,6 +442,10 @@ try {
             windows                = $licSummary.windows_activated
             office                 = $licSummary.office_activated
             windows_activated      = $licSummary.windows_activated
+            windows_oa3_present    = $licSummary.windows_oa3_present
+            windows_edition        = $licSummary.windows_edition
+            windows_license_method = $licSummary.windows_license_method
+            windows_license_detail = $licSummary.windows_license_detail
             office_installed       = $licSummary.office_installed
             office_activated       = $licSummary.office_activated
             office_activation_mode = $licSummary.office_activation_mode
@@ -386,7 +455,9 @@ try {
     }
     if ($thermalNote) {
         $finalTelemetryData["thermal_note"] = $thermalNote
-        $finalTelemetryData["notes"] = $notesList
+    }
+    if ($notesArr.Count -gt 0) {
+        $finalTelemetryData["notes"] = $notesArr
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
@@ -449,10 +520,15 @@ try {
             $kMap["cooling_verified"] = $diagnosticsContract.cooling_verified
             $kMap["manual_check_required"] = $diagnosticsContract.manual_check_required
             $kMap["thermal_note"]        = $thermalNote
-            $kMap["notes"]               = $notesList
+            $kMap["notes"]               = $notesArr
+            $kMap["hwtest_incomplete"]   = [bool]$hwTestIncomplete
             $kMap["stress_test"]         = $stressSubMap
             if ($null -ne $licSummary) {
                 $kMap["windows_activated"] = $licSummary.windows_activated
+                $kMap["windows_oa3_present"] = $licSummary.windows_oa3_present
+                $kMap["windows_edition"] = $licSummary.windows_edition
+                $kMap["windows_license_method"] = $licSummary.windows_license_method
+                $kMap["windows_license_detail"] = $licSummary.windows_license_detail
                 $kMap["office_installed"] = $licSummary.office_installed
                 $kMap["office_activated"] = $licSummary.office_activated
                 $kMap["office_activation_mode"] = $licSummary.office_activation_mode
@@ -462,6 +538,10 @@ try {
                     windows                = $licSummary.windows_activated
                     office                 = $licSummary.office_activated
                     windows_activated      = $licSummary.windows_activated
+                    windows_oa3_present    = $licSummary.windows_oa3_present
+                    windows_edition        = $licSummary.windows_edition
+                    windows_license_method = $licSummary.windows_license_method
+                    windows_license_detail = $licSummary.windows_license_detail
                     office_installed       = $licSummary.office_installed
                     office_activated       = $licSummary.office_activated
                     office_activation_mode = $licSummary.office_activation_mode
@@ -505,6 +585,15 @@ try {
                     [void]$mdExtra.AppendLine("")
                     [void]$mdExtra.AppendLine("### [LICENCE] Status Licenci")
                     [void]$mdExtra.AppendLine("- **Windows Licenca:** $(if ($licSummary.windows_activated) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })")
+                    if ($licSummary.windows_edition) {
+                        [void]$mdExtra.AppendLine("- **Windows Edicija:** $($licSummary.windows_edition) (OA3x: $($licSummary.windows_oa3_present))")
+                    }
+                    if ($licSummary.windows_license_method) {
+                        [void]$mdExtra.AppendLine("- **Metod licenciranja Windows-a:** $($licSummary.windows_license_method)")
+                    }
+                    if ($licSummary.windows_license_detail) {
+                        [void]$mdExtra.AppendLine("- **Detalj licenciranja Windows-a:** $($licSummary.windows_license_detail)")
+                    }
                     $kOffTxt = if (-not $licSummary.office_installed) { 'Nije instaliran' } elseif ($licSummary.office_activated) { '[OK] Trajno aktiviran' } elseif ($licSummary.office_activation_mode -ieq 'Skip') { 'Preskočeno (OfficeActivationMode=Skip)' } else { '[UPOZORENJE] Nije aktiviran' }
                     [void]$mdExtra.AppendLine("- **Office Licenca:** $kOffTxt")
                     if ($licSummary.office_license_method) {
@@ -524,10 +613,14 @@ try {
                 [void]$mdExtra.AppendLine("- **Stvarno trajanje testa:** ${stressDurationSec}s")
                 [void]$mdExtra.AppendLine("- **Max CPU / GPU Temp:** ${maxCpuTemp}°C / ${maxGpuTemp}°C")
                 [void]$mdExtra.AppendLine("- **Anti-Leak verifikovan:** $AntiLeakFlag")
-                if ($thermalNote) {
+                if ($notesArr.Count -gt 0) {
                     [void]$mdExtra.AppendLine("")
                     [void]$mdExtra.AppendLine("### [NAPOMENA] Termalne i Servisne Napomene")
-                    [void]$mdExtra.AppendLine("- **Napomena:** $thermalNote")
+                    foreach ($noteLine in $notesArr) {
+                        if ($noteLine) {
+                            [void]$mdExtra.AppendLine("- **Napomena:** $noteLine")
+                        }
+                    }
                 }
                 [void]$mdExtra.AppendLine("- **Zaključak:** $StatusMsg")
                 [System.IO.File]::WriteAllText($kMdPath, $mdExtra.ToString(), $utf8NoBom)
@@ -622,6 +715,8 @@ try {
             $initialStateMap["phase"]               = 6
             $initialStateMap["deployment_status"]   = "NEEDS_ATTENTION"
             $initialStateMap["handover_ready"]      = $false
+            $initialStateMap["hwtest_incomplete"]   = [bool]$hwTestIncomplete
+            $initialStateMap["notes"]               = $notesArr
             $initialStateMap["anti_leak_verified"]  = [bool]$antiLeakVerified
             $initialStateMap["diagnostics_status"] = $diagnosticsContract.diagnostics_status
             $initialStateMap["diagnostics_warning"] = $diagnosticsContract.diagnostics_warning
@@ -858,7 +953,7 @@ try {
             stress_report       = $stressReport
             diagnostics_warning = $diagWarnFinal
             thermal_note        = $thermalNote
-            notes               = $notesList
+            notes               = $notesArr
             stress_history      = $stressHistory
         }
         $contractFinalJson = ConvertTo-Json -InputObject $contractFinal -Depth 6
@@ -868,12 +963,13 @@ try {
         $initialStateMap["phase"]               = 6
         $initialStateMap["deployment_status"]   = "DONE"
         $initialStateMap["handover_ready"]      = $true
+        $initialStateMap["hwtest_incomplete"]   = $false
         $initialStateMap["anti_leak_verified"]  = $true
         $initialStateMap["security_hardening_verified"] = [bool]$hardeningOk
         $initialStateMap["diagnostics_status"]  = $diagnosticsContract.diagnostics_status
         $initialStateMap["diagnostics_warning"] = $diagWarnFinal
         $initialStateMap["thermal_note"]        = $thermalNote
-        $initialStateMap["notes"]               = $notesList
+        $initialStateMap["notes"]               = $notesArr
         $initialStateMap["cooling_verified"] = $diagnosticsContract.cooling_verified
         $initialStateMap["manual_check_required"] = $diagnosticsContract.manual_check_required
         $initialStateMap["stress_status"]       = $stressStatus

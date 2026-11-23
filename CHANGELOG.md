@@ -4,6 +4,54 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.4.3] / ServiceHub [v3.6.3] — 2026-11-23
+
+### Ispravke bagova, Hard Gate interaktivnih testova, USB Auto-Learn i `zh-CN` Lokalizacija (`WIS-TASK-268`, `V343-01`–`V343-08`, `[SECURITY GREEN]`)
+- **`V343-01` — Windows 11 24H2 `ConsentStore\location` & `P5.AutoDiag` (`ISO/SetupComplete.ps1`, `UI/Skripte/Modules/WIS.Branding.psm1`, `UI/HwTest/HwTestShell.cs`, `AutoHardwareDiagnostics.cs`, `NativeMethods.cs`):**
+  - `CapabilityAccessManager\ConsentStore\location\Value` i `NonPackaged\Value` postavljaju se na `"Allow"` trajno (uz brisanje `DisableLocation = 1`, omogućavanje `lfsvc` i `Test-WisLocationAccessEnabled`), uz očuvano gašenje telemetrije (`AllowTelemetry = 0`, `DiagTrack`/`dmwappushservice` disabled, `ShowGlobalPrompts = 0`) i SHA-256 sinhronizaciju sve 3 kopije `SetupComplete.ps1` i obe kopije `WIS.Branding.psm1`.
+  - `StartPhase5FullWorkflow()` uvek sveže izvršava `auto_battery`, `auto_network` i `auto_security` pri ulasku u Fazu 5 (osim ako su restaurirani iz UEFI BIOS checkpointa) i popunjava konkretan `reason` u `EmitPhase5Step("P5.AutoDiag", ...)`.
+- **`V343-02` — Aktivacija Windows-a i Office-a + Anti-Leak (`UI/Skripte/Modules/WIS.Apps.psm1`, `WIS.Core.psm1`, `Wifi-Servis.example.ini`, `ISO/Wifi-Servis.example.ini`, `UI/TelemetryService.cs`, `ServiceHub/servishub/reports.py`):**
+  - Dodata kodna podrška i zakomentarisani `[Licensing]` primer za Windows (`WindowsActivationMode`, `WindowsKmsHost`, `WindowsKmsPort`, `WindowsProductKey`) u oba `.example.ini` šablona (živi produkcijski `Wifi-Servis.ini` ostaje van Git-a).
+  - Uveden `Get-WindowsLicenseStatus` (primarno WMI/CIM `SoftwareLicensingProduct` + `slmgr.vbs /xpr` timeout fallback), poziv `slmgr.vbs /ato` i bez BIOS `OA3xOriginalProductKey` (za digitalnu HWID licencu), te proširena maskirana polja (`windows_oa3_present`, `windows_edition`, `windows_license_method`, `windows_license_detail`) u `license-status.json`, `TelemetryService.cs` i `ServiceHub/servishub/reports.py`.
+  - `Protect-WisLicenseLogText` (`-SensitiveHosts`) aktivno maskira i 25-znakovne ključeve i KMS hostove u logovima (`[SECURITY GREEN]`).
+- **`V343-03` — Hard Gate interaktivnih testova pre Završnog kartona i krajnjeg izveštaja (`UI/MainWindow.HwTest.cs`, `MainWindow.xaml`, `MainWindow.xaml.cs`, `MainWindow.Reboot.cs`, `HwTestShell.cs`, `Phase6-Finalize.ps1`, `ServiceHub/servishub/reports.py`):**
+  - Uklonjen automatski `manualWaitLimitMs` (`24h`/`45m`) auto-skip na laptopovima; uvedeni prominentni modalni `PendingInteractiveTestsOverlay` i stalna gornja traka `PendingInteractiveTestsBanner` sa brojačem preostalih testova i dugmetom za pokretanje (umesto prevremenog `CompletionOverlay` ili crnog `DisplayTestWindow`).
+  - Vanredno preskakanje je moguće isključivo kroz `RequestEmergencySkipPhase5WithConfirmation()` uz obavezan razlog (`>= 5` znakova), dok `HasUnfinishedInteractiveHwTests()` i Hard Gate u `Phase6-Finalize.ps1` blokiraju Fazu 6 / `COMPLETED` dok `remainingPending > 0`, uz `ReuploadUpdatedReportAfterHwTestAsync` za naknadno odrađene testove.
+  - `ServiceHub/servishub/reports.py` označava preskočene/nedovršene interaktivne testove kao `NEEDS_SERVICE` i `⚠️ NEPOTPUNO (preskočeni interaktivni testovi)` umesto `✅ PASS`.
+- **`V343-04` — Tačna detekcija svetleće tastature bez lažnih pozitiva (`UI/MainWindow.Hardware.cs`, `Models.cs`, `WIS.Hardware.psm1`, `HardwareProbe.cs`, `FactorySpecProbe.cs`, `KeyboardTestWindow.cs`, `ServiceHub/servishub/hardware_spec.py`):**
+  - Uklonjeni lažni PnP/WMI/BIOS detektori (`LEN0071`, `DELLABCE`, bezuslovni `Lenovo_SetKeyboardBacklightStatus`, `HP_BIOSSetting`, `DCIM_BiosEnumeration`), popravljena `TryProbeLenovoEnergyDrvBacklight()` provera capability bita `(outVal & 0x01u) != 0u`.
+  - `ServiceHub/servishub/hardware_spec.py` podignut na `schema_version = 3` sa `has_keyboard_backlight` i `keyboard_backlight_evidence` (HP non-backlit BOM pravilo), `FactorySpecProbe.cs` dozvoljava da BOM `false` nadglasa slabije signale, dugme `⚪ Model nema osvetljenje` (`backlight_passed = "no_hardware"`) je uvek vidljivo u `KeyboardTestWindow.cs`, a rezultat Faze 5 se sinhronizuje sa Završnim i servisnim kartonom.
+- **`V343-05` — Sklopljeni `FAZA TRACKER` po difoltu (`UI/Models.cs`, `UI/MainWindow.xaml`, `UI/MainWindow.xaml.cs`):**
+  - Postavljeni `_isPhasesExpanded = false` i `_showStepsInOverview = false`, a `PhasesCollapseToggleBtn` premešten u gornji desni ugao zaglavlja (`▼ Prikaži korake` / `▲ Sakrij korake`) bez preklapanja 5. faze.
+- **`V343-06` — Automatsko samoučenje broja USB portova po modelu (`UI/HwTest/Tests/UsbPortTestWindow.cs`, `ModelProfileClient.cs`, `HardwareProbe.cs`, `ServiceHub/servishub/model_profiles.py`, `handlers.py`):**
+  - Razdvojeni `physical_port_locations` (`PCIROOT`/`ACPI`) i `charger_ports_count` uz `hasTypeCController` zaštitu; `POST /api/model-profile/usb-override` čuva `known_port_locations` i `observed_counts` uz anti-poisoning pravila za automatsko učenje naviše (`4 -> 5`).
+- **`V343-07` — Unapređena sekcija `Dodatne periferije` (`UI/Models.cs`, `UI/MainWindow.Hardware.cs`, `UI/MainWindow.xaml.cs`):**
+  - Uklonjeni bedževi `Thunderbolt / USB4` i `Web kamera`, dodat prikaz Bluetooth verzije (`DEVPKEY_Bluetooth_RadioLmpVersion` LMP `6..14` + fallback), unapređena `4G LTE` / `5G` WWAN detekcija (`netsh mbn` + PCI/USB VID/PID), dodata `eSIM` detekcija (`eUICC`/`EID`/`WwanSvc`) i automatsko osvežavanje posle Faze 2 drajvera.
+- **`V343-08` — Kompletna `zh-CN` (`简体中文`) lokalizacija & CI Parity Gate (`UI/HwTest/Core/HwTestLocalization.cs`, `UI/LocalizationService.cs`, `UI/MainWindow.xaml`, `UI/Models.cs`, `UI/HwTest/**`, `UI/Tests/Test-LocalizationParity.py`):**
+  - Uveden `HwTestLocalization.cs` (`937` `Pick`/`PickFormat` poziva kroz jezgro, dijagnostiku i svih `11` prozora u `UI/HwTest/Tests/*.cs`, `--lang zh`/`sr`, live `RefreshLocalization()`).
+  - Proširen `UI/LocalizationService.cs` na `1021` SR / `1021` ZH ključeva (uz reviziju `207` starih prevoda i live sinhronizaciju sa `HwTestLocalization`), lokalizovano `66` XAML tekstova i svih `28` koraka faza u `Models.cs`, te dodat CI gate `UI/Tests/Test-LocalizationParity.py`.
+- **Verzionisanje & Verifikacija:** Root [`version.json`](version.json) i svi podsistemi podignuti na **`WIS v3.4.3`** / **`ServiceHub v3.6.3`** (`Sync-Versions.py --check` `[PASS]`, `[SECURITY GREEN]`).
+
+---
+
+## [v3.4.2] / ServiceHub [v3.6.2] — 2026-11-21
+
+### Live Audit Unapređenja, Sanacija Bagova i Anti-Cheat (`WIS-TASK-265`, `WIS-TASK-266`, `WIS-TASK-267`, `IMP-19`–`IMP-35`, `BUG-01`–`BUG-03`, `HWT-05`, `FEAT-01`)
+- **ServiceHub performanse & stabilnost (`ServiceHub/servishub/drivers/pool.py`, `telemetry.py`, `benchmark.py`, `reports.py`, `handlers.py`, `Dockerfile`, `docker-compose.yml`):**
+  - `IMP-19`: U `scan_and_ingest_archives` uvedena provera `(size_bytes, mtime_ns)` pre `_file_sha256`, 3-fazni `ingest_directory` i `build_bundle_tar` van `self.lock`, `cleanup_stale_temp_dirs()` (bez praćenja simlinkova) i `_stats_cache` (`< 50 ms`).
+  - `IMP-20` & `IMP-23`: Reset polja stare sesije pri re-run-u u Fazi 1/2, čišćenje `DESKTOP-*` siročića u `cleanup_duplicate_devices_locked`, `_resolve_device_key_locked` u `record_logs` i 45s deduplikacija u `record_lifecycle_complete`.
+  - `IMP-25`, `IMP-26`, `IMP-27`: Inkrementalni keš u `benchmark.py` (`< 50 ms`), čitanje kanonskih WIS JSON kartona u `get_device_history`, `tzdata` + `TZ=Europe/Belgrade` i `release_status = "production"`.
+- **Klijentski pipeline, `BUG-01`–`BUG-03` i bezbednost (`UI/Skripte/Modules/WIS.Branding.psm1`, `WIS.Update.psm1`, `WIS.Core.psm1`, `WIS.Apps.psm1`, `Phase4-Apps.ps1`, `Phase6-Finalize.ps1`, `UI/MainWindow.xaml*`, `UI/App.xaml.cs`):**
+  - `BUG-01` (`IMP-34`): Uklonjeni `DisableLocation = 1` i gašenje `lfsvc` iz `WIS.Branding.psm1` uz očuvanje telemetrijskih polisa i dodatu `IsLocationPolicyDisabled()` dijagnostiku u `AutoHardwareDiagnostics.cs` / `NativeMethods.cs`.
+  - `BUG-02`: Dozvoljeno minimizovanje (`ResizeMode="CanMinimize"`) uz `EnsureWindowMaximized` čuvar (`SW_MAXIMIZE`, `300 ms` debounce i `WindowMaximizedGuardHook`).
+  - `BUG-03` (`IMP-35`), `IMP-24`, `IMP-30`: Re-evaluacija Reality Check-a i automatski prelazak na Fazu 5 u `RetrySingleApp()`, traka `FailedPhaseRecoveryPanel`, `-PreserveCurrentPhase` i `WARN` (`exit 0`) za `License` Retry u `Auto`/`Skip` režimu.
+  - `IMP-21`, `IMP-22`, `IMP-28` (kodni deo), `IMP-29`, `IMP-31`, `IMP-32`, `IMP-33`: Proširen `Add-WisBenchmarkTransfer` (`"driver_pool"`), `robocopy` 15s heartbeat, `4 MiB` `FileStream` kopiranje `<Model>.tar` i `15s` HTTP connection timeout, prepoznavanje `0x8024200d` (`WU_E_UH_NEEDANOTHERDOWNLOAD`), uklonjen trajni `_sensorTimedOut` short-circuit (`CreateBoundedWmiSearcher`), zagarantovan Anti-Leak `finally` blok u `Phase6-Finalize.ps1` i `Wait-WindowsUpdateCompletionBarrier` 1× u Fazi 6.
+- **`HWT-05` Anti-Cheat & `FEAT-01` USB Easter Egg (`UI/HwTest/Tests/TouchpadTestWindow.cs`, `HwTestShell.cs`, `UsbPortTestWindow.cs`, `UI/HwTest/Assets/usb_skip_easter_egg.jpg`):**
+  - `HWT-05`: `SPI_SETTOUCHPADPARAMETERS` (`SPIF_SENDCHANGE`), atomični `hwtest-touchpad-restore.json` i 3-slojni Anti-Brick recovery, RawInput klasifikacija (`ClassifyMouseRawDevice`) i `F9`/`Ctrl+F` prečice.
+  - `FEAT-01`: Jednokratno mamac dugme `_btnUsbEasterEgg` u `UsbPortTestWindow.cs` sa `2.0 s` fullscreen slikom i `2 s` PCM sirenom u RAM-u uz puno očuvanje `HWT-02` zabrane preskakanja.
+
+---
+
 ## [v3.4.1] / ServiceHub [v3.6.1] — 2026-11-21
 
 ### Dijagnostika Licenciranja u Fazi 4 i Strukturisana Telemetrija (`WIS-TASK-264`, `LIC-01`–`LIC-06`)

@@ -72,15 +72,19 @@ namespace WIS.HwTest.Tests
             _onRequestUefiBiosReboot = onRequestUefiBiosReboot;
             _hasStylusPen = (_hwInfo != null && _hwInfo.HasStylusPen);
             Title = _hasStylusPen
-                ? "WIS — Test Ekrana na Dodir i Aktivne Olovke (Stylus)"
-                : "WIS — Test Ekrana na Dodir (Gore-Dole, Beskonačno, 5-Prstiju Šaka)";
+                ? HwTestLocalization.Pick("WIS — Test Ekrana na Dodir i Aktivne Olovke (Stylus)", "WIS — 触控屏与主动式触控笔 (Stylus) 测试")
+                : HwTestLocalization.Pick("WIS — Test Ekrana na Dodir (Gore-Dole, Beskonačno, 5-Prstiju Šaka)", "WIS — 触控屏测试（上下折线、∞ 字形、五指多点触控）");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(20, 22, 28));
             Topmost = true;
 
-            Result = new TestItemResult("touchscreen", _hasStylusPen ? "Touchscreen + Olovka (Stylus)" : "Ekran na dodir (Touchscreen)",
-                "Test celog ekrana (gore-dole), znaka beskonačno (∞) i 5-tačkastog multitoucha u obliku šake");
+            Result = new TestItemResult("touchscreen",
+                _hasStylusPen
+                    ? HwTestLocalization.Pick("Touchscreen + Olovka (Stylus)", "触控屏 + 触控笔 (Stylus)")
+                    : HwTestLocalization.Pick("Ekran na dodir (Touchscreen)", "触控屏 (Touchscreen)"),
+                HwTestLocalization.Pick("Test celog ekrana (gore-dole), znaka beskonačno (∞) i 5-tačkastog multitoucha u obliku šake",
+                    "全屏上下折线、无穷符号 (∞) 及五指手掌多点触控测试"));
 
             Grid root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(_hasStylusPen ? 98 : 74) });
@@ -95,7 +99,8 @@ namespace WIS.HwTest.Tests
             };
             _statusText = new TextBlock
             {
-                Text = "🖐️ Faza 1/3: Krenite prstom od START (dole levo) i pratite putanju GORE-DOLE preko celog ekrana",
+                Text = HwTestLocalization.Pick("🖐️ Faza 1/3: Krenite prstom od START (dole levo) i pratite putanju GORE-DOLE preko celog ekrana",
+                    "🖐️ 第 1/3 阶段：请用手指从左下角 START 起点开始，沿上下折线路径滑动覆盖全屏"),
                 FontSize = 17,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
@@ -107,22 +112,26 @@ namespace WIS.HwTest.Tests
                 if (_hwInfo.TouchscreenDisabledInBios)
                 {
                     _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                    _statusText.Text = "⚠️ TOUCHSCREEN JE ONEMOGUĆEN U BIOS-u (" + _hwInfo.TouchscreenBiosStatus + ")! Uključite ga u BIOS-u ili označite FAIL.";
+                    _statusText.Text = HwTestLocalization.PickFormat("⚠️ TOUCHSCREEN JE ONEMOGUĆEN U BIOS-u ({0})! Uključite ga u BIOS-u ili označite FAIL.",
+                        "⚠️ 触控屏已在 BIOS 中禁用 ({0})！请在 BIOS 中启用或标记为 FAIL。", _hwInfo.TouchscreenBiosStatus);
                 }
                 else if (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent)
                 {
                     _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                    _statusText.Text = "⚠️ FABRIČKI TOUCHSCREEN NIJE AKTIVAN U WINDOWS-U (" +
-                        (!string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP/BOM") +
-                        ") — proverite drajver/kabl ili označite FAIL.";
+                    _statusText.Text = HwTestLocalization.PickFormat("⚠️ FABRIČKI TOUCHSCREEN NIJE AKTIVAN U WINDOWS-U ({0}) — proverite drajver/kabl ili označite FAIL.",
+                        "⚠️ 出厂配置的触控屏在 Windows 中未激活 ({0}) — 请检查驱动/排线或标记为 FAIL。",
+                        !string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP/BOM");
                 }
             }
             if (_hasStylusPen)
             {
-                string penLabel = string.IsNullOrEmpty(_hwInfo.StylusPenName) ? "Wacom / Aktivna olovka" : _hwInfo.StylusPenName;
+                string penLabel = string.IsNullOrEmpty(_hwInfo.StylusPenName)
+                    ? HwTestLocalization.Pick("Wacom / Aktivna olovka", "Wacom / 主动式触控笔")
+                    : _hwInfo.StylusPenName;
                 _stylusBadge = new TextBlock
                 {
-                    Text = string.Format("🖊️ Aktivna olovka ({0}): Dodirnite ekran olovkom (opciono testiranje pritiska)", penLabel),
+                    Text = HwTestLocalization.PickFormat("🖊️ Aktivna olovka ({0}): Dodirnite ekran olovkom (opciono testiranje pritiska)",
+                        "🖊️ 主动式触控笔 ({0})：请用触控笔轻触屏幕（可选压感测试）", penLabel),
                     FontSize = 13,
                     FontWeight = FontWeights.SemiBold,
                     Foreground = new SolidColorBrush(Color.FromRgb(255, 205, 80)),
@@ -166,7 +175,7 @@ namespace WIS.HwTest.Tests
                 };
                 Button btnBiosReboot = new Button
                 {
-                    Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                    Content = HwTestLocalization.Pick("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", "🔧 重启进入 UEFI BIOS（之后继续 WIS）"),
                     Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
                     Foreground = Brushes.White,
                     FontWeight = FontWeights.Bold,
@@ -178,7 +187,7 @@ namespace WIS.HwTest.Tests
                 spBiosLeft.Children.Add(btnBiosReboot);
                 spBiosLeft.Children.Add(new TextBlock
                 {
-                    Text = "BIOS tasteri: HP F10, Lenovo F1, Dell F2",
+                    Text = HwTestLocalization.Pick("BIOS tasteri: HP F10, Lenovo F1, Dell F2", "BIOS 快捷键: HP F10, Lenovo F1, Dell F2"),
                     Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
                     FontSize = 12,
                     VerticalAlignment = VerticalAlignment.Center
@@ -195,7 +204,7 @@ namespace WIS.HwTest.Tests
 
             _btnFlipHand = new Button
             {
-                Content = "🔄 Zameni šaku (Leva / Desna)",
+                Content = HwTestLocalization.Pick("🔄 Zameni šaku (Leva / Desna)", "🔄 切换左右手（左手 / 右手）"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.SemiBold,
@@ -215,7 +224,7 @@ namespace WIS.HwTest.Tests
 
             Button btnFail = new Button
             {
-                Content = "❌ Ne reaguje na dodir (FAIL)",
+                Content = HwTestLocalization.Pick("❌ Ne reaguje na dodir (FAIL)", "❌ 触控无响应 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -266,7 +275,8 @@ namespace WIS.HwTest.Tests
             _nextCheckpointIdx = 0;
 
             RenderGuidedPathScene(
-                "🖐️ Faza 1/3: Pratite putanju GORE-DOLE od ZELENE tačke (dole levo) do CRVENE tačke",
+                HwTestLocalization.Pick("🖐️ Faza 1/3: Pratite putanju GORE-DOLE od ZELENE tačke (dole levo) do CRVENE tačke",
+                    "🖐️ 第 1/3 阶段：请沿上下折线路径从绿色起点（左下）滑动到红色终点"),
                 new SolidColorBrush(Color.FromRgb(78, 201, 176)),
                 54.0,
                 true);
@@ -286,7 +296,8 @@ namespace WIS.HwTest.Tests
             _nextCheckpointIdx = 0;
 
             RenderGuidedPathScene(
-                "♾️ Faza 2/3: Pratite prstom znak BESKONAČNO (od centra kroz obe petlje nazad u centar)",
+                HwTestLocalization.Pick("♾️ Faza 2/3: Pratite prstom znak BESKONAČNO (od centra kroz obe petlje nazad u centar)",
+                    "♾️ 第 2/3 阶段：请用手指沿无穷符号 ∞ 轨迹滑动（从中心绕过两侧环线回到中心）"),
                 new SolidColorBrush(Color.FromRgb(95, 195, 255)),
                 58.0,
                 false);
@@ -428,7 +439,7 @@ namespace WIS.HwTest.Tests
                 {
                     TextBlock lbl = new TextBlock
                     {
-                        Text = isFirst ? "START" : "CILJ",
+                        Text = isFirst ? HwTestLocalization.Pick("START", "起点") : HwTestLocalization.Pick("CILJ", "终点"),
                         FontSize = 11,
                         FontWeight = FontWeights.ExtraBold,
                         Foreground = Brushes.White
@@ -533,11 +544,13 @@ namespace WIS.HwTest.Tests
                     int pct = Math.Min(100, (_nextCheckpointIdx * 100) / Math.Max(1, _pathPoints.Count));
                     if (_phase == TouchPhase.Serpentine)
                     {
-                        _statusText.Text = string.Format("🖐️ Faza 1/3 (Gore-Dole): {0}% — nastavite ka zlatnom krugu do CRVENE tačke", pct);
+                        _statusText.Text = HwTestLocalization.PickFormat("🖐️ Faza 1/3 (Gore-Dole): {0}% — nastavite ka zlatnom krugu do CRVENE tačke",
+                            "🖐️ 第 1/3 阶段（上下折线）: {0}% — 请继续朝金色光环方向滑向红色终点", pct);
                     }
                     else if (_phase == TouchPhase.Infinity)
                     {
-                        _statusText.Text = string.Format("♾️ Faza 2/3 (Znak Beskonačno): {0}% — pratite krivu ∞ do kraja", pct);
+                        _statusText.Text = HwTestLocalization.PickFormat("♾️ Faza 2/3 (Znak Beskonačno): {0}% — pratite krivu ∞ do kraja",
+                            "♾️ 第 2/3 阶段（∞ 字形）: {0}% — 请沿 ∞ 曲线滑动至终点", pct);
                     }
                 }
             }
@@ -576,8 +589,9 @@ namespace WIS.HwTest.Tests
 
             if (!HasHardwareWarningBanner())
             {
-                _statusText.Text = string.Format("🖐️ Faza 3/3 (5-Prstiju Multitouch - {0} šaka): Spustite SVIH 5 PRSTIJU na krugove u obliku ruke i držite 1s!",
-                    _rightHandMode ? "Desna" : "Leva");
+                _statusText.Text = HwTestLocalization.PickFormat("🖐️ Faza 3/3 (5-Prstiju Multitouch - {0} šaka): Spustite SVIH 5 PRSTIJU na krugove u obliku ruke i držite 1s!",
+                    "🖐️ 第 3/3 阶段（五指多点触控 - {0}）：请将五根手指同时按住手掌圆圈并保持 1 秒！",
+                    _rightHandMode ? HwTestLocalization.Pick("Desna", "右手") : HwTestLocalization.Pick("Leva", "左手"));
                 _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
             }
 
@@ -602,11 +616,11 @@ namespace WIS.HwTest.Tests
             };
             string[] fingerNames = new string[]
             {
-                "1\nPalac",
-                "2\nKažiprst",
-                "3\nSrednji",
-                "4\nDomali",
-                "5\nMali"
+                HwTestLocalization.Pick("1\nPalac", "1\n拇指"),
+                HwTestLocalization.Pick("2\nKažiprst", "2\n食指"),
+                HwTestLocalization.Pick("3\nSrednji", "3\n中指"),
+                HwTestLocalization.Pick("4\nDomali", "4\n无名指"),
+                HwTestLocalization.Pick("5\nMali", "5\n小指")
             };
 
             Point palmCenter = new Point(cx, cy + scale * 0.66);
@@ -675,7 +689,7 @@ namespace WIS.HwTest.Tests
             double uiTop = Math.Min(h - 75, palmCenter.Y + scale * 0.78);
             _handCounterText = new TextBlock
             {
-                Text = "Aktivno prstiju na šaci: 0 / 5",
+                Text = HwTestLocalization.Pick("Aktivno prstiju na šaci: 0 / 5", "当前按住手掌圆圈手指数: 0 / 5"),
                 Width = 420,
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
@@ -807,7 +821,8 @@ namespace WIS.HwTest.Tests
 
             if (_handCounterText != null)
             {
-                _handCounterText.Text = string.Format("Aktivno prstiju na šaci: {0} / 5 (ukupno dodira: {1})",
+                _handCounterText.Text = HwTestLocalization.PickFormat("Aktivno prstiju na šaci: {0} / 5 (ukupno dodira: {1})",
+                    "当前匹配手指数: {0} / 5（总触控点数: {1}）",
                     matchedCount, _activeTouches.Count);
                 _handCounterText.Foreground = (matchedCount >= 5)
                     ? new SolidColorBrush(Color.FromRgb(78, 235, 125))
@@ -905,7 +920,8 @@ namespace WIS.HwTest.Tests
 
             if (_stylusBadge != null)
             {
-                _stylusBadge.Text = string.Format("🖊️ Aktivna olovka: DETEKTOVANA ✓ (maks. pritisak: {0:0}%)", _maxStylusPressure * 100.0f);
+                _stylusBadge.Text = HwTestLocalization.PickFormat("🖊️ Aktivna olovka: DETEKTOVANA ✓ (maks. pritisak: {0:0}%)",
+                    "🖊️ 主动式触控笔：已检测到 ✓（最大压感: {0:0}%）", _maxStylusPressure * 100.0f);
                 _stylusBadge.Foreground = new SolidColorBrush(Color.FromRgb(78, 235, 125));
             }
 
@@ -981,8 +997,8 @@ namespace WIS.HwTest.Tests
             Result.Status = TestStatus.Fail;
             Result.Attempts = 1;
             Result.Reason = (_hwInfo != null && _hwInfo.TouchscreenDisabledInBios)
-                ? ("Touchscreen onemogućen u BIOS-u: " + _hwInfo.TouchscreenBiosStatus)
-                : "Ekran na dodir ne reaguje na unos";
+                ? HwTestLocalization.PickFormat("Touchscreen onemogućen u BIOS-u: {0}", "触控屏已在 BIOS 中禁用: {0}", _hwInfo.TouchscreenBiosStatus)
+                : HwTestLocalization.Pick("Ekran na dodir ne reaguje na unos", "触控屏无输入响应");
             Result.Details["stylus_expected"] = _hasStylusPen;
             Result.Details["stylus_detected"] = _stylusDetected;
             Result.Details["stylus_max_pressure"] = (double)Math.Round(_maxStylusPressure * 100.0f, 1);
@@ -1006,8 +1022,9 @@ namespace WIS.HwTest.Tests
             else
             {
                 MessageBox.Show(
-                    "Za uključivanje ekrana na dodir restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite Touchscreen.",
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Za uključivanje ekrana na dodir restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite Touchscreen.",
+                        "要启用触控屏，请重启电脑进入 UEFI BIOS（HP: F10, Lenovo: F1, Dell: F2）并开启 Touchscreen。"),
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
             }

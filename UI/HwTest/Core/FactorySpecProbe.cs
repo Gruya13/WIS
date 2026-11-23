@@ -162,6 +162,7 @@ namespace WIS.HwTest.Core
                 hw.FactoryKeyboardIso = ReadNullableBoolProp(dict, "has_keyboard_iso");
                 hw.FactoryKeyboardNumpad = ReadNullableBoolProp(dict, "has_keyboard_numpad");
                 hw.FactoryKeyboardBacklight = ReadNullableBoolProp(dict, "has_keyboard_backlight");
+                hw.FactoryKeyboardBacklightEvidence = ReadStrProp(dict, "keyboard_backlight_evidence") ?? "";
                 hw.FactoryKeyboardDesc = ReadStrProp(dict, "keyboard_desc") ?? "";
                 return true;
             }
@@ -203,6 +204,7 @@ namespace WIS.HwTest.Core
                     { "has_keyboard_iso", hw.FactoryKeyboardIso },
                     { "has_keyboard_numpad", hw.FactoryKeyboardNumpad },
                     { "has_keyboard_backlight", hw.FactoryKeyboardBacklight },
+                    { "keyboard_backlight_evidence", hw.FactoryKeyboardBacklightEvidence ?? "" },
                     { "keyboard_desc", hw.FactoryKeyboardDesc ?? "" },
                     { "cached_at", DateTime.Now.ToString("o") }
                 };
@@ -255,6 +257,8 @@ namespace WIS.HwTest.Core
                 hw.FactorySpeakers = ReadNullableBoolProp(dict, "has_speakers");
                 hw.FactoryMicrophone = ReadNullableBoolProp(dict, "has_microphone");
                 hw.FactoryKeyboardBacklight = ReadNullableBoolProp(dict, "has_keyboard_backlight");
+                string blEvHub = ReadStrProp(dict, "keyboard_backlight_evidence");
+                if (!string.IsNullOrEmpty(blEvHub)) hw.FactoryKeyboardBacklightEvidence = blEvHub;
                 string kbdDescHub = ReadStrProp(dict, "keyboard_desc");
                 if (!string.IsNullOrEmpty(kbdDescHub)) hw.FactoryKeyboardDesc = kbdDescHub;
                 return true;
@@ -640,13 +644,13 @@ namespace WIS.HwTest.Core
                 else
                 {
                     hw.FactoryTouchscreen = false;
-                    hw.FactoryTouchscreenEvidence = string.Format("BOM ({0} delova, bez touch panela)", total);
+                    hw.FactoryTouchscreenEvidence = HwTestLocalization.PickFormat("BOM ({0} delova, bez touch panela)", "BOM({0} 个部件,无触摸面板)", total);
                 }
             }
             else
             {
                 hw.FactoryTouchscreen = false;
-                hw.FactoryTouchscreenEvidence = string.Format("BOM ({0} delova, bez touch panela)", total);
+                hw.FactoryTouchscreenEvidence = HwTestLocalization.PickFormat("BOM ({0} delova, bez touch panela)", "BOM({0} 个部件,无触摸面板)", total);
             }
 
             // 2. Fingerprint evaluacija (kombinujemo primary + secondary)
@@ -692,7 +696,7 @@ namespace WIS.HwTest.Core
                 hw.FactoryFingerprint = false;
                 hw.FactoryFingerprintEvidence = explicitNoFp
                     ? fpEv
-                    : string.Format("BOM ({0} delova, bez FP čitača)", total);
+                    : HwTestLocalization.PickFormat("BOM ({0} delova, bez FP čitača)", "BOM({0} 个部件,无指纹读取器)", total);
             }
 
             // 3. Kamera & IR kamera
@@ -732,12 +736,12 @@ namespace WIS.HwTest.Core
                 hw.FactoryWebcam = true;
                 hw.FactoryWebcamEvidence = camEv;
                 hw.FactoryIrCamera = hasIr;
-                hw.FactoryIrCameraEvidence = hasIr ? irEv : "Standardna RGB kamera (bez IR)";
+                hw.FactoryIrCameraEvidence = hasIr ? irEv : HwTestLocalization.Pick("Standardna RGB kamera (bez IR)", "标准RGB摄像头(无红外)");
             }
             else if (explicitNoCam || total >= 8)
             {
                 hw.FactoryWebcam = false;
-                hw.FactoryWebcamEvidence = explicitNoCam ? camEv : string.Format("BOM ({0} delova, bez kamere)", total);
+                hw.FactoryWebcamEvidence = explicitNoCam ? camEv : HwTestLocalization.PickFormat("BOM ({0} delova, bez kamere)", "BOM({0} 个部件,无摄像头)", total);
                 hw.FactoryIrCamera = false;
             }
 
@@ -790,27 +794,97 @@ namespace WIS.HwTest.Core
                 hw.FactoryMicrophone = true;
             }
 
-            // 5. Tastatura (interna tastatura iz BOM opisa: jezik/ISO/ANSI, numpad)
-            // BITNO: ISO/ANSI i konkretan jezik čitamo SAMO iz primaryEntries (unit_configuration),
-            // jer spare_part lista sadrži sve regionalne varijante za model (US, ENG/ARAB, BEL, GR, FR...)!
+            // 5. Tastatura (interna tastatura iz BOM opisa: jezik/ISO/ANSI, numpad, backlight)
+            // BITNO: ISO/ANSI, konkretan jezik i HP backlight čitamo SAMO iz primaryEntries (unit_configuration),
+            // jer spare_part lista sadrži sve regionalne i backlit/non-backlit varijante za model!
+            string bomVendor = DetectVendor(hw.Manufacturer, hw.ModelName, hw.SystemSkuNumber);
             List<OemPartEntry> kbdPrimary = primaryEntries.Count > 0 ? primaryEntries : allEntries;
             bool allowIsoFromList = primaryEntries.Count > 0;
+            bool isPrimaryList = primaryEntries.Count > 0;
             foreach (OemPartEntry e in kbdPrimary)
             {
-                ParseKeyboardFromBomEntry(e, hw, allowIsoFromList);
+                ParseKeyboardFromBomEntry(e, hw, allowIsoFromList, bomVendor, isPrimaryList);
             }
             if (string.IsNullOrEmpty(hw.FactoryKeyboardDesc) && primaryEntries.Count > 0)
             {
                 foreach (OemPartEntry e in allEntries)
                 {
-                    ParseKeyboardFromBomEntry(e, hw, false);
+                    ParseKeyboardFromBomEntry(e, hw, false, bomVendor, false);
                 }
             }
 
-            hw.FactorySummary = string.Format("{0} ({1} delova)", source, total);
+            hw.FactorySummary = HwTestLocalization.PickFormat("{0} ({1} delova)", "{0}({1} 个部件)", source, total);
         }
 
-        private static void ParseKeyboardFromBomEntry(OemPartEntry e, HardwareProbeResult hw, bool allowIsoFromEntry)
+        private static bool? ParseKeyboardBacklightFromDescription(
+            string rawDesc,
+            string category,
+            string vendor,
+            bool isPrimaryHpUnitConfig,
+            out string evidence)
+        {
+            evidence = "";
+            if (string.IsNullOrEmpty(rawDesc)) return null;
+
+            string catUp = (category ?? "").ToUpperInvariant();
+            string descTrim = rawDesc.Trim();
+            string up = (catUp + " " + descTrim).ToUpperInvariant();
+
+            if (up.Contains("NON-BACKLIT") || up.Contains("NON BACKLIT") || up.Contains("NONBACKLIT") ||
+                up.Contains("NOT BACKLIT") || up.Contains("WITHOUT BACKLIGHT") || up.Contains("W/O BACKLIGHT") ||
+                up.Contains("NO BACKLIGHT") || up.Contains("W/O BL") || up.Contains("NO BL") ||
+                up.Contains("NO_BL") || up.Contains("NO-BL") ||
+                Regex.IsMatch(up, @"\bNBL\b"))
+            {
+                evidence = HwTestLocalization.Pick("OEM BOM (bez osvetljenja): ", "OEM BOM(无背光): ") + descTrim;
+                return false;
+            }
+
+            if (up.Contains("BACKLIT") || up.Contains("BACKLIGHT") || up.Contains("ILLUMINATED") ||
+                up.Contains("BLGT") || up.Contains("W/BL") || up.Contains("W/ BL") ||
+                up.Contains("BL-RGB") || up.Contains("RGB-BL") || up.Contains("RGB BL"))
+            {
+                evidence = "OEM BOM: " + descTrim;
+                return true;
+            }
+
+            if (string.Equals(vendor, "HP", StringComparison.OrdinalIgnoreCase))
+            {
+                if (Regex.IsMatch(up, @"\bBL\b") || Regex.IsMatch(up, @"\bRGB\b"))
+                {
+                    evidence = "OEM BOM (HP BL): " + descTrim;
+                    return true;
+                }
+
+                if (isPrimaryHpUnitConfig)
+                {
+                    bool looksLikeInternalHpKbd =
+                        up.Contains("KEYBOARD") ||
+                        up.Contains("TOP COVER WITH KEYBOARD") ||
+                        Regex.IsMatch(up, @"\bKBD[A-Z0-9]*\b") ||
+                        Regex.IsMatch(up, @"\bKEYB\b");
+                    bool nonKeyboardPart =
+                        up.Contains("EXTERNAL") || up.Contains("USB ") || up.Contains("WIRELESS") ||
+                        up.Contains("DONGLE") || up.Contains("MOUSE") || up.Contains("CABLE") ||
+                        up.Contains("SCREW") || up.Contains("BRACKET") || up.Contains("MYLAR") ||
+                        up.Contains("CARDREADER") || up.Contains("KEYBOARD FRAME");
+                    if (looksLikeInternalHpKbd && !nonKeyboardPart)
+                    {
+                        evidence = HwTestLocalization.Pick("HP UnitConfig KBD (bez BL): ", "HP UnitConfig 键盘(无背光): ") + descTrim;
+                        return false;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        private static void ParseKeyboardFromBomEntry(
+            OemPartEntry e,
+            HardwareProbeResult hw,
+            bool allowIsoFromEntry,
+            string vendor,
+            bool isPrimaryList)
         {
             if (e == null) return;
             string rawDesc = (e.Description ?? "").Trim();
@@ -881,19 +955,24 @@ namespace WIS.HwTest.Core
                 }
             }
 
-            if (!hw.FactoryKeyboardBacklight.HasValue)
+            // Za backlit izbegavamo donosenje zakljucka iz secondary/spare_part liste kada vec imamo primary (ili za HP bez primary)
+            if (isPrimaryList || !string.Equals(vendor, "HP", StringComparison.OrdinalIgnoreCase))
             {
-                if (up.Contains("NON-BACKLIT") || up.Contains("NON BACKLIT") || up.Contains("NONBACKLIT") ||
-                    up.Contains("NOT BACKLIT") || up.Contains("WITHOUT BACKLIGHT") || up.Contains("W/O BACKLIGHT") ||
-                    up.Contains("NO BACKLIGHT") || up.Contains("W/O BL") || up.Contains("NO BL") ||
-                    Regex.IsMatch(up, @"\bNBL\b"))
+                bool isPrimaryHp = isPrimaryList && string.Equals(vendor, "HP", StringComparison.OrdinalIgnoreCase);
+                string blEvidence;
+                bool? parsedBl = ParseKeyboardBacklightFromDescription(rawDesc, e.Category, vendor, isPrimaryHp, out blEvidence);
+                if (parsedBl.HasValue)
                 {
-                    hw.FactoryKeyboardBacklight = false;
-                }
-                else if (up.Contains("BACKLIT") || up.Contains("BACKLIGHT") || up.Contains("ILLUMINATED") ||
-                         up.Contains("BLGT") || Regex.IsMatch(up, @"\b(BL|RGB)\b"))
-                {
-                    hw.FactoryKeyboardBacklight = true;
+                    if (parsedBl.Value == true)
+                    {
+                        hw.FactoryKeyboardBacklight = true;
+                        hw.FactoryKeyboardBacklightEvidence = blEvidence;
+                    }
+                    else if (!hw.FactoryKeyboardBacklight.HasValue)
+                    {
+                        hw.FactoryKeyboardBacklight = false;
+                        hw.FactoryKeyboardBacklightEvidence = blEvidence;
+                    }
                 }
             }
         }
@@ -962,7 +1041,7 @@ namespace WIS.HwTest.Core
             }
             if (!isPrimary && sawPanel)
             {
-                hw.FactoryTouchscreenEvidence = "Panel bez Touch oznake: " + nonTouchPanelEv;
+                hw.FactoryTouchscreenEvidence = HwTestLocalization.Pick("Panel bez Touch oznake: ", "面板无触摸标识: ") + nonTouchPanelEv;
                 return false;
             }
 
@@ -982,12 +1061,12 @@ namespace WIS.HwTest.Core
                     upModel.Contains("TOUCH") || upModel.Contains("FOLIO"))
                 {
                     hw.FactoryTouchscreen = true;
-                    hw.FactoryTouchscreenEvidence = "Model ukazuje na Touchscreen/2-in-1 (" + hw.ModelName + ")";
+                    hw.FactoryTouchscreenEvidence = HwTestLocalization.PickFormat("Model ukazuje na Touchscreen/2-in-1 ({0})", "型号显示为触摸屏/二合一({0})", hw.ModelName);
                 }
                 else if (!hw.IsLaptop)
                 {
                     hw.FactoryTouchscreen = false;
-                    hw.FactoryTouchscreenEvidence = "Desktop šasija";
+                    hw.FactoryTouchscreenEvidence = HwTestLocalization.Pick("Desktop šasija", "台式机机箱");
                 }
             }
 
@@ -1005,14 +1084,46 @@ namespace WIS.HwTest.Core
                 if (!hw.FactoryTouchpad.HasValue) hw.FactoryTouchpad = true;
             }
 
-            if (!hw.HasKeyboardBacklight.HasValue && hw.FactoryKeyboardBacklight.HasValue)
+            if (!hw.FactoryKeyboardBacklight.HasValue && !string.IsNullOrEmpty(hw.FactoryKeyboardDesc))
+            {
+                string vendor = DetectVendor(hw.Manufacturer, hw.ModelName, hw.SystemSkuNumber);
+                bool isPrimaryHp = (vendor == "HP" && hw.FactoryBomLoaded &&
+                    (hw.FactorySource ?? "").IndexOf("spare", StringComparison.OrdinalIgnoreCase) < 0);
+                string parsedBlEv;
+                bool? parsedBl = ParseKeyboardBacklightFromDescription(hw.FactoryKeyboardDesc, "", vendor, isPrimaryHp, out parsedBlEv);
+                if (parsedBl.HasValue)
+                {
+                    hw.FactoryKeyboardBacklight = parsedBl.Value;
+                    if (string.IsNullOrEmpty(hw.FactoryKeyboardBacklightEvidence))
+                        hw.FactoryKeyboardBacklightEvidence = parsedBlEv;
+                }
+            }
+
+            if (hw.FactoryKeyboardBacklight == false)
+            {
+                bool strongKernelDriver = !string.IsNullOrEmpty(hw.KeyboardBacklightEvidence) &&
+                    (hw.KeyboardBacklightEvidence.StartsWith("IBMPmDrv", StringComparison.OrdinalIgnoreCase) ||
+                     hw.KeyboardBacklightEvidence.StartsWith("EnergyDrv", StringComparison.OrdinalIgnoreCase));
+                if (hw.FactoryBomLoaded || !strongKernelDriver)
+                {
+                    hw.HasKeyboardBacklight = false;
+                    hw.KeyboardBacklightEvidence = !string.IsNullOrEmpty(hw.FactoryKeyboardBacklightEvidence)
+                        ? hw.FactoryKeyboardBacklightEvidence
+                        : (!string.IsNullOrEmpty(hw.FactoryKeyboardDesc)
+                            ? HwTestLocalization.Pick("OEM BOM (bez osvetljenja): ", "OEM BOM(无背光): ") + hw.FactoryKeyboardDesc
+                            : HwTestLocalization.Pick("OEM BOM: Bez osvetljenja", "OEM BOM: 无背光"));
+                }
+            }
+            else if (!hw.HasKeyboardBacklight.HasValue && hw.FactoryKeyboardBacklight.HasValue)
             {
                 hw.HasKeyboardBacklight = hw.FactoryKeyboardBacklight;
                 if (string.IsNullOrEmpty(hw.KeyboardBacklightEvidence))
                 {
-                    hw.KeyboardBacklightEvidence = !string.IsNullOrEmpty(hw.FactoryKeyboardDesc)
-                        ? "OEM BOM: " + hw.FactoryKeyboardDesc
-                        : "OEM/Heuristika";
+                    hw.KeyboardBacklightEvidence = !string.IsNullOrEmpty(hw.FactoryKeyboardBacklightEvidence)
+                        ? hw.FactoryKeyboardBacklightEvidence
+                        : (!string.IsNullOrEmpty(hw.FactoryKeyboardDesc)
+                            ? "OEM BOM: " + hw.FactoryKeyboardDesc
+                            : "OEM/Heuristika");
                 }
             }
 
@@ -1023,7 +1134,7 @@ namespace WIS.HwTest.Core
 
             if (string.IsNullOrEmpty(hw.FactorySummary))
             {
-                hw.FactorySummary = hw.IsLaptop ? "Lokalna heuristika + WMI/BIOS" : "Desktop šasija + WMI";
+                hw.FactorySummary = hw.IsLaptop ? HwTestLocalization.Pick("Lokalna heuristika + WMI/BIOS", "本地启发式判断 + WMI/BIOS") : HwTestLocalization.Pick("Desktop šasija + WMI", "台式机机箱 + WMI");
             }
 
             HardwareProbe.RecomputeRecommendedLayout(hw);

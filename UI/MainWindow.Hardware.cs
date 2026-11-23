@@ -6,6 +6,7 @@ using System.Management;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using System.Windows.Media;
 using Microsoft.Win32;
@@ -14,6 +15,75 @@ namespace WIS.UI
 {
     public partial class MainWindow
     {
+        private int _peripheralsRefreshInFlight = 0;
+        private int _peripheralsRefreshPending = 0;
+
+        /// <summary>
+        /// Primenjuje odluku o pozadinskom osvetljenju tastature (iz OEM BOM-a ili Faze 5 HwTest-a) na ViewModel.
+        /// </summary>
+        public void ApplyBacklitKeyboardVerdict(bool? confirmed, string sourceReason)
+        {
+            try
+            {
+                Action applyAction = delegate
+                {
+                    if (ViewModel != null && ViewModel.HardwareInfo != null)
+                    {
+                        ViewModel.HardwareInfo.ApplyBacklitKeyboardVerdict(confirmed, sourceReason);
+                    }
+                };
+
+                if (Dispatcher != null && !Dispatcher.CheckAccess())
+                {
+                    Dispatcher.BeginInvoke(applyAction);
+                }
+                else
+                {
+                    applyAction();
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Bezbedno asinhrono osvežava periferije (Bluetooth verzija, 4G/5G, eSIM i pregled) nakon instalacije drajvera.
+        /// </summary>
+        public void RefreshPeripheralsAfterDrivers()
+        {
+            Interlocked.Exchange(ref _peripheralsRefreshPending, 1);
+            if (Interlocked.CompareExchange(ref _peripheralsRefreshInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+
+            try
+            {
+                ThreadPool.QueueUserWorkItem(delegate
+                {
+                    try
+                    {
+                        while (Interlocked.Exchange(ref _peripheralsRefreshPending, 0) != 0)
+                        {
+                            DetectPeripherals();
+                        }
+                    }
+                    catch { }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _peripheralsRefreshInFlight, 0);
+                        if (Interlocked.CompareExchange(ref _peripheralsRefreshPending, 0, 0) != 0)
+                        {
+                            RefreshPeripheralsAfterDrivers();
+                        }
+                    }
+                });
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _peripheralsRefreshInFlight, 0);
+            }
+        }
+
         public void RefreshCategories(HwCategory categories)
         {
             if ((categories & HwCategory.Cpu) != 0) DetectCpu();
@@ -255,7 +325,7 @@ namespace WIS.UI
                 string ramSlotsSummaryStr = "";
                 if (isSoldered && (totalSlots == 0 || freeSlots == 0))
                 {
-                    ramSlotsSummaryStr = "Integrisana na ploči (Bez slotova)";
+                    ramSlotsSummaryStr = LocalizationService.Get("HwRamSolderedNoSlots", "Integrisana na ploči (Bez slotova)");
                 }
                 else if (isSoldered && freeSlots > 0)
                 {
@@ -278,7 +348,7 @@ namespace WIS.UI
                 string speedStr = maxSpeed > 0 ? string.Format("{0} MHz", maxSpeed) : "N/A";
                 string detailsStr = moduleCount > 1
                     ? string.Format("{0} modula ({1})", moduleCount, string.Join(", ", locators.ToArray()))
-                    : (isSoldered ? "Integrisana na matičnoj ploči" : string.Format("1 modul ({0})", locators.Count > 0 ? locators[0] : "Slot 1"));
+                    : (isSoldered ? LocalizationService.Get("HwRamSolderedOnboard", "Integrisana na matičnoj ploči") : string.Format(LocalizationService.Get("HwRamOneModule", "1 modul ({0})"), locators.Count > 0 ? locators[0] : "Slot 1"));
 
                 string solderedBadgeStr = isSoldered ? "Integrisan (LPDDR / Soldered)" : "Standardni moduli (SO-DIMM)";
 
@@ -308,7 +378,7 @@ namespace WIS.UI
                 {
                     if (ViewModel.HardwareInfo != null)
                     {
-                        ViewModel.HardwareInfo.RamSummary = "Greška pri detekciji RAM";
+                        ViewModel.HardwareInfo.RamSummary = LocalizationService.Get("HwRamDetectError", "Greška pri detekciji RAM");
                         ViewModel.HardwareInfo.RamSlotsSummary = "N/A";
                     }
                 });
@@ -360,7 +430,7 @@ namespace WIS.UI
                                 }
                                 else
                                 {
-                                    ViewModel.HardwareInfo.StorageHealth = "100% Zdravlje";
+                                    ViewModel.HardwareInfo.StorageHealth = LocalizationService.Get("HwDiskHealth100", "100% Zdravlje");
                                 }
 
                                 if (ViewModel.SmartStatusBrush is SolidColorBrush)
@@ -374,7 +444,7 @@ namespace WIS.UI
                                 }
                                 else
                                 {
-                                    ViewModel.HardwareInfo.StorageHours = "N/A (Zahteva S.M.A.R.T.)";
+                                    ViewModel.HardwareInfo.StorageHours = LocalizationService.Get("HwDiskHoursNaSmart", "N/A (Zahteva S.M.A.R.T.)");
                                 }
 
                                 if (_thermalEngine != null && _thermalEngine.SsdTemperature > 0f)
@@ -383,7 +453,7 @@ namespace WIS.UI
                                 }
                                 else
                                 {
-                                    ViewModel.HardwareInfo.StorageTemp = "N/A (Senzor nedostupan)";
+                                    ViewModel.HardwareInfo.StorageTemp = LocalizationService.Get("HwDiskTempNaSensor", "N/A (Senzor nedostupan)");
                                 }
                             }
 
@@ -399,7 +469,7 @@ namespace WIS.UI
                 {
                     if (ViewModel.HardwareInfo != null)
                     {
-                        ViewModel.HardwareInfo.StorageModel = "Greška pri detekciji diska";
+                        ViewModel.HardwareInfo.StorageModel = LocalizationService.Get("HwDiskDetectError", "Greška pri detekciji diska");
                     }
                 });
             }
@@ -522,9 +592,9 @@ namespace WIS.UI
                     double wearLevel = (1.0 - ((double)fullCap / (double)designCap)) * 100.0;
                     if (wearLevel < 0.0) wearLevel = 0.0;
 
-                    string wearStr = string.Format("{0:0.0}% Istrošenost ({1:N0} / {2:N0} mWh)", wearLevel, fullCap, designCap);
+                    string wearStr = string.Format(LocalizationService.Get("HwBatteryWearFmt", "{0:0.0}% Istrošenost ({1:N0} / {2:N0} mWh)"), wearLevel, fullCap, designCap);
                     string capStr = string.Format("{0:N0} mWh / {1:N0} mWh", fullCap, designCap);
-                    string powerStr = (batteryStatus == 2) ? "Punjenje (AC Adapter)" : (batteryStatus == 1 ? "Na bateriji (DC)" : "AC Mreža / Puna");
+                    string powerStr = (batteryStatus == 2) ? LocalizationService.Get("HwBatteryChargingAc", "Punjenje (AC Adapter)") : (batteryStatus == 1 ? LocalizationService.Get("HwBatteryOnBatteryDc", "Na bateriji (DC)") : LocalizationService.Get("HwBatteryAcFull", "AC Mreža / Puna"));
 
                     SolidColorBrush healthBrush;
                     if (wearLevel < 15.0)
@@ -561,13 +631,13 @@ namespace WIS.UI
                 }
                 else if (hasBattery)
                 {
-                    string powerStr = (batteryStatus == 2) ? "Punjenje (AC Adapter)" : (batteryStatus == 1 ? "Na bateriji (DC)" : "AC Mreža / Baterija");
+                    string powerStr = (batteryStatus == 2) ? LocalizationService.Get("HwBatteryChargingAc", "Punjenje (AC Adapter)") : (batteryStatus == 1 ? LocalizationService.Get("HwBatteryOnBatteryDc", "Na bateriji (DC)") : LocalizationService.Get("HwBatteryAcOrBatt", "AC Mreža / Baterija"));
                     string cyclesStr = hasCycles ? string.Format("{0} ciklusa", cycleCount) : "N/A";
                     Dispatcher.BeginInvoke((Action)delegate
                     {
                         if (ViewModel.HardwareInfo != null)
                         {
-                            ViewModel.HardwareInfo.BatteryWear = "Detektovana baterija";
+                            ViewModel.HardwareInfo.BatteryWear = LocalizationService.Get("HwBatteryDetected", "Detektovana baterija");
                             ViewModel.HardwareInfo.BatteryCapacity = "N/A";
                             ViewModel.HardwareInfo.BatteryCycles = cyclesStr;
                             ViewModel.HardwareInfo.BatteryPowerStatus = powerStr;
@@ -585,9 +655,9 @@ namespace WIS.UI
                         if (ViewModel.HardwareInfo != null)
                         {
                             ViewModel.HardwareInfo.BatteryWear = "Nema baterije (Desktop / AC Only)";
-                            ViewModel.HardwareInfo.BatteryCapacity = "N/A (Fiksno AC napajanje)";
+                            ViewModel.HardwareInfo.BatteryCapacity = LocalizationService.Get("HwBatteryCapNaFixedAc", "N/A (Fiksno AC napajanje)");
                             ViewModel.HardwareInfo.BatteryCycles = "N/A";
-                            ViewModel.HardwareInfo.BatteryPowerStatus = "Desktop AC Napajanje";
+                            ViewModel.HardwareInfo.BatteryPowerStatus = LocalizationService.Get("HwBatteryDesktopAc", "Desktop AC Napajanje");
                             ViewModel.HardwareInfo.BatteryHealthBrush = BaseViewModel.CreateFrozenBrush(100, 100, 100);
                         }
 
@@ -609,7 +679,7 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.BatteryWear = "Nema baterije (Desktop / AC Only)";
                         ViewModel.HardwareInfo.BatteryCapacity = "N/A";
                         ViewModel.HardwareInfo.BatteryCycles = "N/A";
-                        ViewModel.HardwareInfo.BatteryPowerStatus = "AC Napajanje";
+                        ViewModel.HardwareInfo.BatteryPowerStatus = LocalizationService.Get("HwBatteryAcPower", "AC Napajanje");
                         ViewModel.HardwareInfo.BatteryHealthBrush = BaseViewModel.CreateFrozenBrush(100, 100, 100);
                     }
 
@@ -760,13 +830,13 @@ namespace WIS.UI
                 if (hasTouch)
                 {
                     touchStatusStr = touches > 0
-                        ? string.Format("🖐️ Podržan ({0} tačaka dodira)", touches)
-                        : "🖐️ Podržan (Touchscreen)";
+                        ? string.Format(LocalizationService.Get("HwTouchYes", "🖐️ Podržan ({0} tačaka dodira)"), touches)
+                        : LocalizationService.Get("HwTouchYesSimple", "🖐️ Podržan (Touchscreen)");
                     touchBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
                 }
                 else
                 {
-                    touchStatusStr = "Nije detektovan (Standardni displej)";
+                    touchStatusStr = LocalizationService.Get("HwTouchNo", "Nije detektovan (Standardni displej)");
                     touchBrush = BaseViewModel.CreateFrozenBrush(136, 136, 136);
                 }
 
@@ -1034,7 +1104,7 @@ namespace WIS.UI
                                 int enabled = 0;
                                 if (int.TryParse(val.ToString(), out enabled))
                                 {
-                                    secureBootStr = (enabled == 1) ? "Omogućen (SecureBoot ON)" : "Onemogućen (SecureBoot OFF)";
+                                    secureBootStr = (enabled == 1) ? LocalizationService.Get("HwSecureBootOn", "Omogućen (SecureBoot ON)") : LocalizationService.Get("HwSecureBootOff", "Onemogućen (SecureBoot OFF)");
                                 }
                             }
                         }
@@ -1046,7 +1116,7 @@ namespace WIS.UI
                     ? string.Format("{0} ({1})", biosVer, biosDate)
                     : biosVer;
 
-                string finalMbProd = !string.IsNullOrEmpty(bbProd) ? bbProd : "Standardna matična ploča";
+                string finalMbProd = !string.IsNullOrEmpty(bbProd) ? bbProd : LocalizationService.Get("HwMbStandard", "Standardna matična ploča");
                 string finalMbMfg = !string.IsNullOrEmpty(bbMfg) ? bbMfg : rawMfg;
 
                 Dispatcher.BeginInvoke((Action)delegate
@@ -1074,7 +1144,7 @@ namespace WIS.UI
                 {
                     if (ViewModel.HardwareInfo != null)
                     {
-                        ViewModel.HardwareInfo.MotherboardModel = "Greška pri detekciji ploče";
+                        ViewModel.HardwareInfo.MotherboardModel = LocalizationService.Get("HwMbDetectError", "Greška pri detekciji ploče");
                     }
                 });
             }
@@ -1145,86 +1215,41 @@ namespace WIS.UI
                 }
                 catch { }
 
-                string backlitStatus = LocalizationService.Instance.GetString("HwKbNo", "Standardna (Bez osvetljenja)");
-                bool hasBacklit = false;
-                bool backlitIsManual = false;
-                SolidColorBrush backlitBrush = BaseViewModel.CreateFrozenBrush(136, 136, 136);
+                bool? backlitConfirmed = null;
+                string backlitReason = LocalizationService.Get("HwKbUnconfirmed", "Nije potvrđeno (provera u Fazi 5)");
+                bool backlitFromHwTestFile = false;
 
+                bool isLaptopForBacklit = false;
                 try
                 {
-                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                        "SELECT Name, DeviceID, Service FROM Win32_PnPEntity " +
-                        "WHERE (Name LIKE '%Backlight%' OR Name LIKE '%Illuminated%' OR Name LIKE '%RGB Keyboard%' " +
-                        "OR Service LIKE '%KbdBacklight%' OR Service LIKE '%Backlight%' OR DeviceID LIKE '%DELLABCE%' OR DeviceID LIKE '%LEN0071%')"))
-                    {
-                        foreach (ManagementObject obj in searcher.Get())
-                        {
-                            hasBacklit = true;
-                            backlitStatus = LocalizationService.Instance.GetString("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
-                            backlitBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
-                            break;
-                        }
-                    }
+                    isLaptopForBacklit = ViewModel != null && ViewModel.IsLaptop;
+                }
+                catch { }
 
-                    if (!hasBacklit)
+                bool hasExternalAuthBacklit = false;
+                bool? existingAuthConfirmed = null;
+                string existingAuthReason = "";
+                try
+                {
+                    if (ViewModel != null && ViewModel.HardwareInfo != null &&
+                        ViewModel.HardwareInfo.HasAuthoritativeBacklitVerdict &&
+                        ViewModel.HardwareInfo.BacklitKeyboardConfirmed.HasValue)
                     {
-                        try
-                        {
-                            using (ManagementObjectSearcher lenovoSearcher = new ManagementObjectSearcher(@"root\WMI", "SELECT * FROM Lenovo_SetKeyboardBacklightStatus"))
-                            {
-                                if (lenovoSearcher.Get().Count > 0)
-                                {
-                                    hasBacklit = true;
-                                    backlitStatus = LocalizationService.Instance.GetString("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
-                                    backlitBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (!hasBacklit)
-                    {
-                        try
-                        {
-                            using (ManagementObjectSearcher dellSearcher = new ManagementObjectSearcher(@"root\dcim\sysman", "SELECT * FROM DCIM_BiosEnumeration WHERE AttributeName LIKE '%Keyboard%Backlight%'"))
-                            {
-                                if (dellSearcher.Get().Count > 0)
-                                {
-                                    hasBacklit = true;
-                                    backlitStatus = LocalizationService.Instance.GetString("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
-                                    backlitBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (!hasBacklit)
-                    {
-                        try
-                        {
-                            using (ManagementObjectSearcher hpSearcher = new ManagementObjectSearcher(@"root\hp\instrumentedBIOS", "SELECT * FROM HP_BIOSSetting WHERE Name LIKE '%Backlit%'"))
-                            {
-                                if (hpSearcher.Get().Count > 0)
-                                {
-                                    hasBacklit = true;
-                                    backlitStatus = LocalizationService.Instance.GetString("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
-                                    backlitBrush = BaseViewModel.CreateFrozenBrush(78, 201, 176);
-                                }
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (!hasBacklit && ViewModel.IsLaptop)
-                    {
-                        backlitIsManual = true;
-                        backlitStatus = LocalizationService.Instance.GetString("HwKbCheckManual", "Standardna / Proveri ručno (Fn+Space)");
-                        backlitBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
+                        hasExternalAuthBacklit = true;
+                        existingAuthConfirmed = ViewModel.HardwareInfo.BacklitKeyboardConfirmed;
+                        existingAuthReason = ViewModel.HardwareInfo.BacklitKeyboardReason;
                     }
                 }
                 catch { }
+
+                DetectKeyboardBacklightConservative(
+                    isLaptopForBacklit,
+                    hasExternalAuthBacklit,
+                    existingAuthConfirmed,
+                    existingAuthReason,
+                    out backlitConfirmed,
+                    out backlitReason,
+                    out backlitFromHwTestFile);
 
                 string fpStatus = LocalizationService.Instance.GetString("HwFpNo", "Nije detektovan");
                 string fpDetectedName = "";
@@ -1337,9 +1362,12 @@ namespace WIS.UI
                 string wifiStandardLabel = "";
                 bool hasBluetooth = false;
                 string bluetoothInfo = "";
+                string bluetoothVersionLabel = "";
                 bool hasWwan = false;
                 string wwanInfo = "";
                 string wwanAdapterName = "";
+                bool hasEsim = false;
+                string esimInfo = "";
                 bool hasSmartCard = false;
                 bool hasNfc = false;
                 bool hasThunderbolt = false;
@@ -1350,9 +1378,12 @@ namespace WIS.UI
                     out wifiStandardLabel,
                     out hasBluetooth,
                     out bluetoothInfo,
+                    out bluetoothVersionLabel,
                     out hasWwan,
                     out wwanInfo,
                     out wwanAdapterName,
+                    out hasEsim,
+                    out esimInfo,
                     out hasSmartCard,
                     out hasNfc,
                     out hasThunderbolt);
@@ -1369,10 +1400,14 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.HasIrCamera = hasIrCamera;
                         ViewModel.HardwareInfo.IrCameraBrush = irCameraBrush;
 
-                        ViewModel.HardwareInfo.BacklitKeyboardStatus = backlitStatus;
-                        ViewModel.HardwareInfo.HasBacklitKeyboard = hasBacklit;
-                        ViewModel.HardwareInfo.BacklitIsManual = backlitIsManual;
-                        ViewModel.HardwareInfo.BacklitKeyboardBrush = backlitBrush;
+                        if (backlitFromHwTestFile)
+                        {
+                            ViewModel.HardwareInfo.ApplyBacklitKeyboardVerdict(backlitConfirmed, backlitReason);
+                        }
+                        else
+                        {
+                            ViewModel.HardwareInfo.ApplyDetectedBacklitKeyboard(backlitConfirmed, backlitReason);
+                        }
 
                         ViewModel.HardwareInfo.FingerprintDeviceName = fpDetectedName;
                         ViewModel.HardwareInfo.FingerprintSensor = fpStatus;
@@ -1392,9 +1427,12 @@ namespace WIS.UI
                         ViewModel.HardwareInfo.HasWifi = hasWifi;
                         ViewModel.HardwareInfo.HasBluetooth = hasBluetooth;
                         ViewModel.HardwareInfo.BluetoothInfo = bluetoothInfo;
+                        ViewModel.HardwareInfo.BluetoothVersionLabel = bluetoothVersionLabel;
                         ViewModel.HardwareInfo.WwanAdapterName = wwanAdapterName;
                         ViewModel.HardwareInfo.WwanInfo = wwanInfo;
                         ViewModel.HardwareInfo.HasWwan = hasWwan;
+                        ViewModel.HardwareInfo.HasEsim = hasEsim;
+                        ViewModel.HardwareInfo.EsimInfo = esimInfo;
                         ViewModel.HardwareInfo.HasSmartCard = hasSmartCard;
                         ViewModel.HardwareInfo.HasNfc = hasNfc;
                         ViewModel.HardwareInfo.HasThunderbolt = hasThunderbolt;
@@ -1406,15 +1444,448 @@ namespace WIS.UI
             catch { }
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HwDevPropKey
+        {
+            public Guid fmtid;
+            public uint pid;
+        }
+
+        [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode, EntryPoint = "CM_Locate_DevNodeW")]
+        private static extern int HwInfoLocateDevNodeW(out uint pdnDevInst, string pDeviceID, uint ulFlags);
+
+        [DllImport("cfgmgr32.dll", CharSet = CharSet.Unicode, EntryPoint = "CM_Get_DevNode_PropertyW")]
+        private static extern int HwInfoGetDevNodePropertyW(
+            uint dnDevInst,
+            ref HwDevPropKey PropertyKey,
+            out uint PropertyType,
+            byte[] PropertyBuffer,
+            ref uint PropertyBufferSize,
+            uint ulFlags);
+
+        private static void DetectKeyboardBacklightConservative(
+            bool isLaptop,
+            bool hasExternalAuth,
+            bool? existingAuthConfirmed,
+            string existingAuthReason,
+            out bool? confirmed,
+            out string reason,
+            out bool fromHwTestFile)
+        {
+            confirmed = null;
+            reason = LocalizationService.Get("HwKbUnconfirmed", "Nije potvrđeno (provera u Fazi 5)");
+            fromHwTestFile = false;
+
+            bool? fileConfirmed;
+            string fileReason;
+            if (TryReadBacklitVerdictFromHwTestFile(out fileConfirmed, out fileReason))
+            {
+                confirmed = fileConfirmed;
+                reason = fileReason;
+                fromHwTestFile = true;
+                return;
+            }
+
+            if (hasExternalAuth && existingAuthConfirmed.HasValue)
+            {
+                confirmed = existingAuthConfirmed;
+                reason = existingAuthReason;
+                return;
+            }
+
+            // Pouzdani hardverski kontroleri (bez lažnih pozitiva poput LEN0071, DELLABCE, HP_BIOSSetting i Lenovo_SetKeyboardBacklightStatus)
+            string pmDetail;
+            int pmLevel;
+            try
+            {
+                if (WIS.HwTest.Core.HardwareProbe.TryProbeLenovoIbmPmBacklight(out pmDetail, out pmLevel))
+                {
+                    confirmed = true;
+                    reason = pmDetail;
+                    return;
+                }
+            }
+            catch { }
+
+            string energyDetail;
+            if (TryProbeLenovoEnergyDrvStrict(out energyDetail))
+            {
+                confirmed = true;
+                reason = energyDetail;
+                return;
+            }
+
+            string hidBacklightDetail;
+            if (TryDetectKeyboardHidOrLampArray(out hidBacklightDetail))
+            {
+                confirmed = true;
+                reason = hidBacklightDetail;
+                return;
+            }
+
+            string dellDetail;
+            if (TryDetectDellBiosBacklightStrict(out dellDetail))
+            {
+                confirmed = true;
+                reason = dellDetail;
+                return;
+            }
+
+            if (!isLaptop)
+            {
+                confirmed = false;
+                reason = LocalizationService.Get("HwKbDesktopNone", "Desktop sistem (bez ugrađenog pozadinskog osvetljenja)");
+                return;
+            }
+
+            confirmed = null;
+            reason = LocalizationService.Get("HwKbUnconfirmed", "Nije potvrđeno (provera u Fazi 5)");
+        }
+
+        private static bool TryReadBacklitVerdictFromHwTestFile(out bool? confirmed, out string reason)
+        {
+            confirmed = null;
+            reason = "";
+            try
+            {
+                string path = @"C:\setup\hwtest-result.json";
+                if (!File.Exists(path)) return false;
+
+                string json = File.ReadAllText(path, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json)) return false;
+
+                JsonNode root = JsonHelper.Parse(json);
+                if (root == null || !root.ContainsKey("tests") || !root["tests"].IsArray) return false;
+
+                JsonNode tests = root["tests"];
+                for (int i = 0; i < tests.Count; i++)
+                {
+                    JsonNode t = tests[i];
+                    if (t == null) continue;
+                    string id = t["id"].AsString("");
+                    if (!string.Equals(id, "keyboard", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    JsonNode details = t["details"];
+                    if (details == null || !details.IsObject) break;
+
+                    string blPassed = details["backlight_passed"].AsString("").Trim();
+                    if (string.Equals(blPassed, "true", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(blPassed, "1", StringComparison.OrdinalIgnoreCase))
+                    {
+                        confirmed = true;
+                        reason = LocalizationService.Get("HwTBacklitConfirmed", "Potvrđeno u Fazi 5 (Test tastature)");
+                        return true;
+                    }
+                    if (string.Equals(blPassed, "no_hardware", StringComparison.OrdinalIgnoreCase))
+                    {
+                        confirmed = false;
+                        reason = LocalizationService.Get("HwKbConfirmedNone", "Potvrđeno u Fazi 5 (Model nema pozadinsko osvetljenje)");
+                        return true;
+                    }
+                    break;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool TryProbeLenovoEnergyDrvStrict(out string detail)
+        {
+            detail = "";
+            IntPtr hDev = IntPtr.Zero;
+            try
+            {
+                hDev = WIS.HwTest.Core.HardwareProbe.OpenKernelDeviceHandle(@"\\.\EnergyDrv");
+                if (hDev == IntPtr.Zero) return false;
+
+                uint[] queries = new uint[] { 0x01u, 0x32u };
+                for (int i = 0; i < queries.Length; i++)
+                {
+                    uint inVal = queries[i];
+                    uint outVal = 0;
+                    uint bytesRet = 0;
+                    if (WIS.HwTest.Interop.NativeMethods.DeviceIoControl(hDev, 0x83102144u, ref inVal, 4u, ref outVal, 4u, out bytesRet, IntPtr.Zero) &&
+                        bytesRet == 4u &&
+                        (outVal & 0x01u) != 0u)
+                    {
+                        detail = string.Format("EnergyDrv (0x83102144, q=0x{0:X}, res=0x{1:X})", inVal, outVal);
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (hDev != IntPtr.Zero)
+                {
+                    try { WIS.HwTest.Interop.NativeMethods.CloseHandle(hDev); } catch { }
+                }
+            }
+            return false;
+        }
+
+        private static bool TryDetectKeyboardHidOrLampArray(out string detail)
+        {
+            detail = "";
+            bool hasPhysicalKeyboard = false;
+            bool hasLampArrayHid = false;
+
+            try
+            {
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    "SELECT Name, DeviceID, PNPClass, Service, ConfigManagerErrorCode FROM Win32_PnPEntity"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        uint errCode = obj["ConfigManagerErrorCode"] != null ? Convert.ToUInt32(obj["ConfigManagerErrorCode"]) : 0;
+                        if (errCode != 0) continue;
+
+                        string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
+                        string devId = obj["DeviceID"] != null ? obj["DeviceID"].ToString().Trim() : "";
+                        string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "";
+                        string service = obj["Service"] != null ? obj["Service"].ToString().Trim() : "";
+
+                        string upName = name.ToUpperInvariant();
+                        string upId = devId.ToUpperInvariant();
+                        string upSvc = service.ToUpperInvariant();
+
+                        if (string.Equals(pnpClass, "Keyboard", StringComparison.OrdinalIgnoreCase) ||
+                            upId.Contains("HID_DEVICE_SYSTEM_KEYBOARD"))
+                        {
+                            hasPhysicalKeyboard = true;
+                        }
+
+                        if (upId.Contains("UP:0059") && (upId.Contains("HID\\") || upName.Contains("LAMP") || upName.Contains("LIGHTING")))
+                        {
+                            hasLampArrayHid = true;
+                        }
+
+                        if (upSvc.Contains("KBDBACKLIGHT") ||
+                            ((upName.Contains("KEYBOARD") || upSvc.Contains("KBD") || upId.Contains("HID\\")) &&
+                             (upName.Contains("BACKLIGHT") || upName.Contains("ILLUMINATED") || upName.Contains("RGB KEYBOARD"))))
+                        {
+                            detail = "PnP HID/KBD: " + (!string.IsNullOrEmpty(name) ? name : devId);
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (hasPhysicalKeyboard && hasLampArrayHid)
+            {
+                detail = "Windows Dynamic Lighting / HID LampArray (UP:0059)";
+                return true;
+            }
+
+            if (hasPhysicalKeyboard && TryCheckWinRtKeyboardLampArray())
+            {
+                detail = "Windows Dynamic Lighting / LampArray";
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryCheckWinRtKeyboardLampArray()
+        {
+            try
+            {
+                Type lampArrayType = Type.GetType("Windows.Devices.Lights.LampArray, Windows, ContentType=WindowsRuntime", false);
+                Type devInfoType = Type.GetType("Windows.Devices.Enumeration.DeviceInformation, Windows, ContentType=WindowsRuntime", false);
+                if (lampArrayType == null || devInfoType == null) return false;
+
+                System.Reflection.MethodInfo getSelector = lampArrayType.GetMethod(
+                    "GetDeviceSelector",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                    null,
+                    Type.EmptyTypes,
+                    null);
+                if (getSelector == null) return false;
+                string selector = getSelector.Invoke(null, null) as string;
+                if (string.IsNullOrEmpty(selector)) return false;
+
+                System.Reflection.MethodInfo findAll = devInfoType.GetMethod("FindAllAsync", new Type[] { typeof(string) });
+                if (findAll == null) return false;
+                object asyncOp = findAll.Invoke(null, new object[] { selector });
+                object collection = AwaitWinRtSimple(asyncOp, 1500);
+                System.Collections.IEnumerable items = collection as System.Collections.IEnumerable;
+                if (items == null) return false;
+
+                System.Reflection.MethodInfo fromId = lampArrayType.GetMethod("FromIdAsync", new Type[] { typeof(string) });
+                if (fromId == null) return false;
+
+                foreach (object devInfo in items)
+                {
+                    if (devInfo == null) continue;
+                    System.Reflection.PropertyInfo idProp = devInfo.GetType().GetProperty("Id");
+                    string id = idProp != null ? idProp.GetValue(devInfo, null) as string : null;
+                    if (string.IsNullOrEmpty(id)) continue;
+
+                    object laOp = fromId.Invoke(null, new object[] { id });
+                    object lampArray = AwaitWinRtSimple(laOp, 1500);
+                    if (lampArray == null) continue;
+
+                    try
+                    {
+                        System.Reflection.PropertyInfo kindProp = lampArray.GetType().GetProperty("LampArrayKind");
+                        if (kindProp != null)
+                        {
+                            object kindVal = kindProp.GetValue(lampArray, null);
+                            if (kindVal != null && Convert.ToInt32(kindVal) == 1)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        IDisposable disp = lampArray as IDisposable;
+                        if (disp != null) disp.Dispose();
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static object AwaitWinRtSimple(object asyncOp, int timeoutMs)
+        {
+            if (asyncOp == null) return null;
+            try
+            {
+                System.Reflection.PropertyInfo statusProp = asyncOp.GetType().GetProperty("Status");
+                System.Reflection.MethodInfo getResults = asyncOp.GetType().GetMethod("GetResults");
+                if (statusProp == null || getResults == null) return null;
+
+                Stopwatch sw = Stopwatch.StartNew();
+                while (sw.ElapsedMilliseconds < timeoutMs)
+                {
+                    object stObj = statusProp.GetValue(asyncOp, null);
+                    int st = stObj != null ? Convert.ToInt32(stObj) : -1;
+                    // AsyncStatus.Completed == 1, Canceled == 2, Error == 3
+                    if (st == 1)
+                    {
+                        return getResults.Invoke(asyncOp, null);
+                    }
+                    if (st == 2 || st == 3)
+                    {
+                        return null;
+                    }
+                    Thread.Sleep(25);
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static bool TryDetectDellBiosBacklightStrict(out string detail)
+        {
+            detail = "";
+            string[] dellScopes = new string[]
+            {
+                @"root\dcim\sysman|DCIM_BIOSEnumeration",
+                @"root\dcim\sysman\biosattributes|EnumerationAttribute"
+            };
+            for (int sIdx = 0; sIdx < dellScopes.Length; sIdx++)
+            {
+                string[] sp = dellScopes[sIdx].Split('|');
+                try
+                {
+                    using (ManagementObjectSearcher dellSearcher = new ManagementObjectSearcher(sp[0], "SELECT * FROM " + sp[1]))
+                    {
+                        foreach (ManagementObject obj in dellSearcher.Get())
+                        {
+                            string attrName = ExtractWmiValueString(obj, "AttributeName");
+                            if (string.IsNullOrEmpty(attrName)) continue;
+
+                            string upName = attrName.ToUpperInvariant();
+                            if (!upName.Contains("KEYBOARD") ||
+                                (!upName.Contains("BACKLIGHT") && !upName.Contains("ILLUMINATION")))
+                            {
+                                continue;
+                            }
+
+                            string curVal = ExtractWmiValueString(obj, "CurrentValue");
+                            string possVal = ExtractWmiValueString(obj, "PossibleValues");
+                            string upCur = curVal.ToUpperInvariant();
+                            string upPoss = possVal.ToUpperInvariant();
+
+                            if (string.IsNullOrEmpty(upPoss) && string.IsNullOrEmpty(upCur)) continue;
+                            if (upCur.Contains("NOT SUPPORTED") || upCur.Contains("UNAVAILABLE")) continue;
+                            if (upPoss.Contains("NOT SUPPORTED") && !upPoss.Contains("BRIGHT") && !upPoss.Contains("DIM")) continue;
+
+                            bool hasActivePoss =
+                                upPoss.Contains("BRIGHT") ||
+                                upPoss.Contains("DIM") ||
+                                upPoss.Contains("ENABLED") ||
+                                upPoss.Contains("100%") ||
+                                upPoss.Contains("75%") ||
+                                upPoss.Contains("50%") ||
+                                upPoss.Contains("25%") ||
+                                Regex.IsMatch(upPoss, @"\bON\b");
+
+                            bool hasActiveCur =
+                                upCur.Contains("BRIGHT") ||
+                                upCur.Contains("DIM") ||
+                                upCur.Contains("ENABLED") ||
+                                upCur.Contains("100%") ||
+                                upCur.Contains("75%") ||
+                                upCur.Contains("50%") ||
+                                upCur.Contains("25%") ||
+                                Regex.IsMatch(upCur, @"\bON\b");
+
+                            if (hasActivePoss || hasActiveCur)
+                            {
+                                detail = string.Format("Dell BIOS ({0}: {1})", attrName, !string.IsNullOrEmpty(curVal) ? curVal : possVal);
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            return false;
+        }
+
+        private static string ExtractWmiValueString(ManagementBaseObject obj, string propName)
+        {
+            if (obj == null || string.IsNullOrEmpty(propName)) return "";
+            try
+            {
+                object v = obj[propName];
+                if (v == null) return "";
+                string[] arr = v as string[];
+                if (arr != null) return string.Join(", ", arr).Trim();
+                return v.ToString().Trim();
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private sealed class BluetoothCandidateInfo
+        {
+            public string Name;
+            public string DeviceId;
+            public string HardwareIds;
+            public string Service;
+            public int LmpVersion;
+        }
+
         private static void DetectWifiAndExtraPeripherals(
             out bool hasWifi,
             out string wifiAdapterName,
             out string wifiStandardLabel,
             out bool hasBluetooth,
             out string bluetoothInfo,
+            out string bluetoothVersionLabel,
             out bool hasWwan,
             out string wwanInfo,
             out string wwanAdapterName,
+            out bool hasEsim,
+            out string esimInfo,
             out bool hasSmartCard,
             out bool hasNfc,
             out bool hasThunderbolt)
@@ -1424,14 +1895,22 @@ namespace WIS.UI
             wifiStandardLabel = "";
             hasBluetooth = false;
             bluetoothInfo = "";
+            bluetoothVersionLabel = "";
             hasWwan = false;
             wwanInfo = "";
             wwanAdapterName = "";
+            hasEsim = false;
+            esimInfo = "";
             hasSmartCard = false;
             hasNfc = false;
             hasThunderbolt = false;
 
-            // 1. Wi-Fi adapter i eventualni WWAN adapter iz Win32_NetworkAdapter (pa fallback na Win32_PnPEntity Net)
+            List<BluetoothCandidateInfo> btCandidates = new List<BluetoothCandidateInfo>();
+            List<string> pnpEuiccHints = new List<string>();
+            StringBuilder wwanIdCollector = new StringBuilder();
+            string wwanFallbackCandidateName = "";
+
+            // 1. Wi-Fi adapter i eventualni WWAN adapter iz Win32_NetworkAdapter
             try
             {
                 using (ManagementObjectSearcher wifiSearcher = new ManagementObjectSearcher(
@@ -1450,34 +1929,262 @@ namespace WIS.UI
                         {
                             hasWwan = true;
                             wwanAdapterName = name;
-                            wwanInfo = FormatWwanLabel(name);
                         }
                     }
                 }
             }
             catch { }
 
-            if (!hasWifi || !hasWwan)
+            // 2. Jedinstven prolaz kroz Win32_PnPEntity za Net, Bluetooth (+LMP), WWAN (ime + PCI/USB ID), eUICC/eSIM, SmartCard, NFC
+            try
+            {
+                using (ManagementObjectSearcher pnpSearcher = new ManagementObjectSearcher(
+                    "SELECT Name, Description, DeviceID, HardwareID, PNPClass, Service, ConfigManagerErrorCode FROM Win32_PnPEntity"))
+                {
+                    foreach (ManagementObject obj in pnpSearcher.Get())
+                    {
+                        string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
+                        string desc = obj["Description"] != null ? obj["Description"].ToString().Trim() : "";
+                        string devId = obj["DeviceID"] != null ? obj["DeviceID"].ToString().Trim() : "";
+                        string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "";
+                        string service = obj["Service"] != null ? obj["Service"].ToString().Trim() : "";
+                        uint errCode = obj["ConfigManagerErrorCode"] != null ? Convert.ToUInt32(obj["ConfigManagerErrorCode"]) : 0;
+
+                        string[] hwIds = null;
+                        try { hwIds = obj["HardwareID"] as string[]; } catch { }
+                        string hwJoined = hwIds != null ? string.Join(" ", hwIds) : "";
+                        string displayCandidate = !string.IsNullOrEmpty(name) ? name : desc;
+
+                        if (string.Equals(pnpClass, "Net", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!hasWifi && IsPhysicalWifiAdapterName(displayCandidate))
+                            {
+                                hasWifi = true;
+                                wifiAdapterName = displayCandidate;
+                                wifiStandardLabel = FormatWifiStandardLabel(displayCandidate);
+                            }
+                            if (!hasWwan && IsWwanModemName(displayCandidate))
+                            {
+                                hasWwan = true;
+                                wwanAdapterName = displayCandidate;
+                            }
+                        }
+
+                        if (IsBluetoothPnpCandidate(displayCandidate, devId, pnpClass, service))
+                        {
+                            hasBluetooth = true;
+                            int lmp = 0;
+                            bool isPhysicalBtRadio = !string.IsNullOrEmpty(devId) &&
+                                !devId.StartsWith("BTH\\", StringComparison.OrdinalIgnoreCase) &&
+                                !devId.StartsWith("BTHLE\\", StringComparison.OrdinalIgnoreCase) &&
+                                !devId.StartsWith("BTHENUM\\", StringComparison.OrdinalIgnoreCase) &&
+                                !devId.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase) &&
+                                IsGoodBluetoothDisplayName(displayCandidate);
+                            if (isPhysicalBtRadio)
+                            {
+                                TryGetBluetoothLmpVersion(obj, devId, out lmp);
+                            }
+                            btCandidates.Add(new BluetoothCandidateInfo
+                            {
+                                Name = displayCandidate,
+                                DeviceId = devId,
+                                HardwareIds = hwJoined,
+                                Service = service,
+                                LmpVersion = lmp
+                            });
+                        }
+
+                        if (string.Equals(pnpClass, "SmartCardReader", StringComparison.OrdinalIgnoreCase) &&
+                            displayCandidate.IndexOf("Virtual", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            hasSmartCard = true;
+                        }
+
+                        if (string.Equals(pnpClass, "Proximity", StringComparison.OrdinalIgnoreCase) ||
+                            displayCandidate.IndexOf("NFC", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasNfc = true;
+                        }
+
+                        if (displayCandidate.IndexOf("Thunderbolt", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            displayCandidate.IndexOf("USB4", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            hasThunderbolt = true;
+                        }
+
+                        if (IsEuiccPnpCandidate(displayCandidate, devId, pnpClass, service, errCode))
+                        {
+                            pnpEuiccHints.Add(!string.IsNullOrEmpty(displayCandidate) ? displayCandidate : devId);
+                        }
+
+                        string hwidModelHint;
+                        bool isAuxiliaryPort;
+                        if (IsWwanPnpCandidate(displayCandidate, desc, devId, hwIds, pnpClass, service, out hwidModelHint, out isAuxiliaryPort))
+                        {
+                            if (!string.IsNullOrEmpty(devId)) wwanIdCollector.Append(devId).Append(' ');
+                            if (!string.IsNullOrEmpty(hwJoined)) wwanIdCollector.Append(hwJoined).Append(' ');
+                            if (!string.IsNullOrEmpty(displayCandidate)) wwanIdCollector.Append(displayCandidate).Append(' ');
+
+                            string chosenWwanName = !string.IsNullOrEmpty(hwidModelHint) && IsGenericPnPDeviceName(displayCandidate)
+                                ? hwidModelHint
+                                : (!string.IsNullOrEmpty(displayCandidate) ? displayCandidate : hwidModelHint);
+
+                            if (!isAuxiliaryPort)
+                            {
+                                hasWwan = true;
+                                if (string.IsNullOrEmpty(wwanAdapterName) || IsGenericPnPDeviceName(wwanAdapterName))
+                                {
+                                    wwanAdapterName = chosenWwanName;
+                                }
+                            }
+                            else if (string.IsNullOrEmpty(wwanFallbackCandidateName))
+                            {
+                                wwanFallbackCandidateName = chosenWwanName;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (!hasWwan && !string.IsNullOrEmpty(wwanFallbackCandidateName))
+            {
+                hasWwan = true;
+                wwanAdapterName = wwanFallbackCandidateName;
+            }
+
+            // 3. netsh mbn show interfaces za preciznu WWAN klasu (LTE / 5G / NR) i model
+            string mbnInterfacesOutput = RunNetshCommand("mbn show interfaces", 3000);
+            string mbnDataClass = "";
+            string mbnModelDesc = "";
+            if (TryParseNetshMbnInterface(mbnInterfacesOutput, out mbnModelDesc, out mbnDataClass))
+            {
+                hasWwan = true;
+                if (!string.IsNullOrEmpty(mbnModelDesc) &&
+                    (string.IsNullOrEmpty(wwanAdapterName) ||
+                     IsGenericPnPDeviceName(wwanAdapterName) ||
+                     mbnModelDesc.IndexOf("Generic", StringComparison.OrdinalIgnoreCase) < 0))
+                {
+                    wwanAdapterName = mbnModelDesc;
+                }
+            }
+
+            if (hasWwan)
+            {
+                wwanInfo = FormatWwanLabel(wwanAdapterName + " " + wwanIdCollector.ToString(), mbnDataClass);
+            }
+
+            // 4. Bluetooth verzija (DEVPKEY_Bluetooth_RadioLmpVersion -> SIG tabela -> combo adapter fallback)
+            if (hasBluetooth)
+            {
+                ResolveBluetoothDetails(btCandidates, wifiAdapterName, out bluetoothVersionLabel, out bluetoothInfo);
+            }
+
+            // 5. eSIM podrška (strogo bez lažnih pozitiva)
+            DetectEsimSupport(
+                hasWwan,
+                wwanAdapterName,
+                wwanIdCollector.ToString(),
+                mbnInterfacesOutput,
+                pnpEuiccHints,
+                out hasEsim,
+                out esimInfo);
+        }
+
+        private static bool IsGenericPnPDeviceName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return true;
+            string s = name.Trim().ToUpperInvariant();
+            return s == "PCI DEVICE" ||
+                   s == "PCI SIMPLE COMMUNICATIONS CONTROLLER" ||
+                   s == "UNKNOWN DEVICE" ||
+                   s == "USB COMPOSITE DEVICE" ||
+                   s == "NETWORK CONTROLLER" ||
+                   s == "OTHER DEVICE";
+        }
+
+        private static bool IsBluetoothPnpCandidate(string name, string devId, string pnpClass, string service)
+        {
+            if (string.Equals(pnpClass, "Bluetooth", StringComparison.OrdinalIgnoreCase)) return true;
+            if (string.Equals(service, "BTHUSB", StringComparison.OrdinalIgnoreCase)) return true;
+            if (!string.IsNullOrEmpty(service))
+            {
+                string upSvc = service.ToUpperInvariant();
+                if (upSvc == "IBTUSB" || upSvc == "BTHMTK" || upSvc == "RTKBTFILTER" || upSvc == "QCABT")
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsGoodBluetoothDisplayName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            return name.IndexOf("Enumerator", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("RFCOMM", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("Protocol", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("Avrcp", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("A2dp", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("Hands-Free", StringComparison.OrdinalIgnoreCase) < 0 &&
+                   name.IndexOf("Personal Area Network", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        private static bool TryGetBluetoothLmpVersion(ManagementObject pnpObj, string devId, out int lmpVersion)
+        {
+            lmpVersion = 0;
+            if (string.IsNullOrEmpty(devId)) return false;
+
+            // 1. Primarno: cfgmgr32 CM_Get_DevNode_PropertyW za DEVPKEY_Bluetooth_RadioLmpVersion ({A92F26CA-EDA7-4B1D-9DB2-27B68AA5A2EB}, PID 2)
+            try
+            {
+                uint devInst = 0;
+                if (HwInfoLocateDevNodeW(out devInst, devId, 0) == 0 && devInst != 0)
+                {
+                    HwDevPropKey key = new HwDevPropKey
+                    {
+                        fmtid = new Guid("A92F26CA-EDA7-4B1D-9DB2-27B68AA5A2EB"),
+                        pid = 2u
+                    };
+                    uint propType = 0;
+                    uint bufLen = 16;
+                    byte[] buf = new byte[bufLen];
+                    int cr = HwInfoGetDevNodePropertyW(devInst, ref key, out propType, buf, ref bufLen, 0);
+                    if (cr == 0 && bufLen > 0)
+                    {
+                        int parsed = ParseLmpFromBytes(buf, (int)Math.Min(bufLen, (uint)buf.Length));
+                        if (parsed >= 4 && parsed <= 20)
+                        {
+                            lmpVersion = parsed;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Fallback: WMI Win32_PnPEntity.GetDeviceProperties
+            if (pnpObj != null)
             {
                 try
                 {
-                    using (ManagementObjectSearcher netPnpSearcher = new ManagementObjectSearcher(
-                        "SELECT Name FROM Win32_PnPEntity WHERE PNPClass = 'Net'"))
+                    ManagementBaseObject inParams = pnpObj.GetMethodParameters("GetDeviceProperties");
+                    inParams["devicePropertyKeys"] = new string[] { "{A92F26CA-EDA7-4B1D-9DB2-27B68AA5A2EB} 2" };
+                    ManagementBaseObject outParams = pnpObj.InvokeMethod("GetDeviceProperties", inParams, null);
+                    if (outParams != null)
                     {
-                        foreach (ManagementObject obj in netPnpSearcher.Get())
+                        ManagementBaseObject[] props = outParams["deviceProperties"] as ManagementBaseObject[];
+                        if (props != null)
                         {
-                            string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
-                            if (!hasWifi && IsPhysicalWifiAdapterName(name))
+                            for (int i = 0; i < props.Length; i++)
                             {
-                                hasWifi = true;
-                                wifiAdapterName = name;
-                                wifiStandardLabel = FormatWifiStandardLabel(name);
-                            }
-                            if (!hasWwan && IsWwanModemName(name))
-                            {
-                                hasWwan = true;
-                                wwanAdapterName = name;
-                                wwanInfo = FormatWwanLabel(name);
+                                object dataObj = props[i] != null ? props[i]["Data"] : null;
+                                int parsed = ParseLmpFromObject(dataObj);
+                                if (parsed >= 4 && parsed <= 20)
+                                {
+                                    lmpVersion = parsed;
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -1485,77 +2192,691 @@ namespace WIS.UI
                 catch { }
             }
 
-            // 2. Bluetooth, WWAN (4G LTE / 5G modem), SmartCard, NFC, Thunderbolt / USB4
+            // 3. Fallback: Registry Properties ključ
             try
             {
-                using (ManagementObjectSearcher extraSearcher = new ManagementObjectSearcher(
-                    "SELECT Name, PNPClass, Service FROM Win32_PnPEntity WHERE " +
-                    "PNPClass = 'Bluetooth' OR Service = 'BTHUSB' OR " +
-                    "PNPClass = 'SmartCardReader' OR PNPClass = 'Proximity' OR " +
-                    "Name LIKE '%Thunderbolt%' OR Name LIKE '%USB4%' OR " +
-                    "Name LIKE '%WWAN%' OR Name LIKE '%LTE%' OR Name LIKE '%Cellular%' OR " +
-                    "Name LIKE '%Fibocom%' OR Name LIKE '%Quectel%' OR Name LIKE '%Sierra Wireless%' OR " +
-                    "Name LIKE '%Mobile Broadband%' OR Name LIKE '%XMM%' OR " +
-                    "Name LIKE '%DW58%' OR Name LIKE '%DW59%' OR Name LIKE '%T77W%' OR Name LIKE '%T99W%' OR " +
-                    "Name LIKE '%EM74%' OR Name LIKE '%EM75%' OR Name LIKE '%EM91%' OR " +
-                    "Name LIKE '%FM350%' OR Name LIKE '%FM101%' OR Name LIKE '%L850%' OR Name LIKE '%L860%' OR " +
-                    "Name LIKE '%RM520%' OR Name LIKE '%Snapdragon X%' OR Name LIKE '%NFC%'"))
+                string regPath = @"SYSTEM\CurrentControlSet\Enum\" + devId + @"\Properties\{a92f26ca-eda7-4b1d-9db2-27b68aa5a2eb}\0002";
+                using (RegistryKey rk = Registry.LocalMachine.OpenSubKey(regPath))
                 {
-                    foreach (ManagementObject obj in extraSearcher.Get())
+                    if (rk != null)
                     {
-                        string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "";
-                        string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "";
-                        string service = obj["Service"] != null ? obj["Service"].ToString().Trim() : "";
-                        if (string.IsNullOrEmpty(name)) continue;
-
-                        if (string.Equals(pnpClass, "Bluetooth", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(service, "BTHUSB", StringComparison.OrdinalIgnoreCase))
+                        object val = rk.GetValue("");
+                        int parsed = ParseLmpFromObject(val);
+                        if (parsed >= 4 && parsed <= 20)
                         {
-                            hasBluetooth = true;
-                            if (string.IsNullOrEmpty(bluetoothInfo) &&
-                                name.IndexOf("Enumerator", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                name.IndexOf("RFCOMM", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                name.IndexOf("Protocol", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                name.IndexOf("Avrcp", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                name.IndexOf("A2dp", StringComparison.OrdinalIgnoreCase) < 0)
-                            {
-                                bluetoothInfo = name;
-                            }
-                        }
-
-                        if (string.Equals(pnpClass, "SmartCardReader", StringComparison.OrdinalIgnoreCase) &&
-                            name.IndexOf("Virtual", StringComparison.OrdinalIgnoreCase) < 0)
-                        {
-                            hasSmartCard = true;
-                        }
-
-                        if (string.Equals(pnpClass, "Proximity", StringComparison.OrdinalIgnoreCase) ||
-                            name.IndexOf("NFC", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            hasNfc = true;
-                        }
-
-                        if (name.IndexOf("Thunderbolt", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            name.IndexOf("USB4", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            hasThunderbolt = true;
-                        }
-
-                        if (!hasWwan && IsWwanModemName(name))
-                        {
-                            hasWwan = true;
-                            wwanAdapterName = name;
-                            wwanInfo = FormatWwanLabel(name);
+                            lmpVersion = parsed;
+                            return true;
                         }
                     }
                 }
             }
             catch { }
 
-            if (hasBluetooth && string.IsNullOrEmpty(bluetoothInfo))
+            return false;
+        }
+
+        private static int ParseLmpFromBytes(byte[] buf, int len)
+        {
+            if (buf == null || len <= 0) return 0;
+            if (len == 1) return buf[0];
+            if (len == 2) return BitConverter.ToUInt16(buf, 0);
+            if (len >= 4) return (int)BitConverter.ToUInt32(buf, 0);
+            return 0;
+        }
+
+        private static int ParseLmpFromObject(object val)
+        {
+            if (val == null) return 0;
+            byte[] bytes = val as byte[];
+            if (bytes != null) return ParseLmpFromBytes(bytes, bytes.Length);
+            try
             {
-                bluetoothInfo = "Bluetooth adapter detektovan";
+                int parsed = Convert.ToInt32(val);
+                return parsed;
             }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static string MapBluetoothLmpToVersion(int lmp)
+        {
+            switch (lmp)
+            {
+                case 6: return "4.0";
+                case 7: return "4.1";
+                case 8: return "4.2";
+                case 9: return "5.0";
+                case 10: return "5.1";
+                case 11: return "5.2";
+                case 12: return "5.3";
+                case 13: return "5.4";
+                case 14: return "6.0";
+                default: return "";
+            }
+        }
+
+        private static string GuessBluetoothVersionFromAdapter(string btName, string wifiName, string btIdSummary)
+        {
+            string combined = ((btName ?? "") + " " + (wifiName ?? "") + " " + (btIdSummary ?? "")).ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(combined)) return "";
+
+            if (combined.Contains("BE200") || combined.Contains("BE201") || combined.Contains("BE202") ||
+                combined.Contains("QCNCM865") || combined.Contains("MT7927") || combined.Contains("VID_8087&PID_0036"))
+            {
+                return "5.4";
+            }
+
+            if (combined.Contains("AX211") || combined.Contains("AX210") || combined.Contains("AX411") ||
+                combined.Contains("AX1675") || combined.Contains("AX1690") || combined.Contains("MT7922") ||
+                combined.Contains("RZ616") || combined.Contains("WCN6856") || combined.Contains("RTL8852CE") ||
+                combined.Contains("VID_8087&PID_0033") || combined.Contains("VID_8087&PID_0032"))
+            {
+                return "5.3";
+            }
+
+            if (combined.Contains("AX201") || combined.Contains("AX200") || combined.Contains("AX101") ||
+                combined.Contains("AX1650") || combined.Contains("MT7921") || combined.Contains("RZ608") ||
+                combined.Contains("RTL8852BE") || combined.Contains("RTL8852AE") || combined.Contains("RTL8852") ||
+                combined.Contains("VID_8087&PID_0026") || combined.Contains("VID_8087&PID_0029"))
+            {
+                return "5.2";
+            }
+
+            if (combined.Contains("9560") || combined.Contains("9260") ||
+                combined.Contains("VID_8087&PID_0AAA") || combined.Contains("VID_8087&PID_0025"))
+            {
+                return "5.1";
+            }
+
+            if (combined.Contains("8265") || combined.Contains("8260") || combined.Contains("VID_8087&PID_0A2B"))
+            {
+                return "4.2";
+            }
+
+            return "";
+        }
+
+        private static void ResolveBluetoothDetails(
+            List<BluetoothCandidateInfo> candidates,
+            string wifiAdapterName,
+            out string bluetoothVersionLabel,
+            out string bluetoothInfo)
+        {
+            bluetoothVersionLabel = "Bluetooth";
+            bluetoothInfo = "Bluetooth adapter detektovan";
+
+            string bestName = "";
+            int bestLmp = 0;
+            StringBuilder idSummary = new StringBuilder();
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                BluetoothCandidateInfo c = candidates[i];
+                if (!string.IsNullOrEmpty(c.DeviceId)) idSummary.Append(c.DeviceId).Append(' ');
+                if (!string.IsNullOrEmpty(c.HardwareIds)) idSummary.Append(c.HardwareIds).Append(' ');
+
+                bool isPhysicalRadio = !string.IsNullOrEmpty(c.DeviceId) &&
+                    (c.DeviceId.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase) ||
+                     c.DeviceId.StartsWith("PCI\\", StringComparison.OrdinalIgnoreCase) ||
+                     c.DeviceId.StartsWith("ACPI\\", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(c.Service, "BTHUSB", StringComparison.OrdinalIgnoreCase));
+
+                if (c.LmpVersion > 0 && (bestLmp == 0 || isPhysicalRadio))
+                {
+                    bestLmp = c.LmpVersion;
+                }
+
+                if (IsGoodBluetoothDisplayName(c.Name) && (string.IsNullOrEmpty(bestName) || isPhysicalRadio))
+                {
+                    bestName = c.Name;
+                }
+            }
+
+            string baseName = !string.IsNullOrEmpty(bestName) ? bestName : "Bluetooth adapter";
+            string btVer = bestLmp > 0 ? MapBluetoothLmpToVersion(bestLmp) : "";
+            bool fromLmp = !string.IsNullOrEmpty(btVer);
+            if (!fromLmp)
+            {
+                btVer = GuessBluetoothVersionFromAdapter(baseName, wifiAdapterName, idSummary.ToString());
+            }
+
+            if (!string.IsNullOrEmpty(btVer))
+            {
+                bluetoothVersionLabel = "Bluetooth " + btVer;
+                bluetoothInfo = fromLmp
+                    ? string.Format("{0} (LMP {1} — Bluetooth {2})", baseName, bestLmp, btVer)
+                    : string.Format("{0} (Bluetooth {1})", baseName, btVer);
+            }
+            else
+            {
+                bluetoothVersionLabel = "Bluetooth";
+                bluetoothInfo = !string.IsNullOrEmpty(bestName) ? bestName : "Bluetooth adapter detektovan";
+            }
+        }
+
+        private static bool IsWwanPnpCandidate(
+            string name,
+            string desc,
+            string devId,
+            string[] hwIds,
+            string pnpClass,
+            string service,
+            out string inferredModel,
+            out bool isAuxiliaryPort)
+        {
+            inferredModel = "";
+            isAuxiliaryPort = false;
+
+            string upClass = (pnpClass ?? "").ToUpperInvariant();
+            if (upClass == "MOUSE" || upClass == "KEYBOARD" || upClass == "HIDCLASS" ||
+                upClass == "PRINTER" || upClass == "MONITOR" || upClass == "AUDIOENDPOINT" ||
+                upClass == "MEDIA" || upClass == "CAMERA" || upClass == "IMAGE" ||
+                upClass == "BLUETOOTH" || upClass == "BIOMETRIC" || upClass == "DISKDRIVE" ||
+                upClass == "VOLUME" || upClass == "USBHUB")
+            {
+                return false;
+            }
+
+            string upName = (name ?? "").ToUpperInvariant();
+            string upDesc = (desc ?? "").ToUpperInvariant();
+            if (upName.Contains("ROOT_HUB") || upName.Contains("USB HUB") ||
+                upName.Contains("MINIPORT") || upName.Contains("VIRTUAL") ||
+                upName.Contains("LOOPBACK") || upName.Contains("WI-FI") ||
+                upName.Contains("WIFI") || upName.Contains("ETHERNET") ||
+                upName.Contains("BLUETOOTH"))
+            {
+                return false;
+            }
+
+            if (upName.Contains("GNSS") || upName.Contains("NMEA") || upName.Contains("AT PORT") ||
+                upName.Contains("DM PORT") || upName.Contains("DIAGNOSTIC") || upName.Contains("LOCATION"))
+            {
+                isAuxiliaryPort = true;
+            }
+
+            if (IsWwanModemName(name) || IsWwanModemName(desc))
+            {
+                return true;
+            }
+
+            StringBuilder allIdsSb = new StringBuilder();
+            if (!string.IsNullOrEmpty(devId)) allIdsSb.Append(devId.ToUpperInvariant()).Append(' ');
+            if (hwIds != null)
+            {
+                for (int i = 0; i < hwIds.Length; i++)
+                {
+                    if (!string.IsNullOrEmpty(hwIds[i]))
+                    {
+                        allIdsSb.Append(hwIds[i].ToUpperInvariant()).Append(' ');
+                    }
+                }
+            }
+            string allIds = allIdsSb.ToString();
+            if (string.IsNullOrWhiteSpace(allIds)) return false;
+
+            if (allIds.Contains("USB\\ROOT_HUB")) return false;
+
+            // Nedvosmisleni WWAN kontroleri
+            if (allIds.Contains("VEN_8086&DEV_7560")) { inferredModel = "Intel XMM 7560 4G LTE"; return true; }
+            if (allIds.Contains("VEN_8086&DEV_7360")) { inferredModel = "Intel XMM 7360 4G LTE"; return true; }
+            if (allIds.Contains("VEN_14C3&DEV_4D75")) { inferredModel = "Fibocom FM350-GL 5G"; return true; }
+            if (allIds.Contains("VID_2CB7")) { inferredModel = "Fibocom WWAN"; return true; }
+            if (allIds.Contains("VID_2C7C") || allIds.Contains("VEN_1EAC")) { inferredModel = "Quectel WWAN"; return true; }
+            if (allIds.Contains("VID_1199")) { inferredModel = "Sierra Wireless WWAN"; return true; }
+
+            // Qualcomm VEN_17CB pravi i Wi-Fi kartice (DEV_1100..1107); isključi Wi-Fi ID-eve
+            if (allIds.Contains("VEN_17CB"))
+            {
+                bool isQualcommWifi =
+                    allIds.Contains("DEV_1100") || allIds.Contains("DEV_1101") ||
+                    allIds.Contains("DEV_1102") || allIds.Contains("DEV_1103") ||
+                    allIds.Contains("DEV_1104") || allIds.Contains("DEV_1107") ||
+                    allIds.Contains("DEV_003E") || allIds.Contains("DEV_0042") ||
+                    IsPhysicalWifiAdapterName(name);
+                if (!isQualcommWifi)
+                {
+                    inferredModel = "Qualcomm Snapdragon WWAN";
+                    return true;
+                }
+            }
+
+            // Foxconn VID_0489 / Dell VID_413C / HP VID_03F0 — strogo samo WWAN PID-evi ili Modem/MBIM kontekst
+            bool isModemOrNet = upClass == "MODEM" || upClass == "NET" ||
+                                (service ?? "").ToUpperInvariant().Contains("MBIM") ||
+                                (service ?? "").ToUpperInvariant().Contains("QMI") ||
+                                upName.Contains("MBIM") || upDesc.Contains("MBIM");
+
+            if (allIds.Contains("VID_0489"))
+            {
+                bool knownFoxconnWwan =
+                    allIds.Contains("PID_E0B4") || allIds.Contains("PID_E0B5") ||
+                    allIds.Contains("PID_E0C3") || allIds.Contains("PID_E0D8") ||
+                    allIds.Contains("PID_E0DA") || allIds.Contains("PID_E0E5") ||
+                    allIds.Contains("PID_E0F5") || isModemOrNet;
+                if (knownFoxconnWwan && !IsPhysicalWifiAdapterName(name))
+                {
+                    inferredModel = "Foxconn WWAN";
+                    return true;
+                }
+            }
+
+            if (allIds.Contains("VID_413C"))
+            {
+                bool knownDellWwan =
+                    allIds.Contains("PID_81B6") || allIds.Contains("PID_81C2") ||
+                    allIds.Contains("PID_81CC") || allIds.Contains("PID_81D7") ||
+                    allIds.Contains("PID_81E0") || allIds.Contains("PID_81E4") ||
+                    allIds.Contains("PID_81E6") || allIds.Contains("PID_81F6") ||
+                    allIds.Contains("PID_8201") || allIds.Contains("PID_8207") ||
+                    (isModemOrNet && !IsPhysicalWifiAdapterName(name));
+                if (knownDellWwan)
+                {
+                    inferredModel = "Dell Wireless WWAN";
+                    return true;
+                }
+            }
+
+            if (allIds.Contains("VID_03F0"))
+            {
+                bool knownHpWwan =
+                    allIds.Contains("PID_0857") || allIds.Contains("PID_0A6C") ||
+                    allIds.Contains("PID_0B6C") || allIds.Contains("PID_066C") ||
+                    allIds.Contains("PID_421D") || allIds.Contains("PID_521D") ||
+                    allIds.Contains("PID_581D") || allIds.Contains("PID_681D") ||
+                    allIds.Contains("PID_9D1D") || allIds.Contains("PID_A31D") ||
+                    (isModemOrNet && !IsPhysicalWifiAdapterName(name));
+                if (knownHpWwan)
+                {
+                    inferredModel = "HP Mobile Broadband";
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsEuiccPnpCandidate(string name, string devId, string pnpClass, string service, uint errCode)
+        {
+            string upSvc = (service ?? "").ToUpperInvariant();
+            string upName = (name ?? "").ToUpperInvariant();
+            string upId = (devId ?? "").ToUpperInvariant();
+
+            if (upId.StartsWith("ROOT\\", StringComparison.OrdinalIgnoreCase) ||
+                upName.Contains("VIRTUAL") || upName.Contains("EMULATOR") || upName.Contains("SIMULATOR"))
+            {
+                return false;
+            }
+
+            if (upSvc == "EUICC") return true;
+            if (upId.Contains("EUICC")) return true;
+
+            if (errCode == 0 &&
+                (upName.Contains("EUICC") ||
+                 upName.Contains("ESIM") ||
+                 upName.Contains("EMBEDDED SIM") ||
+                 upName.Contains("MICROSOFT UICC ISO DEVICE")))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private static string RunNetshCommand(string arguments, int timeoutMs)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "netsh.exe",
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8
+                };
+
+                using (Process proc = new Process { StartInfo = psi })
+                {
+                    StringBuilder output = new StringBuilder();
+                    proc.OutputDataReceived += delegate(object sender, DataReceivedEventArgs e)
+                    {
+                        if (e.Data != null)
+                        {
+                            lock (output)
+                            {
+                                output.AppendLine(e.Data);
+                            }
+                        }
+                    };
+
+                    if (!proc.Start()) return "";
+                    proc.BeginOutputReadLine();
+
+                    if (!proc.WaitForExit(timeoutMs))
+                    {
+                        try { proc.Kill(); } catch { }
+                    }
+                    else
+                    {
+                        // Daj malo vremena asinhronom čitaču da isprazni bafer
+                        proc.WaitForExit(200);
+                    }
+
+                    lock (output)
+                    {
+                        return output.ToString();
+                    }
+                }
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static bool TryParseNetshMbnInterface(string mbnOutput, out string modelDesc, out string dataClass)
+        {
+            modelDesc = "";
+            dataClass = "";
+            if (string.IsNullOrWhiteSpace(mbnOutput)) return false;
+
+            string upper = mbnOutput.ToUpperInvariant();
+            if (upper.Contains("THERE IS NO MOBILE BROADBAND INTERFACE") ||
+                upper.Contains("NO MOBILE BROADBAND INTERFACE") ||
+                upper.Contains("NOT RUNNING") ||
+                upper.Contains("NIJE POKRENUT"))
+            {
+                return false;
+            }
+
+            string desc = "";
+            string model = "";
+            string mfg = "";
+            string cls = "";
+            bool hasInterfaceFields = false;
+
+            string[] lines = mbnOutput.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                int colonIdx = line.IndexOf(':');
+                if (colonIdx <= 0) continue;
+
+                string key = line.Substring(0, colonIdx).Trim().ToUpperInvariant();
+                string val = line.Substring(colonIdx + 1).Trim();
+                if (string.IsNullOrEmpty(val)) continue;
+
+                if (key == "DESCRIPTION")
+                {
+                    desc = val;
+                    hasInterfaceFields = true;
+                }
+                else if (key == "MODEL")
+                {
+                    model = val;
+                    hasInterfaceFields = true;
+                }
+                else if (key == "MANUFACTURER")
+                {
+                    mfg = val;
+                    hasInterfaceFields = true;
+                }
+                else if (key == "DATA CLASS")
+                {
+                    cls = val;
+                    hasInterfaceFields = true;
+                }
+                else if (key == "DEVICE ID" || key == "PHYSICAL ADDRESS")
+                {
+                    hasInterfaceFields = true;
+                }
+            }
+
+            if (!hasInterfaceFields) return false;
+
+            dataClass = cls;
+            if (!string.IsNullOrEmpty(desc) && desc.IndexOf("Generic", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                modelDesc = desc;
+            }
+            else if (!string.IsNullOrEmpty(mfg) && !string.IsNullOrEmpty(model))
+            {
+                modelDesc = mfg + " " + model;
+            }
+            else if (!string.IsNullOrEmpty(model))
+            {
+                modelDesc = model;
+            }
+            else
+            {
+                modelDesc = desc;
+            }
+
+            return true;
+        }
+
+        private static void DetectEsimSupport(
+            bool hasWwan,
+            string wwanAdapterName,
+            string wwanDeviceIds,
+            string mbnInterfacesOutput,
+            List<string> pnpEuiccHints,
+            out bool hasEsim,
+            out string esimInfo)
+        {
+            hasEsim = false;
+            esimInfo = "";
+
+            // 1. Primarno (a): Win32_PnPEntity (eUICC / eSIM / Embedded SIM / Microsoft UICC ISO Device)
+            if (pnpEuiccHints != null && pnpEuiccHints.Count > 0)
+            {
+                hasEsim = true;
+                esimInfo = string.Format(LocalizationService.Get("HwEsimSupportedPnp", "Podržan eSIM (PnP: {0})"), pnpEuiccHints[0]);
+                return;
+            }
+
+            // 2. Primarno (b): netsh mbn show interfaces + show readyinfo (samo ako postoji WWAN/MBN interfejs)
+            bool hasMbnInterface = !string.IsNullOrWhiteSpace(mbnInterfacesOutput) &&
+                mbnInterfacesOutput.IndexOf("no Mobile Broadband interface", StringComparison.OrdinalIgnoreCase) < 0 &&
+                mbnInterfacesOutput.IndexOf("not running", StringComparison.OrdinalIgnoreCase) < 0;
+
+            if (hasMbnInterface || hasWwan)
+            {
+                string readyOutput = hasMbnInterface ? RunNetshCommand("mbn show readyinfo interface=*", 3000) : "";
+                string combinedMbn = (mbnInterfacesOutput ?? "") + "\n" + (readyOutput ?? "");
+                string mbnReason;
+                if (HasEsimIndicatorInMbnOutput(combinedMbn, out mbnReason))
+                {
+                    hasEsim = true;
+                    esimInfo = mbnReason;
+                    return;
+                }
+            }
+
+            // 3. Primarno (c): Registry HKLM\SOFTWARE\Microsoft\WwanSvc\Interfaces (EmbeddedSim / EID / eUICC)
+            string regReason;
+            if (TryDetectEsimFromWwanSvcRegistry(out regReason))
+            {
+                hasEsim = true;
+                esimInfo = regReason;
+                return;
+            }
+
+            // 4. Sekundarno: poznati eSIM-sposobni WWAN moduli — STROGO samo ako je fizička 4G/5G WWAN kartica prisutna
+            if (hasWwan)
+            {
+                string combinedWwan = ((wwanAdapterName ?? "") + " " + (wwanDeviceIds ?? "") + " " + (mbnInterfacesOutput ?? "")).ToUpperInvariant();
+                string[] knownEsimModules = new string[]
+                {
+                    "FM350-GL", "L860-GL-16", "EM05-G", "EM120R-GL", "EM160R-GL",
+                    "RM520N-GL", "T99W175", "T99W373", "DW5930E", "DW5931E",
+                    "DW5821E", "EM9190"
+                };
+                for (int i = 0; i < knownEsimModules.Length; i++)
+                {
+                    if (combinedWwan.Contains(knownEsimModules[i]))
+                    {
+                        hasEsim = true;
+                        esimInfo = string.Format(LocalizationService.Get("HwEsimSupportedWwan", "Podržan eSIM (WWAN modul {0})"), knownEsimModules[i]);
+                        return;
+                    }
+                }
+            }
+        }
+
+        private static bool HasEsimIndicatorInMbnOutput(string mbnText, out string reason)
+        {
+            reason = "";
+            if (string.IsNullOrWhiteSpace(mbnText)) return false;
+
+            string[] lines = mbnText.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                int colon = line.IndexOf(':');
+                if (colon <= 0) continue;
+
+                string key = line.Substring(0, colon).Trim().ToUpperInvariant();
+                string val = line.Substring(colon + 1).Trim();
+                if (string.IsNullOrEmpty(val)) continue;
+                string upVal = val.ToUpperInvariant();
+
+                if (key == "EID" || key.Contains("EUICC ID"))
+                {
+                    if (IsValidEidString(val))
+                    {
+                        reason = LocalizationService.Get("HwEsimSupportedEid", "Podržan eSIM (EID detektovan)");
+                        return true;
+                    }
+                }
+                else if (key.Contains("EMBEDDED") || key.Contains("ESIM") || key.Contains("EUICC"))
+                {
+                    if (upVal == "YES" || upVal == "TRUE" || upVal == "1" || upVal.Contains("SUPPORTED") || upVal.Contains("EMBEDDED"))
+                    {
+                        reason = LocalizationService.Get("HwEsimSupportedEuiccSlot", "Podržan eSIM (eUICC slot)");
+                        return true;
+                    }
+                }
+                else if (key.Contains("SLOT") && (upVal.Contains("EMBEDDED") || upVal.Contains("EUICC") || upVal.Contains("ESIM")))
+                {
+                    reason = LocalizationService.Get("HwEsimSupportedEmbeddedSlot", "Podržan eSIM (Embedded SIM slot)");
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsValidEidString(string val)
+        {
+            if (string.IsNullOrWhiteSpace(val)) return false;
+            string clean = val.Trim();
+            string up = clean.ToUpperInvariant();
+            if (up.Contains("NOT AVAILABLE") || up.Contains("NOT SUPPORTED") || up == "NONE" || up == "N/A" || up == "UNKNOWN")
+            {
+                return false;
+            }
+            int hexDigits = 0;
+            bool allZeros = true;
+            for (int i = 0; i < clean.Length; i++)
+            {
+                char ch = clean[i];
+                if ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))
+                {
+                    hexDigits++;
+                    if (ch != '0') allZeros = false;
+                }
+            }
+            return hexDigits >= 16 && !allZeros;
+        }
+
+        private static bool TryDetectEsimFromWwanSvcRegistry(out string reason)
+        {
+            reason = "";
+            try
+            {
+                using (RegistryKey root = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\WwanSvc\Interfaces"))
+                {
+                    if (root == null) return false;
+                    string[] subNames = root.GetSubKeyNames();
+                    for (int i = 0; i < subNames.Length; i++)
+                    {
+                        using (RegistryKey ifaceKey = root.OpenSubKey(subNames[i]))
+                        {
+                            if (ScanWwanSvcKeyForEsim(ifaceKey, 0, out reason))
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private static bool ScanWwanSvcKeyForEsim(RegistryKey key, int depth, out string reason)
+        {
+            reason = "";
+            if (key == null || depth > 3) return false;
+
+            try
+            {
+                string[] valNames = key.GetValueNames();
+                for (int i = 0; i < valNames.Length; i++)
+                {
+                    string vn = valNames[i] ?? "";
+                    string upVn = vn.ToUpperInvariant();
+                    object raw = key.GetValue(vn);
+                    if (raw == null) continue;
+
+                    if (upVn == "EID" || upVn.Contains("UICCEID") || upVn.Contains("EUICC"))
+                    {
+                        byte[] rawBytes = raw as byte[];
+                        string strVal = rawBytes != null
+                            ? BitConverter.ToString(rawBytes).Replace("-", "")
+                            : raw.ToString();
+                        if (IsValidEidString(strVal))
+                        {
+                            reason = LocalizationService.Get("HwEsimSupportedWwanSvcEid", "Podržan eSIM (WwanSvc EID)");
+                            return true;
+                        }
+                    }
+
+                    if (upVn == "EMBEDDEDSIM" || upVn == "ISEMBEDDEDSIM" || upVn == "ISEMBEDDED")
+                    {
+                        int num = 0;
+                        if (int.TryParse(raw.ToString(), out num) && num == 1)
+                        {
+                            reason = LocalizationService.Get("HwEsimSupportedWwanSvcEmbedded", "Podržan eSIM (WwanSvc EmbeddedSim)");
+                            return true;
+                        }
+                        if (string.Equals(raw.ToString(), "True", StringComparison.OrdinalIgnoreCase))
+                        {
+                            reason = LocalizationService.Get("HwEsimSupportedWwanSvcEmbedded", "Podržan eSIM (WwanSvc EmbeddedSim)");
+                            return true;
+                        }
+                    }
+                }
+
+                string[] subKeys = key.GetSubKeyNames();
+                for (int i = 0; i < subKeys.Length; i++)
+                {
+                    string subName = subKeys[i] ?? "";
+                    using (RegistryKey sk = key.OpenSubKey(subName))
+                    {
+                        if (sk == null) continue;
+                        if (ScanWwanSvcKeyForEsim(sk, depth + 1, out reason))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         private static bool IsWwanModemName(string name)
@@ -1571,26 +2892,30 @@ namespace WIS.UI
                 return false;
             }
             return s.Contains("WWAN") || s.Contains("MOBILE BROADBAND") || s.Contains("CELLULAR") ||
-                   s.Contains("4G LTE") || s.Contains("5G MODEM") || s.Contains("LTE ") || s.Contains(" LTE") ||
+                   s.Contains("4G LTE") || s.Contains("5G MODEM") || s.Contains("5G NR") ||
+                   s.Contains("MBIM") || s.Contains("LTE ") || s.Contains(" LTE") ||
                    s.Contains("FIBOCOM") || s.Contains("QUECTEL") || s.Contains("SIERRA WIRELESS") ||
                    s.Contains("XMM 7") || s.Contains("XMM7") ||
+                   Regex.IsMatch(s, @"\b(HP\s+LT4[12]|LT4[12]\d*|EM0[56]|EM12\d*|EM160\S*)\b") ||
                    s.Contains("DW58") || s.Contains("DW59") || s.Contains("T77W") || s.Contains("T99W") ||
                    s.Contains("EM74") || s.Contains("EM75") || s.Contains("EM91") ||
                    s.Contains("FM350") || s.Contains("FM101") || s.Contains("L850") || s.Contains("L860") ||
                    s.Contains("RM520") || s.Contains("SNAPDRAGON X55") || s.Contains("SNAPDRAGON X62") ||
-                   s.Contains("SNAPDRAGON X65");
+                   s.Contains("SNAPDRAGON X65") || s.Contains("SNAPDRAGON X20") || s.Contains("SNAPDRAGON X24");
         }
 
-        private static string FormatWwanLabel(string rawName)
+        private static string FormatWwanLabel(string rawName, string mbnDataClass = "")
         {
             string raw = (rawName ?? "").Trim();
             string s = raw.ToUpperInvariant();
+            string upData = (mbnDataClass ?? "").ToUpperInvariant();
 
-            bool is5G = s.Contains("5G") || s.Contains("FM350") || s.Contains("RM520") ||
+            bool is5G = upData.Contains("5G") || Regex.IsMatch(upData, @"\bNR\b") ||
+                        s.Contains("5G") || s.Contains("FM350") || s.Contains("RM520") ||
                         s.Contains("EM9190") || s.Contains("DW5930") || s.Contains("DW5931") ||
-                        s.Contains("T99W175") || s.Contains("T99W373") ||
+                        s.Contains("DW5932") || s.Contains("T99W175") || s.Contains("T99W373") ||
                         s.Contains("X55") || s.Contains("X62") || s.Contains("X65");
-            string genLabel = is5G ? "5G modem" : "4G LTE modem";
+            string genShort = is5G ? "5G" : "4G LTE";
 
             string brand = "";
             if (s.Contains("FIBOCOM")) brand = "Fibocom";
@@ -1599,15 +2924,20 @@ namespace WIS.UI
             else if (s.Contains("INTEL") || s.Contains("XMM")) brand = "Intel";
             else if (s.Contains("SNAPDRAGON") || s.Contains("QUALCOMM")) brand = "Qualcomm";
             else if (s.Contains("DELL") || s.Contains("DW58") || s.Contains("DW59")) brand = "Dell";
+            else if (s.Contains("HP ") || s.Contains("LT41") || s.Contains("LT42")) brand = "HP";
+            else if (s.Contains("FOXCONN") || s.Contains("T77W") || s.Contains("T99W")) brand = "Foxconn";
 
             string[] models = new string[]
             {
-                "FM350", "FM101", "L860", "L850", "RM520",
-                "EM9190", "EM7565", "EM7455", "EM7430", "EM160", "EM120",
-                "DW5931E", "DW5930E", "DW5931", "DW5930", "DW5821E", "DW5820E", "DW5821", "DW5820",
+                "FM350-GL", "FM350", "FM101",
+                "L860-GL-16", "L860-GL", "L860", "L850-GL", "L850",
+                "RM520N-GL", "RM520",
+                "EM9190", "EM7565", "EM7455", "EM7430", "EM160R-GL", "EM160", "EM120R-GL", "EM120", "EM12", "EM06", "EM05-G", "EM05",
+                "DW5932", "DW5931E", "DW5930E", "DW5931", "DW5930", "DW5829", "DW5821E", "DW5820E", "DW5821", "DW5820", "DW5814", "DW5811",
                 "T99W373", "T99W175", "T77W968",
+                "LT4211", "LT4210", "LT4132", "LT4120", "LT42", "LT41",
                 "XMM 7560", "XMM 7360", "XMM7560", "XMM7360",
-                "X65", "X62", "X55"
+                "X65", "X62", "X55", "X24", "X20"
             };
             string model = "";
             for (int i = 0; i < models.Length; i++)
@@ -1622,9 +2952,9 @@ namespace WIS.UI
             if (!string.IsNullOrEmpty(model))
             {
                 string detail = string.IsNullOrEmpty(brand) ? model : (brand + " " + model);
-                return string.Format("{0} ({1})", genLabel, detail);
+                return string.Format("{0} ({1})", genShort, detail);
             }
-            return genLabel;
+            return is5G ? "5G kartica" : "4G LTE kartica";
         }
 
         private static bool IsPhysicalWifiAdapterName(string name)

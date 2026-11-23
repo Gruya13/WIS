@@ -724,58 +724,65 @@ function Get-HardwareDiagnosticsInfo {
         }
     } catch {}
 
-    # Svetleća tastatura (HW-06 - OEM WMI upiti i trostepeni status za laptopove)
+    # Svetleća tastatura (V343-04: apsolutni prioritet hwtest-result.json -> stroga PnP provera bez laznih WMI/BIOS detektora)
     $hasBacklit = $false
     $backlitStatus = "Standardna (Bez osvetljenja)"
+    $backlitDecidedByHwTest = $false
     try {
-        # 1. PnP pretraga
-        $kbPnp = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-            ($_.Name -match '(?i)Backlight|Illuminated|RGB Keyboard' -or
-             $_.Service -match '(?i)KbdBacklight|Backlight' -or
-             $_.DeviceID -match '(?i)DELLABCE|LEN0071')
+        $hwTestCandidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($Global:LocalSetupDir)) {
+            $hwTestCandidates += (Join-Path $Global:LocalSetupDir "hwtest-result.json")
         }
-        if ($kbPnp) {
-            $hasBacklit = $true
-            $backlitStatus = "Da (Pozadinsko osvetljenje)"
-        }
+        $hwTestCandidates += "C:\setup\hwtest-result.json"
+        $hwTestCandidates += "C:\Windows\Logs\WIS\hwtest-result.json"
 
-        # 2. Lenovo WMI
-        if (-not $hasBacklit) {
-            try {
-                $lenovoKb = Get-CimInstance -Namespace root\WMI -ClassName Lenovo_SetKeyboardBacklightStatus -ErrorAction SilentlyContinue
-                if ($lenovoKb) {
-                    $hasBacklit = $true
-                    $backlitStatus = "Da (Pozadinsko osvetljenje)"
+        foreach ($hwResPath in ($hwTestCandidates | Select-Object -Unique)) {
+            if (-not $hwResPath -or -not (Test-Path -LiteralPath $hwResPath -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+            $rawHwRes = Get-Content -LiteralPath $hwResPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($rawHwRes)) { continue }
+            $parsedHwRes = ConvertFrom-Json -InputObject $rawHwRes -ErrorAction SilentlyContinue
+            if (-not $parsedHwRes -or -not $parsedHwRes.tests) { continue }
+
+            $kbdTest = @($parsedHwRes.tests) | Where-Object { $_ -and "$($_.id)".Trim().ToLowerInvariant() -eq "keyboard" } | Select-Object -First 1
+            if ($kbdTest -and $kbdTest.details) {
+                $blProp = $kbdTest.details.PSObject.Properties["backlight_passed"]
+                if ($blProp) {
+                    $blNorm = if ($null -ne $blProp.Value) { ("$($blProp.Value)").Trim().ToLowerInvariant() } else { "" }
+                    if ($blNorm -eq "true") {
+                        $hasBacklit = $true
+                        $backlitStatus = "Da (Pozadinsko osvetljenje)"
+                        $backlitDecidedByHwTest = $true
+                    } elseif ($blNorm -eq "no_hardware") {
+                        $hasBacklit = $false
+                        $backlitStatus = "Standardna (Bez osvetljenja)"
+                        $backlitDecidedByHwTest = $true
+                    } elseif ($blNorm -eq "false") {
+                        $hasBacklit = $false
+                        $backlitStatus = "Nije potvrđeno (Test osvetljenja nije prošao)"
+                        $backlitDecidedByHwTest = $true
+                    }
                 }
-            } catch {}
+            }
+            if ($backlitDecidedByHwTest) { break }
         }
 
-        # 3. Dell WMI
-        if (-not $hasBacklit) {
-            try {
-                $dellKb = Get-CimInstance -Namespace root\dcim\sysman -ClassName DCIM_BiosEnumeration -Filter "AttributeName LIKE '%Keyboard%Backlight%'" -ErrorAction SilentlyContinue
-                if ($dellKb) {
-                    $hasBacklit = $true
-                    $backlitStatus = "Da (Pozadinsko osvetljenje)"
+        if (-not $backlitDecidedByHwTest) {
+            # Samo namenski PnP/HID kontroler osvetljenja tastature sa error kodom 0 (uklonjeni genericki hotkey/wireless PnP ID-evi i lažni WMI/BIOS upiti)
+            $kbPnp = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
+                ([int]$_.ConfigManagerErrorCode -eq 0) -and (
+                    ($_.Name -match '(?i)(Keyboard.*Backlight|Backlit.*Keyboard|Illuminated.*Keyboard|RGB Keyboard)') -or
+                    ($_.Service -match '(?i)^KbdBacklight$')
+                )
+            }
+            if ($kbPnp) {
+                $hasBacklit = $true
+                $backlitStatus = "Da (Pozadinsko osvetljenje)"
+            } else {
+                $isLap = (Test-BatteryPresent)
+                if ($isLap) {
+                    $backlitStatus = "Nije potvrđeno (provera u Fazi 5)"
                 }
-            } catch {}
-        }
-
-        # 4. HP WMI
-        if (-not $hasBacklit) {
-            try {
-                $hpKb = Get-CimInstance -Namespace root\hp\instrumentedBIOS -ClassName HP_BIOSSetting -Filter "Name LIKE '%Backlit%'" -ErrorAction SilentlyContinue
-                if ($hpKb) {
-                    $hasBacklit = $true
-                    $backlitStatus = "Da (Pozadinsko osvetljenje)"
-                }
-            } catch {}
-        }
-
-        # Trostepeni fallback za laptopove gde WMI nije izložen
-        $isLap = (Test-BatteryPresent)
-        if (-not $hasBacklit -and $isLap) {
-            $backlitStatus = "Standardna / Proveri ručno (Fn+Space)"
+            }
         }
     } catch {}
 

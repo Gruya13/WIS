@@ -129,14 +129,20 @@ def estimate_usb_port_count(manufacturer: str = "", model: str = "", is_desktop:
 def _parse_keyboard_from_bom(
     primary_entries: List[Tuple[str, str]],
     secondary_entries: List[Tuple[str, str]],
-) -> Tuple[Optional[bool], Optional[bool], str]:
-    """Parsira podatke o tastaturi; ISO/ANSI isključivo iz primary_entries (unit_configuration)."""
+    source: str = "",
+) -> Tuple[Optional[bool], Optional[bool], str, Optional[bool], str]:
+    """Parsira podatke o tastaturi; ISO/ANSI i HP non-backlit zaključak isključivo iz primary_entries (unit_configuration)."""
     kbd_iso: Optional[bool] = None
     kbd_numpad: Optional[bool] = None
     kbd_desc = ""
+    kbd_backlight: Optional[bool] = None
+    kbd_backlight_ev = ""
+    is_hp_bom = "hp" in (source or "").lower()
+    saw_primary_kbd = False
+    primary_kbd_ev = ""
 
-    def _scan(entries: List[Tuple[str, str]], allow_iso: bool) -> None:
-        nonlocal kbd_iso, kbd_numpad, kbd_desc
+    def _scan(entries: List[Tuple[str, str]], allow_iso: bool, is_primary_scan: bool = False) -> None:
+        nonlocal kbd_iso, kbd_numpad, kbd_desc, kbd_backlight, kbd_backlight_ev, saw_primary_kbd, primary_kbd_ev
         for pn, desc in entries:
             txt = (desc or "").strip()
             if not txt:
@@ -147,6 +153,7 @@ def _parse_keyboard_from_bom(
                 "KEYBOARD" in up
                 or "TOP COVER WITH KEYBOARD" in up
                 or bool(re.search(r"\bKBD[A-Z0-9]*\b", up))
+                or bool(re.search(r"\bKYBD[A-Z0-9]*\b", up))
                 or bool(re.search(r"\bKEYB\b", up))
             )
             if not looks_like_kbd:
@@ -155,6 +162,33 @@ def _parse_keyboard_from_bom(
                 continue
             if len(txt) > len(kbd_desc):
                 kbd_desc = txt
+            if is_primary_scan:
+                saw_primary_kbd = True
+                if len(txt) >= len(primary_kbd_ev):
+                    primary_kbd_ev = f"{pn} {txt}".strip()
+            if kbd_backlight is None:
+                ev_str = f"{pn} {txt}".strip()
+                is_explicit_no_bl = (
+                    any(nb in up for nb in (
+                        "NON-BACKLIT", "NON BACKLIT", "NONBACKLIT", "NOT BACKLIT",
+                        "WITHOUT BACKLIGHT", "W/O BACKLIGHT", "NO BACKLIGHT",
+                        "W/O BL", "WO/BL", "NO BL",
+                    ))
+                    or bool(re.search(r"\bNBL\b", up))
+                )
+                is_positive_bl = (
+                    any(pb in up for pb in (
+                        "BACKLIT", "BACKLIGHT", "ILLUMINATED", "BL-RGB", "BLGT", "W/BL",
+                    ))
+                    or bool(re.search(r"\bRGB\b", up))
+                    or (is_hp_bom and bool(re.search(r"\bBL\b", up)))
+                )
+                if is_explicit_no_bl:
+                    kbd_backlight = False
+                    kbd_backlight_ev = f"Non-backlit BOM: {ev_str}"
+                elif is_positive_bl:
+                    kbd_backlight = True
+                    kbd_backlight_ev = ev_str
             if kbd_numpad is None:
                 if any(nk in up for nk in ("NO KEYPAD", "WITHOUT KEYPAD", "W/O KP", "NO NUMPAD")) or re.search(r"\bNKP\b", up):
                     kbd_numpad = False
@@ -176,13 +210,16 @@ def _parse_keyboard_from_bom(
                     kbd_iso = False
 
     if primary_entries:
-        _scan(primary_entries, True)
+        _scan(primary_entries, True, is_primary_scan=True)
+        if kbd_backlight is None and is_hp_bom and saw_primary_kbd:
+            kbd_backlight = False
+            kbd_backlight_ev = f"HP primary BOM bez BL oznake: {primary_kbd_ev}"
         if not kbd_desc:
-            _scan(secondary_entries, False)
+            _scan(secondary_entries, False, is_primary_scan=False)
     else:
-        _scan(secondary_entries, False)
+        _scan(secondary_entries, False, is_primary_scan=False)
 
-    return kbd_iso, kbd_numpad, kbd_desc
+    return kbd_iso, kbd_numpad, kbd_desc, kbd_backlight, kbd_backlight_ev
 
 
 def _evaluate_bom_entries(
@@ -193,7 +230,7 @@ def _evaluate_bom_entries(
 ) -> Dict[str, Any]:
     total = len(primary_entries) + len(secondary_entries)
     res: Dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "bom_loaded": total > 0,
         "source": source,
         "summary": f"{source} ({total} delova)" if total > 0 else "",
@@ -210,6 +247,8 @@ def _evaluate_bom_entries(
         "has_microphone": None,
         "has_keyboard_iso": None,
         "has_keyboard_numpad": None,
+        "has_keyboard_backlight": None,
+        "keyboard_backlight_evidence": "",
         "keyboard_desc": "",
     }
     if total == 0:
@@ -286,9 +325,13 @@ def _evaluate_bom_entries(
     if has_cam and res["has_microphone"] is None and not is_desktop:
         res["has_microphone"] = True
 
-    kbd_iso, kbd_numpad, kbd_desc = _parse_keyboard_from_bom(primary_entries, secondary_entries)
+    kbd_iso, kbd_numpad, kbd_desc, kbd_bl, kbd_bl_ev = _parse_keyboard_from_bom(
+        primary_entries, secondary_entries, source=source
+    )
     res["has_keyboard_iso"] = kbd_iso
     res["has_keyboard_numpad"] = kbd_numpad
+    res["has_keyboard_backlight"] = kbd_bl
+    res["keyboard_backlight_evidence"] = kbd_bl_ev
     res["keyboard_desc"] = kbd_desc
 
     return res
@@ -337,7 +380,7 @@ def resolve_hardware_spec(
         try:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cached = json.load(f)
-            if cached.get("bom_loaded") and cached.get("schema_version") == 2:
+            if cached.get("bom_loaded") and cached.get("schema_version") == 3:
                 cached["source"] = f"{cached.get('source', 'bom')} (hub_cache)"
                 cached.setdefault("usb_port_count", estimate_usb_port_count(manufacturer, model, is_desktop))
                 return cached
@@ -423,7 +466,7 @@ def resolve_hardware_spec(
             touch_guess = False
             touch_ev = "Desktop šasija"
         spec = {
-            "schema_version": 2,
+            "schema_version": 3,
             "bom_loaded": False,
             "source": "offline_heuristic",
             "summary": "Offline heuristika",
@@ -440,6 +483,8 @@ def resolve_hardware_spec(
             "has_microphone": False if is_desktop else None,
             "has_keyboard_iso": None,
             "has_keyboard_numpad": None,
+            "has_keyboard_backlight": None,
+            "keyboard_backlight_evidence": "",
             "keyboard_desc": "",
         }
 

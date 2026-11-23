@@ -67,13 +67,15 @@ namespace WIS.HwTest.Tests
         {
             _onRequestUefiBiosReboot = onRequestUefiBiosReboot;
             _showBiosRebootHint = showBiosRebootHint;
-            Title = "WIS — Test Mikrofona";
+            Title = HwTestLocalization.Pick("WIS — Test Mikrofona", "WIS — 麦克风测试");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
             Topmost = true;
 
-            Result = new TestItemResult("mic", "Mikrofon", "Ispitivanje mikrofona, VU metar i automatska reprodukcija 3s snimka");
+            Result = new TestItemResult("mic",
+                HwTestLocalization.Pick("Mikrofon", "麦克风"),
+                HwTestLocalization.Pick("Ispitivanje mikrofona, VU metar i automatska reprodukcija 3s snimka", "麦克风检测、音量表及自动录音回放测试"));
 
             Grid root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(80) });
@@ -89,7 +91,7 @@ namespace WIS.HwTest.Tests
             DockPanel headerDock = new DockPanel();
             TextBlock title = new TextBlock
             {
-                Text = "🎤 TEST MIKROFONA (VU METAR I AUTOMATSKI SNIMAK)",
+                Text = HwTestLocalization.Pick("🎤 TEST MIKROFONA (VU METAR I AUTOMATSKI SNIMAK)", "🎤 麦克风测试（音量表与自动录音）"),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
@@ -107,7 +109,7 @@ namespace WIS.HwTest.Tests
             };
             _micSelectPanel.Children.Add(new TextBlock
             {
-                Text = "Ulazni uređaj: ",
+                Text = HwTestLocalization.Pick("Ulazni uređaj: ", "输入设备: "),
                 Foreground = new SolidColorBrush(Color.FromRgb(185, 190, 200)),
                 FontSize = 13,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -142,7 +144,7 @@ namespace WIS.HwTest.Tests
             StackPanel spC = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
             _statusText = new TextBlock
             {
-                Text = "Recite nešto u mikrofon ili pucnite prstima...",
+                Text = HwTestLocalization.Pick("Recite nešto u mikrofon ili pucnite prstima...", "请对着麦克风说话或打响指..."),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -167,7 +169,7 @@ namespace WIS.HwTest.Tests
 
             _dbfsText = new TextBlock
             {
-                Text = "Nivo signala: -60 dBFS (Prag za automatsko snimanje: > -44 dBFS)",
+                Text = HwTestLocalization.Pick("Nivo signala: -60 dBFS (Prag za automatsko snimanje: > -44 dBFS)", "信号电平: -60 dBFS（自动录音阈值: > -44 dBFS）"),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 180)),
                 TextAlignment = TextAlignment.Center,
@@ -178,7 +180,7 @@ namespace WIS.HwTest.Tests
             StackPanel spButtons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center };
             _btnPass = new Button
             {
-                Content = "✓ Potvrdi sada (PASS)",
+                Content = HwTestLocalization.Pick("✓ Potvrdi sada (PASS)", "✓ 立即确认通过 (PASS)"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -191,7 +193,7 @@ namespace WIS.HwTest.Tests
 
             _btnFail = new Button
             {
-                Content = "✗ Mikrofon ne radi (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Mikrofon ne radi (FAIL)", "✗ 麦克风故障 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -204,7 +206,7 @@ namespace WIS.HwTest.Tests
 
             _btnRecordManual = new Button
             {
-                Content = "⏺️ Snimi ponovo 2s",
+                Content = HwTestLocalization.Pick("⏺️ Snimi ponovo 2s", "⏺️ 重新录音 2 秒"),
                 Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -223,7 +225,7 @@ namespace WIS.HwTest.Tests
 
             _btnReplay = new Button
             {
-                Content = "🔊 Preslušaj snimak 2s",
+                Content = HwTestLocalization.Pick("🔊 Preslušaj snimak 2s", "🔊 回放 2 秒录音"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 Padding = new Thickness(15, 10, 15, 10),
@@ -250,7 +252,8 @@ namespace WIS.HwTest.Tests
             DockPanel footerDock = new DockPanel();
             TextBlock biosHintLabel = new TextBlock
             {
-                Text = "⚠️ Mikrofon je onemogućen u BIOS-u ili nedostaje uprkos OEM BOM-u (HP: F10, Lenovo: F1, Dell: F2).",
+                Text = HwTestLocalization.Pick("⚠️ Mikrofon je onemogućen u BIOS-u ili nedostaje uprkos OEM BOM-u (HP: F10, Lenovo: F1, Dell: F2).",
+                    "⚠️ 尽管出厂 BOM 包含麦克风，但其在 BIOS 中被禁用或缺失（HP: F10, Lenovo: F1, Dell: F2）。"),
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
@@ -262,7 +265,7 @@ namespace WIS.HwTest.Tests
 
             Button btnUefiBios = new Button
             {
-                Content = "🔧 Restartuj u UEFI BIOS (i nastavi WIS)",
+                Content = HwTestLocalization.Pick("🔧 Restartuj u UEFI BIOS (i nastavi WIS)", "🔧 重启进入 UEFI BIOS（之后继续 WIS）"),
                 Background = new SolidColorBrush(Color.FromRgb(217, 119, 6)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -283,7 +286,7 @@ namespace WIS.HwTest.Tests
 
             Loaded += (s, e) => {
                 _btnRecordManual.IsEnabled = false;
-                _statusText.Text = "⏳ Inicijalizacija audio ulaza (mikrofon)...";
+                _statusText.Text = HwTestLocalization.Pick("⏳ Inicijalizacija audio ulaza (mikrofon)...", "⏳ 正在初始化音频输入设备（麦克风）...");
                 _statusText.Foreground = Brushes.White;
                 StartMicInitAsync(true);
             };
@@ -367,7 +370,7 @@ namespace WIS.HwTest.Tests
                 catch (Exception ex)
                 {
                     HwTestLogger.Error("MIC", "StartMicInitAsync exception: " + ex.Message);
-                    UpdateStatusSafe("⚠ Greška pri pokretanju mikrofona: " + ex.Message, Color.FromRgb(220, 53, 69), false);
+                    UpdateStatusSafe(HwTestLocalization.Pick("⚠ Greška pri pokretanju mikrofona: ", "⚠ 启动麦克风失败: ") + ex.Message, Color.FromRgb(220, 53, 69), false);
                 }
             });
             initThread.IsBackground = true;
@@ -405,7 +408,7 @@ namespace WIS.HwTest.Tests
             choices.Add(new MicDeviceChoice
             {
                 DeviceId = NativeMethods.WAVE_MAPPER,
-                Label = "Podrazumevani mikrofon (Windows Mapper)"
+                Label = HwTestLocalization.Pick("Podrazumevani mikrofon (Windows Mapper)", "默认麦克风 (Windows Mapper)")
             });
 
             try
@@ -415,7 +418,7 @@ namespace WIS.HwTest.Tests
                 for (uint i = 0; i < numDevs; i++)
                 {
                     NativeMethods.WAVEINCAPSW caps;
-                    string devName = string.Format("Mikrofon #{0}", i + 1);
+                    string devName = HwTestLocalization.PickFormat("Mikrofon #{0}", "麦克风 #{0}", i + 1);
                     if (NativeMethods.waveInGetDevCaps((IntPtr)i, out caps, capsSize) == 0 && !string.IsNullOrEmpty(caps.szPname))
                     {
                         devName = caps.szPname.Trim();
@@ -452,7 +455,7 @@ namespace WIS.HwTest.Tests
             _btnReplay.IsEnabled = false;
             _btnRecordManual.IsEnabled = false;
             _statusText.Foreground = Brushes.White;
-            _statusText.Text = "Prebačeno na: " + choice.Label + " — inicijalizacija...";
+            _statusText.Text = HwTestLocalization.PickFormat("Prebačeno na: {0} — inicijalizacija...", "已切换至: {0} — 正在初始化...", choice.Label);
 
             StartMicInitAsync(false);
         }
@@ -469,7 +472,7 @@ namespace WIS.HwTest.Tests
                     HwTestLogger.Info("MIC", "waveInGetNumDevs=" + numDevs + " | SelectedDeviceId=" + _selectedDeviceId);
                     if (numDevs == 0)
                     {
-                        UpdateStatusSafe("⚠ Nije detektovan nijedan ulazni audio uređaj (mikrofon).", Color.FromRgb(220, 53, 69), false);
+                        UpdateStatusSafe(HwTestLocalization.Pick("⚠ Nije detektovan nijedan ulazni audio uređaj (mikrofon).", "⚠ 未检测到任何音频输入设备（麦克风）。"), Color.FromRgb(220, 53, 69), false);
                         return;
                     }
 
@@ -502,8 +505,9 @@ namespace WIS.HwTest.Tests
 
                     if (openRes != 0 || _hwi == IntPtr.Zero)
                     {
-                        string err = string.Format("waveInOpen neuspešan (MMSYSERR={0}). Proverite privatnost mikrofona u Windowsu.", openRes);
-                        HwTestLogger.Error("MIC", err);
+                        string err = HwTestLocalization.PickFormat("waveInOpen neuspešan (MMSYSERR={0}). Proverite privatnost mikrofona u Windowsu.",
+                            "waveInOpen 失败 (MMSYSERR={0})。请检查 Windows 麦克风隐私权限。", openRes);
+                        HwTestLogger.Error("MIC", string.Format("waveInOpen neuspešan (MMSYSERR={0}).", openRes));
                         UpdateStatusSafe("⚠ " + err, Color.FromRgb(220, 53, 69), false);
                         return;
                     }
@@ -529,19 +533,19 @@ namespace WIS.HwTest.Tests
 
                     if (sRes != 0)
                     {
-                        UpdateStatusSafe(string.Format("⚠ waveInStart neuspešan (code={0}).", sRes), Color.FromRgb(220, 53, 69), false);
+                        UpdateStatusSafe(HwTestLocalization.PickFormat("⚠ waveInStart neuspešan (code={0}).", "⚠ waveInStart 失败 (code={0})。", sRes), Color.FromRgb(220, 53, 69), false);
                         return;
                     }
 
                     _isClosing = false;
                     _captureThread = new Thread(CaptureLoop) { IsBackground = true };
                     _captureThread.Start();
-                    UpdateStatusSafe("Recite nešto glasno u mikrofon (npr. 'Test jedan dva tri')...", Colors.White, true);
+                    UpdateStatusSafe(HwTestLocalization.Pick("Recite nešto glasno u mikrofon (npr. 'Test jedan dva tri')...", "请对着麦克风大声说话（例如“测试一二三”）..."), Colors.White, true);
                 }
                 catch (Exception ex)
                 {
                     HwTestLogger.Error("MIC", "StartWaveInCore exception: " + ex.Message);
-                    UpdateStatusSafe("⚠ Greška pri pokretanju mikrofona: " + ex.Message, Color.FromRgb(220, 53, 69), false);
+                    UpdateStatusSafe(HwTestLocalization.Pick("⚠ Greška pri pokretanju mikrofona: ", "⚠ 启动麦克风失败: ") + ex.Message, Color.FromRgb(220, 53, 69), false);
                 }
             }
         }
@@ -756,7 +760,8 @@ namespace WIS.HwTest.Tests
         {
             if (dbfs > _peakDbfs) _peakDbfs = dbfs;
             _vuMeter.Value = dbfs;
-            _dbfsText.Text = string.Format("Nivo signala: {0:F1} dBFS | Peak: {1:F1} dBFS (Prag: > -44 dBFS)", dbfs, _peakDbfs);
+            _dbfsText.Text = HwTestLocalization.PickFormat("Nivo signala: {0:F1} dBFS | Peak: {1:F1} dBFS (Prag: > -44 dBFS)",
+                "信号电平: {0:F1} dBFS | 峰值: {1:F1} dBFS（阈值: > -44 dBFS）", dbfs, _peakDbfs);
 
             if (_peakDbfs > -42.0 && !_btnPass.IsEnabled)
             {
@@ -789,7 +794,7 @@ namespace WIS.HwTest.Tests
             }
 
             _btnRecordManual.IsEnabled = false;
-            _statusText.Text = "⏺️ SNIMANJE U TOKU (2 sekunde)... Govorite u mikrofon!";
+            _statusText.Text = HwTestLocalization.Pick("⏺️ SNIMANJE U TOKU (2 sekunde)... Govorite u mikrofon!", "⏺️ 正在录音（2 秒）... 请对着麦克风说话！");
             _statusText.Foreground = new SolidColorBrush(Color.FromRgb(220, 53, 69));
 
             if (_recordTimer != null)
@@ -822,8 +827,9 @@ namespace WIS.HwTest.Tests
                 {
                     _autoVerified = true;
                     _btnPass.IsEnabled = true;
-                    _statusText.Text = string.Format(
+                    _statusText.Text = HwTestLocalization.PickFormat(
                         "✓ AUTOMATSKA PROVERA PROŠLA! (Peak={0:F1} dBFS, Aktivno={1} okvira, Dinamika={2:F1} dB) — reprodukujem i završavam...",
+                        "✓ 自动检测通过！(峰值={0:F1} dBFS, 有效帧={1}, 动态范围={2:F1} dB) — 正在回放并完成测试...",
                         analysis.PeakDbfs, analysis.ActiveFrames, analysis.DynamicRangeDb);
                     _statusText.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
                     HwTestLogger.Info("MIC_AUTO", "PASS: " + analysis.Summary);
@@ -839,8 +845,9 @@ namespace WIS.HwTest.Tests
                     _recorded3sAudio = null;
                     _consecutiveAboveThreshold = 0;
 
-                    _statusText.Text = string.Format(
+                    _statusText.Text = HwTestLocalization.PickFormat(
                         "⚠️ AUTOMATSKA PROVERA NIJE USPELA: {0}. Pokušajte ponovo (govorite/kucnite) ili kliknite PASS/FAIL.",
+                        "⚠️ 自动检测未通过: {0}。请重试（说话或轻敲）或手动点击 PASS/FAIL。",
                         analysis.Reason);
                     _statusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                     HwTestLogger.Warn("MIC_AUTO", "NOT VERIFIED: " + analysis.Summary);
@@ -868,7 +875,7 @@ namespace WIS.HwTest.Tests
             if (pcm16 == null || pcm16.Length < 12000)
             {
                 res.Passed = false;
-                res.Reason = "Snimak je prekratak ili prazan";
+                res.Reason = HwTestLocalization.Pick("Snimak je prekratak ili prazan", "录音过短或为空");
                 res.Summary = string.Format("len={0}", pcm16 != null ? pcm16.Length : 0);
                 return res;
             }
@@ -944,21 +951,24 @@ namespace WIS.HwTest.Tests
             if (peakDbfs < -44.0 || activeFrames < 2)
             {
                 res.Passed = false;
-                res.Reason = string.Format("Preslab signal / tišina (Peak={0:F1} dBFS, aktivno={1} okvira)", peakDbfs, activeFrames);
+                res.Reason = HwTestLocalization.PickFormat("Preslab signal / tišina (Peak={0:F1} dBFS, aktivno={1} okvira)",
+                    "信号过弱 / 静音 (峰值={0:F1} dBFS, 有效帧={1})", peakDbfs, activeFrames);
                 return res;
             }
 
             if (acStdDev < 25.0)
             {
                 res.Passed = false;
-                res.Reason = string.Format("Ravan signal bez akustične oscilacije (AC StdDev={0:F1})", acStdDev);
+                res.Reason = HwTestLocalization.PickFormat("Ravan signal bez akustične oscilacije (AC StdDev={0:F1})",
+                    "信号平直无声学波动 (AC StdDev={0:F1})", acStdDev);
                 return res;
             }
 
             if (dynamicRange < 2.2 && !(maxFrameDb > -30.0 && acStdDev > 200.0 && dynamicRange >= 1.2))
             {
                 res.Passed = false;
-                res.Reason = string.Format("Konstantan šum/zujanje bez govorne dinamike ({0:F1} dB)", dynamicRange);
+                res.Reason = HwTestLocalization.PickFormat("Konstantan šum/zujanje bez govorne dinamike ({0:F1} dB)",
+                    "存在持续底噪或嗡嗡声，缺乏语音动态变化 ({0:F1} dB)", dynamicRange);
                 return res;
             }
 
@@ -1090,8 +1100,8 @@ namespace WIS.HwTest.Tests
             Result.Status = TestStatus.Fail;
             Result.Attempts = 1;
             Result.Reason = string.IsNullOrEmpty(reason)
-                ? "Mikrofon nije prošao test (nema validnog audio signala)"
-                : ("Mikrofon ne radi (" + reason + ")");
+                ? HwTestLocalization.Pick("Mikrofon nije prošao test (nema validnog audio signala)", "麦克风测试未通过（未检测到有效音频信号）")
+                : HwTestLocalization.PickFormat("Mikrofon ne radi ({0})", "麦克风故障 ({0})", reason);
             Result.Details["mic_level_dbfs"] = Math.Round(_peakDbfs, 1);
             Result.Details["auto_verified"] = false;
             SafeCloseDialog(false);
@@ -1121,8 +1131,9 @@ namespace WIS.HwTest.Tests
             else
             {
                 MessageBox.Show(
-                    "Za uključivanje mikrofona restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite ugrađeni mikrofon.",
-                    "Restart u UEFI BIOS",
+                    HwTestLocalization.Pick("Za uključivanje mikrofona restartujte računar u UEFI BIOS (HP: F10, Lenovo: F1, Dell: F2) i omogućite ugrađeni mikrofon.",
+                        "要启用麦克风，请重启电脑进入 UEFI BIOS（HP: F10, Lenovo: F1, Dell: F2）并开启内置麦克风。"),
+                    HwTestLocalization.Pick("Restart u UEFI BIOS", "重启进入 UEFI BIOS"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
             }

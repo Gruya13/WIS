@@ -22,6 +22,7 @@ namespace WIS.UI
         private string _hubUrl;
         private string _hubVersion;
         private int _hubPort = 8080;
+        private string _clientToken = null;
         private bool _isEnabled = true;
         private bool _isDisposed = false;
         private int _consecutiveFailures = 0;
@@ -200,6 +201,13 @@ namespace WIS.UI
                                 if (int.TryParse(val, out p) && p > 0)
                                 {
                                     _hubPort = p;
+                                }
+                            }
+                            else if (key == "clienttoken")
+                            {
+                                lock (_stateLock)
+                                {
+                                    _clientToken = val;
                                 }
                             }
                         }
@@ -498,6 +506,54 @@ namespace WIS.UI
             return payload != null && payload.TryGetValue(key, out val) && val != null;
         }
 
+        private static bool TryReadJsonBool(JsonNode root, JsonNode licNode, bool hasLicObj, string key, out bool value)
+        {
+            if (root != null && root.ContainsKey(key) && !root[key].IsNull)
+            {
+                value = root[key].AsBool(false);
+                return true;
+            }
+            if (hasLicObj && licNode != null && licNode.ContainsKey(key) && !licNode[key].IsNull)
+            {
+                value = licNode[key].AsBool(false);
+                return true;
+            }
+            value = false;
+            return false;
+        }
+
+        private static bool TryReadJsonString(JsonNode root, JsonNode licNode, bool hasLicObj, string key, out string value)
+        {
+            if (root != null && root.ContainsKey(key) && !root[key].IsNull)
+            {
+                value = root[key].AsString("");
+                return true;
+            }
+            if (hasLicObj && licNode != null && licNode.ContainsKey(key) && !licNode[key].IsNull)
+            {
+                value = licNode[key].AsString("");
+                return true;
+            }
+            value = "";
+            return false;
+        }
+
+        private static void MaskPayloadField(Dictionary<string, object> payload, string key)
+        {
+            if (HasNonNullKey(payload, key) && payload[key] is string)
+            {
+                payload[key] = MaskLicenseKeyText((string)payload[key]);
+            }
+        }
+
+        private static void MaskExistingDictField(System.Collections.IDictionary dict, string key)
+        {
+            if (dict != null && dict.Contains(key) && dict[key] is string)
+            {
+                dict[key] = MaskLicenseKeyText((string)dict[key]);
+            }
+        }
+
         /// <summary>
         /// Dopunjava završni telemetrijski payload strukturisanim statusom aktivacije Windows-a i Office-a
         /// iz C:\setup\license-status.json (uz fallback na C:\setup\servisni_karton.json), uz strogo maskiranje ključeva.
@@ -508,14 +564,23 @@ namespace WIS.UI
 
             try
             {
-                // Odbrana po dubini: maskiraj eventualni product ključ ako je već prosleđen u payload-u
-                if (HasNonNullKey(payload, "office_license_detail") && payload["office_license_detail"] is string)
-                {
-                    payload["office_license_detail"] = MaskLicenseKeyText((string)payload["office_license_detail"]);
-                }
+                // Odbrana po dubini: maskiraj eventualne product ključeve ako su već prosleđeni u payload-u
+                MaskPayloadField(payload, "office_license_detail");
+                MaskPayloadField(payload, "office_license_method");
+                MaskPayloadField(payload, "windows_license_detail");
+                MaskPayloadField(payload, "windows_license_method");
+                MaskPayloadField(payload, "windows_edition");
 
                 bool hasWinActivated = false;
                 bool winActivated = false;
+                bool hasWinOa3Present = false;
+                bool winOa3Present = false;
+                bool hasWinEdition = false;
+                string winEdition = "";
+                bool hasWinMethod = false;
+                string winLicenseMethod = "";
+                bool hasWinDetail = false;
+                string winLicenseDetail = "";
                 bool hasOfficeInstalled = false;
                 bool officeInstalled = false;
                 bool hasOfficeActivated = false;
@@ -552,14 +617,8 @@ namespace WIS.UI
 
                         if (!hasWinActivated)
                         {
-                            if (root.ContainsKey("windows_activated") && !root["windows_activated"].IsNull)
+                            if (TryReadJsonBool(root, licNode, hasLicObj, "windows_activated", out winActivated))
                             {
-                                winActivated = root["windows_activated"].AsBool(false);
-                                hasWinActivated = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("windows_activated") && !licNode["windows_activated"].IsNull)
-                            {
-                                winActivated = licNode["windows_activated"].AsBool(false);
                                 hasWinActivated = true;
                             }
                             else if (hasLicObj && licNode.ContainsKey("windows") && !licNode["windows"].IsNull)
@@ -569,16 +628,42 @@ namespace WIS.UI
                             }
                         }
 
+                        if (!hasWinOa3Present)
+                        {
+                            if (TryReadJsonBool(root, licNode, hasLicObj, "windows_oa3_present", out winOa3Present))
+                            {
+                                hasWinOa3Present = true;
+                            }
+                        }
+
+                        if (!hasWinEdition)
+                        {
+                            if (TryReadJsonString(root, licNode, hasLicObj, "windows_edition", out winEdition))
+                            {
+                                hasWinEdition = true;
+                            }
+                        }
+
+                        if (!hasWinMethod)
+                        {
+                            if (TryReadJsonString(root, licNode, hasLicObj, "windows_license_method", out winLicenseMethod))
+                            {
+                                hasWinMethod = true;
+                            }
+                        }
+
+                        if (!hasWinDetail)
+                        {
+                            if (TryReadJsonString(root, licNode, hasLicObj, "windows_license_detail", out winLicenseDetail))
+                            {
+                                hasWinDetail = true;
+                            }
+                        }
+
                         if (!hasOfficeInstalled)
                         {
-                            if (root.ContainsKey("office_installed") && !root["office_installed"].IsNull)
+                            if (TryReadJsonBool(root, licNode, hasLicObj, "office_installed", out officeInstalled))
                             {
-                                officeInstalled = root["office_installed"].AsBool(false);
-                                hasOfficeInstalled = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("office_installed") && !licNode["office_installed"].IsNull)
-                            {
-                                officeInstalled = licNode["office_installed"].AsBool(false);
                                 hasOfficeInstalled = true;
                             }
                             else if (hasAppsObj && appsNode.ContainsKey("office") && !appsNode["office"].IsNull)
@@ -590,14 +675,8 @@ namespace WIS.UI
 
                         if (!hasOfficeActivated)
                         {
-                            if (root.ContainsKey("office_activated") && !root["office_activated"].IsNull)
+                            if (TryReadJsonBool(root, licNode, hasLicObj, "office_activated", out officeActivated))
                             {
-                                officeActivated = root["office_activated"].AsBool(false);
-                                hasOfficeActivated = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("office_activated") && !licNode["office_activated"].IsNull)
-                            {
-                                officeActivated = licNode["office_activated"].AsBool(false);
                                 hasOfficeActivated = true;
                             }
                             else if (hasLicObj && licNode.ContainsKey("office") && !licNode["office"].IsNull)
@@ -609,14 +688,8 @@ namespace WIS.UI
 
                         if (!hasMethod)
                         {
-                            if (root.ContainsKey("office_license_method") && !root["office_license_method"].IsNull)
+                            if (TryReadJsonString(root, licNode, hasLicObj, "office_license_method", out licenseMethod))
                             {
-                                licenseMethod = root["office_license_method"].AsString("");
-                                hasMethod = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("office_license_method") && !licNode["office_license_method"].IsNull)
-                            {
-                                licenseMethod = licNode["office_license_method"].AsString("");
                                 hasMethod = true;
                             }
                             else if (hasLicObj && licNode.ContainsKey("method") && !licNode["method"].IsNull)
@@ -628,14 +701,8 @@ namespace WIS.UI
 
                         if (!hasDetail)
                         {
-                            if (root.ContainsKey("office_license_detail") && !root["office_license_detail"].IsNull)
+                            if (TryReadJsonString(root, licNode, hasLicObj, "office_license_detail", out licenseDetail))
                             {
-                                licenseDetail = root["office_license_detail"].AsString("");
-                                hasDetail = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("office_license_detail") && !licNode["office_license_detail"].IsNull)
-                            {
-                                licenseDetail = licNode["office_license_detail"].AsString("");
                                 hasDetail = true;
                             }
                             else if (hasLicObj && licNode.ContainsKey("detail") && !licNode["detail"].IsNull)
@@ -647,14 +714,8 @@ namespace WIS.UI
 
                         if (!hasMode)
                         {
-                            if (root.ContainsKey("office_activation_mode") && !root["office_activation_mode"].IsNull)
+                            if (TryReadJsonString(root, licNode, hasLicObj, "office_activation_mode", out activationMode))
                             {
-                                activationMode = root["office_activation_mode"].AsString("");
-                                hasMode = true;
-                            }
-                            else if (hasLicObj && licNode.ContainsKey("office_activation_mode") && !licNode["office_activation_mode"].IsNull)
-                            {
-                                activationMode = licNode["office_activation_mode"].AsString("");
                                 hasMode = true;
                             }
                         }
@@ -662,17 +723,19 @@ namespace WIS.UI
                     catch { }
                 }
 
-                if (hasDetail)
-                {
-                    licenseDetail = MaskLicenseKeyText(licenseDetail);
-                }
-                if (hasMethod)
-                {
-                    licenseMethod = MaskLicenseKeyText(licenseMethod);
-                }
+                if (hasDetail) licenseDetail = MaskLicenseKeyText(licenseDetail);
+                if (hasMethod) licenseMethod = MaskLicenseKeyText(licenseMethod);
+                if (hasWinEdition) winEdition = MaskLicenseKeyText(winEdition);
+                if (hasWinMethod) winLicenseMethod = MaskLicenseKeyText(winLicenseMethod);
+                if (hasWinDetail) winLicenseDetail = MaskLicenseKeyText(winLicenseDetail);
 
-                bool hasFileLicenseData = hasWinActivated || hasOfficeInstalled || hasOfficeActivated || hasMethod || hasDetail;
+                bool hasFileLicenseData = hasWinActivated || hasWinOa3Present || hasWinEdition || hasWinMethod || hasWinDetail ||
+                                          hasOfficeInstalled || hasOfficeActivated || hasMethod || hasDetail;
                 bool hasPayloadLicenseData = HasNonNullKey(payload, "windows_activated") ||
+                                             HasNonNullKey(payload, "windows_oa3_present") ||
+                                             HasNonNullKey(payload, "windows_edition") ||
+                                             HasNonNullKey(payload, "windows_license_method") ||
+                                             HasNonNullKey(payload, "windows_license_detail") ||
                                              HasNonNullKey(payload, "office_installed") ||
                                              HasNonNullKey(payload, "office_activated") ||
                                              HasNonNullKey(payload, "office_license_method") ||
@@ -686,6 +749,28 @@ namespace WIS.UI
                 if (hasWinActivated && !HasNonNullKey(payload, "windows_activated"))
                 {
                     payload["windows_activated"] = winActivated;
+                }
+
+                if (hasWinOa3Present && !HasNonNullKey(payload, "windows_oa3_present"))
+                {
+                    payload["windows_oa3_present"] = winOa3Present;
+                }
+
+                if (hasWinEdition && !string.IsNullOrEmpty(winEdition) && !HasNonNullKey(payload, "windows_edition"))
+                {
+                    payload["windows_edition"] = winEdition;
+                }
+
+                if (!HasNonNullKey(payload, "windows_license_method") &&
+                    (hasWinMethod || hasWinActivated || hasWinOa3Present || hasWinEdition || hasWinDetail))
+                {
+                    payload["windows_license_method"] = hasWinMethod ? (winLicenseMethod ?? "") : "";
+                }
+
+                if (!HasNonNullKey(payload, "windows_license_detail") &&
+                    (hasWinDetail || hasWinActivated || hasWinOa3Present || hasWinEdition || hasWinMethod))
+                {
+                    payload["windows_license_detail"] = hasWinDetail ? (winLicenseDetail ?? "") : "";
                 }
 
                 if (!HasNonNullKey(payload, "office_installed") && (hasOfficeInstalled || hasOfficeActivated))
@@ -724,6 +809,27 @@ namespace WIS.UI
                         licensesDict["windows_activated"] = winVal;
                     }
 
+                    if (HasNonNullKey(payload, "windows_oa3_present"))
+                    {
+                        bool oa3Val = payload["windows_oa3_present"] is bool ? (bool)payload["windows_oa3_present"] : winOa3Present;
+                        licensesDict["windows_oa3_present"] = oa3Val;
+                    }
+
+                    if (HasNonNullKey(payload, "windows_edition"))
+                    {
+                        licensesDict["windows_edition"] = MaskLicenseKeyText(payload["windows_edition"].ToString());
+                    }
+
+                    if (HasNonNullKey(payload, "windows_license_method"))
+                    {
+                        licensesDict["windows_license_method"] = MaskLicenseKeyText(payload["windows_license_method"].ToString());
+                    }
+
+                    if (HasNonNullKey(payload, "windows_license_detail"))
+                    {
+                        licensesDict["windows_license_detail"] = MaskLicenseKeyText(payload["windows_license_detail"].ToString());
+                    }
+
                     if (HasNonNullKey(payload, "office_installed"))
                     {
                         bool offInstVal = payload["office_installed"] is bool ? (bool)payload["office_installed"] : officeInstalled;
@@ -758,13 +864,28 @@ namespace WIS.UI
                     var existingLicenses = payload["licenses"] as System.Collections.IDictionary;
                     if (existingLicenses != null && !existingLicenses.IsReadOnly)
                     {
-                        if (existingLicenses.Contains("office_license_detail") && existingLicenses["office_license_detail"] is string)
+                        MaskExistingDictField(existingLicenses, "office_license_detail");
+                        MaskExistingDictField(existingLicenses, "office_license_method");
+                        MaskExistingDictField(existingLicenses, "detail");
+                        MaskExistingDictField(existingLicenses, "windows_license_detail");
+                        MaskExistingDictField(existingLicenses, "windows_license_method");
+                        MaskExistingDictField(existingLicenses, "windows_edition");
+
+                        if (HasNonNullKey(payload, "windows_oa3_present") && !existingLicenses.Contains("windows_oa3_present"))
                         {
-                            existingLicenses["office_license_detail"] = MaskLicenseKeyText((string)existingLicenses["office_license_detail"]);
+                            existingLicenses["windows_oa3_present"] = payload["windows_oa3_present"];
                         }
-                        if (existingLicenses.Contains("detail") && existingLicenses["detail"] is string)
+                        if (HasNonNullKey(payload, "windows_edition") && !existingLicenses.Contains("windows_edition"))
                         {
-                            existingLicenses["detail"] = MaskLicenseKeyText((string)existingLicenses["detail"]);
+                            existingLicenses["windows_edition"] = payload["windows_edition"];
+                        }
+                        if (HasNonNullKey(payload, "windows_license_method") && !existingLicenses.Contains("windows_license_method"))
+                        {
+                            existingLicenses["windows_license_method"] = payload["windows_license_method"];
+                        }
+                        if (HasNonNullKey(payload, "windows_license_detail") && !existingLicenses.Contains("windows_license_detail"))
+                        {
+                            existingLicenses["windows_license_detail"] = payload["windows_license_detail"];
                         }
                     }
                 }
@@ -1074,7 +1195,232 @@ namespace WIS.UI
             catch { }
         }
 
+        private string GetClientToken()
+        {
+            string tok = null;
+            lock (_stateLock)
+            {
+                tok = _clientToken;
+            }
+            if (!string.IsNullOrWhiteSpace(tok))
+            {
+                return tok.Trim();
+            }
+            try
+            {
+                string envTok = Environment.GetEnvironmentVariable("SERVIS_HUB_CLIENT_TOKEN");
+                if (!string.IsNullOrWhiteSpace(envTok))
+                {
+                    return envTok.Trim();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static object JsonNodeToNativeObject(JsonNode node)
+        {
+            if (node == null || node.IsNull) return null;
+            switch (node.NodeType)
+            {
+                case JsonNodeType.Boolean:
+                case JsonNodeType.Number:
+                case JsonNodeType.String:
+                    return node.Value;
+                case JsonNodeType.Array:
+                    var list = new List<object>();
+                    for (int i = 0; i < node.Elements.Count; i++)
+                    {
+                        list.Add(JsonNodeToNativeObject(node.Elements[i]));
+                    }
+                    return list;
+                case JsonNodeType.Object:
+                    var dict = new Dictionary<string, object>();
+                    foreach (KeyValuePair<string, JsonNode> kvp in node.Properties)
+                    {
+                        dict[kvp.Key] = JsonNodeToNativeObject(kvp.Value);
+                    }
+                    return dict;
+                default:
+                    return null;
+            }
+        }
+
+        private static string SanitizeFleetIdSegment(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "UNKNOWN";
+            string cleaned = Regex.Replace(raw.Trim(), "[^A-Za-z0-9_-]", "").ToUpperInvariant();
+            return string.IsNullOrEmpty(cleaned) ? "UNKNOWN" : cleaned;
+        }
+
+        public void ReuploadUpdatedReportAfterHwTestAsync(Action<bool, string> onCompleted)
+        {
+            if (!_isEnabled)
+            {
+                if (onCompleted != null) { try { onCompleted(false, "Telemetry disabled"); } catch { } }
+                return;
+            }
+
+            Dictionary<string, object> hwSnapshot = BuildHardwarePayload();
+            bool isLaptopSnapshot = (_viewModel != null && _viewModel.IsLaptop);
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(HubUrl))
+                    {
+                        DiscoverHub();
+                        if (string.IsNullOrEmpty(HubUrl))
+                        {
+                            if (onCompleted != null) { try { onCompleted(false, "ServiceHub nije dostupan"); } catch { } }
+                            return;
+                        }
+                    }
+
+                    Dictionary<string, object> reportPayload = null;
+                    string[] kartonCandidates = new string[]
+                    {
+                        @"C:\setup\servisni_karton.json",
+                        @"C:\Windows\Logs\WIS\servisni_karton.json"
+                    };
+
+                    string existingKartonPath = null;
+                    for (int i = 0; i < kartonCandidates.Length; i++)
+                    {
+                        if (File.Exists(kartonCandidates[i]))
+                        {
+                            try
+                            {
+                                string rawKarton = File.ReadAllText(kartonCandidates[i], Encoding.UTF8);
+                                JsonNode parsedKarton = JsonHelper.Parse(rawKarton);
+                                if (parsedKarton != null && parsedKarton.IsObject)
+                                {
+                                    reportPayload = JsonNodeToNativeObject(parsedKarton) as Dictionary<string, object>;
+                                    if (reportPayload != null)
+                                    {
+                                        existingKartonPath = kartonCandidates[i];
+                                        break;
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+
+                    if (reportPayload == null)
+                    {
+                        reportPayload = new Dictionary<string, object>();
+                    }
+
+                    // Učitaj svež C:\setup\hwtest-result.json
+                    string hwTestJsonPath = @"C:\setup\hwtest-result.json";
+                    if (File.Exists(hwTestJsonPath))
+                    {
+                        string hwJson = File.ReadAllText(hwTestJsonPath, Encoding.UTF8);
+                        JsonNode hwNode = JsonHelper.Parse(hwJson);
+                        if (hwNode != null && hwNode.IsObject)
+                        {
+                            reportPayload["hwtest"] = JsonNodeToNativeObject(hwNode);
+                        }
+                    }
+
+                    string serialSnapshot = hwSnapshot.ContainsKey("serial") && hwSnapshot["serial"] != null
+                        ? hwSnapshot["serial"].ToString()
+                        : "";
+                    if (IsPlaceholderHwValue(serialSnapshot))
+                    {
+                        serialSnapshot = Environment.MachineName;
+                    }
+
+                    string devId = reportPayload.ContainsKey("device_id") && reportPayload["device_id"] != null
+                        ? reportPayload["device_id"].ToString()
+                        : "";
+                    if (string.IsNullOrWhiteSpace(devId))
+                    {
+                        string chassisTag = isLaptopSnapshot ? "LAPTOP" : "DESKTOP";
+                        devId = "TK-" + chassisTag + "-" + SanitizeFleetIdSegment(serialSnapshot);
+                        reportPayload["device_id"] = devId;
+                    }
+                    if (!reportPayload.ContainsKey("computer_name") || reportPayload["computer_name"] == null)
+                    {
+                        reportPayload["computer_name"] = Environment.MachineName;
+                    }
+                    if (!reportPayload.ContainsKey("chassis") || reportPayload["chassis"] == null)
+                    {
+                        reportPayload["chassis"] = isLaptopSnapshot ? "Laptop" : "Desktop";
+                    }
+                    if (!reportPayload.ContainsKey("serial_number") || IsPlaceholderHwValue(Convert.ToString(reportPayload["serial_number"])))
+                    {
+                        reportPayload["serial_number"] = serialSnapshot;
+                    }
+                    if (!reportPayload.ContainsKey("hw") || reportPayload["hw"] == null)
+                    {
+                        reportPayload["hw"] = hwSnapshot;
+                    }
+
+                    reportPayload["status"] = "COMPLETED";
+                    reportPayload["handover_ready"] = true;
+                    reportPayload["timestamp"] = DateTime.Now.ToString("o");
+                    EnrichLicenseTelemetryPayload(reportPayload);
+
+                    string serialized = JsonHelper.Serialize(reportPayload);
+                    if (!string.IsNullOrEmpty(existingKartonPath))
+                    {
+                        try { File.WriteAllText(existingKartonPath, serialized, new UTF8Encoding(false)); } catch { }
+                    }
+
+                    string url = HubUrl.TrimEnd('/') + "/api/devices/" + Uri.EscapeDataString(devId) + "/report";
+                    Dictionary<string, string> headers = null;
+                    string tok = GetClientToken();
+                    if (!string.IsNullOrEmpty(tok))
+                    {
+                        headers = new Dictionary<string, string>();
+                        headers["X-ServisHub-Client-Token"] = tok;
+                    }
+
+                    bool ok = false;
+                    int[] delays = new int[] { 0, 1000, 2000 };
+                    for (int a = 0; a < delays.Length; a++)
+                    {
+                        if (delays[a] > 0) Thread.Sleep(delays[a]);
+                        HttpPostWithResponse(url, serialized, 10000, out ok, headers);
+                        if (ok) break;
+                    }
+
+                    if (ok)
+                    {
+                        var compInfo = new Dictionary<string, object>
+                        {
+                            { "phase", 6 },
+                            { "phase_name", "Zavrsetak" },
+                            { "status", "SUCCESS" },
+                            { "hwtest_updated", true }
+                        };
+                        SendLifecycleEvent("COMPLETED", compInfo);
+                    }
+
+                    if (onCompleted != null)
+                    {
+                        try { onCompleted(ok, ok ? url : "HTTP slanje izveštaja nije uspelo"); } catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (onCompleted != null)
+                    {
+                        try { onCompleted(false, ex.Message); } catch { }
+                    }
+                }
+            });
+        }
+
         private string HttpPostWithResponse(string url, string jsonBody, int timeoutMs, out bool success)
+        {
+            return HttpPostWithResponse(url, jsonBody, timeoutMs, out success, null);
+        }
+
+        private string HttpPostWithResponse(string url, string jsonBody, int timeoutMs, out bool success, Dictionary<string, string> headers)
         {
             success = false;
             try
@@ -1084,6 +1430,16 @@ namespace WIS.UI
                 req.ContentType = "application/json; charset=utf-8";
                 req.Timeout = timeoutMs;
                 req.ReadWriteTimeout = timeoutMs;
+                if (headers != null)
+                {
+                    foreach (KeyValuePair<string, string> kvp in headers)
+                    {
+                        if (!string.IsNullOrEmpty(kvp.Key) && !string.IsNullOrEmpty(kvp.Value))
+                        {
+                            req.Headers.Add(kvp.Key, kvp.Value);
+                        }
+                    }
+                }
 
                 byte[] bytes = Encoding.UTF8.GetBytes(jsonBody ?? "{}");
                 req.ContentLength = bytes.Length;

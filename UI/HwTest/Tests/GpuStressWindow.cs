@@ -57,7 +57,9 @@ namespace WIS.HwTest.Tests
         public GpuStressWindow(AutoDiagnosticsEngine diagEngine)
         {
             _diagEngine = diagEngine;
-            Result = new TestItemResult("auto_gpu", "Grafika (GPU)", "Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)");
+            Result = new TestItemResult("auto_gpu",
+                HwTestLocalization.Pick("Grafika (GPU)", "显卡 (GPU)"),
+                HwTestLocalization.Pick("Provera drajvera, VRAM-a i 3D hardverskog renderovanja (WPF Direct3D)", "检测驱动、显存及 3D 硬件渲染性能 (WPF Direct3D)"));
             Result.IsAutomated = true;
 
             AutoDiagnosticsEngine.InspectGpuAdapters(
@@ -65,7 +67,7 @@ namespace WIS.HwTest.Tests
                 out _hasAnyBasicDisplay, out _hasAnyErrorAdapter, out _problemAdapters);
             _renderTier = (RenderCapability.Tier >> 16);
 
-            Title = "GPU 3D Hardverski Stres Test";
+            Title = HwTestLocalization.Pick("GPU 3D Hardverski Stres Test", "GPU 3D 硬件压力测试");
             Width = 920;
             Height = 600;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -90,10 +92,11 @@ namespace WIS.HwTest.Tests
 
             _tbHeaderInfo = new TextBlock
             {
-                Text = string.Format("GPU: {0} | Drajver: {1} | VRAM: {2} | Render Tier: {3}",
+                Text = HwTestLocalization.PickFormat("GPU: {0} | Drajver: {1} | VRAM: {2} | Render Tier: {3}",
+                    "GPU: {0} | 驱动: {1} | 显存: {2} | 渲染等级: {3}",
                     _gpuName,
                     string.IsNullOrEmpty(_driverVer) ? "N/A" : _driverVer,
-                    _vramMb > 0 ? (_vramMb + " MB") : "Shared",
+                    _vramMb > 0 ? (_vramMb + " MB") : HwTestLocalization.Pick("Shared", "共享显存"),
                     _renderTier),
                 Foreground = Brushes.White,
                 FontSize = 14,
@@ -114,7 +117,7 @@ namespace WIS.HwTest.Tests
             };
             _tbTemp = new TextBlock
             {
-                Text = "Temp: --°C",
+                Text = HwTestLocalization.Pick("Temp: --°C", "温度: --°C"),
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 209, 102)),
                 FontSize = 15,
                 FontWeight = FontWeights.SemiBold,
@@ -147,7 +150,7 @@ namespace WIS.HwTest.Tests
             StackPanel spBot = new StackPanel();
             _tbStatus = new TextBlock
             {
-                Text = "Pokrećem 3D Direct3D opterećenje (provera stabilnosti prikaza i FPS)...",
+                Text = HwTestLocalization.Pick("Pokrećem 3D Direct3D opterećenje (provera stabilnosti prikaza i FPS)...", "正在启动 Direct3D 3D 负载测试（检测显示稳定性与帧率）..."),
                 Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 230)),
                 FontSize = 13,
                 Margin = new Thickness(0, 0, 0, 8)
@@ -355,12 +358,13 @@ namespace WIS.HwTest.Tests
                 if (eng != null && eng.GpuTemperature > 0)
                 {
                     if (eng.GpuTemperature > _peakGpuTemp) _peakGpuTemp = eng.GpuTemperature;
-                    _tbTemp.Text = string.Format("Temp: {0:0}°C (Peak {1:0}°C)", eng.GpuTemperature, _peakGpuTemp);
+                    _tbTemp.Text = HwTestLocalization.PickFormat("Temp: {0:0}°C (Peak {1:0}°C)", "温度: {0:0}°C (峰值 {1:0}°C)", eng.GpuTemperature, _peakGpuTemp);
                 }
             }
 
             double remain = Math.Max(0.0, _durationSeconds - elapsed);
-            _tbStatus.Text = string.Format("Direct3D 3D render test u toku... Preostalo {0:0.0}s | Ukupno frejmova: {1}", remain, _totalFrames);
+            _tbStatus.Text = HwTestLocalization.PickFormat("Direct3D 3D render test u toku... Preostalo {0:0.0}s | Ukupno frejmova: {1}",
+                "Direct3D 3D 渲染测试中... 剩余 {0:0.0}s | 总帧数: {1}", remain, _totalFrames);
 
             if (elapsed >= _durationSeconds)
             {
@@ -423,54 +427,54 @@ namespace WIS.HwTest.Tests
             string vramStr = _vramMb > 0 ? string.Format(" | {0} MB", _vramMb) : "";
             string tempStr = _peakGpuTemp > 0 ? string.Format(" | {0:0}°C", _peakGpuTemp) : "";
             Result.MetricSummary = blockedNoDriver
-                ? string.Format("{0}{1} | Tier {2} | Blokiran (nema drajver)", shortGpu, vramStr, _renderTier)
-                : string.Format("{0}{1} | {2:0} FPS | Tier {3}{4}", shortGpu, vramStr, avgFps, _renderTier, tempStr);
+                ? HwTestLocalization.PickFormat("{0}{1} | Tier {2} | Blokiran (nema drajver)", "{0}{1} | 等级 {2} | 已阻止（缺少驱动）", shortGpu, vramStr, _renderTier)
+                : HwTestLocalization.PickFormat("{0}{1} | {2:0} FPS | Tier {3}{4}", "{0}{1} | {2:0} FPS | 等级 {3}{4}", shortGpu, vramStr, avgFps, _renderTier, tempStr);
 
             if (_isBasicDisplay)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = "Aktivan je Microsoft Basic Display Adapter (nedostaje originalni GPU drajver!)";
+                Result.Reason = HwTestLocalization.Pick("Aktivan je Microsoft Basic Display Adapter (nedostaje originalni GPU drajver!)", "当前为 Microsoft 基本显示适配器（缺少原厂 GPU 驱动！）");
             }
             else if (_pnpErr != 0)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = string.Format("Greška grafičke kartice u Device Manager-u (Error Code {0})", _pnpErr);
+                Result.Reason = HwTestLocalization.PickFormat("Greška grafičke kartice u Device Manager-u (Error Code {0})", "设备管理器中显卡报错 (Error Code {0})", _pnpErr);
             }
             else if (_hasAnyBasicDisplay || _hasAnyErrorAdapter)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = string.Format("Sekundarni GPU nema drajver ili ima grešku: {0}", _problemAdapters);
+                Result.Reason = HwTestLocalization.PickFormat("Sekundarni GPU nema drajver ili ima grešku: {0}", "副显卡缺少驱动或存在错误: {0}", _problemAdapters);
             }
             else if (_renderTier == 0)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = "WPF Render Tier 0: Direct3D hardverska akceleracija nije aktivna (softversko renderovanje)!";
+                Result.Reason = HwTestLocalization.Pick("WPF Render Tier 0: Direct3D hardverska akceleracija nije aktivna (softversko renderovanje)!", "WPF Render Tier 0：Direct3D 硬件加速未启用（当前为软件渲染）！");
             }
             else if (_peakGpuTemp >= 95f)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = string.Format("Kritično pregrevanje GPU-a ({0:0}°C >= 95°C)!", _peakGpuTemp);
+                Result.Reason = HwTestLocalization.PickFormat("Kritično pregrevanje GPU-a ({0:0}°C >= 95°C)!", "GPU 严重过热 ({0:0}°C >= 95°C)！", _peakGpuTemp);
             }
             else if (avgFps < 8.0)
             {
                 Result.Status = TestStatus.Fail;
-                Result.Reason = string.Format("Ekstremno niske 3D performanse ({0:0.0} FPS < 8 FPS)", avgFps);
+                Result.Reason = HwTestLocalization.PickFormat("Ekstremno niske 3D performanse ({0:0.0} FPS < 8 FPS)", "3D 性能过低 ({0:0.0} FPS < 8 FPS)", avgFps);
             }
             else if (_renderTier == 1 || avgFps < 20.0 || _peakGpuTemp >= 86f)
             {
                 Result.Status = TestStatus.Pass;
                 Result.HasWarning = true;
                 List<string> warns = new List<string>();
-                if (_renderTier == 1) warns.Add("Delimična GPU akceleracija (Tier 1)");
-                if (avgFps < 20.0) warns.Add(string.Format("Niži 3D FPS ({0:0.0} FPS)", avgFps));
-                if (_peakGpuTemp >= 86f) warns.Add(string.Format("Visoka temperatura GPU-a ({0:0}°C)", _peakGpuTemp));
-                Result.Reason = "UPOZORENJE: " + string.Join("; ", warns.ToArray());
+                if (_renderTier == 1) warns.Add(HwTestLocalization.Pick("Delimična GPU akceleracija (Tier 1)", "部分 GPU 硬件加速 (Tier 1)"));
+                if (avgFps < 20.0) warns.Add(HwTestLocalization.PickFormat("Niži 3D FPS ({0:0.0} FPS)", "3D 帧率偏低 ({0:0.0} FPS)", avgFps));
+                if (_peakGpuTemp >= 86f) warns.Add(HwTestLocalization.PickFormat("Visoka temperatura GPU-a ({0:0}°C)", "GPU 温度偏高 ({0:0}°C)", _peakGpuTemp));
+                Result.Reason = HwTestLocalization.Pick("UPOZORENJE: ", "警告: ") + string.Join("; ", warns.ToArray());
             }
             else
             {
                 Result.Status = TestStatus.Pass;
                 Result.HasWarning = false;
-                Result.Reason = string.Format("GPU drajver i 3D renderovanje OK ({0:0} FPS, Tier {1})", avgFps, _renderTier);
+                Result.Reason = HwTestLocalization.PickFormat("GPU drajver i 3D renderovanje OK ({0:0} FPS, Tier {1})", "GPU 驱动与 3D 渲染正常 ({0:0} FPS, Tier {1})", avgFps, _renderTier);
             }
 
             SafeCloseDialog(true);

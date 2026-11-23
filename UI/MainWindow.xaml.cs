@@ -130,6 +130,24 @@ namespace WIS.UI
         private System.Windows.Controls.Button _btnFailedPhaseSkip = null;
         private bool _recoveryBarEventsWired = false;
 
+        // V343-03 (Odluke 3A & 4A): Modalni overlay i gornja traka za obavezne interaktivne testove
+        private System.Windows.Controls.Border _pendingInteractiveOverlay = null;
+        private System.Windows.Controls.Border _pendingInteractiveBanner = null;
+        private System.Windows.Controls.TextBlock _pendingOverlayBadgeTb = null;
+        private System.Windows.Controls.TextBlock _pendingOverlayTitleTb = null;
+        private System.Windows.Controls.TextBlock _pendingOverlaySubtitleTb = null;
+        private System.Windows.Controls.TextBlock _pendingOverlayCountTb = null;
+        private System.Windows.Controls.TextBlock _pendingOverlayListTb = null;
+        private System.Windows.Controls.Button _btnPendingStartTests = null;
+        private System.Windows.Controls.Button _btnPendingBrowseTabs = null;
+        private System.Windows.Controls.Button _btnPendingEmergencySkip = null;
+        private System.Windows.Controls.TextBlock _pendingBannerTitleTb = null;
+        private System.Windows.Controls.TextBlock _pendingBannerDetailTb = null;
+        private System.Windows.Controls.Button _btnBannerResumeTests = null;
+        private System.Windows.Controls.Button _btnBannerEmergencySkip = null;
+        private bool _pendingInteractiveUiEventsWired = false;
+        private List<string> _lastPendingInteractiveNames = new List<string>();
+
         public MainWindow()
         {
             InitializeComponent();
@@ -178,6 +196,7 @@ namespace WIS.UI
             this.ResizeMode = ResizeMode.CanMinimize;
 
             EnsureBackgroundWuVisualElements();
+            EnsurePendingInteractiveTestsUi();
             EnsureFailedPhaseRecoveryBar();
             UpdateFailedPhaseRecoveryBar();
             Loaded += (s, e) => ApplyCompactViewportLayoutIfNeeded();
@@ -430,6 +449,7 @@ namespace WIS.UI
         {
             if (ViewModel == null) return;
             ViewModel.RefreshLocalization();
+            RefreshPendingInteractiveTestsLocalization();
         }
 
         #region DWM Immersive Dark Title Bar
@@ -893,7 +913,7 @@ namespace WIS.UI
             string exePath = FindHwTestExe();
             if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath))
             {
-                MessageBox.Show("Modul za hardversko testiranje (WIS.HwTest.exe) nije pronađen!", "WIS Greška", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(LocalizationService.Get("WinMsgHwTestModuleMissing", "Modul za hardversko testiranje (WIS.HwTest.exe) nije pronađen!"), LocalizationService.Get("WinMsgTitleError", "WIS Greška"), MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
@@ -963,19 +983,29 @@ namespace WIS.UI
                             int totalApplicable = pass + fail + skip;
                             if (totalApplicable <= 0) totalApplicable = pass + fail + skip + na;
 
-                            ViewModel.IsHwTestFinished = true;
-                            ViewModel.HwTestOverallStatus = overall;
+                            bool noPendingFromFile = ReadPendingInteractiveTestsFromReportFile().Count == 0;
+                            ViewModel.IsHwTestFinished = noPendingFromFile;
+                            ViewModel.HwTestOverallStatus = (skip > 0 && overall == "PASS_WITH_SKIP") ? LocalizationService.Get("WinHwTestIncompleteSkip", "NEPOTPUNO (SKIP)") : overall;
                             ViewModel.HwTestSummaryText = fail > 0
                                 ? string.Format("{0}/{1} PASS, {2} FAIL, {3} SKIP", pass, totalApplicable, fail, skip)
                                 : string.Format("{0}/{1} PASS, {2} SKIP", pass, totalApplicable, skip);
 
-                            if (overall == "PASS" || overall == "PASS_WITH_SKIP")
+                            if (fail > 0)
+                            {
+                                ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(220, 53, 69);
+                            }
+                            else if (skip > 0 || !noPendingFromFile)
+                            {
+                                ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(230, 126, 34);
+                            }
+                            else if (overall == "PASS" || overall == "PASS_WITH_SKIP")
                             {
                                 ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(40, 167, 69);
                             }
-                            else if (overall == "FAIL")
+
+                            if (noPendingFromFile)
                             {
-                                ViewModel.HwTestBadgeBrush = MainViewModel.CreateFrozenBrush(220, 53, 69);
+                                HidePendingInteractiveTestsWarning();
                             }
 
                             ViewModel.AddLog(
@@ -1020,21 +1050,6 @@ namespace WIS.UI
                 if (File.Exists(p)) return p;
             }
             return null;
-        }
-
-        private void TriggerHardwareTestAfterPhase6()
-        {
-            ThreadPool.QueueUserWorkItem(delegate(object _)
-            {
-                try
-                {
-                    System.Threading.Thread.Sleep(500);
-                    Dispatcher.Invoke((Action)(() => {
-                        ExecuteRunHwTest(null);
-                    }));
-                }
-                catch { }
-            });
         }
 
         private void EnsureBackgroundWuVisualElements()
@@ -1253,7 +1268,7 @@ namespace WIS.UI
 
             var infoHeader = new System.Windows.Controls.TextBlock
             {
-                Text = "INFORMACIJE O UREĐAJU",
+                Text = LocalizationService.Get("WinDevInfoTitle", "INFORMACIJE O UREĐAJU"),
                 FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1278,7 +1293,7 @@ namespace WIS.UI
 
             var modelLabelTb = new System.Windows.Controls.TextBlock
             {
-                Text = "PROIZVOĐAČ / MODEL",
+                Text = LocalizationService.Get("WinDevInfoModelLabel", "PROIZVOĐAČ / MODEL"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1345,7 +1360,7 @@ namespace WIS.UI
             var periphStack = new System.Windows.Controls.StackPanel();
             periphStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "DODATNE PERIFERIJE",
+                Text = LocalizationService.Get("WinPeripheralsTitle", "DODATNE PERIFERIJE"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1410,7 +1425,7 @@ namespace WIS.UI
             var hwMonHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 8) };
             hwMonHdr.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "HARDVER MONITOR",
+                Text = LocalizationService.Get("WinHwMonTitle", "HARDVER MONITOR"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1418,7 +1433,7 @@ namespace WIS.UI
             });
             hwMonHdr.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "● Uživo",
+                Text = LocalizationService.Get("WinHwMonLive", "● Uživo"),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(78, 201, 176),
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -1436,7 +1451,7 @@ namespace WIS.UI
             var cpuHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
             cpuHdr.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "CPU opterećenje",
+                Text = LocalizationService.Get("WinHwMonCpuLoad", "CPU opterećenje"),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
             });
@@ -1469,7 +1484,7 @@ namespace WIS.UI
             var ramHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 4) };
             ramHdr.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "RAM zauzeće",
+                Text = LocalizationService.Get("WinHwMonRamUsage", "RAM zauzeće"),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
             });
@@ -1590,7 +1605,7 @@ namespace WIS.UI
             var alertsHdr = new System.Windows.Controls.Grid { Margin = new Thickness(0, 0, 0, 8) };
             alertsHdr.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "UPOZORENJA",
+                Text = LocalizationService.Get("WinWarningsTitle", "UPOZORENJA"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1655,14 +1670,14 @@ namespace WIS.UI
             var noAlertsStack = new System.Windows.Controls.StackPanel();
             noAlertsStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "✓ Nema aktivnih upozorenja",
+                Text = LocalizationService.Get("WinWarningsNone", "✓ Nema aktivnih upozorenja"),
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = MainViewModel.CreateFrozenBrush(46, 204, 113)
             });
             noAlertsStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "Temperature, Autopilot, drajveri i programi su u normalnom stanju.",
+                Text = LocalizationService.Get("WinWarningsNormal", "Temperature, Autopilot, drajveri i programi su u normalnom stanju."),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(168, 197, 180),
                 TextWrapping = TextWrapping.Wrap,
@@ -1703,7 +1718,7 @@ namespace WIS.UI
 
             var qrTitle = new System.Windows.Controls.TextBlock
             {
-                Text = "KARTON UREĐAJA (SERVISHUB)",
+                Text = LocalizationService.Get("WinServiceHubCardTitle", "KARTON UREĐAJA (SERVISHUB)"),
                 FontSize = 11,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -1755,7 +1770,7 @@ namespace WIS.UI
             qrPlaceholder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowDeviceCardQrPlaceholder") { Converter = boolToVis });
             qrPlaceholder.Child = new System.Windows.Controls.TextBlock
             {
-                Text = "QR kod će se pojaviti kada se otkrije ServisHub...",
+                Text = LocalizationService.Get("WinQrPlaceholder", "QR kod će se pojaviti kada se otkrije ServisHub..."),
                 FontSize = 12,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 TextWrapping = TextWrapping.Wrap,
@@ -2518,7 +2533,7 @@ namespace WIS.UI
 
                     _btnFailedPhaseSkip = CreateRecoveryFooterButton(
                         "BtnFailedPhaseSkip",
-                        "Preskoči na sledeću fazu",
+                        LocalizationService.Get("WinRecoverySkipBtn", "Preskoči na sledeću fazu"),
                         Color.FromRgb(33, 38, 45),
                         Colors.White,
                         Color.FromRgb(218, 54, 51));
@@ -2570,14 +2585,14 @@ namespace WIS.UI
                 if (_btnFailedPhaseRetry != null)
                 {
                     _btnFailedPhaseRetry.Content = show
-                        ? string.Format("↻ Ponovi Fazu {0}", _failedPhase)
-                        : "Ponovi Fazu";
+                        ? string.Format(LocalizationService.Get("WinRecoveryRetryPhaseFmt", "↻ Ponovi Fazu {0}"), _failedPhase)
+                        : LocalizationService.Get("WinRecoveryRetryPhaseDefault", "Ponovi Fazu");
                 }
                 if (_btnFailedPhaseSkip != null)
                 {
-                    _btnFailedPhaseSkip.Content = "Preskoči na sledeću fazu";
+                    _btnFailedPhaseSkip.Content = LocalizationService.Get("WinRecoverySkipBtn", "Preskoči na sledeću fazu");
                     _btnFailedPhaseSkip.ToolTip = show
-                        ? string.Format("Preskoči Fazu {0} i nastavi na Fazu {1}", _failedPhase, _failedPhase + 1)
+                        ? string.Format(LocalizationService.Get("WinRecoverySkipTooltipFmt", "Preskoči Fazu {0} i nastavi na Fazu {1}"), _failedPhase, _failedPhase + 1)
                         : null;
                 }
 
@@ -2598,6 +2613,513 @@ namespace WIS.UI
                 }
             }
             catch { }
+        }
+
+        // =====================================================================
+        // V343-03 (Odluke 3A & 4A): Ekransko upozorenje za obavezne interaktivne testove
+        // =====================================================================
+
+        private void EnsurePendingInteractiveTestsUi()
+        {
+            try
+            {
+                if (_pendingInteractiveBanner == null)
+                {
+                    _pendingInteractiveBanner = FindTaggedElement<System.Windows.Controls.Border>(this, "PendingInteractiveTestsBanner");
+                }
+                if (_pendingInteractiveOverlay == null)
+                {
+                    _pendingInteractiveOverlay = FindTaggedElement<System.Windows.Controls.Border>(this, "PendingInteractiveTestsOverlay");
+                }
+
+                System.Windows.Controls.Grid rootGrid = this.Content as System.Windows.Controls.Grid;
+                if (_pendingInteractiveBanner == null && rootGrid != null && MainTabControl != null)
+                {
+                    DependencyObject tabParent = LogicalTreeHelper.GetParent(MainTabControl) ?? VisualTreeHelper.GetParent(MainTabControl);
+                    System.Windows.Controls.Grid directRoot = tabParent as System.Windows.Controls.Grid;
+                    if (object.ReferenceEquals(directRoot, rootGrid))
+                    {
+                        int tabIdx = rootGrid.Children.IndexOf(MainTabControl);
+                        int tabRow = System.Windows.Controls.Grid.GetRow(MainTabControl);
+                        if (tabIdx >= 0)
+                        {
+                            rootGrid.Children.RemoveAt(tabIdx);
+                            var wrapperGrid = new System.Windows.Controls.Grid();
+                            wrapperGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+                            wrapperGrid.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                            System.Windows.Controls.Grid.SetRow(wrapperGrid, tabRow);
+
+                            _pendingInteractiveBanner = BuildPendingInteractiveTestsBannerFallback();
+                            System.Windows.Controls.Grid.SetRow(_pendingInteractiveBanner, 0);
+                            wrapperGrid.Children.Add(_pendingInteractiveBanner);
+
+                            System.Windows.Controls.Grid.SetRow(MainTabControl, 1);
+                            wrapperGrid.Children.Add(MainTabControl);
+                            rootGrid.Children.Insert(tabIdx, wrapperGrid);
+                        }
+                    }
+                }
+
+                if (_pendingInteractiveOverlay == null && rootGrid != null)
+                {
+                    _pendingInteractiveOverlay = BuildPendingInteractiveTestsOverlayFallback();
+                    System.Windows.Controls.Grid.SetRow(_pendingInteractiveOverlay, 0);
+                    System.Windows.Controls.Grid.SetRowSpan(_pendingInteractiveOverlay, 3);
+                    System.Windows.Controls.Panel.SetZIndex(_pendingInteractiveOverlay, 90);
+                    rootGrid.Children.Add(_pendingInteractiveOverlay);
+                }
+
+                if (_pendingInteractiveOverlay != null)
+                {
+                    if (_pendingOverlayBadgeTb == null)
+                        _pendingOverlayBadgeTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveOverlay, "PendingOverlayBadgeText");
+                    if (_pendingOverlayTitleTb == null)
+                        _pendingOverlayTitleTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveOverlay, "PendingOverlayTitleText");
+                    if (_pendingOverlaySubtitleTb == null)
+                        _pendingOverlaySubtitleTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveOverlay, "PendingOverlaySubtitleText");
+                    if (_pendingOverlayCountTb == null)
+                        _pendingOverlayCountTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveOverlay, "PendingOverlayCountText");
+                    if (_pendingOverlayListTb == null)
+                        _pendingOverlayListTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveOverlay, "PendingOverlayListText");
+                    if (_btnPendingStartTests == null)
+                        _btnPendingStartTests = FindTaggedElement<System.Windows.Controls.Button>(_pendingInteractiveOverlay, "BtnPendingStartTests");
+                    if (_btnPendingBrowseTabs == null)
+                        _btnPendingBrowseTabs = FindTaggedElement<System.Windows.Controls.Button>(_pendingInteractiveOverlay, "BtnPendingBrowseTabs");
+                    if (_btnPendingEmergencySkip == null)
+                        _btnPendingEmergencySkip = FindTaggedElement<System.Windows.Controls.Button>(_pendingInteractiveOverlay, "BtnPendingEmergencySkip");
+                }
+
+                if (_pendingInteractiveBanner != null)
+                {
+                    if (_pendingBannerTitleTb == null)
+                        _pendingBannerTitleTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveBanner, "PendingBannerTitleText");
+                    if (_pendingBannerDetailTb == null)
+                        _pendingBannerDetailTb = FindTaggedElement<System.Windows.Controls.TextBlock>(_pendingInteractiveBanner, "PendingBannerDetailText");
+                    if (_btnBannerResumeTests == null)
+                        _btnBannerResumeTests = FindTaggedElement<System.Windows.Controls.Button>(_pendingInteractiveBanner, "BtnBannerResumeTests");
+                    if (_btnBannerEmergencySkip == null)
+                        _btnBannerEmergencySkip = FindTaggedElement<System.Windows.Controls.Button>(_pendingInteractiveBanner, "BtnBannerEmergencySkip");
+                }
+
+                if (!_pendingInteractiveUiEventsWired &&
+                    (_btnPendingStartTests != null || _btnBannerResumeTests != null))
+                {
+                    if (_btnPendingStartTests != null)
+                    {
+                        _btnPendingStartTests.Click += (s, e) => StartPendingInteractiveTestsFromUi();
+                    }
+                    if (_btnPendingBrowseTabs != null)
+                    {
+                        _btnPendingBrowseTabs.Click += (s, e) => HidePendingInteractiveTestsOverlayOnly();
+                    }
+                    if (_btnPendingEmergencySkip != null)
+                    {
+                        _btnPendingEmergencySkip.Click += (s, e) => RequestEmergencySkipPhase5WithConfirmation();
+                    }
+                    if (_btnBannerResumeTests != null)
+                    {
+                        _btnBannerResumeTests.Click += (s, e) => StartPendingInteractiveTestsFromUi();
+                    }
+                    if (_btnBannerEmergencySkip != null)
+                    {
+                        _btnBannerEmergencySkip.Click += (s, e) => RequestEmergencySkipPhase5WithConfirmation();
+                    }
+                    _pendingInteractiveUiEventsWired = true;
+                }
+
+                RefreshPendingInteractiveTestsLocalization();
+            }
+            catch { }
+        }
+
+        private static System.Windows.Controls.Border BuildPendingInteractiveTestsBannerFallback()
+        {
+            var banner = new System.Windows.Controls.Border
+            {
+                Tag = "PendingInteractiveTestsBanner",
+                Background = MainViewModel.CreateFrozenBrush(51, 34, 10),
+                BorderBrush = MainViewModel.CreateFrozenBrush(243, 156, 18),
+                BorderThickness = new Thickness(1.5),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 9, 14, 9),
+                Margin = new Thickness(14, 10, 14, 0),
+                Visibility = Visibility.Collapsed
+            };
+
+            var grid = new System.Windows.Controls.Grid();
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new System.Windows.Controls.ColumnDefinition { Width = GridLength.Auto });
+
+            var leftStack = new System.Windows.Controls.StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            leftStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingBannerTitleText",
+                Text = LocalizationService.Get("WinPendingBannerTitle", "⚠️ OBAVEZNI INTERAKTIVNI TESTOVI NISU ZAVRŠENI"),
+                FontSize = 12.5,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(251, 191, 36)
+            });
+            leftStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingBannerDetailText",
+                Text = LocalizationService.Get("WinPendingBannerDetail", "Automatski deo je završen. Završite preostale testove da bi se kreirao izveštaj i završni karton."),
+                FontSize = 11.5,
+                Foreground = MainViewModel.CreateFrozenBrush(253, 230, 138),
+                TextTrimming = TextTrimming.CharacterEllipsis,
+                Margin = new Thickness(0, 2, 0, 0)
+            });
+            System.Windows.Controls.Grid.SetColumn(leftStack, 0);
+            grid.Children.Add(leftStack);
+
+            var rightStack = new System.Windows.Controls.StackPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(12, 0, 0, 0)
+            };
+            rightStack.Children.Add(new System.Windows.Controls.Button
+            {
+                Tag = "BtnBannerResumeTests",
+                Content = LocalizationService.Get("WinPendingBtnResume", "▶ Nastavi testove"),
+                Background = MainViewModel.CreateFrozenBrush(230, 126, 34),
+                Foreground = MainViewModel.CreateFrozenBrush(17, 17, 17),
+                BorderBrush = MainViewModel.CreateFrozenBrush(245, 176, 65),
+                BorderThickness = new Thickness(1),
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(14, 6, 14, 6),
+                Margin = new Thickness(0, 0, 8, 0),
+                Cursor = Cursors.Hand
+            });
+            rightStack.Children.Add(new System.Windows.Controls.Button
+            {
+                Tag = "BtnBannerEmergencySkip",
+                Content = LocalizationService.Get("WinPendingBtnEmergencySkip", "Vanredno preskoči..."),
+                Background = MainViewModel.CreateFrozenBrush(42, 22, 22),
+                Foreground = MainViewModel.CreateFrozenBrush(245, 183, 177),
+                BorderBrush = MainViewModel.CreateFrozenBrush(192, 57, 43),
+                BorderThickness = new Thickness(1),
+                FontSize = 11.5,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(10, 6, 10, 6),
+                Cursor = Cursors.Hand
+            });
+            System.Windows.Controls.Grid.SetColumn(rightStack, 1);
+            grid.Children.Add(rightStack);
+
+            banner.Child = grid;
+            return banner;
+        }
+
+        private static System.Windows.Controls.Border BuildPendingInteractiveTestsOverlayFallback()
+        {
+            var bgOverlay = new SolidColorBrush(Color.FromArgb(235, 18, 18, 20));
+            bgOverlay.Freeze();
+
+            var overlayRoot = new System.Windows.Controls.Border
+            {
+                Tag = "PendingInteractiveTestsOverlay",
+                Background = bgOverlay,
+                Visibility = Visibility.Collapsed
+            };
+
+            var hostGrid = new System.Windows.Controls.Grid();
+            var card = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(31, 25, 18),
+                BorderBrush = MainViewModel.CreateFrozenBrush(243, 156, 18),
+                BorderThickness = new Thickness(2),
+                CornerRadius = new CornerRadius(10),
+                MinWidth = 680,
+                MaxWidth = 940,
+                Margin = new Thickness(24),
+                Padding = new Thickness(26, 22, 26, 22),
+                VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+
+            var stack = new System.Windows.Controls.StackPanel();
+
+            var badge = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(243, 156, 18),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(10, 4, 10, 4),
+                HorizontalAlignment = HorizontalAlignment.Left
+            };
+            badge.Child = new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingOverlayBadgeText",
+                Text = LocalizationService.Get("WinPendingOverlayBadge", "OBAVEZNA SERVISNA AKCIJA — FAZA 5"),
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(17, 17, 17)
+            };
+            stack.Children.Add(badge);
+
+            stack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingOverlayTitleText",
+                Text = LocalizationService.Get("WinPendingOverlayTitle", "⚠️ AUTOMATSKI PROCES JE ZAVRŠEN — OBAVEZNI INTERAKTIVNI TESTOVI"),
+                FontSize = 20,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(255, 183, 77),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 10, 0, 6)
+            });
+
+            stack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingOverlaySubtitleText",
+                Text = LocalizationService.Get("WinPendingOverlaySubtitle", "Automatski deo procesa (drajveri, optimizacije, programi i 30s stres test) je završen. Krajnji izveštaj za ServiceHub i Završni karton neće biti kreirani dok se svi obavezni interaktivni testovi hardvera ne završe."),
+                FontSize = 13,
+                Foreground = MainViewModel.CreateFrozenBrush(242, 230, 216),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 14)
+            });
+
+            var listBox = new System.Windows.Controls.Border
+            {
+                Background = MainViewModel.CreateFrozenBrush(22, 18, 13),
+                BorderBrush = MainViewModel.CreateFrozenBrush(217, 119, 6),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(6),
+                Padding = new Thickness(14, 12, 14, 12),
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+            var listStack = new System.Windows.Controls.StackPanel();
+            listStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingOverlayCountText",
+                Text = LocalizationService.Get("WinPendingOverlayCountTitle", "Preostali obavezni testovi (0):"),
+                FontSize = 13,
+                FontWeight = FontWeights.Bold,
+                Foreground = MainViewModel.CreateFrozenBrush(251, 191, 36),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            listStack.Children.Add(new System.Windows.Controls.TextBlock
+            {
+                Tag = "PendingOverlayListText",
+                Text = "",
+                FontSize = 12.5,
+                Foreground = Brushes.White,
+                TextWrapping = TextWrapping.Wrap,
+                LineHeight = 20
+            });
+            listBox.Child = listStack;
+            stack.Children.Add(listBox);
+
+            var btnWrap = new System.Windows.Controls.WrapPanel
+            {
+                Orientation = System.Windows.Controls.Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                Margin = new Thickness(0, 4, 0, 0)
+            };
+            btnWrap.Children.Add(new System.Windows.Controls.Button
+            {
+                Tag = "BtnPendingStartTests",
+                Content = LocalizationService.Get("WinPendingBtnStartTests", "▶ Pokreni interaktivne testove"),
+                Background = MainViewModel.CreateFrozenBrush(230, 126, 34),
+                Foreground = MainViewModel.CreateFrozenBrush(17, 17, 17),
+                BorderBrush = MainViewModel.CreateFrozenBrush(245, 176, 65),
+                BorderThickness = new Thickness(1.5),
+                FontSize = 14,
+                FontWeight = FontWeights.Bold,
+                Padding = new Thickness(20, 11, 20, 11),
+                Margin = new Thickness(6, 4, 6, 4),
+                Cursor = Cursors.Hand
+            });
+            btnWrap.Children.Add(new System.Windows.Controls.Button
+            {
+                Tag = "BtnPendingBrowseTabs",
+                Content = LocalizationService.Get("WinPendingBtnBrowseTabs", "Pregledaj tabove"),
+                Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                Foreground = Brushes.White,
+                BorderBrush = MainViewModel.CreateFrozenBrush(102, 102, 110),
+                BorderThickness = new Thickness(1),
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(16, 11, 16, 11),
+                Margin = new Thickness(6, 4, 6, 4),
+                Cursor = Cursors.Hand
+            });
+            btnWrap.Children.Add(new System.Windows.Controls.Button
+            {
+                Tag = "BtnPendingEmergencySkip",
+                Content = LocalizationService.Get("WinPendingBtnEmergencySkip", "Vanredno preskoči..."),
+                Background = MainViewModel.CreateFrozenBrush(42, 22, 22),
+                Foreground = MainViewModel.CreateFrozenBrush(245, 183, 177),
+                BorderBrush = MainViewModel.CreateFrozenBrush(192, 57, 43),
+                BorderThickness = new Thickness(1),
+                FontSize = 12,
+                FontWeight = FontWeights.SemiBold,
+                Padding = new Thickness(14, 11, 14, 11),
+                Margin = new Thickness(6, 4, 6, 4),
+                Cursor = Cursors.Hand
+            });
+            stack.Children.Add(btnWrap);
+
+            card.Child = new System.Windows.Controls.ScrollViewer
+            {
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Disabled,
+                Content = stack
+            };
+            hostGrid.Children.Add(card);
+            overlayRoot.Child = hostGrid;
+            return overlayRoot;
+        }
+
+        private void RefreshPendingInteractiveTestsLocalization()
+        {
+            int cnt = _lastPendingInteractiveNames != null ? _lastPendingInteractiveNames.Count : 0;
+            string inlineList = cnt > 0 ? string.Join(", ", _lastPendingInteractiveNames.ToArray()) : "";
+
+            if (_pendingOverlayBadgeTb != null)
+            {
+                _pendingOverlayBadgeTb.Text = LocalizationService.Get("WinPendingOverlayBadge", "OBAVEZNA SERVISNA AKCIJA — FAZA 5");
+            }
+            if (_pendingOverlayTitleTb != null)
+            {
+                _pendingOverlayTitleTb.Text = LocalizationService.Get("WinPendingOverlayTitle", "⚠️ AUTOMATSKI PROCES JE ZAVRŠEN — OBAVEZNI INTERAKTIVNI TESTOVI");
+            }
+            if (_pendingOverlaySubtitleTb != null)
+            {
+                _pendingOverlaySubtitleTb.Text = LocalizationService.Get("WinPendingOverlaySubtitle", "Automatski deo procesa (drajveri, optimizacije, programi i 30s stres test) je završen. Krajnji izveštaj za ServiceHub i Završni karton neće biti kreirani dok se svi obavezni interaktivni testovi hardvera ne završe.");
+            }
+            if (_pendingOverlayCountTb != null)
+            {
+                _pendingOverlayCountTb.Text = string.Format(LocalizationService.Get("WinPendingOverlayCountFmt", "Preostalo {0} obaveznih interaktivnih testova:"), cnt);
+            }
+            if (_pendingOverlayListTb != null)
+            {
+                if (cnt > 0)
+                {
+                    var sb = new StringBuilder();
+                    for (int i = 0; i < cnt; i++)
+                    {
+                        if (i > 0) sb.AppendLine();
+                        sb.Append("• ").Append(_lastPendingInteractiveNames[i]);
+                    }
+                    _pendingOverlayListTb.Text = sb.ToString();
+                }
+                else
+                {
+                    _pendingOverlayListTb.Text = "";
+                }
+            }
+            if (_btnPendingStartTests != null)
+            {
+                _btnPendingStartTests.Content = LocalizationService.Get("WinPendingBtnStartTests", "▶ Pokreni interaktivne testove");
+            }
+            if (_btnPendingBrowseTabs != null)
+            {
+                _btnPendingBrowseTabs.Content = LocalizationService.Get("WinPendingBtnBrowseTabs", "Pregledaj tabove");
+            }
+            if (_btnPendingEmergencySkip != null)
+            {
+                _btnPendingEmergencySkip.Content = LocalizationService.Get("WinPendingBtnEmergencySkip", "Vanredno preskoči...");
+            }
+
+            if (_pendingBannerTitleTb != null)
+            {
+                _pendingBannerTitleTb.Text = string.Format(LocalizationService.Get("WinPendingBannerTitleFmt", "⚠️ OBAVEZNI INTERAKTIVNI TESTOVI NISU ZAVRŠENI (preostalo: {0})"), cnt);
+            }
+            if (_pendingBannerDetailTb != null)
+            {
+                _pendingBannerDetailTb.Text = string.Format(LocalizationService.Get("WinPendingBannerDetailFmt", "Preostalo: {0} — Krajnji izveštaj i Završni karton se kreiraju tek nakon završetka testova."), inlineList);
+            }
+            if (_btnBannerResumeTests != null)
+            {
+                _btnBannerResumeTests.Content = LocalizationService.Get("WinPendingBtnResume", "▶ Nastavi testove");
+            }
+            if (_btnBannerEmergencySkip != null)
+            {
+                _btnBannerEmergencySkip.Content = LocalizationService.Get("WinPendingBtnEmergencySkip", "Vanredno preskoči...");
+            }
+        }
+
+        private void ShowPendingInteractiveTestsWarning(List<string> pendingNames, bool showOverlay, bool playSound)
+        {
+            Action showAction = delegate
+            {
+                EnsurePendingInteractiveTestsUi();
+
+                List<string> resolved = (pendingNames != null && pendingNames.Count > 0)
+                    ? pendingNames
+                    : GetPendingInteractiveHwTestNames();
+
+                _lastPendingInteractiveNames = resolved != null ? new List<string>(resolved) : new List<string>();
+                if (_lastPendingInteractiveNames.Count == 0)
+                {
+                    HidePendingInteractiveTestsWarning();
+                    return;
+                }
+
+                RefreshPendingInteractiveTestsLocalization();
+
+                if (_pendingInteractiveBanner != null)
+                {
+                    _pendingInteractiveBanner.Visibility = Visibility.Visible;
+                }
+                if (showOverlay && _pendingInteractiveOverlay != null)
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.IsCompleted = false;
+                    }
+                    _pendingInteractiveOverlay.Visibility = Visibility.Visible;
+                    if (playSound)
+                    {
+                        PlayPendingTestsAttentionSound();
+                    }
+                }
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess()) showAction();
+                else Dispatcher.BeginInvoke(showAction);
+            }
+        }
+
+        private void HidePendingInteractiveTestsOverlayOnly()
+        {
+            Action hideAction = delegate
+            {
+                if (_pendingInteractiveOverlay != null)
+                {
+                    _pendingInteractiveOverlay.Visibility = Visibility.Collapsed;
+                }
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess()) hideAction();
+                else Dispatcher.BeginInvoke(hideAction);
+            }
+        }
+
+        private void HidePendingInteractiveTestsWarning()
+        {
+            Action hideAction = delegate
+            {
+                _lastPendingInteractiveNames.Clear();
+                if (_pendingInteractiveOverlay != null)
+                {
+                    _pendingInteractiveOverlay.Visibility = Visibility.Collapsed;
+                }
+                if (_pendingInteractiveBanner != null)
+                {
+                    _pendingInteractiveBanner.Visibility = Visibility.Collapsed;
+                }
+            };
+
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                if (Dispatcher.CheckAccess()) hideAction();
+                else Dispatcher.BeginInvoke(hideAction);
+            }
         }
 
         private void ExecuteFailedPhaseRecheck()
@@ -2628,7 +3150,7 @@ namespace WIS.UI
             if (ViewModel != null)
             {
                 ViewModel.AddLog("INFO", "RealityCheck", "Ponovna provera ključnih aplikacija na disku (Faza 4)...");
-                ViewModel.LiveStatus = "Proveravam prisustvo ključnih aplikacija na disku...";
+                ViewModel.LiveStatus = LocalizationService.Get("WinRcCheckingApps", "Proveravam prisustvo ključnih aplikacija na disku...");
             }
 
             ThreadPool.QueueUserWorkItem(delegate
@@ -2673,11 +3195,11 @@ namespace WIS.UI
                             if (ViewModel != null)
                             {
                                 ViewModel.AddLog("WARN", "RealityCheck", "Reality Check i dalje detektuje nedostajuće programe: " + missingListStr);
-                                ViewModel.LiveStatus = "Još uvek nedostaju: " + missingListStr + ". Pokrenite pojedinačni Retry na kartici Programi.";
+                                ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinRcStillMissingFmt", "Još uvek nedostaju: {0}. Pokrenite pojedinačni Retry na kartici Programi."), missingListStr);
                             }
                             MessageBox.Show(
-                                string.Format("Sledeći ključni programi još uvek nisu pronađeni na disku:\n\n{0}\n\nPokrenite pojedinačni ↻ Retry na kartici 'Programi' ili 'Ponovi Fazu 4'.", missingListStr),
-                                "WIS Reality Check — Nedostaju programi",
+                                string.Format(LocalizationService.Get("WinRcMissingMsgFmt", "Sledeći ključni programi još uvek nisu pronađeni na disku:\n\n{0}\n\nPokrenite pojedinačni ↻ Retry na kartici 'Programi' ili 'Ponovi Fazu 4'."), missingListStr),
+                                LocalizationService.Get("WinRcMissingMsgTitle", "WIS Reality Check — Nedostaju programi"),
                                 MessageBoxButton.OK,
                                 MessageBoxImage.Warning);
                         }));
@@ -2717,16 +3239,16 @@ namespace WIS.UI
                 List<string> missing = GetMissingKeyApplications();
                 if (missing.Count > 0)
                 {
-                    extraWarn = "\n\nNedostaju sledeći programi na disku:\n- " + string.Join("\n- ", missing.ToArray());
+                    extraWarn = LocalizationService.Get("WinSkipMissingAppsHdr", "\n\nNedostaju sledeći programi na disku:\n- ") + string.Join("\n- ", missing.ToArray());
                 }
             }
 
             string targetLabel = (nextP <= 6)
-                ? string.Format("Fazu {0}", nextP)
-                : "završetak servisa";
+                ? string.Format(LocalizationService.Get("WinSkipPhaseTargetFmt", "Fazu {0}"), nextP)
+                : LocalizationService.Get("WinSkipTargetFinish", "završetak servisa");
             MessageBoxResult res = MessageBox.Show(
-                string.Format("Da li ste sigurni da želite da preskočite neuspelu Fazu {0} i pređete na {1}?{2}", failed, targetLabel, extraWarn),
-                "WIS Servis — Potvrda preskakanja faze",
+                string.Format(LocalizationService.Get("WinSkipConfirmMsgFmt", "Da li ste sigurni da želite da preskočite neuspelu Fazu {0} i pređete na {1}?{2}"), failed, targetLabel, extraWarn),
+                LocalizationService.Get("WinSkipConfirmTitle", "WIS Servis — Potvrda preskakanja faze"),
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Warning,
                 MessageBoxResult.No);
@@ -2787,7 +3309,7 @@ namespace WIS.UI
 
             var leftLabelTb = new System.Windows.Controls.TextBlock
             {
-                Text = "UKUPAN NAPREDAK PROCESA",
+                Text = LocalizationService.Get("WinGlobalProgressTitle", "UKUPAN NAPREDAK PROCESA"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -2861,7 +3383,7 @@ namespace WIS.UI
             var consolasFont = new FontFamily("Consolas");
             globalTimingStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "Traje ",
+                Text = LocalizationService.Get("WinTimingElapsedPrefix", "Traje "),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 VerticalAlignment = VerticalAlignment.Center
@@ -2885,7 +3407,7 @@ namespace WIS.UI
             });
             globalTimingStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "ETA ",
+                Text = LocalizationService.Get("WinTimingEtaPrefix", "ETA "),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 VerticalAlignment = VerticalAlignment.Center
@@ -2914,7 +3436,7 @@ namespace WIS.UI
 
             rootStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "AKTIVNI KORACI",
+                Text = LocalizationService.Get("WinActiveStepsTitle", "AKTIVNI KORACI"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -3458,7 +3980,7 @@ namespace WIS.UI
 
             var titleTb = new System.Windows.Controls.TextBlock
             {
-                Text = "HW MONITOR  •  SISTEMSKA TELEMETRIJA UŽIVO",
+                Text = LocalizationService.Get("WinHwMonHeader", "HW MONITOR  •  SISTEMSKA TELEMETRIJA UŽIVO"),
                 FontSize = 13,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(56, 189, 248),
@@ -3468,7 +3990,7 @@ namespace WIS.UI
             leftActions.Children.Add(titleTb);
 
             var btnReset = CreateHwActionButton(
-                "↺ Reset Min/Max",
+                LocalizationService.Get("WinHwMonBtnReset", "↺ Reset Min/Max"),
                 "ResetCoreClocksCommand",
                 MainViewModel.CreateFrozenBrush(45, 45, 52),
                 MainViewModel.CreateFrozenBrush(82, 82, 92),
@@ -3477,7 +3999,7 @@ namespace WIS.UI
             leftActions.Children.Add(btnReset);
 
             var btnStartStress = CreateHwActionButton(
-                "▶ Start Stres",
+                LocalizationService.Get("WinHwMonBtnStartStress", "▶ Start Stres"),
                 "RunThermalStressCommand",
                 MainViewModel.CreateFrozenBrush(18, 66, 48),
                 MainViewModel.CreateFrozenBrush(16, 185, 129),
@@ -3491,7 +4013,7 @@ namespace WIS.UI
             leftActions.Children.Add(btnStartStress);
 
             var btnStopStress = CreateHwActionButton(
-                "⏹ Stop Stres",
+                LocalizationService.Get("WinHwMonBtnStopStress", "⏹ Stop Stres"),
                 "CancelThermalStressCommand",
                 MainViewModel.CreateFrozenBrush(72, 26, 28),
                 MainViewModel.CreateFrozenBrush(239, 68, 68),
@@ -3529,35 +4051,35 @@ namespace WIS.UI
             };
 
             kpiGrid.Children.Add(CreateHwKpiCard(
-                "CPU / PROCESOR",
+                LocalizationService.Get("WinHwMonKpiCpu", "CPU / PROCESOR"),
                 "CpuTempText", "CpuTempBrush",
                 "CpuUsageShortText", "HwCpuAvgClockText", "HwCpuKpiSubText",
                 "CpuUsagePercent", MainViewModel.CreateFrozenBrush(56, 189, 248),
                 new Thickness(0, 0, 6, 0)));
 
             kpiGrid.Children.Add(CreateHwKpiCard(
-                "RAM MEMORIJA",
+                LocalizationService.Get("WinHwMonKpiRam", "RAM MEMORIJA"),
                 "RamUsageShortText", "RamUsageBrush",
                 "HwRamAvailableText", "HwRamCommitText", "HardwareInfo.RamSummary",
                 "RamUsagePercent", MainViewModel.CreateFrozenBrush(96, 165, 250),
                 new Thickness(3, 0, 3, 0)));
 
             kpiGrid.Children.Add(CreateHwKpiCard(
-                "GRAFIKA (GPU)",
+                LocalizationService.Get("WinHwMonKpiGpu", "GRAFIKA (GPU)"),
                 "GpuTempText", "GpuTempBrush",
                 "FanSpeedText", "HardwareInfo.GpuPrimary", "HwGpuKpiSubText",
                 "GpuTemp", MainViewModel.CreateFrozenBrush(192, 132, 252),
                 new Thickness(3, 0, 3, 0)));
 
             kpiGrid.Children.Add(CreateHwKpiCard(
-                "DISK / SSD I/O",
+                LocalizationService.Get("WinHwMonKpiDisk", "DISK / SSD I/O"),
                 "SsdTempText", "SsdTempBrush",
                 "HwDiskIoText", "MbTempText", "ThrottlingText",
                 "HwDiskActivePercent", MainViewModel.CreateFrozenBrush(16, 185, 129),
                 new Thickness(3, 0, 3, 0)));
 
             kpiGrid.Children.Add(CreateHwKpiCard(
-                "NAPAJANJE / BATERIJA",
+                LocalizationService.Get("WinHwMonKpiPower", "NAPAJANJE / BATERIJA"),
                 "PowerDrawText", "PowerDrawBrush",
                 "HwPowerVoltageText", "PowerStatusTitle", "HwPowerSubText",
                 "BatteryChargePercent", MainViewModel.CreateFrozenBrush(245, 158, 11),
@@ -3581,7 +4103,7 @@ namespace WIS.UI
             var legendDock = new System.Windows.Controls.DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 0, 6) };
             var graphTitle = new System.Windows.Controls.TextBlock
             {
-                Text = "TERMALNA KRIVA & CPU OPTEREĆENJE (5 MIN / 1 Hz)",
+                Text = LocalizationService.Get("WinHwMonGraphTitle", "TERMALNA KRIVA & CPU OPTEREĆENJE (5 MIN / 1 Hz)"),
                 FontSize = 11.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
@@ -3669,7 +4191,7 @@ namespace WIS.UI
 
             var sensorsTitle = new System.Windows.Controls.TextBlock
             {
-                Text = "DETALJNI SENZORI (MIN / TRENUTNO / MAX)",
+                Text = LocalizationService.Get("WinHwMonSensorsTitle", "DETALJNI SENZORI (MIN / TRENUTNO / MAX)"),
                 FontSize = 11.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
@@ -3686,12 +4208,12 @@ namespace WIS.UI
                 Padding = new Thickness(8, 5, 8, 5)
             };
             var shDock = new System.Windows.Controls.DockPanel { LastChildFill = true };
-            shDock.Children.Add(CreateFixedHeaderCol("MAX", 76));
-            shDock.Children.Add(CreateFixedHeaderCol("MIN", 76));
-            shDock.Children.Add(CreateFixedHeaderCol("TRENUTNO", 82));
+            shDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColMax", "MAX"), 76));
+            shDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColMin", "MIN"), 76));
+            shDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColCurrent", "TRENUTNO"), 82));
             shDock.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "SENZOR",
+                Text = LocalizationService.Get("WinHwMonColSensor", "SENZOR"),
                 FontSize = 10.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184)
@@ -3750,7 +4272,7 @@ namespace WIS.UI
             clocksTitleDock.Children.Add(avgClockTb);
             clocksTitleDock.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "TAKTOVI PROCESORSKIH JEZGARA",
+                Text = LocalizationService.Get("WinHwMonClocksTitle", "TAKTOVI PROCESORSKIH JEZGARA"),
                 FontSize = 11.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240)
@@ -3766,12 +4288,12 @@ namespace WIS.UI
                 Padding = new Thickness(8, 5, 8, 5)
             };
             var chDock = new System.Windows.Controls.DockPanel { LastChildFill = true };
-            chDock.Children.Add(CreateFixedHeaderCol("MAX", 68));
-            chDock.Children.Add(CreateFixedHeaderCol("MIN", 68));
-            chDock.Children.Add(CreateFixedHeaderCol("TRENUTNO", 74));
+            chDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColMax", "MAX"), 68));
+            chDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColMin", "MIN"), 68));
+            chDock.Children.Add(CreateFixedHeaderCol(LocalizationService.Get("WinHwMonColCurrent", "TRENUTNO"), 74));
             chDock.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "JEZGRO",
+                Text = LocalizationService.Get("WinHwMonColCore", "JEZGRO"),
                 FontSize = 10.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(148, 163, 184)
@@ -3810,17 +4332,17 @@ namespace WIS.UI
             var subsysStack = new System.Windows.Controls.StackPanel();
             subsysStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "PODSISTEMI & DIJAGNOSTIKA",
+                Text = LocalizationService.Get("WinHwMonSubsysTitle", "PODSISTEMI & DIJAGNOSTIKA"),
                 FontSize = 11.5,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(226, 232, 240),
                 Margin = new Thickness(0, 0, 0, 6)
             });
-            subsysStack.Children.Add(CreateHwSubsystemRow("Mreža (RX / TX)", "HwNetRateText", MainViewModel.CreateFrozenBrush(56, 189, 248)));
-            subsysStack.Children.Add(CreateHwSubsystemRow("Disk I/O", "HwDiskIoText", MainViewModel.CreateFrozenBrush(16, 185, 129)));
-            subsysStack.Children.Add(CreateHwSubsystemRow("Napajanje", "PowerDrawText", MainViewModel.CreateFrozenBrush(245, 158, 11)));
-            subsysStack.Children.Add(CreateHwSubsystemRow("Režim / Napon", "HwPowerVoltageText", MainViewModel.CreateFrozenBrush(203, 213, 225)));
-            subsysStack.Children.Add(CreateHwSubsystemRow("Term. ocena", "ThermalVerdictTitle", null, "ThermalVerdictBrush"));
+            subsysStack.Children.Add(CreateHwSubsystemRow(LocalizationService.Get("WinHwMonSubNet", "Mreža (RX / TX)"), "HwNetRateText", MainViewModel.CreateFrozenBrush(56, 189, 248)));
+            subsysStack.Children.Add(CreateHwSubsystemRow(LocalizationService.Get("WinHwMonSubDisk", "Disk I/O"), "HwDiskIoText", MainViewModel.CreateFrozenBrush(16, 185, 129)));
+            subsysStack.Children.Add(CreateHwSubsystemRow(LocalizationService.Get("WinHwMonSubPower", "Napajanje"), "PowerDrawText", MainViewModel.CreateFrozenBrush(245, 158, 11)));
+            subsysStack.Children.Add(CreateHwSubsystemRow(LocalizationService.Get("WinHwMonSubVolt", "Režim / Napon"), "HwPowerVoltageText", MainViewModel.CreateFrozenBrush(203, 213, 225)));
+            subsysStack.Children.Add(CreateHwSubsystemRow(LocalizationService.Get("WinHwMonSubThermal", "Term. ocena"), "ThermalVerdictTitle", null, "ThermalVerdictBrush"));
             subsysCard.Child = subsysStack;
             System.Windows.Controls.Grid.SetRow(subsysCard, 2);
             rightCol.Children.Add(subsysCard);
@@ -4305,7 +4827,7 @@ namespace WIS.UI
                     var copyrightTb = new System.Windows.Controls.TextBlock
                     {
                         Tag = "FooterCopyrightText",
-                        Text = "Razvija i održava IG-Systems. Sva prava zadržana",
+                        Text = LocalizationService.Get("WinFooterCopyright", "Razvija i održava IG-Systems. Sva prava zadržana"),
                         FontSize = 11,
                         Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                         HorizontalAlignment = HorizontalAlignment.Center,
@@ -4498,7 +5020,7 @@ namespace WIS.UI
             var stepMonoFont = new FontFamily("Consolas");
             stepTimingStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "Traje ",
+                Text = LocalizationService.Get("WinTimingElapsedPrefix", "Traje "),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 VerticalAlignment = VerticalAlignment.Center
@@ -4522,7 +5044,7 @@ namespace WIS.UI
             });
             stepTimingStack.Children.Add(new System.Windows.Controls.TextBlock
             {
-                Text = "ETA ",
+                Text = LocalizationService.Get("WinTimingEtaPrefix", "ETA "),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 VerticalAlignment = VerticalAlignment.Center
@@ -4635,51 +5157,69 @@ namespace WIS.UI
                     }
                     curr = LogicalTreeHelper.GetParent(curr);
                 }
-                if (cardBorder == null || HasTaggedElement(cardBorder, "PhasesCollapseToggleBtn")) return;
+                if (cardBorder == null) return;
 
-                Button toggleBtn = new Button
+                // Oslobodi prostor u desnom gornjem uglu naslova kartice FAZA TRACKER da se dugme ne preklapa sa tekstom ili 5. fazom
+                System.Windows.Controls.Panel phasesParentPanel = LogicalTreeHelper.GetParent(phasesControl) as System.Windows.Controls.Panel;
+                if (phasesParentPanel != null && phasesParentPanel.Children.Count > 0)
                 {
-                    Tag = "PhasesCollapseToggleBtn",
-                    HorizontalAlignment = HorizontalAlignment.Right,
-                    VerticalAlignment = VerticalAlignment.Bottom,
-                    Width = 28,
-                    Height = 22,
-                    Margin = new Thickness(0, 0, 7, 8),
-                    Padding = new Thickness(0),
-                    Background = MainViewModel.CreateFrozenBrush(37, 37, 38),
-                    Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
-                    BorderBrush = MainViewModel.CreateFrozenBrush(78, 78, 86),
-                    BorderThickness = new Thickness(1),
-                    FontSize = 10,
-                    FontWeight = FontWeights.Bold,
-                    Cursor = Cursors.Hand
-                };
-                Style actionStyle = TryFindResource("ActionButtonStyle") as Style;
-                if (actionStyle != null)
-                {
-                    toggleBtn.Style = actionStyle;
+                    System.Windows.Controls.TextBlock titleTb = phasesParentPanel.Children[0] as System.Windows.Controls.TextBlock;
+                    if (titleTb != null)
+                    {
+                        titleTb.Margin = new Thickness(0, 2, 144, 12);
+                    }
                 }
-                System.Windows.Controls.Panel.SetZIndex(toggleBtn, 10);
-                toggleBtn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandProperty, new System.Windows.Data.Binding("TogglePhasesExpandedCommand"));
-                toggleBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("PhasesToggleGlyph"));
+
+                Button toggleBtn = FindTaggedElement<Button>(cardBorder, "PhasesCollapseToggleBtn");
+                if (toggleBtn == null)
+                {
+                    toggleBtn = new Button
+                    {
+                        Tag = "PhasesCollapseToggleBtn",
+                        Background = MainViewModel.CreateFrozenBrush(45, 45, 48),
+                        Foreground = MainViewModel.CreateFrozenBrush(204, 204, 204),
+                        BorderBrush = MainViewModel.CreateFrozenBrush(78, 78, 86),
+                        BorderThickness = new Thickness(1),
+                        Cursor = Cursors.Hand
+                    };
+                    Style actionStyle = TryFindResource("ActionButtonStyle") as Style;
+                    if (actionStyle != null)
+                    {
+                        toggleBtn.Style = actionStyle;
+                    }
+                    System.Windows.Controls.Panel.SetZIndex(toggleBtn, 10);
+                    toggleBtn.SetBinding(System.Windows.Controls.Primitives.ButtonBase.CommandProperty, new System.Windows.Data.Binding("TogglePhasesExpandedCommand"));
+
+                    System.Windows.Controls.Grid existingGrid = cardBorder.Child as System.Windows.Controls.Grid;
+                    if (existingGrid != null)
+                    {
+                        existingGrid.Children.Add(toggleBtn);
+                    }
+                    else
+                    {
+                        UIElement existingChild = cardBorder.Child;
+                        cardBorder.Child = null;
+                        System.Windows.Controls.Grid wrapperGrid = new System.Windows.Controls.Grid();
+                        if (existingChild != null)
+                        {
+                            wrapperGrid.Children.Add(existingChild);
+                        }
+                        wrapperGrid.Children.Add(toggleBtn);
+                        cardBorder.Child = wrapperGrid;
+                    }
+                }
+
+                toggleBtn.HorizontalAlignment = HorizontalAlignment.Right;
+                toggleBtn.VerticalAlignment = VerticalAlignment.Top;
+                toggleBtn.Width = double.NaN;
+                toggleBtn.MinWidth = 136;
+                toggleBtn.Height = 24;
+                toggleBtn.Margin = new Thickness(0, -2, 0, 0);
+                toggleBtn.Padding = new Thickness(10, 2, 10, 2);
+                toggleBtn.FontSize = 10.5;
+                toggleBtn.FontWeight = FontWeights.SemiBold;
+                toggleBtn.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding("PhasesToggleText"));
                 toggleBtn.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding("PhasesToggleToolTip"));
-
-                System.Windows.Controls.Grid existingGrid = cardBorder.Child as System.Windows.Controls.Grid;
-                if (existingGrid != null)
-                {
-                    existingGrid.Children.Add(toggleBtn);
-                    return;
-                }
-
-                UIElement existingChild = cardBorder.Child;
-                cardBorder.Child = null;
-                System.Windows.Controls.Grid wrapperGrid = new System.Windows.Controls.Grid();
-                if (existingChild != null)
-                {
-                    wrapperGrid.Children.Add(existingChild);
-                }
-                wrapperGrid.Children.Add(toggleBtn);
-                cardBorder.Child = wrapperGrid;
             }
             catch { }
         }
@@ -4805,7 +5345,7 @@ namespace WIS.UI
             }
             ViewModel.IsPaused = false;
             ViewModel.IpcConnected = true;
-            ViewModel.IpcStatusText = string.Format("Master Faza {0}", phaseNumber);
+            ViewModel.IpcStatusText = string.Format(LocalizationService.Get("WinMasterPhaseStatusFmt", "Master Faza {0}"), phaseNumber);
 
             if (_isMasterMode && phaseNumber >= 1 && phaseNumber <= 5)
             {
@@ -4834,6 +5374,23 @@ namespace WIS.UI
 
         public void ExecutePhase(int phaseNumber)
         {
+            if (phaseNumber == 6 && HasUnfinishedInteractiveHwTests())
+            {
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.CurrentPhase = 5;
+                        ViewModel.IsCompleted = false;
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase6BlockedSub", "Čekaju obavezni interaktivni testovi...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase6BlockedLive", "⚠️ Faza 6 je blokirana dok se ne završe svi obavezni interaktivni testovi hardvera.");
+                        ViewModel.AddLog("WARN", "Hardver", "HARD GATE: Blokiran prelazak u Fazu 6 jer postoje nezavršeni obavezni interaktivni hardverski testovi.");
+                    }
+                    ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                }));
+                return;
+            }
+
             if (phaseNumber >= 6)
             {
                 _phase6ScriptCompletedSuccessfully = false;
@@ -4864,45 +5421,45 @@ namespace WIS.UI
                 switch (phaseNumber)
                 {
                     case 1:
-                        ViewModel.PhaseName = "Faza 1: Mreža i povezivanje";
-                        ViewModel.SubPhase = "Povezivanje na servisnu mrežu...";
-                        ViewModel.LiveStatus = "Konfigurisanje mrežnih interfejsa i rutiranja...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase1Name", "Faza 1: Mreža i povezivanje");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase1Sub", "Povezivanje na servisnu mrežu...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase1Live", "Konfigurisanje mrežnih interfejsa i rutiranja...");
                         ViewModel.Progress = 10;
                         break;
                     case 2:
-                        ViewModel.PhaseName = "Faza 2: Drajveri i zakrpe";
-                        ViewModel.SubPhase = "Instalacija PnP drajvera...";
-                        ViewModel.LiveStatus = "Skeniranje i instalacija nedostajućih drajvera...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase2Name", "Faza 2: Drajveri i zakrpe");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase2Sub", "Instalacija PnP drajvera...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase2Live", "Skeniranje i instalacija nedostajućih drajvera...");
                         ViewModel.Progress = 25;
                         break;
                     case 3:
-                        ViewModel.PhaseName = "Faza 3: Optimizacija i debloat";
-                        ViewModel.SubPhase = "Sistemske optimizacije...";
-                        ViewModel.LiveStatus = "Primenjivanje debloat i brending skripti...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase3Name", "Faza 3: Optimizacija i debloat");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase3Sub", "Sistemske optimizacije...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase3Live", "Primenjivanje debloat i brending skripti...");
                         ViewModel.Progress = 50;
                         break;
                     case 4:
-                        ViewModel.PhaseName = "Faza 4: Instalacija programa";
-                        ViewModel.SubPhase = "Instalacija programskih paketa...";
-                        ViewModel.LiveStatus = "Instalacija i verifikacija servisnih programa...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase4Name", "Faza 4: Instalacija programa");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase4Sub", "Instalacija programskih paketa...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase4Live", "Instalacija i verifikacija servisnih programa...");
                         ViewModel.Progress = 70;
                         break;
                     case 5:
-                        ViewModel.PhaseName = "Faza 5: Hardverski test (Stres + Periferije)";
-                        ViewModel.SubPhase = "Automatska provera, 30s stres i testovi periferija...";
-                        ViewModel.LiveStatus = "Izvršavanje integrisanih hardverskih testova u tabu Hardverski testovi...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase5Name", "Faza 5: Hardverski test (Stres + Periferije)");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase5Sub", "Automatska provera, 30s stres i testovi periferija...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase5Live", "Izvršavanje integrisanih hardverskih testova u tabu Hardverski testovi...");
                         ViewModel.Progress = 85;
                         break;
                     case 6:
-                        ViewModel.PhaseName = "Faza 6: Završetak i rezime";
-                        ViewModel.SubPhase = "Finalizacija i dijagnostika...";
-                        ViewModel.LiveStatus = "Generisanje servisnog izveštaja i verifikacija...";
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase6Name", "Faza 6: Završetak i rezime");
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhase6Sub", "Finalizacija i dijagnostika...");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinPhase6Live", "Generisanje servisnog izveštaja i verifikacija...");
                         ViewModel.Progress = 95;
                         break;
                     default:
-                        ViewModel.PhaseName = string.Format("Faza {0}", phaseNumber);
-                        ViewModel.SubPhase = "Izvršavanje faze...";
-                        ViewModel.LiveStatus = string.Format("Rad na Fazi {0}...", phaseNumber);
+                        ViewModel.PhaseName = string.Format(LocalizationService.Get("WinPhaseDefaultNameFmt", "Faza {0}"), phaseNumber);
+                        ViewModel.SubPhase = LocalizationService.Get("WinPhaseDefaultSub", "Izvršavanje faze...");
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhaseDefaultLiveFmt", "Rad na Fazi {0}..."), phaseNumber);
                         break;
                 }
 
@@ -5006,7 +5563,7 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Skripta faze nije pronađena: {0}", fileName));
-                    ViewModel.LiveStatus = string.Format("Greška: {0} nedostaje na sistemu!", fileName);
+                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhaseScriptMissingFmt", "Greška: {0} nedostaje na sistemu!"), fileName);
                     SetFailedPhase(phaseNumber);
                 }));
                 return;
@@ -5120,7 +5677,7 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         ViewModel.AddLog("ERROR", "TaskRunner", string.Format("Faza {0} je prekinuta zbog isteka timeout-a od {1} minuta!", phaseNumber, timeoutMinutes));
-                        ViewModel.LiveStatus = string.Format("Faza {0} prekoračila timeout. Koristite traku za oporavak dole ('Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu').", phaseNumber);
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhaseTimeoutLiveFmt", "Faza {0} prekoračila timeout. Koristite traku za oporavak dole ('Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu')."), phaseNumber);
                         SetFailedPhase(phaseNumber);
                     }));
                     return;
@@ -5189,6 +5746,7 @@ namespace WIS.UI
                     if (phaseNumber == 2)
                     {
                         PerformPhase2RealityCheck();
+                        RefreshPeripheralsAfterDrivers();
                         Dispatcher.BeginInvoke((Action)(() =>
                         {
                             PollBackgroundWuStatusFile();
@@ -5319,7 +5877,7 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         ViewModel.AddLog("ERROR", "TaskRunner", phaseErrLine);
-                        ViewModel.LiveStatus = string.Format("Greška u Fazi {0} (Kod {1}). Koristite traku za oporavak dole ('Proveri ponovo i nastavi', 'Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu').", phaseNumber, exitCode);
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhaseErrorLiveFmt", "Greška u Fazi {0} (Kod {1}). Koristite traku za oporavak dole ('Proveri ponovo i nastavi', 'Ponovi Fazu {0}' ili 'Preskoči na sledeću fazu')."), phaseNumber, exitCode);
                         SetFailedPhase(phaseNumber);
                     }));
                 }
@@ -5369,7 +5927,7 @@ namespace WIS.UI
                 ViewModel.StressTestProgress = 0;
                 ViewModel.MaxTempReached = 0.0f;
                 ViewModel.StressTestTimeText = "0 / 30s";
-                ViewModel.StressTestStatusText = "Automatski 30s stres test procesora (Faza 5)...";
+                ViewModel.StressTestStatusText = LocalizationService.Get("WinStressAutoStatus", "Automatski 30s stres test procesora (Faza 5)...");
             }));
 
             _stressCts = new CancellationTokenSource();
@@ -5425,7 +5983,7 @@ namespace WIS.UI
                 _lastStressReason = reason;
                 _criticalStressFailure = false;
                 string thermalNote = string.Equals(status, "THERMAL_CRITICAL", StringComparison.OrdinalIgnoreCase)
-                    ? string.Format("NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.", maxT > 0.5f ? maxT : 95.0f)
+                    ? string.Format(LocalizationService.Get("WinThermalOverheatNoteFmt", "NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste."), maxT > 0.5f ? maxT : 95.0f)
                     : "";
                 if (!string.IsNullOrEmpty(thermalNote))
                 {
@@ -5546,7 +6104,7 @@ namespace WIS.UI
                         _criticalStressFailure = false;
                         bool isThermalCritical = string.Equals(status, "THERMAL_CRITICAL", StringComparison.OrdinalIgnoreCase) || (abort && maxT > 0.5f);
                         string thermalNote = isThermalCritical
-                            ? string.Format("NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste.", maxT > 0.5f ? maxT : 95.0f)
+                            ? string.Format(LocalizationService.Get("WinThermalOverheatNoteFmt", "NAPOMENA: Procesor je dostigao kritičnu temperaturu ({0:F1}°C >= 95°C) tokom stres testa — potrebno čišćenje hladnjaka i zamena termalne paste."), maxT > 0.5f ? maxT : 95.0f)
                             : "";
                         if (!string.IsNullOrEmpty(thermalNote))
                         {
@@ -5795,12 +6353,12 @@ namespace WIS.UI
                 ViewModel.StressResultStatus = "THERMAL_CRITICAL";
                 ViewModel.StressResultReason = _lastStressReason;
                 ViewModel.MaxTempReached = displayTemp;
-                ViewModel.LiveStatus = string.Format("⚠️ {0} — instalacija nastavlja dalje.", noteMsg);
-                ViewModel.StressTestStatusText = string.Format("⚠️ NAPOMENA: CPU {0:F1}°C (>= 95°C) — sačuvano u izveštaju!", displayTemp);
-                ViewModel.ThermalVerdictTitle = string.Format("⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)", displayTemp);
-                ViewModel.ThermalVerdictDescription = string.Format("Procesor je dostigao {0:F1}°C tokom stres testa (opterećenje je bezbedno zaustavljeno). Pipeline je nastavljen i napomena je zabeležena u izveštaju.", displayTemp);
+                ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinThermalLiveContinue", "⚠️ {0} — instalacija nastavlja dalje."), noteMsg);
+                ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinThermalStressNoteText", "⚠️ NAPOMENA: CPU {0:F1}°C (>= 95°C) — sačuvano u izveštaju!"), displayTemp);
+                ViewModel.ThermalVerdictTitle = string.Format(LocalizationService.Get("WinThermalOverheatTitle", "⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)"), displayTemp);
+                ViewModel.ThermalVerdictDescription = string.Format(LocalizationService.Get("WinThermalOverheatDesc", "Procesor je dostigao {0:F1}°C tokom stres testa (opterećenje je bezbedno zaustavljeno). Pipeline je nastavljen i napomena je zabeležena u izveštaju."), displayTemp);
                 ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(230, 126, 34); // #E67E22 Narandžasta napomena
-                ViewModel.ThermalRecommendation = "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu pre predaje računara kupcu.";
+                ViewModel.ThermalRecommendation = LocalizationService.Get("WinThermalServiceNote", "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu pre predaje računara kupcu.");
 
                 ViewModel.AddLog("WARN", "ThermalGuard", noteMsg + " Pipeline nastavlja na sledeću fazu.");
             }));
@@ -5977,15 +6535,16 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "RealityCheck", "Post-Execution Reality Check (Faza 4) NEUSPEŠAN! Nedostaju ključni programi na disku: " + missingStr);
-                    ViewModel.LiveStatus = "Greška u Fazi 4: Nedostaju ključni programi (" + missingStr + "). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole.";
+                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhase4MissingApps", "Greška u Fazi 4: Nedostaju ključni programi ({0}). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole."), missingStr);
                     SetFailedPhase(4);
 
+                    string appNotFoundTxt = LocalizationService.Get("WinAppFileNotFound", "Fajl nije pronađen");
                     foreach (string item in missing)
                     {
-                        if (item.Contains("Chrome")) ViewModel.UpdateAppStatus("Chrome", "FAIL", "Fajl nije pronađen");
-                        if (item.Contains("Acrobat")) ViewModel.UpdateAppStatus("Acrobat", "FAIL", "Fajl nije pronađen");
-                        if (item.Contains("Office")) ViewModel.UpdateAppStatus("Office", "FAIL", "Fajl nije pronađen");
-                        if (item.Contains("WinRAR")) ViewModel.UpdateAppStatus("WinRAR", "FAIL", "Fajl nije pronađen");
+                        if (item.Contains("Chrome")) ViewModel.UpdateAppStatus("Chrome", "FAIL", appNotFoundTxt);
+                        if (item.Contains("Acrobat")) ViewModel.UpdateAppStatus("Acrobat", "FAIL", appNotFoundTxt);
+                        if (item.Contains("Office")) ViewModel.UpdateAppStatus("Office", "FAIL", appNotFoundTxt);
+                        if (item.Contains("WinRAR")) ViewModel.UpdateAppStatus("WinRAR", "FAIL", appNotFoundTxt);
                     }
                 }));
                 return false;
@@ -6021,7 +6580,7 @@ namespace WIS.UI
                                 uint errCode = Convert.ToUInt32(errObj);
                                 if (errCode != 0)
                                 {
-                                    string devName = mo["Name"] != null ? mo["Name"].ToString() : "Nepoznat uređaj";
+                                    string devName = mo["Name"] != null ? mo["Name"].ToString() : LocalizationService.Get("MdlUnknownDevice", "Nepoznat uređaj");
                                     badDevices.Add(string.Format("{0} (Kod: {1})", devName, errCode));
                                 }
                             }
@@ -6039,7 +6598,7 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         ViewModel.AddLog("WARN", "RealityCheck", string.Format("Faza 2 Reality Check UPOZORENJE: Detektovano {0} uređaja sa greškom drajvera: {1}", badDevices.Count, badList));
-                        ViewModel.LiveStatus = string.Format("Upozorenje: Pronađeno {0} neispravnih uređaja u Upravljaču uređaja.", badDevices.Count);
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinPhase2BadDevices", "Upozorenje: Pronađeno {0} neispravnih uređaja u Upravljaču uređaja."), badDevices.Count);
                     }));
                 }
                 else
@@ -6131,6 +6690,24 @@ namespace WIS.UI
 
         private void HandleFinalCompletion()
         {
+            if (HasUnfinishedInteractiveHwTests())
+            {
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.IsCompleted = false;
+                        ViewModel.IsServiceFinished = false;
+                        ViewModel.CurrentPhase = 5;
+                        ViewModel.AddLog("WARN", "Hardver", "HARD GATE: Blokiran završetak servisa i prikaz Završnog kartona dok se ne završe obavezni interaktivni testovi.");
+                    }
+                    ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                }));
+                return;
+            }
+
+            HidePendingInteractiveTestsWarning();
+            RefreshPeripheralsAfterDrivers();
             StopScreenCaptureWorker();
             ClearRunOnceEntries();
             EnsureStressTestResultFile();
@@ -6162,7 +6739,7 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.AddLog("ERROR", "RealityCheck", "Post-Execution Reality Check: Servis NE MOŽE biti označen kao završen jer nedostaju ključne aplikacije: " + missingStr);
-                    ViewModel.LiveStatus = "Greška: Nedostaju ključni programi (" + missingStr + "). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole.";
+                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinFinalMissingApps", "Greška: Nedostaju ključni programi ({0}). Pokrenite ↻ Retry na kartici Programi ili koristite traku za oporavak dole."), missingStr);
                     ViewModel.CurrentPhase = 4;
                     SetFailedPhase(4);
                 }));
@@ -6241,39 +6818,39 @@ namespace WIS.UI
                 ViewModel.IsServiceFinished = true;
                 ViewModel.CriticalStressFailure = false;
                 ViewModel.CompletionTitle = isActuallyThermalCritical
-                    ? "⚠️ INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU)"
-                    : "INSTALACIJA ZAVRŠENA";
+                    ? LocalizationService.Get("WinCompletionTitleOverheat", "⚠️ INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU)")
+                    : LocalizationService.Get("WinCompletionTitleDone", "INSTALACIJA ZAVRŠENA");
                 if (isActuallyThermalCritical)
                 {
                     float noteTemp = _lastStressMaxTemp > 0.5f ? _lastStressMaxTemp : 95.0f;
                     string noteTxt = !string.IsNullOrEmpty(_thermalOverheatNote)
                         ? _thermalOverheatNote
-                        : string.Format("NAPOMENA: Procesor se pregrevao tokom stres testa ({0:F1}°C >= 95°C) — potreban servis hlađenja / zamena termalne paste.", noteTemp);
+                        : string.Format(LocalizationService.Get("WinThermalOverheatFallback", "NAPOMENA: Procesor se pregrevao tokom stres testa ({0:F1}°C >= 95°C) — potreban servis hlađenja / zamena termalne paste."), noteTemp);
                     ViewModel.StressResultStatus = "THERMAL_CRITICAL";
                     ViewModel.CompletionSummary = "⚠️ " + noteTxt;
-                    ViewModel.LiveStatus = "⚠️ Instalacija završena uz termalnu napomenu (sačuvano u izveštaju).";
-                    ViewModel.ThermalVerdictTitle = string.Format("⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)", noteTemp);
+                    ViewModel.LiveStatus = LocalizationService.Get("WinCompletionLiveThermalNote", "⚠️ Instalacija završena uz termalnu napomenu (sačuvano u izveštaju).");
+                    ViewModel.ThermalVerdictTitle = string.Format(LocalizationService.Get("WinThermalOverheatTitle", "⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)"), noteTemp);
                     ViewModel.ThermalVerdictDescription = noteTxt;
                     ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(230, 126, 34);
-                    ViewModel.ThermalRecommendation = "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu.";
+                    ViewModel.ThermalRecommendation = LocalizationService.Get("WinThermalServiceNoteShort", "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu.");
                 }
                 else if (isSensorUnavailable || string.Equals(_lastStressStatus, "UNKNOWN", StringComparison.OrdinalIgnoreCase))
                 {
                     ViewModel.StressResultStatus = "UNKNOWN";
-                    ViewModel.CompletionSummary = "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.";
-                    ViewModel.LiveStatus = "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.";
-                    ViewModel.ThermalVerdictTitle = "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)";
-                    ViewModel.ThermalVerdictDescription = "Hlađenje nije automatski potvrđeno; obavezna ručna provera. Potrebna je ručna provera hladnjaka i ventilatora.";
+                    ViewModel.CompletionSummary = LocalizationService.Get("WinCompletionSensorUnknown", "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.");
+                    ViewModel.LiveStatus = LocalizationService.Get("WinCompletionSensorUnknown", "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.");
+                    ViewModel.ThermalVerdictTitle = LocalizationService.Get("WinThermalSensorUnknownTitle", "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)");
+                    ViewModel.ThermalVerdictDescription = LocalizationService.Get("WinThermalSensorUnknownDesc", "Hlađenje nije automatski potvrđeno; obavezna ručna provera. Potrebna je ručna provera hladnjaka i ventilatora.");
                     ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(243, 156, 18); // #F39C12
-                    ViewModel.ThermalRecommendation = "Preporuka: Proverite rad kulera i ventilaciju u BIOS/UEFI ili fizički pre isporuke računara.";
+                    ViewModel.ThermalRecommendation = LocalizationService.Get("WinThermalSensorUnknownRec", "Preporuka: Proverite rad kulera i ventilaciju u BIOS/UEFI ili fizički pre isporuke računara.");
                 }
                 else if (string.Equals(_lastStressStatus, "WARN", StringComparison.OrdinalIgnoreCase))
                 {
-                    ViewModel.CompletionSummary = string.Format("Svi programi, drajveri i optimizacije su kompletirani. UPOZORENJE: Maksimalna CPU temperatura na stres testu je dostigla {0:F1}°C (preporučen preventivni servis hlađenja).", _lastStressMaxTemp);
+                    ViewModel.CompletionSummary = string.Format(LocalizationService.Get("WinCompletionSummaryWarn", "Svi programi, drajveri i optimizacije su kompletirani. UPOZORENJE: Maksimalna CPU temperatura na stres testu je dostigla {0:F1}°C (preporučen preventivni servis hlađenja)."), _lastStressMaxTemp);
                 }
                 else
                 {
-                    ViewModel.CompletionSummary = "Svi programi, drajveri, stres test i sistemske optimizacije su kompletirani.";
+                    ViewModel.CompletionSummary = LocalizationService.Get("WinCompletionSummaryOk", "Svi programi, drajveri, stres test i sistemske optimizacije su kompletirani.");
                 }
                 ViewModel.ShutdownCountdown = 0;
                 ViewModel.ShutdownTimerActive = false;
@@ -6295,10 +6872,6 @@ namespace WIS.UI
                 });
                 EnsureLabelPrintButtons();
                 EnsureHwTestButtons();
-                if (!ViewModel.IsHwTestFinished)
-                {
-                    TriggerHardwareTestAfterPhase6();
-                }
             }));
         }
 
@@ -6649,7 +7222,7 @@ namespace WIS.UI
                         {
                             ViewModel.AddLog("ERROR", "IPC", string.Format("Prekid IPC komunikacije: {0}", ex.Message));
                             ViewModel.IpcConnected = false;
-                            ViewModel.IpcStatusText = "IPC Diskonektovan";
+                            ViewModel.IpcStatusText = LocalizationService.Get("WinIpcDisconnected", "IPC Diskonektovan");
                         }
                     }));
                 }
@@ -6665,7 +7238,7 @@ namespace WIS.UI
             if (!_isMasterMode)
             {
                 ViewModel.IpcConnected = false;
-                ViewModel.IpcStatusText = "IPC Završen (EOF)";
+                ViewModel.IpcStatusText = LocalizationService.Get("WinIpcEof", "IPC Završen (EOF)");
                 ViewModel.AddLog("WARN", "IPC", "Standardni ulaz je zatvoren (roditeljski proces je prekinut).");
             }
         }
@@ -6934,10 +7507,10 @@ namespace WIS.UI
                             var dev = new PnpProblemDevice();
                             if (item.IsObject)
                             {
-                                dev.Name = item["name"].AsString(item["Name"].AsString(item["description"].AsString("Nepoznat uređaj")));
+                                dev.Name = item["name"].AsString(item["Name"].AsString(item["description"].AsString(LocalizationService.Get("MdlUnknownDevice", "Nepoznat uređaj"))));
                                 dev.DeviceId = item["device_id"].AsString(item["DeviceId"].AsString(""));
                                 dev.ErrorCode = item["error_code"].AsInt(item["ErrorCode"].AsInt(item["ConfigManagerErrorCode"].AsInt(0)));
-                                dev.ErrorStatus = item["error_status"].AsString(item["ErrorStatus"].AsString(string.Format("Kôd greške {0}", dev.ErrorCode)));
+                                dev.ErrorStatus = item["error_status"].AsString(item["ErrorStatus"].AsString(string.Format(LocalizationService.Get("WinErrorCodeFmt", "Kôd greške {0}"), dev.ErrorCode)));
                             }
                             else
                             {
@@ -6970,12 +7543,12 @@ namespace WIS.UI
                         string ctLower = (ViewModel.ConnectionType ?? "").ToLowerInvariant();
                         if (ctLower.Contains("wi-fi") || ctLower.Contains("wifi") || ctLower.Contains("wireless"))
                         {
-                            ViewModel.ConnectionStatusText = "✓ Wi-Fi konekcija aktivna";
+                            ViewModel.ConnectionStatusText = LocalizationService.Get("WinNetWifiActive", "✓ Wi-Fi konekcija aktivna");
                             ViewModel.ConnectionStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                         }
                         else if (ctLower.Contains("ethernet") || ctLower.Contains("lan"))
                         {
-                            ViewModel.ConnectionStatusText = "✓ Ethernet (LAN) aktivan";
+                            ViewModel.ConnectionStatusText = LocalizationService.Get("WinNetLanActive", "✓ Ethernet (LAN) aktivan");
                             ViewModel.ConnectionStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                         }
                     }
@@ -7280,6 +7853,20 @@ namespace WIS.UI
                 case "COMPLETED":
                 case "COMPLETE":
                 case "FINISHED":
+                    if (HasUnfinishedInteractiveHwTests())
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.IsCompleted = false;
+                            ViewModel.IsServiceFinished = false;
+                            ViewModel.CurrentPhase = 5;
+                            ViewModel.AddLog("WARN", "Hardver", "HARD GATE: Blokirana IPC poruka COMPLETED dok se ne završe obavezni interaktivni testovi.");
+                        }
+                        ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                        break;
+                    }
+                    HidePendingInteractiveTestsWarning();
+                    RefreshPeripheralsAfterDrivers();
                     EnsureStressTestResultFile();
 
                     bool isSensorUnavailCompleted = !HasCriticalThermalEvidence() && !HasIncompleteStressResult() && (string.Equals(_lastStressStatus, "UNKNOWN", StringComparison.OrdinalIgnoreCase) ||
@@ -7308,25 +7895,25 @@ namespace WIS.UI
                         float noteTemp = _lastStressMaxTemp > 0.5f ? _lastStressMaxTemp : 95.0f;
                         string noteTxt = !string.IsNullOrEmpty(_thermalOverheatNote)
                             ? _thermalOverheatNote
-                            : string.Format("NAPOMENA: Procesor se pregrevao tokom stres testa ({0:F1}°C >= 95°C) — potreban servis hlađenja / zamena termalne paste.", noteTemp);
+                            : string.Format(LocalizationService.Get("WinThermalOverheatFallback", "NAPOMENA: Procesor se pregrevao tokom stres testa ({0:F1}°C >= 95°C) — potreban servis hlađenja / zamena termalne paste."), noteTemp);
                         ViewModel.StressResultStatus = "THERMAL_CRITICAL";
-                        ViewModel.CompletionTitle = "⚠️ INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU)";
+                        ViewModel.CompletionTitle = LocalizationService.Get("WinCompletionTitleOverheat", "⚠️ INSTALACIJA ZAVRŠENA (NAPOMENA: PREGREVANJE CPU)");
                         ViewModel.CompletionSummary = "⚠️ " + noteTxt;
-                        ViewModel.LiveStatus = "⚠️ Instalacija završena uz termalnu napomenu (sačuvano u izveštaju).";
-                        ViewModel.ThermalVerdictTitle = string.Format("⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)", noteTemp);
+                        ViewModel.LiveStatus = LocalizationService.Get("WinCompletionLiveThermalNote", "⚠️ Instalacija završena uz termalnu napomenu (sačuvano u izveštaju).");
+                        ViewModel.ThermalVerdictTitle = string.Format(LocalizationService.Get("WinThermalOverheatTitle", "⚠️ NAPOMENA: PREGREVANJE CPU ({0:F1}°C >= 95°C)"), noteTemp);
                         ViewModel.ThermalVerdictDescription = noteTxt;
                         ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(230, 126, 34);
-                        ViewModel.ThermalRecommendation = "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu.";
+                        ViewModel.ThermalRecommendation = LocalizationService.Get("WinThermalServiceNoteShort", "NAPOMENA ZA SERVIS: Očistiti hladnjak/ventilator i zameniti termalnu pastu.");
                     }
                     else if (isSensorUnavailCompleted)
                     {
                         ViewModel.StressResultStatus = "UNKNOWN";
-                        ViewModel.CompletionSummary = "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.";
-                        ViewModel.LiveStatus = "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.";
-                        ViewModel.ThermalVerdictTitle = "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)";
-                        ViewModel.ThermalVerdictDescription = "Hlađenje nije automatski potvrđeno; obavezna ručna provera. Potrebna je ručna provera hladnjaka i ventilatora.";
+                        ViewModel.CompletionSummary = LocalizationService.Get("WinCompletionSensorUnknown", "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.");
+                        ViewModel.LiveStatus = LocalizationService.Get("WinCompletionSensorUnknown", "⚠️ Instalacija uspešna. Dijagnostika hlađenja: Hlađenje nije automatski potvrđeno; obavezna ručna provera.");
+                        ViewModel.ThermalVerdictTitle = LocalizationService.Get("WinThermalSensorUnknownTitle", "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)");
+                        ViewModel.ThermalVerdictDescription = LocalizationService.Get("WinThermalSensorUnknownDesc", "Hlađenje nije automatski potvrđeno; obavezna ručna provera. Potrebna je ručna provera hladnjaka i ventilatora.");
                         ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(243, 156, 18);
-                        ViewModel.ThermalRecommendation = "Preporuka: Proverite rad kulera i ventilaciju u BIOS/UEFI ili fizički pre isporuke računara.";
+                        ViewModel.ThermalRecommendation = LocalizationService.Get("WinThermalSensorUnknownRec", "Preporuka: Proverite rad kulera i ventilaciju u BIOS/UEFI ili fizički pre isporuke računara.");
                     }
                     else
                     {
@@ -7352,10 +7939,6 @@ namespace WIS.UI
                     });
                     EnsureLabelPrintButtons();
                     EnsureHwTestButtons();
-                    if (!ViewModel.IsHwTestFinished)
-                    {
-                        TriggerHardwareTestAfterPhase6();
-                    }
                     break;
 
                 case "USB_FREE":
@@ -7437,7 +8020,7 @@ namespace WIS.UI
                     if (_autoStartTimer != null && _autoStartTimer.IsEnabled)
                     {
                         _autoStartTimer.Stop();
-                        string pauseMsg = "Automatski start pauziran. Omogućen ručni pregled.";
+                        string pauseMsg = LocalizationService.Get("WinAutoStartPaused", "Automatski start pauziran. Omogućen ručni pregled.");
                         ViewModel.AutoStartMessage = pauseMsg;
                         ViewModel.LiveStatus = pauseMsg;
                         ViewModel.IsPaused = true;
@@ -7480,7 +8063,7 @@ namespace WIS.UI
                 {
                     _autoStartTimer.Stop();
                     ViewModel.IsPaused = true;
-                    string pauseMsg = "Automatski start pauziran. Omogućen ručni pregled.";
+                    string pauseMsg = LocalizationService.Get("WinAutoStartPaused", "Automatski start pauziran. Omogućen ručni pregled.");
                     ViewModel.AutoStartMessage = pauseMsg;
                     ViewModel.LiveStatus = pauseMsg;
                     ViewModel.AddLog("WARN", "Korisnik", "Automatski start pauziran od strane tehničara.");
@@ -7528,6 +8111,12 @@ namespace WIS.UI
             if (_failedPhase > 0)
             {
                 int nextP = _failedPhase + 1;
+                if (nextP == 6 && HasUnfinishedInteractiveHwTests())
+                {
+                    ViewModel.AddLog("WARN", "Hardver", "Preskakanje na Fazu 6 je blokirano dok postoje obavezni interaktivni testovi — koristite vanredno preskakanje uz unos razloga.");
+                    ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                    return;
+                }
                 SetFailedPhase(0);
                 ViewModel.AddLog("WARN", "Korisnik", string.Format("Korisnik zahtevao PRESKAKANJE pale faze. Prelazim na Fazu {0}...", nextP));
                 if (nextP <= 6)
@@ -7543,9 +8132,17 @@ namespace WIS.UI
 
             ViewModel.AddLog("WARN", "Korisnik", string.Format("Zahtev za PRESKAKANJE trenutne operacije u Fazi {0}.", ViewModel.CurrentPhase));
 
-            if (ViewModel.CurrentPhase == 5 && ForceSkipEmbeddedPhase5())
+            if (ViewModel.CurrentPhase == 5)
             {
-                return;
+                if (HasUnfinishedInteractiveHwTests())
+                {
+                    RequestEmergencySkipPhase5WithConfirmation();
+                    return;
+                }
+                if (ForceSkipEmbeddedPhase5())
+                {
+                    return;
+                }
             }
 
             try
@@ -7613,7 +8210,7 @@ namespace WIS.UI
             bool persisted = TryPersistRestartScheduleState(out persistError);
 
             string dueTimeFormatted = dueLocal.ToString("HH:mm:ss");
-            ViewModel.LiveStatus = string.Format("Međurestart odložen za 10 minuta (novi termin: {0}).", dueTimeFormatted);
+            ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinRebootDelayedLive", "Međurestart odložen za 10 minuta (novi termin: {0})."), dueTimeFormatted);
             ViewModel.AddLog(
                 persisted ? "INFO" : "WARN",
                 "Korisnik",
@@ -7632,16 +8229,16 @@ namespace WIS.UI
             if (persisted)
             {
                 MessageBox.Show(
-                    string.Format("Restart računara je stvarno odložen za 10 minuta.\nNovi termin restarta: {0} (ukupno odloženo: {1} min).", dueTimeFormatted, totalDelayedMin),
-                    "WIS Servis — Odlaganje restarta",
+                    string.Format(LocalizationService.Get("WinRebootDelayedDialogBody", "Restart računara je stvarno odložen za 10 minuta.\nNovi termin restarta: {0} (ukupno odloženo: {1} min)."), dueTimeFormatted, totalDelayedMin),
+                    LocalizationService.Get("WinRebootDelayedDialogTitle", "WIS Servis — Odlaganje restarta"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Information);
             }
             else
             {
                 MessageBox.Show(
-                    string.Format("Restart je odložen u memoriji do {0}, ali upis u deploy-state.json nije uspeo: {1}", dueTimeFormatted, persistError ?? "Nepoznata greška"),
-                    "WIS Servis — Upozorenje",
+                    string.Format(LocalizationService.Get("WinRebootDelayPersistErrBody", "Restart je odložen u memoriji do {0}, ali upis u deploy-state.json nije uspeo: {1}"), dueTimeFormatted, persistError ?? LocalizationService.Get("WinUnknownError", "Nepoznata greška")),
+                    LocalizationService.Get("WinServiceWarningTitle", "WIS Servis — Upozorenje"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
             }
@@ -7704,7 +8301,7 @@ namespace WIS.UI
                     foreach (var app in ViewModel.Apps)
                     {
                         app.Status = "WAIT";
-                        app.Detail = "U redu čekanja";
+                        app.Detail = LocalizationService.Get("WinAppQueued", "U redu čekanja");
                     }
                     ViewModel.UpdateAppsSummary();
                 }
@@ -8010,7 +8607,7 @@ namespace WIS.UI
                         Dispatcher.BeginInvoke((Action)delegate
                         {
                             targetApp.Status = "ERROR";
-                            targetApp.Detail = "Phase4-Apps.ps1 nije pronađena";
+                            targetApp.Detail = LocalizationService.Get("WinAppPhase4ScriptMissing", "Phase4-Apps.ps1 nije pronađena");
                             ViewModel.UpdateAppsSummary();
                             ViewModel.AddLog("ERROR", "AppsRetry", "Phase4-Apps.ps1 nije pronađena na disku za Retry.");
                         });
@@ -8044,7 +8641,7 @@ namespace WIS.UI
                             Dispatcher.BeginInvoke((Action)delegate
                             {
                                 targetApp.Status = "ERROR";
-                                targetApp.Detail = "Nije moguće pokrenuti powershell.exe";
+                                targetApp.Detail = LocalizationService.Get("WinAppPsStartFailed", "Nije moguće pokrenuti powershell.exe");
                                 ViewModel.UpdateAppsSummary();
                             });
                             return;
@@ -8123,7 +8720,7 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)delegate
                     {
                         targetApp.Status = "ERROR";
-                        targetApp.Detail = "Greška pri pokretanju: " + ex.Message;
+                        targetApp.Detail = LocalizationService.Get("WinAppLaunchErrorPrefix", "Greška pri pokretanju: ") + ex.Message;
                         ViewModel.UpdateAppsSummary();
                         ViewModel.AddLog("ERROR", "AppsRetry", string.Format("Izuzetak pri Retry-u za {0}: {1}", safeAppId, ex.Message));
                     });
@@ -8138,15 +8735,15 @@ namespace WIS.UI
                             if (exited && exitCode == 0)
                             {
                                 targetApp.Status = "OK";
-                                targetApp.Detail = "Instalacija uspešno verifikovana";
+                                targetApp.Detail = LocalizationService.Get("WinAppRetryVerified", "Instalacija uspešno verifikovana");
                                 ViewModel.AddLog("SUCCESS", "AppsRetry", string.Format("Program {0} uspešno instaliran nakon Retry-a.", targetApp.Name));
                             }
                             else
                             {
                                 targetApp.Status = "ERROR";
                                 targetApp.Detail = exited
-                                    ? string.Format("Ponovna instalacija nije uspela (ExitCode {0})", exitCode)
-                                    : "Ponovna instalacija prekoračila timeout od 15 min";
+                                    ? string.Format(LocalizationService.Get("WinAppRetryFailedExit", "Ponovna instalacija nije uspela (ExitCode {0})"), exitCode)
+                                    : LocalizationService.Get("WinAppRetryTimeout", "Ponovna instalacija prekoračila timeout od 15 min");
                                 ViewModel.AddLog("ERROR", "AppsRetry", string.Format("Retry za {0} nije uspeo: {1}", targetApp.Name, targetApp.Detail));
                             }
                         }
@@ -8213,7 +8810,7 @@ namespace WIS.UI
                                 {
                                     if (ViewModel != null)
                                     {
-                                        ViewModel.LiveStatus = string.Format("Program {0} uspešno instaliran. Još nedostaju za Retry: {1}.", targetApp.Name, remainingStr);
+                                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("WinAppRetryRemaining", "Program {0} uspešno instaliran. Još nedostaju za Retry: {1}."), targetApp.Name, remainingStr);
                                         ViewModel.AddLog("INFO", "RealityCheck", "Preostale ključne aplikacije koje čekaju Retry: " + remainingStr);
                                     }
                                 });
@@ -8257,9 +8854,9 @@ namespace WIS.UI
                 if (ViewModel.Autopilot.IsScanning) return;
 
                 ViewModel.Autopilot.IsScanning = true;
-                ViewModel.Autopilot.StatusTitle = "PROVERA AUTOPILOTA U TOKU...";
-                ViewModel.Autopilot.StatusDescription = "Sistem vrši duboku forenziku lokalnog registra i proveru Microsoft ZTD oblaka...";
-                ViewModel.Autopilot.RecommendedAction = "Molimo sačekajte završetak bezbednosne provere...";
+                ViewModel.Autopilot.StatusTitle = LocalizationService.Get("WinApScanningTitle", "PROVERA AUTOPILOTA U TOKU...");
+                ViewModel.Autopilot.StatusDescription = LocalizationService.Get("WinApScanningDesc", "Sistem vrši duboku forenziku lokalnog registra i proveru Microsoft ZTD oblaka...");
+                ViewModel.Autopilot.RecommendedAction = LocalizationService.Get("WinApScanningRec", "Molimo sačekajte završetak bezbednosne provere...");
                 ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(0, 122, 204);
                 ViewModel.AddLog("INFO", "Autopilot", "Pokretanje bezbednosne provere Microsoft Autopilot statusa...");
 
@@ -8275,8 +8872,8 @@ namespace WIS.UI
                         {
                             ViewModel.Autopilot.IsScanning = false;
                             ViewModel.Autopilot.StatusLevel = "ERROR";
-                            ViewModel.Autopilot.StatusTitle = "GREŠKA PRI PROVERI";
-                            ViewModel.Autopilot.StatusDescription = "Izuzetak na pozadinskoj niti: " + ex.Message;
+                            ViewModel.Autopilot.StatusTitle = LocalizationService.Get("ApMatrixTitle_Error", "GREŠKA PRI PROVERI");
+                            ViewModel.Autopilot.StatusDescription = LocalizationService.Get("WinApWorkerException", "Izuzetak na pozadinskoj niti: ") + ex.Message;
                             ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
                             ViewModel.AddLog("ERROR", "Autopilot", "Izuzetak u Autopilot radniku: " + ex.Message);
                         }));
@@ -9411,14 +10008,14 @@ namespace WIS.UI
                                         detectedIp = ipStr;
                                         if (nic.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
                                         {
-                                            detectedConnType = "Wi-Fi (Bežična mreža)";
-                                            detectedConnStatus = "✓ Wi-Fi konekcija aktivna";
+                                            detectedConnType = LocalizationService.Get("WinNetWifiType", "Wi-Fi (Bežična mreža)");
+                                            detectedConnStatus = LocalizationService.Get("WinNetWifiActive", "✓ Wi-Fi konekcija aktivna");
                                             detectedConnBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                                         }
                                         else
                                         {
-                                            detectedConnType = "Ethernet (LAN kabl)";
-                                            detectedConnStatus = "✓ Ethernet (LAN) aktivan";
+                                            detectedConnType = LocalizationService.Get("WinNetLanType", "Ethernet (LAN kabl)");
+                                            detectedConnStatus = LocalizationService.Get("WinNetLanActive", "✓ Ethernet (LAN) aktivan");
                                             detectedConnBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                                         }
                                         break;
@@ -9430,7 +10027,7 @@ namespace WIS.UI
 
                         if (string.IsNullOrEmpty(detectedIp))
                         {
-                            detectedConnStatus = "⚠ Nema mrežne veze";
+                            detectedConnStatus = LocalizationService.Get("WinNetNoConnection", "⚠ Nema mrežne veze");
                             detectedConnBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
                         }
                     }
@@ -9523,8 +10120,8 @@ namespace WIS.UI
                                 ? MainViewModel.CreateFrozenBrush(239, 68, 68)
                                 : (curRam >= 65 ? MainViewModel.CreateFrozenBrush(245, 158, 11) : MainViewModel.CreateFrozenBrush(96, 165, 250));
                             ViewModel.UpdateHwMonitorSensor("load_ram", curRam, "{0:0} %", ramBrush);
-                            ViewModel.HwRamAvailableText = string.Format("Slobodno: {0:0.0} GB / {1:0.0} GB", dispatchRamAvailGb, dispatchRamTotalGb);
-                            ViewModel.HwRamCommitText = string.Format("Commit: {0:0.0} / {1:0.0} GB", dispatchRamCommitUsedGb, dispatchRamCommitTotalGb);
+                            ViewModel.HwRamAvailableText = string.Format(LocalizationService.Get("WinRamAvailableFmt", "Slobodno: {0:0.0} GB / {1:0.0} GB"), dispatchRamAvailGb, dispatchRamTotalGb);
+                            ViewModel.HwRamCommitText = string.Format(LocalizationService.Get("WinRamCommitFmt", "Commit: {0:0.0} / {1:0.0} GB"), dispatchRamCommitUsedGb, dispatchRamCommitTotalGb);
                         }
                     }
 
@@ -9574,11 +10171,13 @@ namespace WIS.UI
                         }
                         else
                         {
-                            ViewModel.HwPowerVoltageText = dispatchOnAc ? "AC Adapter (Napon N/A)" : "Baterija (Napon N/A)";
+                            ViewModel.HwPowerVoltageText = dispatchOnAc
+                                ? LocalizationService.Get("WinPwrAcVoltageNa", "AC Adapter (Napon N/A)")
+                                : LocalizationService.Get("WinPwrBattVoltageNa", "Baterija (Napon N/A)");
                         }
                         ViewModel.HwPowerSubText = dispatchHasBatt
-                            ? string.Format("Baterija: {0}% ({1})", dispatchChargePct, dispatchOnAc ? (dispatchCharging ? "Punjenje" : "AC mreža") : "Pražnjenje")
-                            : "Desktop / AC napajanje";
+                            ? string.Format(LocalizationService.Get("WinPwrBattSubFmt", "Baterija: {0}% ({1})"), dispatchChargePct, dispatchOnAc ? (dispatchCharging ? LocalizationService.Get("WinPwrCharging", "Punjenje") : LocalizationService.Get("WinPwrAcGrid", "AC mreža")) : LocalizationService.Get("WinPwrDischarging", "Pražnjenje"))
+                            : LocalizationService.Get("WinPwrDesktopAc", "Desktop / AC napajanje");
 
                         if (dispatchWatts > 0.05)
                         {
@@ -9637,7 +10236,7 @@ namespace WIS.UI
                                 {
                                     Dispatcher.BeginInvoke((Action)delegate
                                     {
-                                        ViewModel.NasStatus = "Povezan (192.168.170.254)";
+                                        ViewModel.NasStatus = LocalizationService.Get("WinNasConnected", "Povezan (192.168.170.254)");
                                         ViewModel.NasLatency = string.Format("{0} ms", reply.RoundtripTime);
                                     });
                                 }
@@ -9645,7 +10244,7 @@ namespace WIS.UI
                                 {
                                     Dispatcher.BeginInvoke((Action)delegate
                                     {
-                                        ViewModel.NasStatus = "Lokalno (Offline)";
+                                        ViewModel.NasStatus = LocalizationService.Get("WinNasOffline", "Lokalno (Offline)");
                                         ViewModel.NasLatency = "N/A";
                                     });
                                 }
@@ -9655,7 +10254,7 @@ namespace WIS.UI
                         {
                             Dispatcher.BeginInvoke((Action)delegate
                             {
-                                ViewModel.NasStatus = "Lokalno (Offline)";
+                                ViewModel.NasStatus = LocalizationService.Get("WinNasOffline", "Lokalno (Offline)");
                                 ViewModel.NasLatency = "N/A";
                             });
                         }
@@ -9935,7 +10534,7 @@ namespace WIS.UI
 
             item.IsInstalling = true;
             item.CanInstall = false;
-            item.InstallStatusText = "Povezivanje sa ServisHub...";
+            item.InstallStatusText = LocalizationService.Get("WinDrvConnectingHub", "Povezivanje sa ServisHub...");
             item.InstallProgressPercent = 5;
             item.InstallSpeedText = "";
 
@@ -9988,7 +10587,7 @@ namespace WIS.UI
                 {
                     item.IsInstalling = true;
                     item.CanInstall = false;
-                    item.InstallStatusText = "Povezivanje sa ServisHub...";
+                    item.InstallStatusText = LocalizationService.Get("WinDrvConnectingHub", "Povezivanje sa ServisHub...");
                     item.InstallProgressPercent = 10;
                 });
 
@@ -10043,7 +10642,7 @@ namespace WIS.UI
                 {
                     Dispatcher.BeginInvoke((Action)delegate
                     {
-                        item.InstallStatusText = "Nije pronađen na OEM katalogu";
+                        item.InstallStatusText = LocalizationService.Get("WinDrvNotFoundOem", "Nije pronađen na OEM katalogu");
                         item.IsInstalling = false;
                         item.CanInstall = true;
                         ViewModel.AddLog("WARN", "Drajveri", string.Format("Drajver za '{0}' nije pronađen na ServisHub-u.", item.Name));
@@ -10069,8 +10668,8 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)delegate
                     {
                         item.InstallStatusText = elapsedSec > 0
-                            ? string.Format("ServiceHub preuzima OEM paket na keš ({0}s)...", elapsedSec)
-                            : "ServiceHub preuzima OEM paket na keš...";
+                            ? string.Format(LocalizationService.Get("WinDrvCachingElapsed", "ServiceHub preuzima OEM paket na keš ({0}s)..."), elapsedSec)
+                            : LocalizationService.Get("WinDrvCaching", "ServiceHub preuzima OEM paket na keš...");
                         item.InstallProgressPercent = 12;
                         if (logNow)
                         {
@@ -10098,7 +10697,7 @@ namespace WIS.UI
                     {
                         Dispatcher.BeginInvoke((Action)delegate
                         {
-                            item.InstallStatusText = "Neispravan download URL";
+                            item.InstallStatusText = LocalizationService.Get("WinDrvInvalidUrl", "Neispravan download URL");
                             item.IsInstalling = false;
                             item.CanInstall = true;
                         });
@@ -10116,7 +10715,7 @@ namespace WIS.UI
 
                     Dispatcher.BeginInvoke((Action)delegate
                     {
-                        item.InstallStatusText = "Preuzimanje zvaničnog OEM drajvera...";
+                        item.InstallStatusText = LocalizationService.Get("WinDrvDownloadingOem", "Preuzimanje zvaničnog OEM drajvera...");
                         item.InstallProgressPercent = 15;
                         ViewModel.AddLog("INFO", "Drajveri", string.Format("Preuzimanje drajvera za '{0}' ({1})...", item.Name, drvTitle));
                     });
@@ -10184,7 +10783,7 @@ namespace WIS.UI
                     {
                         item.InstallProgressPercent = 85;
                         item.InstallSpeedText = "";
-                        item.InstallStatusText = "Instalacija drajvera (pnputil)...";
+                        item.InstallStatusText = LocalizationService.Get("WinDrvInstallingPnputil", "Instalacija drajvera (pnputil)...");
                         ViewModel.AddLog("INFO", "Drajveri", string.Format("Raspakivanje i instalacija drajvera za '{0}'...", item.Name));
                     });
 
@@ -10234,7 +10833,7 @@ namespace WIS.UI
                         Dispatcher.BeginInvoke((Action)delegate
                         {
                             item.InstallProgressPercent = 100;
-                            item.InstallStatusText = "✓ Uspešno instalirano!";
+                            item.InstallStatusText = LocalizationService.Get("WinDrvInstallOk", "✓ Uspešno instalirano!");
                             item.IsResolved = true;
                             item.IsInstalling = false;
                             item.CanInstall = false;
@@ -10251,12 +10850,12 @@ namespace WIS.UI
                             if (ViewModel.Drivers.MissingDevicesCount == 0)
                             {
                                 ViewModel.Drivers.HasMissingDevices = false;
-                                ViewModel.Drivers.MissingSummaryText = "✅ Svi drajveri su uspešno instalirani! (0 problematičnih uređaja)";
+                                ViewModel.Drivers.MissingSummaryText = LocalizationService.Get("WinDrvAllInstalledSummary", "✅ Svi drajveri su uspešno instalirani! (0 problematičnih uređaja)");
                                 ViewModel.Drivers.MissingSummaryBrush = BaseViewModel.CreateFrozenBrush(63, 185, 80);
                             }
                             else
                             {
-                                ViewModel.Drivers.MissingSummaryText = string.Format("⚠ Pronađeno je {0} uređaja bez odgovarajućeg drajvera ili sa greškom!", ViewModel.Drivers.MissingDevicesCount);
+                                ViewModel.Drivers.MissingSummaryText = string.Format(LocalizationService.Get("WinDrvMissingSummary", "⚠ Pronađeno je {0} uređaja bez odgovarajućeg drajvera ili sa greškom!"), ViewModel.Drivers.MissingDevicesCount);
                             }
 
                             if (triggerRescan)
@@ -10271,7 +10870,7 @@ namespace WIS.UI
                     {
                         Dispatcher.BeginInvoke((Action)delegate
                         {
-                            item.InstallStatusText = string.Format("Greška instalacije (kod {0})", pnpExitCode);
+                            item.InstallStatusText = string.Format(LocalizationService.Get("WinDrvInstallErrCode", "Greška instalacije (kod {0})"), pnpExitCode);
                             item.IsInstalling = false;
                             item.CanInstall = true;
                             ViewModel.AddLog("ERROR", "Drajveri", string.Format("Neuspešna instalacija drajvera za '{0}'. pnputil exit code: {1}", item.Name, pnpExitCode));
@@ -10283,7 +10882,7 @@ namespace WIS.UI
                 {
                     Dispatcher.BeginInvoke((Action)delegate
                     {
-                        item.InstallStatusText = "Nije pronađen na OEM katalogu";
+                        item.InstallStatusText = LocalizationService.Get("WinDrvNotFoundOem", "Nije pronađen na OEM katalogu");
                         item.IsInstalling = false;
                         item.CanInstall = true;
                         ViewModel.AddLog("WARN", "Drajveri", string.Format("Drajver za '{0}' nije pronađen u OEM katalogu.", item.Name));
@@ -10295,7 +10894,7 @@ namespace WIS.UI
             {
                 Dispatcher.BeginInvoke((Action)delegate
                 {
-                    item.InstallStatusText = "Greška pri povezivanju sa ServisHub";
+                    item.InstallStatusText = LocalizationService.Get("WinDrvConnectHubErr", "Greška pri povezivanju sa ServisHub");
                     item.IsInstalling = false;
                     item.CanInstall = true;
                     ViewModel.AddLog("ERROR", "Drajveri", string.Format("Izuzetak pri instalaciji drajvera za '{0}': {1}", item.Name, ex.Message));
@@ -10317,7 +10916,7 @@ namespace WIS.UI
 
             ViewModel.Drivers.IsBatchResolving = true;
             ViewModel.Drivers.BatchProgressPercent = 0;
-            ViewModel.Drivers.BatchStatusText = string.Format("Započinjem rešavanje {0} nedostajućih drajvera...", missingCopy.Count);
+            ViewModel.Drivers.BatchStatusText = string.Format(LocalizationService.Get("WinDrvBatchStart", "Započinjem rešavanje {0} nedostajućih drajvera..."), missingCopy.Count);
             ViewModel.AddLog("INFO", "Drajveri", string.Format("Pokrenuto grupno rešavanje {0} nedostajućih drajvera...", missingCopy.Count));
 
             Task.Factory.StartNew(delegate
@@ -10340,7 +10939,7 @@ namespace WIS.UI
                     Dispatcher.BeginInvoke((Action)delegate
                     {
                         ViewModel.Drivers.BatchProgressPercent = percent;
-                        ViewModel.Drivers.BatchStatusText = string.Format("Instalacija {0}/{1}: {2}...", currentIdx, total, item.Name);
+                        ViewModel.Drivers.BatchStatusText = string.Format(LocalizationService.Get("WinDrvBatchProgress", "Instalacija {0}/{1}: {2}..."), currentIdx, total, item.Name);
                     });
 
                     bool success = InstallSingleDriverInternal(item, false);
@@ -10355,7 +10954,7 @@ namespace WIS.UI
                 Dispatcher.BeginInvoke((Action)delegate
                 {
                     ViewModel.Drivers.BatchProgressPercent = 100;
-                    ViewModel.Drivers.BatchStatusText = string.Format("Grupna instalacija drajvera završena ({0}/{1} uspešno).", successfulCount, total);
+                    ViewModel.Drivers.BatchStatusText = string.Format(LocalizationService.Get("WinDrvBatchDone", "Grupna instalacija drajvera završena ({0}/{1} uspešno)."), successfulCount, total);
                     ViewModel.AddLog("INFO", "Drajveri", string.Format("Grupna instalacija drajvera završena: {0} od {1} uspešno instalirano.", successfulCount, total));
                 });
 
@@ -10499,14 +11098,14 @@ namespace WIS.UI
                         item.LatestVersion = latestVer;
                         item.LatestDate = latestDate;
                         item.TargetDriverId = drvId;
-                        item.UpdateBadgeText = string.Format("Dostupna nova verzija: {0}", latestVer);
+                        item.UpdateBadgeText = string.Format(LocalizationService.Get("WinDrvUpdateAvailableFmt", "Dostupna nova verzija: {0}"), latestVer);
                         ViewModel.AddLog("INFO", "Drajveri", string.Format("Pronađeno OEM ažuriranje za '{0}': v{1} ({2}).", item.Name, latestVer, latestDate));
                     }
                     else
                     {
                         item.HasUpdateAvailable = false;
                         item.IsUpToDate = true;
-                        item.UpdateBadgeText = "✓ Najnoviji drajver";
+                        item.UpdateBadgeText = LocalizationService.Get("WinDrvLatestBadge", "✓ Najnoviji drajver");
                         ViewModel.AddLog("INFO", "Drajveri", string.Format("Drajver za '{0}' je ažuran (v{1}).", item.Name, item.DriverVersion));
                     }
                 });
@@ -10550,7 +11149,7 @@ namespace WIS.UI
             Dispatcher.BeginInvoke((Action)delegate
             {
                 item.IsCheckingUpdate = true;
-                item.UpdateBadgeText = "Nadogradnja u toku...";
+                item.UpdateBadgeText = LocalizationService.Get("WinDrvUpgradingBadge", "Nadogradnja u toku...");
                 ViewModel.AddLog("INFO", "Drajveri", string.Format("Započinjem preuzimanje i nadogradnju zvaničnog OEM drajvera za '{0}' (Target ID: {1})...", item.Name, targetId));
             });
 
@@ -10638,7 +11237,7 @@ namespace WIS.UI
                             item.IsCheckingUpdate = false;
                             item.HasUpdateAvailable = false;
                             item.IsUpToDate = true;
-                            item.UpdateBadgeText = "✓ Najnoviji drajver";
+                            item.UpdateBadgeText = LocalizationService.Get("WinDrvLatestBadge", "✓ Najnoviji drajver");
                             if (!string.IsNullOrEmpty(item.LatestVersion))
                             {
                                 item.DriverVersion = item.LatestVersion;
@@ -10697,13 +11296,13 @@ namespace WIS.UI
 
             if (keyDevices.Count == 0)
             {
-                ViewModel.Drivers.KeyDriversCheckStatus = "Nema pronađenih ključnih uređaja";
+                ViewModel.Drivers.KeyDriversCheckStatus = LocalizationService.Get("WinDrvKeyNoneFound", "Nema pronađenih ključnih uređaja");
                 ViewModel.AddLog("INFO", "Drajveri", "Nema detektovanih ključnih hardverskih uređaja (GPU, Mreža, Zvuk, Bluetooth) za proveru.");
                 return;
             }
 
             ViewModel.Drivers.IsCheckingKeyDrivers = true;
-            ViewModel.Drivers.KeyDriversCheckStatus = string.Format("Započinjem proveru 0/{0} ključnih drajvera...", keyDevices.Count);
+            ViewModel.Drivers.KeyDriversCheckStatus = string.Format(LocalizationService.Get("WinDrvKeyCheckStart", "Započinjem proveru 0/{0} ključnih drajvera..."), keyDevices.Count);
             ViewModel.AddLog("INFO", "Drajveri", string.Format("Pokrenuta provera ažuriranja za {0} ključnih hardverskih uređaja...", keyDevices.Count));
 
             Task.Factory.StartNew(delegate
@@ -10718,7 +11317,7 @@ namespace WIS.UI
 
                     Dispatcher.BeginInvoke((Action)delegate
                     {
-                        ViewModel.Drivers.KeyDriversCheckStatus = string.Format("Provera {0}/{1}: {2}...", currentIdx, total, dev.Name);
+                        ViewModel.Drivers.KeyDriversCheckStatus = string.Format(LocalizationService.Get("WinDrvKeyCheckProgress", "Provera {0}/{1}: {2}..."), currentIdx, total, dev.Name);
                     });
 
                     bool hasUpdate = CheckSingleDriverUpdateInternal(dev);
@@ -10735,12 +11334,12 @@ namespace WIS.UI
                     ViewModel.Drivers.IsCheckingKeyDrivers = false;
                     if (updatesFound > 0)
                     {
-                        ViewModel.Drivers.KeyDriversCheckStatus = string.Format("Pronađeno {0} ažuriranja ključnih drajvera!", updatesFound);
+                        ViewModel.Drivers.KeyDriversCheckStatus = string.Format(LocalizationService.Get("WinDrvKeyUpdatesFound", "Pronađeno {0} ažuriranja ključnih drajvera!"), updatesFound);
                         ViewModel.AddLog("INFO", "Drajveri", string.Format("Završena provera ključnih drajvera: pronađeno {0} novijih verzija drajvera.", updatesFound));
                     }
                     else
                     {
-                        ViewModel.Drivers.KeyDriversCheckStatus = "Svi ključni drajveri su ažurni!";
+                        ViewModel.Drivers.KeyDriversCheckStatus = LocalizationService.Get("WinDrvKeyAllUpToDate", "Svi ključni drajveri su ažurni!");
                         ViewModel.AddLog("INFO", "Drajveri", "Završena provera: svi ključni hardverski drajveri su ažurni.");
                     }
                 });
@@ -10755,22 +11354,22 @@ namespace WIS.UI
         {
             switch (code)
             {
-                case 1: return "Kod 1: Uređaj nije konfigurisan";
-                case 3: return "Kod 3: Drajver za ovaj uređaj je oštećen";
-                case 10: return "Kod 10: Uređaj ne može da se pokrene";
-                case 12: return "Kod 12: Uređaj ne može da pronađe slobodne resurse";
-                case 14: return "Kod 14: Potreban je restart računara da bi uređaj radio";
-                case 18: return "Kod 18: Reinstalirajte drajvere za ovaj uređaj";
-                case 22: return "Kod 22: Uređaj je onemogućen (Disabled)";
-                case 24: return "Kod 24: Uređaj nije prisutan ili ne radi ispravno";
-                case 28: return "Kod 28: Drajver nije instaliran (Missing Driver)";
-                case 29: return "Kod 29: Uređaj je onemogućen u BIOS-u";
-                case 31: return "Kod 31: Windows ne može da učita drajvere za ovaj uređaj";
-                case 32: return "Kod 32: Drajver (servis) za ovaj uređaj je onemogućen";
-                case 37: return "Kod 37: Windows ne može da inicijalizuje drajver uređaja";
-                case 39: return "Kod 39: Windows ne može da učita drajver (oštećen ili nedostaje)";
-                case 43: return "Kod 43: Windows je zaustavio uređaj zbog prijavljenog problema";
-                default: return string.Format("Kod {0}: Problem u konfiguraciji uređaja", code);
+                case 1: return LocalizationService.Get("WinErrCode1", "Kod 1: Uređaj nije konfigurisan");
+                case 3: return LocalizationService.Get("WinErrCode3", "Kod 3: Drajver za ovaj uređaj je oštećen");
+                case 10: return LocalizationService.Get("WinErrCode10", "Kod 10: Uređaj ne može da se pokrene");
+                case 12: return LocalizationService.Get("WinErrCode12", "Kod 12: Uređaj ne može da pronađe slobodne resurse");
+                case 14: return LocalizationService.Get("WinErrCode14", "Kod 14: Potreban je restart računara da bi uređaj radio");
+                case 18: return LocalizationService.Get("WinErrCode18", "Kod 18: Reinstalirajte drajvere za ovaj uređaj");
+                case 22: return LocalizationService.Get("WinErrCode22", "Kod 22: Uređaj je onemogućen (Disabled)");
+                case 24: return LocalizationService.Get("WinErrCode24", "Kod 24: Uređaj nije prisutan ili ne radi ispravno");
+                case 28: return LocalizationService.Get("WinErrCode28", "Kod 28: Drajver nije instaliran (Missing Driver)");
+                case 29: return LocalizationService.Get("WinErrCode29", "Kod 29: Uređaj je onemogućen u BIOS-u");
+                case 31: return LocalizationService.Get("WinErrCode31", "Kod 31: Windows ne može da učita drajvere za ovaj uređaj");
+                case 32: return LocalizationService.Get("WinErrCode32", "Kod 32: Drajver (servis) za ovaj uređaj je onemogućen");
+                case 37: return LocalizationService.Get("WinErrCode37", "Kod 37: Windows ne može da inicijalizuje drajver uređaja");
+                case 39: return LocalizationService.Get("WinErrCode39", "Kod 39: Windows ne može da učita drajver (oštećen ili nedostaje)");
+                case 43: return LocalizationService.Get("WinErrCode43", "Kod 43: Windows je zaustavio uređaj zbog prijavljenog problema");
+                default: return string.Format(LocalizationService.Get("WinErrCodeDefault", "Kod {0}: Problem u konfiguraciji uređaja"), code);
             }
         }
 
@@ -10813,7 +11412,7 @@ namespace WIS.UI
                     {
                         foreach (ManagementObject obj in searcher.Get())
                         {
-                            string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : "Nepoznat uređaj";
+                            string name = obj["Name"] != null ? obj["Name"].ToString().Trim() : LocalizationService.Get("MdlUnknownDevice", "Nepoznat uređaj");
                             string devId = obj["DeviceID"] != null ? obj["DeviceID"].ToString().Trim() : "";
                             string pnpClass = obj["PNPClass"] != null ? obj["PNPClass"].ToString().Trim() : "Other";
                             string manufacturer = obj["Manufacturer"] != null ? obj["Manufacturer"].ToString().Trim() : "Nepoznato";
@@ -10910,7 +11509,7 @@ namespace WIS.UI
                                 HardwareId = hwid,
                                 PnpClass = devClass,
                                 ErrorCode = 0,
-                                ErrorDescription = "Ispravno instaliran",
+                                ErrorDescription = LocalizationService.Get("WinDrvInstalledOkDesc", "Ispravno instaliran"),
                                 HasError = false,
                                 StatusBrush = BaseViewModel.CreateFrozenBrush(63, 185, 80)
                             };
@@ -10980,7 +11579,7 @@ namespace WIS.UI
                                 HardwareId = hwid,
                                 PnpClass = pnpClass,
                                 ErrorCode = 0,
-                                ErrorDescription = "Ispravno instaliran",
+                                ErrorDescription = LocalizationService.Get("WinDrvInstalledOkDesc", "Ispravno instaliran"),
                                 HasError = false,
                                 StatusBrush = BaseViewModel.CreateFrozenBrush(63, 185, 80)
                             };
@@ -11010,15 +11609,15 @@ namespace WIS.UI
                 }
 
                 // 4. Raspodela po kategorijama
-                var catDisplay = new DriverCategoryViewModel { CategoryName = "Grafički adapteri", CategoryCode = "Display", CategoryIcon = "🖥️", IsExpanded = true };
-                var catNet = new DriverCategoryViewModel { CategoryName = "Mrežni adapteri", CategoryCode = "Net", CategoryIcon = "🌐", IsExpanded = true };
-                var catAudio = new DriverCategoryViewModel { CategoryName = "Zvučne i audio komponente", CategoryCode = "MEDIA", CategoryIcon = "🔊", IsExpanded = true };
-                var catDisk = new DriverCategoryViewModel { CategoryName = "Diskovi i skladište", CategoryCode = "DiskDrive", CategoryIcon = "💾", IsExpanded = true };
-                var catCamera = new DriverCategoryViewModel { CategoryName = "Kamere i biometrija", CategoryCode = "Camera", CategoryIcon = "📷", IsExpanded = true };
-                var catInput = new DriverCategoryViewModel { CategoryName = "Tastature i pokazivači", CategoryCode = "Keyboard", CategoryIcon = "⌨️", IsExpanded = true };
-                var catUsb = new DriverCategoryViewModel { CategoryName = "USB i kontroleri", CategoryCode = "USB", CategoryIcon = "🔌", IsExpanded = true };
-                var catSystem = new DriverCategoryViewModel { CategoryName = "Sistemski uređaji & Čipset", CategoryCode = "System", CategoryIcon = "⚙️", IsExpanded = false };
-                var catOther = new DriverCategoryViewModel { CategoryName = "Ostali uređaji", CategoryCode = "Other", CategoryIcon = "📦", IsExpanded = false };
+                var catDisplay = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatDisplay", "Grafički adapteri"), CategoryCode = "Display", CategoryIcon = "🖥️", IsExpanded = true };
+                var catNet = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatNet", "Mrežni adapteri"), CategoryCode = "Net", CategoryIcon = "🌐", IsExpanded = true };
+                var catAudio = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatAudio", "Zvučne i audio komponente"), CategoryCode = "MEDIA", CategoryIcon = "🔊", IsExpanded = true };
+                var catDisk = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatDisk", "Diskovi i skladište"), CategoryCode = "DiskDrive", CategoryIcon = "💾", IsExpanded = true };
+                var catCamera = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatCamera", "Kamere i biometrija"), CategoryCode = "Camera", CategoryIcon = "📷", IsExpanded = true };
+                var catInput = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatInput", "Tastature i pokazivači"), CategoryCode = "Keyboard", CategoryIcon = "⌨️", IsExpanded = true };
+                var catUsb = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatUsb", "USB i kontroleri"), CategoryCode = "USB", CategoryIcon = "🔌", IsExpanded = true };
+                var catSystem = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatSystem", "Sistemski uređaji & Čipset"), CategoryCode = "System", CategoryIcon = "⚙️", IsExpanded = false };
+                var catOther = new DriverCategoryViewModel { CategoryName = LocalizationService.Get("WinCatOther", "Ostali uređaji"), CategoryCode = "Other", CategoryIcon = "📦", IsExpanded = false };
 
                 foreach (var dev in allDevicesList)
                 {
@@ -11086,13 +11685,13 @@ namespace WIS.UI
                     if (missingList.Count > 0)
                     {
                         ViewModel.Drivers.HasMissingDevices = true;
-                        ViewModel.Drivers.MissingSummaryText = string.Format("⚠ Pronađeno je {0} uređaja bez odgovarajućeg drajvera ili sa greškom!", missingList.Count);
+                        ViewModel.Drivers.MissingSummaryText = string.Format(LocalizationService.Get("WinDrvMissingSummary", "⚠ Pronađeno je {0} uređaja bez odgovarajućeg drajvera ili sa greškom!"), missingList.Count);
                         ViewModel.Drivers.MissingSummaryBrush = BaseViewModel.CreateFrozenBrush(248, 81, 73);
                     }
                     else
                     {
                         ViewModel.Drivers.HasMissingDevices = false;
-                        ViewModel.Drivers.MissingSummaryText = "✅ Svi drajveri su uspešno instalirani! (0 problematičnih uređaja)";
+                        ViewModel.Drivers.MissingSummaryText = LocalizationService.Get("WinDrvAllInstalledSummary", "✅ Svi drajveri su uspešno instalirani! (0 problematičnih uređaja)");
                         ViewModel.Drivers.MissingSummaryBrush = BaseViewModel.CreateFrozenBrush(63, 185, 80);
                     }
 
@@ -11363,7 +11962,7 @@ namespace WIS.UI
                 }
                 else
                 {
-                    ViewModel.CpuTempText = "N/A (WMI/ACPI nedostupan)";
+                    ViewModel.CpuTempText = LocalizationService.Get("WinCpuTempWmiNa", "N/A (WMI/ACPI nedostupan)");
                     ViewModel.CpuTempShortText = "N/A";
                     ViewModel.CpuTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendCpuText = "CPU Temp (N/A)";
@@ -11383,7 +11982,7 @@ namespace WIS.UI
                 }
                 else
                 {
-                    ViewModel.GpuTempText = "N/A (Integrisana / Idle)";
+                    ViewModel.GpuTempText = LocalizationService.Get("WinGpuTempIgpuNa", "N/A (Integrisana / Idle)");
                     ViewModel.GpuTempShortText = "N/A";
                     ViewModel.GpuTempBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.LegendGpuText = "GPU Temp (N/A)";
@@ -11434,7 +12033,7 @@ namespace WIS.UI
                     ViewModel.SetHwMonitorSensorUnavailable("temp_ssd", "N/A");
                     if (ViewModel.HardwareInfo != null)
                     {
-                        ViewModel.HardwareInfo.StorageTemp = "N/A (Senzor nedostupan)";
+                        ViewModel.HardwareInfo.StorageTemp = LocalizationService.Get("WinStorageTempNa", "N/A (Senzor nedostupan)");
                     }
                 }
 
@@ -11452,10 +12051,9 @@ namespace WIS.UI
                 }
                 else
                 {
-                    bool isZh = LocalizationService.Instance.IsChinese;
-                    ViewModel.ThrottlingText = isZh ? "不可用" : "Nije dostupno";
+                    ViewModel.ThrottlingText = LocalizationService.Get("MdlNotAvailable", "Nije dostupno");
                     ViewModel.ThrottlingBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
-                    ViewModel.LegendThrottleText = isZh ? "Throttling (不可用)" : "Throttling (Nije dostupno)";
+                    ViewModel.LegendThrottleText = LocalizationService.Get("WinLegendThrottleNa", "Throttling (Nije dostupno)");
                     ViewModel.SetHwMonitorSensorUnavailable("load_throttle", "N/A");
                 }
 
@@ -11470,7 +12068,7 @@ namespace WIS.UI
                 }
                 else
                 {
-                    ViewModel.FanSpeedText = _thermalEngine.HasFanData ? "0 RPM (Ugašen/Tihi rad)" : "Pasivno / BIOS kontrola";
+                    ViewModel.FanSpeedText = _thermalEngine.HasFanData ? LocalizationService.Get("WinFan0RpmQuiet", "0 RPM (Ugašen/Tihi rad)") : LocalizationService.Get("WinFanPassiveBios", "Pasivno / BIOS kontrola");
                     ViewModel.FanSpeedBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                     ViewModel.SetHwMonitorSensorUnavailable("fan_rpm", _thermalEngine.HasFanData ? "0 RPM" : "BIOS/N/A");
                 }
@@ -11478,12 +12076,12 @@ namespace WIS.UI
                 // 7. Sensor Status
                 if (_thermalEngine.IsSensorAvailable)
                 {
-                    ViewModel.ThermalSensorStatus = string.Format("● Nativni senzor ({0}, 1 Hz)", _thermalEngine.SensorSource);
+                    ViewModel.ThermalSensorStatus = string.Format(LocalizationService.Get("WinThermalSensorNative", "● Nativni senzor ({0}, 1 Hz)"), _thermalEngine.SensorSource);
                     ViewModel.ThermalSensorStatusBrush = MainViewModel.CreateFrozenBrush(78, 201, 176);
                 }
                 else
                 {
-                    ViewModel.ThermalSensorStatus = "● Termalni senzori nisu dostupni (N/A)";
+                    ViewModel.ThermalSensorStatus = LocalizationService.Get("WinThermalSensorNa", "● Termalni senzori nisu dostupni (N/A)");
                     ViewModel.ThermalSensorStatusBrush = MainViewModel.CreateFrozenBrush(140, 140, 140);
                 }
 
@@ -11508,11 +12106,11 @@ namespace WIS.UI
             ViewModel.StressTestProgress = 0;
             ViewModel.MaxTempReached = 0.0f;
             ViewModel.StressTestTimeText = "0s";
-            ViewModel.StressTestStatusText = "Kontinuirani multi-core stres test u toku...";
-            ViewModel.ThermalVerdictTitle = "Stres test u toku...";
-            ViewModel.ThermalVerdictDescription = "Merenje temperature i taktova pod 100% opterećenjem svih jezgara...";
+            ViewModel.StressTestStatusText = LocalizationService.Get("WinStressRunningStatus", "Kontinuirani multi-core stres test u toku...");
+            ViewModel.ThermalVerdictTitle = LocalizationService.Get("WinStressRunningTitle", "Stres test u toku...");
+            ViewModel.ThermalVerdictDescription = LocalizationService.Get("WinStressRunningDesc", "Merenje temperature i taktova pod 100% opterećenjem svih jezgara...");
             ViewModel.ThermalVerdictBrush = MainViewModel.CreateFrozenBrush(241, 196, 15);
-            ViewModel.ThermalRecommendation = "Kliknite na 'Stop Stres' kada završite proveru hlađenja.";
+            ViewModel.ThermalRecommendation = LocalizationService.Get("WinStressRunningRec", "Kliknite na 'Stop Stres' kada završite proveru hlađenja.");
 
             CommandManager.InvalidateRequerySuggested();
 
@@ -11536,7 +12134,7 @@ namespace WIS.UI
                 catch { }
             }
 
-            ViewModel.StressTestStatusText = "Stres test zaustavljen od strane servisera.";
+            ViewModel.StressTestStatusText = LocalizationService.Get("WinStressStoppedByTech", "Stres test zaustavljen od strane servisera.");
             CommandManager.InvalidateRequerySuggested();
         }
 
@@ -11660,11 +12258,11 @@ namespace WIS.UI
                         : string.Format("{0:F0}s", snapElapsed);
                     if (snapCpu > 0.5f)
                     {
-                        ViewModel.StressTestStatusText = string.Format("Stres aktivno ({0:F0}s) | CPU: {1:F1}°C | Max: {2:F1}°C", snapElapsed, snapCpu, snapMaxTemp);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressActiveTemp", "Stres aktivno ({0:F0}s) | CPU: {1:F1}°C | Max: {2:F1}°C"), snapElapsed, snapCpu, snapMaxTemp);
                     }
                     else
                     {
-                        ViewModel.StressTestStatusText = string.Format("Stres aktivno ({0:F0}s) | CPU senzor: N/A", snapElapsed);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressActiveNoSensor", "Stres aktivno ({0:F0}s) | CPU senzor: N/A"), snapElapsed);
                     }
                 }));
             }
@@ -11706,33 +12304,33 @@ namespace WIS.UI
 
             if (emergencyAbort || maxTemp >= 95.0f)
             {
-                verdictTitle = "🔴 HITNO POTREBNO ČIŠĆENJE I ZAMENA PASTE";
+                verdictTitle = LocalizationService.Get("WinStressCritTitle", "🔴 HITNO POTREBNO ČIŠĆENJE I ZAMENA PASTE");
                 verdictDesc = emergencyAbort ?
-                    string.Format("Kritično pregrevanje! Test je automatski prekinut na {0:F1}°C (prag 95°C / 97°C) radi zaštite hardvera.", maxTemp) :
-                    string.Format("Temperatura je dostigla kritičnih {0:F1}°C! Hladnjak je zapušen ili je pasta sasušena.", maxTemp);
+                    string.Format(LocalizationService.Get("WinStressCritAbortDesc", "Kritično pregrevanje! Test je automatski prekinut na {0:F1}°C (prag 95°C / 97°C) radi zaštite hardvera."), maxTemp) :
+                    string.Format(LocalizationService.Get("WinStressCritTempDesc", "Temperatura je dostigla kritičnih {0:F1}°C! Hladnjak je zapušen ili je pasta sasušena."), maxTemp);
                 verdictBrush = MainViewModel.CreateFrozenBrush(231, 76, 60); // #E74C3C
-                verdictRec = "Preporuka: Obavezno rastavljanje računara, čišćenje ventilatora i rebara hladnjaka, i nanošenje nove visokokvalitetne termalne paste.";
+                verdictRec = LocalizationService.Get("WinStressCritRec", "Preporuka: Obavezno rastavljanje računara, čišćenje ventilatora i rebara hladnjaka, i nanošenje nove visokokvalitetne termalne paste.");
             }
             else if (maxTemp <= 0.5f || (_thermalEngine != null && !_thermalEngine.IsSensorAvailable))
             {
-                verdictTitle = "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)";
-                verdictDesc = "CPU je opterećen 100%, ali senzor temperature nije dostupan (0.0°C). Hlađenje nije moguće automatski potvrditi — obavezna ručna provera ventilatora i izduva!";
+                verdictTitle = LocalizationService.Get("WinThermalSensorUnknownTitle", "⚠️ TERMALNI SENZORI NISU DOSTUPNI (UNKNOWN)");
+                verdictDesc = LocalizationService.Get("WinStressNoSensorDesc", "CPU je opterećen 100%, ali senzor temperature nije dostupan (0.0°C). Hlađenje nije moguće automatski potvrditi — obavezna ručna provera ventilatora i izduva!");
                 verdictBrush = MainViewModel.CreateFrozenBrush(243, 156, 18); // #F39C12 Žuto/Narandžasto upozorenje
-                verdictRec = "Preporuka: Očitavanja senzora nisu dostupna preko WMI/ACPI/OEM. Proverite temperaturu u BIOS/UEFI-ju i fizički proverite rad kulera pre predaje računara.";
+                verdictRec = LocalizationService.Get("WinStressNoSensorRec", "Preporuka: Očitavanja senzora nisu dostupna preko WMI/ACPI/OEM. Proverite temperaturu u BIOS/UEFI-ju i fizički proverite rad kulera pre predaje računara.");
             }
             else if (maxTemp >= 80.0f && maxTemp < 95.0f)
             {
-                verdictTitle = "🟡 PREPORUČUJE SE PREVENTIVNI SERVIS";
-                verdictDesc = string.Format("Maksimalna temperatura je dostigla {0:F1}°C pod punim opterećenjem.", maxTemp);
+                verdictTitle = LocalizationService.Get("WinStressWarnTitle", "🟡 PREPORUČUJE SE PREVENTIVNI SERVIS");
+                verdictDesc = string.Format(LocalizationService.Get("WinStressWarnDesc", "Maksimalna temperatura je dostigla {0:F1}°C pod punim opterećenjem."), maxTemp);
                 verdictBrush = MainViewModel.CreateFrozenBrush(241, 196, 15); // #F1C40F
-                verdictRec = "Preporuka: Termalna pasta počinje da gubi elastičnost ili ima naslaga prašine. Preporučuje se servis u narednom periodu.";
+                verdictRec = LocalizationService.Get("WinStressWarnRec", "Preporuka: Termalna pasta počinje da gubi elastičnost ili ima naslaga prašine. Preporučuje se servis u narednom periodu.");
             }
             else
             {
-                verdictTitle = "🟢 ODLIČNO HLAĐENJE";
-                verdictDesc = string.Format("Maksimalna temperatura od samo {0:F1}°C pod punim opterećenjem!", maxTemp);
+                verdictTitle = LocalizationService.Get("WinStressOkTitle", "🟢 ODLIČNO HLAĐENJE");
+                verdictDesc = string.Format(LocalizationService.Get("WinStressOkDesc", "Maksimalna temperatura od samo {0:F1}°C pod punim opterećenjem!"), maxTemp);
                 verdictBrush = MainViewModel.CreateFrozenBrush(78, 201, 176); // #4EC9B0
-                verdictRec = "Preporuka: Hlađenje i termalna pasta su u vrhunskom fabričkom stanju. Nije potrebno servisiranje.";
+                verdictRec = LocalizationService.Get("WinStressOkRec", "Preporuka: Hlađenje i termalna pasta su u vrhunskom fabričkom stanju. Nije potrebno servisiranje.");
             }
 
             float finalMaxTemp = maxTemp;
@@ -11749,17 +12347,17 @@ namespace WIS.UI
 
                 if (finalAbort)
                 {
-                    ViewModel.StressTestStatusText = string.Format("PREKID: Zaštitni prag dostignut ({0:F1}°C)!", finalMaxTemp);
+                    ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressAbortStatus", "PREKID: Zaštitni prag dostignut ({0:F1}°C)!"), finalMaxTemp);
                 }
                 else if (isManualCancel)
                 {
                     if (finalMaxTemp > 0.5f)
                     {
-                        ViewModel.StressTestStatusText = string.Format("Stres test zaustavljen nakon {0}s (Max CPU: {1:F1}°C)", finalActualDuration, finalMaxTemp);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressStoppedTemp", "Stres test zaustavljen nakon {0}s (Max CPU: {1:F1}°C)"), finalActualDuration, finalMaxTemp);
                     }
                     else
                     {
-                        ViewModel.StressTestStatusText = string.Format("Stres test zaustavljen nakon {0}s (Senzor: N/A)", finalActualDuration);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressStoppedNoSensor", "Stres test zaustavljen nakon {0}s (Senzor: N/A)"), finalActualDuration);
                     }
                 }
                 else
@@ -11772,11 +12370,11 @@ namespace WIS.UI
                     }
                     if (finalMaxTemp > 0.5f)
                     {
-                        ViewModel.StressTestStatusText = string.Format("Test uspešno završen ({0}s | Max CPU: {1:F1}°C)", shownDuration, finalMaxTemp);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressDoneTemp", "Test uspešno završen ({0}s | Max CPU: {1:F1}°C)"), shownDuration, finalMaxTemp);
                     }
                     else
                     {
-                        ViewModel.StressTestStatusText = string.Format("Test završen ({0}s | Senzor temperature nije dostupan)", shownDuration);
+                        ViewModel.StressTestStatusText = string.Format(LocalizationService.Get("WinStressDoneNoSensor", "Test završen ({0}s | Senzor temperature nije dostupan)"), shownDuration);
                     }
                 }
 

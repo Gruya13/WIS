@@ -65,12 +65,29 @@ def _format_hw_disk(hw: dict) -> str:
     return "N/A"
 
 
+def _has_skipped_interactive_hwtests(hwtest) -> bool:
+    """Proverava da li u `hwtest.tests` postoje preskočeni ili nezavršeni interaktivni testovi."""
+    if not isinstance(hwtest, dict):
+        return False
+    tests = hwtest.get("tests")
+    if not isinstance(tests, list):
+        return False
+    for test in tests:
+        if not isinstance(test, dict):
+            continue
+        if test.get("automated") is False:
+            st = str(test.get("status") or "").strip().upper()
+            if st in ("SKIP", "PENDING"):
+                return True
+    return False
+
+
 def compute_handover_status(rec: dict) -> str:
     """
     Računa jedinstveni kanonski status spremnosti uređaja za predaju kupcu:
     - FAILED: kritični neuspeh ili propala anti-leak / security provera
-    - NEEDS_SERVICE: termalno pregrevanje (THERMAL_CRITICAL), HwTest FAIL ili NEEDS_ATTENTION
-    - READY_WITH_NOTE: završeno uz napomenu (WARN / SENSOR_UNAVAILABLE / PASS_WITH_SKIP / servisne beleške)
+    - NEEDS_SERVICE: termalno pregrevanje (THERMAL_CRITICAL), HwTest FAIL, preskočeni interaktivni testovi ili NEEDS_ATTENTION
+    - READY_WITH_NOTE: završeno uz napomenu (WARN / SENSOR_UNAVAILABLE / PASS_WITH_SKIP automatskih testova / servisne beleške)
     - READY: potpuno spreman bez primedbi
     """
     if not isinstance(rec, dict):
@@ -99,6 +116,8 @@ def compute_handover_status(rec: dict) -> str:
         elif hwtest.get("passed") is False:
             hwtest_overall = "FAIL"
 
+    has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest)
+
     anti_leak = _pick("anti_leak_verified")
     sec_hardening = _pick("security_hardening_verified")
     handover_ready = _pick("handover_ready")
@@ -114,6 +133,7 @@ def compute_handover_status(rec: dict) -> str:
     if (
         diag_st == "THERMAL_CRITICAL"
         or hwtest_overall == "FAIL"
+        or has_skipped_interactive
         or dep_raw == "NEEDS_ATTENTION"
         or status_raw == "NEEDS_ATTENTION"
         or handover_ready is False
@@ -236,6 +256,10 @@ def _extract_license_summary(report_data: dict):
         return ""
 
     win_act = _pick_bool("windows_activated", "windows_activated", "windows")
+    win_oa3 = _pick_bool("windows_oa3_present", "windows_oa3_present", "oa3_present")
+    win_edition = _pick_text("windows_edition", "windows_edition")
+    win_method = _pick_text("windows_license_method", "windows_license_method")
+    win_detail = _pick_text("windows_license_detail", "windows_license_detail")
     off_inst = _pick_bool("office_installed", "office_installed")
     off_act = _pick_bool("office_activated", "office_activated", "office")
     method = _pick_text("office_license_method", "office_license_method", "method")
@@ -244,6 +268,10 @@ def _extract_license_summary(report_data: dict):
 
     has_any = any([
         win_act is not None,
+        win_oa3 is not None,
+        bool(win_edition),
+        bool(win_method),
+        bool(win_detail),
         off_inst is not None,
         off_act is not None,
         bool(method),
@@ -275,6 +303,10 @@ def _extract_license_summary(report_data: dict):
 
     return {
         "windows_activated": win_act,
+        "windows_oa3_present": win_oa3,
+        "windows_edition": win_edition,
+        "windows_license_method": win_method,
+        "windows_license_detail": win_detail,
         "office_installed": off_inst,
         "office_activated": off_act,
         "office_license_method": method,
@@ -291,6 +323,11 @@ def _sanitize_report_license_fields(payload: dict) -> dict:
         return payload
     sanitized = dict(payload)
     for key in (
+        "windows_license_detail",
+        "windows_license_method",
+        "windows_edition",
+        "windows_product_key",
+        "WindowsProductKey",
         "office_license_detail",
         "office_license_method",
         "office_activation_mode",
@@ -384,8 +421,17 @@ def generate_markdown_report(report_data: dict) -> str:
             "## 🔑 Status Licenciranja (Windows & Office)",
             "",
             f"- **Windows Status:** {lic_summary['windows_status_label']}",
-            f"- **Office Status:** {lic_summary['office_status_label']}",
         ])
+        if lic_summary["windows_edition"]:
+            lines.append(f"- **Windows Edicija:** {lic_summary['windows_edition']}")
+        if lic_summary["windows_oa3_present"] is not None:
+            oa3_label = "Prisutan" if lic_summary["windows_oa3_present"] else "Nije pronađen"
+            lines.append(f"- **BIOS OA3x OEM Ključ:** {oa3_label}")
+        if lic_summary["windows_license_method"]:
+            lines.append(f"- **Metod Aktivacije (Windows):** {lic_summary['windows_license_method']}")
+        if lic_summary["windows_license_detail"]:
+            lines.append(f"- **Detalji Licenciranja (Windows):** {lic_summary['windows_license_detail']}")
+        lines.append(f"- **Office Status:** {lic_summary['office_status_label']}")
         if lic_summary["office_activation_mode"]:
             lines.append(f"- **Režim Aktivacije (Office):** {lic_summary['office_activation_mode']}")
         if lic_summary["office_license_method"]:
@@ -481,13 +527,21 @@ def generate_markdown_report(report_data: dict) -> str:
     hwtest = report_data.get("hwtest")
     if hwtest and isinstance(hwtest, dict):
         summary = hwtest.get("summary", {})
-        overall = summary.get("overall", "UNKNOWN")
+        overall = str(summary.get("overall", "UNKNOWN") or "UNKNOWN").strip().upper()
         passed = summary.get("pass", 0)
         failed = summary.get("fail", 0)
         skipped = summary.get("skip", 0)
         na = summary.get("na", 0)
 
-        badge = "✅ PASS" if overall in ("PASS", "PASS_WITH_SKIP") else ("❌ FAIL" if overall == "FAIL" else f"⚪ {overall}")
+        has_skipped_interactive = _has_skipped_interactive_hwtests(hwtest)
+        if overall == "FAIL":
+            badge = "❌ FAIL"
+        elif has_skipped_interactive:
+            badge = "⚠️ NEPOTPUNO (preskočeni interaktivni testovi)"
+        elif overall in ("PASS", "PASS_WITH_SKIP"):
+            badge = "✅ PASS"
+        else:
+            badge = f"⚪ {overall}"
         lines.extend([
             "",
             "---",
@@ -502,8 +556,13 @@ def generate_markdown_report(report_data: dict) -> str:
         ])
         for t in hwtest.get("tests", []):
             tid = t.get("id", "nepoznato")
-            tst = t.get("status", "N/A")
-            ticon = "✅ PASS" if tst == "PASS" else ("❌ FAIL" if tst == "FAIL" else ("⏭️ SKIP" if tst == "SKIP" else "⚪ N/A"))
+            tst = str(t.get("status", "N/A") or "N/A").strip().upper()
+            ticon = (
+                "✅ PASS" if tst == "PASS"
+                else ("❌ FAIL" if tst == "FAIL"
+                else ("⏭️ SKIP" if tst == "SKIP"
+                else ("⏳ PENDING" if tst == "PENDING" else "⚪ N/A")))
+            )
             tdur = f"{t.get('duration_s', 0)}s"
             tatt = str(t.get("attempts", 1))
             treason = t.get("reason", "")

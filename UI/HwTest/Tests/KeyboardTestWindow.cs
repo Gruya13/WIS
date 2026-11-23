@@ -79,6 +79,7 @@ namespace WIS.HwTest.Tests
         private bool _hwLevelChangedByUser = false;
         private volatile bool _backlightWorkerBusy = false;
         private bool? _backlightTestPassed = null;
+        private bool _backlightNoHardwareSelected = false;
         private string _backlightReason = "";
         private bool _isClosingOrDone = false;
 
@@ -102,7 +103,9 @@ namespace WIS.HwTest.Tests
             _activeLayoutName = NormalizeLayoutKey(recommendedLayout ?? "laptop-tkl-ansi");
             _profileClient = profileClient;
 
-            Result = new TestItemResult("keyboard", "Tastatura", "Ispitivanje odziva svih fizičkih tastera");
+            Result = new TestItemResult("keyboard",
+                HwTestLocalization.Pick("Tastatura", "键盘测试"),
+                HwTestLocalization.Pick("Ispitivanje odziva svih fizičkih tastera", "检测所有物理按键响应及键盘背光"));
 
             _allKeys = new List<KeyLayoutDefinition>();
             _pressedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -110,7 +113,7 @@ namespace WIS.HwTest.Tests
             _addedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _keyVisuals = new Dictionary<string, Border>(StringComparer.OrdinalIgnoreCase);
 
-            Title = "WIS — Test Tastature";
+            Title = HwTestLocalization.Pick("WIS — Test Tastature", "WIS — 键盘测试");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
@@ -934,7 +937,8 @@ namespace WIS.HwTest.Tests
             StackPanel spTitle = new StackPanel();
             _statusBanner = new TextBlock
             {
-                Text = "⏳ FAZA 1: MIRUJTE! Ne pritiskajte nijedan taster (provera zaglavljenih kontakata)...",
+                Text = HwTestLocalization.Pick("⏳ FAZA 1: MIRUJTE! Ne pritiskajte nijedan taster (provera zaglavljenih kontakata)...",
+                    "⏳ 第 1 阶段：请勿操作！请不要按任何按键（正在检测卡键/短路）..."),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7))
@@ -968,7 +972,7 @@ namespace WIS.HwTest.Tests
                 Padding = new Thickness(12, 7, 12, 7),
                 Margin = new Thickness(0, 0, 8, 0),
                 Focusable = false,
-                ToolTip = "Prebaci raspored proizvođača (ThinkPad / HP Nav / Standard)"
+                ToolTip = HwTestLocalization.Pick("Prebaci raspored proizvođača (ThinkPad / HP Nav / Standard)", "切换厂商键盘布局 (ThinkPad / HP Nav / Standard)")
             };
             _btnCycleBrandLayout.Click += (s, e) => CycleBrandLayout();
             spToggles.Children.Add(_btnCycleBrandLayout);
@@ -982,7 +986,7 @@ namespace WIS.HwTest.Tests
                 Padding = new Thickness(12, 7, 12, 7),
                 Margin = new Thickness(0, 0, 8, 0),
                 Focusable = false,
-                ToolTip = "Prebaci između ANSI (široki Shift) i ISO (< > | pored levog Shifta)"
+                ToolTip = HwTestLocalization.Pick("Prebaci između ANSI (široki Shift) i ISO (< > | pored levog Shifta)", "切换 ANSI（长 Shift）与 ISO（左 Shift 旁含 < > |）布局")
             };
             _btnToggleIso.Click += (s, e) => ToggleAnsiIso();
             spToggles.Children.Add(_btnToggleIso);
@@ -996,7 +1000,7 @@ namespace WIS.HwTest.Tests
                 Padding = new Thickness(12, 7, 12, 7),
                 Margin = new Thickness(0, 0, 8, 0),
                 Focusable = false,
-                ToolTip = "Dodaj ili ukloni numerički blok (Numpad)"
+                ToolTip = HwTestLocalization.Pick("Dodaj ili ukloni numerički blok (Numpad)", "添加或移除小键盘区 (Numpad)")
             };
             _btnToggleNumpad.Click += (s, e) => ToggleNumpad();
             spToggles.Children.Add(_btnToggleNumpad);
@@ -1009,7 +1013,7 @@ namespace WIS.HwTest.Tests
                 FontSize = 12,
                 Padding = new Thickness(12, 7, 12, 7),
                 Focusable = false,
-                ToolTip = "Dodaj ili ukloni desnu kolonu Home / PgUp / PgDn / End (npr. EliteBook 840 G5-G8)"
+                ToolTip = HwTestLocalization.Pick("Dodaj ili ukloni desnu kolonu Home / PgUp / PgDn / End (npr. EliteBook 840 G5-G8)", "添加或移除右侧 Home / PgUp / PgDn / End 功能键列（如 EliteBook 840 G5-G8）")
             };
             _btnToggleNav.Click += (s, e) => ToggleNav();
             spToggles.Children.Add(_btnToggleNav);
@@ -1084,7 +1088,7 @@ namespace WIS.HwTest.Tests
             };
             spRest.Children.Add(new TextBlock
             {
-                Text = "✋ NE DIRAJTE TASTATURU!",
+                Text = HwTestLocalization.Pick("✋ NE DIRAJTE TASTATURU!", "✋ 请勿触碰键盘！"),
                 FontSize = 44,
                 FontWeight = FontWeights.ExtraBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
@@ -1094,7 +1098,8 @@ namespace WIS.HwTest.Tests
             });
             spRest.Children.Add(new TextBlock
             {
-                Text = "Provera zaglavljenih ili kratko spojenih kontakata u toku — sklonite ruke sa tastera",
+                Text = HwTestLocalization.Pick("Provera zaglavljenih ili kratko spojenih kontakata u toku — sklonite ruke sa tastera",
+                    "正在检测是否存在卡键或短路按键 — 请将双手离开键盘"),
                 FontSize = 20,
                 Foreground = Brushes.White,
                 TextAlignment = TextAlignment.Center,
@@ -1134,7 +1139,7 @@ namespace WIS.HwTest.Tests
             };
             spBl.Children.Add(new TextBlock
             {
-                Text = "💡 TEST POZADINSKOG OSVETLJENJA TASTATURE",
+                Text = HwTestLocalization.Pick("💡 TEST POZADINSKOG OSVETLJENJA TASTATURE", "💡 键盘背光测试"),
                 FontSize = 30,
                 FontWeight = FontWeights.ExtraBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
@@ -1166,7 +1171,7 @@ namespace WIS.HwTest.Tests
 
             _backlightPulseStatusText = new TextBlock
             {
-                Text = "PULS: INICIJALIZACIJA...",
+                Text = HwTestLocalization.Pick("PULS: INICIJALIZACIJA...", "脉冲测试: 正在初始化..."),
                 FontSize = 20,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
@@ -1178,7 +1183,7 @@ namespace WIS.HwTest.Tests
 
             _backlightMethodText = new TextBlock
             {
-                Text = "Provera kontrole pozadinskog osvetljenja...",
+                Text = HwTestLocalization.Pick("Provera kontrole pozadinskog osvetljenja...", "正在检测键盘背光控制器..."),
                 FontSize = 15,
                 Foreground = new SolidColorBrush(Color.FromRgb(220, 224, 232)),
                 TextAlignment = TextAlignment.Center,
@@ -1195,7 +1200,7 @@ namespace WIS.HwTest.Tests
             };
             Button btnBlPass = new Button
             {
-                Content = "✓ Osvetljenje radi (PASS)",
+                Content = HwTestLocalization.Pick("✓ Osvetljenje radi (PASS)", "✓ 背光正常 (PASS)"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontSize = 16,
@@ -1206,15 +1211,16 @@ namespace WIS.HwTest.Tests
             };
             btnBlPass.Click += (s, e) =>
             {
+                _backlightNoHardwareSelected = false;
                 _backlightTestPassed = true;
-                _backlightReason = "Serviser potvrdio rad pozadinskog osvetljenja";
+                _backlightReason = HwTestLocalization.Pick("Serviser potvrdio rad pozadinskog osvetljenja", "技术员已确认键盘背光正常");
                 FinishPass();
             };
             wpBlBtns.Children.Add(btnBlPass);
 
             Button btnBlFail = new Button
             {
-                Content = "✗ Osvetljenje ne radi (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Osvetljenje ne radi (FAIL)", "✗ 背光故障 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                 Foreground = Brushes.White,
                 FontSize = 16,
@@ -1225,14 +1231,15 @@ namespace WIS.HwTest.Tests
             };
             btnBlFail.Click += (s, e) =>
             {
+                _backlightNoHardwareSelected = false;
                 _backlightTestPassed = false;
-                FinishFail("Pozadinsko osvetljenje tastature ne radi (prijavio serviser)");
+                FinishFail(HwTestLocalization.Pick("Pozadinsko osvetljenje tastature ne radi (prijavio serviser)", "键盘背光不亮（技术员报告）"));
             };
             wpBlBtns.Children.Add(btnBlFail);
 
             _btnBacklightNoHw = new Button
             {
-                Content = "⚪ Model nema osvetljenje (Nastavi)",
+                Content = HwTestLocalization.Pick("⚪ Model nema osvetljenje (Nastavi)", "⚪ 该机型无背光（继续）"),
                 Background = new SolidColorBrush(Color.FromRgb(82, 88, 102)),
                 Foreground = Brushes.White,
                 FontSize = 14,
@@ -1243,8 +1250,9 @@ namespace WIS.HwTest.Tests
             };
             _btnBacklightNoHw.Click += (s, e) =>
             {
+                _backlightNoHardwareSelected = true;
                 _backlightTestPassed = null;
-                _backlightReason = "Laptop nema ugrađeno pozadinsko osvetljenje (potvrdio serviser)";
+                _backlightReason = HwTestLocalization.Pick("Laptop nema ugrađeno pozadinsko osvetljenje (potvrdio serviser)", "该笔记本无内置键盘背光（技术员确认）");
                 FinishPass();
             };
             wpBlBtns.Children.Add(_btnBacklightNoHw);
@@ -1266,7 +1274,8 @@ namespace WIS.HwTest.Tests
 
             TextBlock autoLearnHint = new TextBlock
             {
-                Text = "💡 Auto-Learn aktivan: Pritisak bilo kog dodatnog tastera automatski ga dodaje na ekran i čuva profil.",
+                Text = HwTestLocalization.Pick("💡 Auto-Learn aktivan: Pritisak bilo kog dodatnog tastera automatski ga dodaje na ekran i čuva profil.",
+                    "💡 自动学习已启用：按下任意额外按键将自动添加到屏幕并保存至机型配置。"),
                 FontSize = 12,
                 Foreground = new SolidColorBrush(Color.FromRgb(140, 180, 170)),
                 VerticalAlignment = VerticalAlignment.Center
@@ -1281,7 +1290,7 @@ namespace WIS.HwTest.Tests
 
             _btnFinishOptionalNow = new Button
             {
-                Content = "✓ Završi (opcioni nisu prisutni)",
+                Content = HwTestLocalization.Pick("✓ Završi (opcioni nisu prisutni)", "✓ 完成测试（无可选按键）"),
                 Background = new SolidColorBrush(Color.FromRgb(34, 139, 75)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -1298,7 +1307,7 @@ namespace WIS.HwTest.Tests
 
             _btnRemoveKey = new Button
             {
-                Content = "❌ Taster ne postoji na ovom modelu",
+                Content = HwTestLocalization.Pick("❌ Taster ne postoji na ovom modelu", "❌ 该机型无此按键"),
                 Background = new SolidColorBrush(Color.FromRgb(180, 40, 40)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -1311,7 +1320,7 @@ namespace WIS.HwTest.Tests
 
             Button btnKeyboardFail = new Button
             {
-                Content = "✗ Prijavi neispravne tastere (FAIL)",
+                Content = HwTestLocalization.Pick("✗ Prijavi neispravne tastere (FAIL)", "✗ 报告故障按键 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(210, 50, 62)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -1335,8 +1344,9 @@ namespace WIS.HwTest.Tests
             if (_subTitleText == null) return;
             string partHint = string.IsNullOrEmpty(_oemPartDesc) ? "" : (" | OEM: " + _oemPartDesc);
             _subTitleText.Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 180));
-            _subTitleText.Text = string.Format(
+            _subTitleText.Text = HwTestLocalization.PickFormat(
                 "Model: {0} | Šablon: {1} ({2}){3} | F1-F12 i Alt+Space blokirani za OS tokom testa (za Fn red koristite Fn+Esc)",
+                "机型: {0} | 布局: {1} ({2}){3} | 测试期间已屏蔽系统 F1-F12 与 Alt+Space（如需 F 键功能请按 Fn+Esc）",
                 _modelName, _activeLayoutName, _layoutSource, partHint);
         }
 
@@ -1350,21 +1360,27 @@ namespace WIS.HwTest.Tests
             if (_btnCycleBrandLayout != null)
             {
                 string brandLbl = isThinkPad ? "ThinkPad" : (hasNav ? "HP Nav" : "Standard");
-                _btnCycleBrandLayout.Content = "⌨ Šablon: " + brandLbl;
+                _btnCycleBrandLayout.Content = HwTestLocalization.Pick("⌨ Šablon: ", "⌨ 布局: ") + brandLbl;
             }
             if (_btnToggleIso != null)
             {
                 bool isIso = _activeLayoutName.EndsWith("-iso", StringComparison.OrdinalIgnoreCase);
-                _btnToggleIso.Content = isIso ? "🌐 ISO (< > | ✓)" : "🌐 ANSI -> Dodaj ISO (< > |)";
+                _btnToggleIso.Content = isIso
+                    ? HwTestLocalization.Pick("🌐 ISO (< > | ✓)", "🌐 ISO (< > | ✓)")
+                    : HwTestLocalization.Pick("🌐 ANSI -> Dodaj ISO (< > |)", "🌐 ANSI -> 添加 ISO (< > |)");
             }
             if (_btnToggleNumpad != null)
             {
-                _btnToggleNumpad.Content = hasNum ? "🔢 Numpad: UKLJUČEN" : "🔢 + Dodaj Numpad";
+                _btnToggleNumpad.Content = hasNum
+                    ? HwTestLocalization.Pick("🔢 Numpad: UKLJUČEN", "🔢 小键盘: 已启用")
+                    : HwTestLocalization.Pick("🔢 + Dodaj Numpad", "🔢 + 添加小键盘");
             }
             if (_btnToggleNav != null)
             {
                 _btnToggleNav.Visibility = (hasNum || isThinkPad) ? Visibility.Collapsed : Visibility.Visible;
-                _btnToggleNav.Content = hasNav ? "📑 Nav kolona: UKLJUČENA" : "📑 + Nav kolona";
+                _btnToggleNav.Content = hasNav
+                    ? HwTestLocalization.Pick("📑 Nav kolona: UKLJUČENA", "📑 导航键列: 已启用")
+                    : HwTestLocalization.Pick("📑 + Nav kolona", "📑 + 导航键列");
             }
         }
 
@@ -1428,7 +1444,9 @@ namespace WIS.HwTest.Tests
                 Tag = kd
             };
 
-            string displayText = (!isPressed && kd.IsOptional) ? (kd.Label + "\n(opc)") : kd.Label;
+            string displayText = (!isPressed && kd.IsOptional)
+                ? (kd.Label + HwTestLocalization.Pick("\n(opc)", "\n(可选)"))
+                : kd.Label;
             TextBlock tb = new TextBlock
             {
                 Text = displayText,
@@ -1442,8 +1460,10 @@ namespace WIS.HwTest.Tests
             };
             keyBox.Child = tb;
             keyBox.ToolTip = kd.IsOptional
-                ? "Opcioni taster: pritisnite ako postoji na ovom modelu (ne blokira test ako fizički ne postoji) | Desni klik = ukloni"
-                : "Levi klik = izaberi | Desni klik = ukloni taster ako fizički ne postoji";
+                ? HwTestLocalization.Pick("Opcioni taster: pritisnite ako postoji na ovom modelu (ne blokira test ako fizički ne postoji) | Desni klik = ukloni",
+                    "可选按键：若当前机型有此键请按下（物理不存在时不会阻塞测试）| 右键点击 = 移除")
+                : HwTestLocalization.Pick("Levi klik = izaberi | Desni klik = ukloni taster ako fizički ne postoji",
+                    "左键点击 = 选中 | 若该按键物理不存在，右键点击 = 移除");
 
             keyBox.MouseLeftButtonDown += (s, e) => {
                 Border b = s as Border;
@@ -1675,7 +1695,7 @@ namespace WIS.HwTest.Tests
                     _isRestPhase = false;
                     if (_restOverlay != null) _restOverlay.Visibility = Visibility.Collapsed;
                     HwTestLogger.Info("KEYBOARD_PHASE2", "Faza mirovanja (5s) prošla čisto. Obavezni tasteri: " + GetMandatoryKeyCount() + ", Ukupno aktivni: " + GetRequiredKeyCount());
-                    _statusBanner.Text = "✅ FAZA 2: TESTIRANJE! Pritisnite redom svaki taster na tastaturi.";
+                    _statusBanner.Text = HwTestLocalization.Pick("✅ FAZA 2: TESTIRANJE! Pritisnite redom svaki taster na tastaturi.", "✅ 第 2 阶段：测试中！请依次按下键盘上的每个按键。");
                     _statusBanner.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
                     _timerText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
                     UpdateKeyCounterAndCheckCompletion();
@@ -1789,8 +1809,9 @@ namespace WIS.HwTest.Tests
             if (_statusBanner != null)
             {
                 _statusBanner.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-                _statusBanner.Text = string.Format(
+                _statusBanner.Text = HwTestLocalization.PickFormat(
                     "✅ Svi obavezni tasteri OK ({0}/{1})! Ako postoje pritisnite još: [{2}] — završava za 1.2s...",
+                    "✅ 所有必测按键正常 ({0}/{1})！如有以下按键请继续按下: [{2}] — 1.2 秒后自动完成...",
                     pressedAll,
                     effectiveTotal,
                     string.Join(", ", optLabels.ToArray()));
@@ -1818,7 +1839,7 @@ namespace WIS.HwTest.Tests
             {
                 if (unpressedOptional > 0)
                 {
-                    _optionalCountText.Text = string.Format("+{0} opc. slot", unpressedOptional);
+                    _optionalCountText.Text = HwTestLocalization.PickFormat("+{0} opc. slot", "+{0} 可选键位", unpressedOptional);
                     _optionalCountText.Visibility = Visibility.Visible;
                 }
                 else
@@ -1956,8 +1977,9 @@ namespace WIS.HwTest.Tests
                 if (_subTitleText != null)
                 {
                     _subTitleText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-                    _subTitleText.Text = string.Format(
+                    _subTitleText.Text = HwTestLocalization.PickFormat(
                         "✓ Media taster (0x{0:X2}) automatski prepoznat na F-redu (OS akcija blokirana).",
+                        "✓ 媒体键 (0x{0:X2}) 已自动识别为 F 功能键（系统操作已拦截）。",
                         vk);
                 }
                 return;
@@ -1970,8 +1992,9 @@ namespace WIS.HwTest.Tests
             if (_subTitleText != null)
             {
                 _subTitleText.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                _subTitleText.Text = string.Format(
+                _subTitleText.Text = HwTestLocalization.PickFormat(
                     "⚠️ Detektovan Media/Fn taster (0x{0:X2}) umesto F1-F12 — OS akcija blokirana. Pritisnite Fn+Esc da F-red šalje F1-F12!",
+                    "⚠️ 检测到媒体/Fn 键 (0x{0:X2}) 而非 F1-F12 — 系统操作已拦截。请按 Fn+Esc 使顶部按键发送 F1-F12！",
                     vk);
             }
         }
@@ -2014,14 +2037,14 @@ namespace WIS.HwTest.Tests
                 UninstallHook();
 
                 MessageBox.Show(
-                    string.Format("Greška u fazi mirovanja! Detektovan pritisak/zaglavljen taster: {0}.", _stuckKeyDetected),
-                    "FAIL — Zaglavljen taster",
+                    HwTestLocalization.PickFormat("Greška u fazi mirovanja! Detektovan pritisak/zaglavljen taster: {0}.", "静置检测阶段失败！检测到按键按下或卡键: {0}。", _stuckKeyDetected),
+                    HwTestLocalization.Pick("FAIL — Zaglavljen taster", "FAIL — 按键卡滞"),
                     MessageBoxButton.OK,
                     MessageBoxImage.Error
                 );
 
                 Result.Status = TestStatus.Fail;
-                Result.Reason = string.Format("Zaglavljen taster u fazi mirovanja: {0}", _stuckKeyDetected);
+                Result.Reason = HwTestLocalization.PickFormat("Zaglavljen taster u fazi mirovanja: {0}", "静置阶段检测到卡键: {0}", _stuckKeyDetected);
                 Result.Details["stuck_key"] = _stuckKeyDetected;
                 SafeCloseDialog(false);
                 return false;
@@ -2124,8 +2147,9 @@ namespace WIS.HwTest.Tests
             if (missingLabels.Count > 0)
             {
                 _statusBanner.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
-                _statusBanner.Text = string.Format(
+                _statusBanner.Text = HwTestLocalization.PickFormat(
                     "⏳ Preostalo još {0}: [{1}] — Ako neki taster NE POSTOJI, DESNI KLIK na njega (ili '🌐 ISO/ANSI') za uklanjanje!",
+                    "⏳ 剩余 {0} 个按键: [{1}] — 如果某个按键物理不存在，请右键点击该键（或切换 '🌐 ISO/ANSI'）将其移除！",
                     missingLabels.Count,
                     string.Join(", ", missingLabels.ToArray()));
             }
@@ -2151,7 +2175,7 @@ namespace WIS.HwTest.Tests
             }
             _btnRemoveKey.IsEnabled = true;
             _btnRemoveKey.Background = new SolidColorBrush(Color.FromRgb(220, 95, 25));
-            _btnRemoveKey.Content = string.Format("❌ Ukloni taster '{0}' za model", keyId);
+            _btnRemoveKey.Content = HwTestLocalization.PickFormat("❌ Ukloni taster '{0}' za model", "❌ 为此机型移除按键 '{0}'", keyId);
         }
 
         private void RemoveSelectedKey()
@@ -2159,8 +2183,10 @@ namespace WIS.HwTest.Tests
             if (string.IsNullOrEmpty(_selectedKeyForRemoval)) return;
 
             var mbr = MessageBox.Show(
-                string.Format("Da li ste sigurni da taster '{0}' fizički NE POSTOJI na modelu '{1}'?\nOvaj izuzetak će biti sačuvan na ServisHub-u za sve buduće servise ovog modela.", _selectedKeyForRemoval, _modelName),
-                "Potvrda uklanjanja tastera iz šablona",
+                HwTestLocalization.PickFormat("Da li ste sigurni da taster '{0}' fizički NE POSTOJI na modelu '{1}'?\nOvaj izuzetak će biti sačuvan na ServisHub-u za sve buduće servise ovog modela.",
+                    "确定机型“{1}”上物理不存在按键“{0}”吗？\n此例外将保存至 ServisHub，供今后同机型维修时自动应用。",
+                    _selectedKeyForRemoval, _modelName),
+                HwTestLocalization.Pick("Potvrda uklanjanja tastera iz šablona", "确认从布局中移除按键"),
                 MessageBoxButton.YesNo,
                 MessageBoxImage.Question
             );
@@ -2193,7 +2219,7 @@ namespace WIS.HwTest.Tests
 
                 _selectedKeyForRemoval = null;
                 _btnRemoveKey.IsEnabled = false;
-                _btnRemoveKey.Content = "❌ Taster ne postoji na ovom modelu";
+                _btnRemoveKey.Content = HwTestLocalization.Pick("❌ Taster ne postoji na ovom modelu", "❌ 该机型无此按键");
 
                 UpdateKeyCounterAndCheckCompletion();
             }
@@ -2216,10 +2242,11 @@ namespace WIS.HwTest.Tests
             }
             else
             {
+                _backlightNoHardwareSelected = (_hwInfo != null && _hwInfo.IsLaptop && _hwInfo.HasKeyboardBacklight == false);
                 _backlightTestPassed = null;
                 _backlightReason = (_hwInfo != null && !string.IsNullOrEmpty(_hwInfo.KeyboardBacklightEvidence))
-                    ? "Preskočeno: " + _hwInfo.KeyboardBacklightEvidence
-                    : "Model nema pozadinsko osvetljenje (preskočeno)";
+                    ? (HwTestLocalization.Pick("Model nema pozadinsko osvetljenje (", "该机型无键盘背光 (") + _hwInfo.KeyboardBacklightEvidence + ")")
+                    : HwTestLocalization.Pick("Model nema pozadinsko osvetljenje (preskočeno)", "该机型无键盘背光（已跳过）");
                 FinishPass();
             }
         }
@@ -2229,17 +2256,16 @@ namespace WIS.HwTest.Tests
             _inBacklightPhase = true;
             UninstallHook(); // Oslobodi Fn+Key prečice ako model koristi EC kontrolu osvetljenja
 
-            _statusBanner.Text = "💡 Faza 3/3: Provera pozadinskog osvetljenja tastature — izaberite PASS ili FAIL";
+            _statusBanner.Text = HwTestLocalization.Pick("💡 Faza 3/3: Provera pozadinskog osvetljenja tastature — izaberite PASS ili FAIL", "💡 第 3/3 阶段：键盘背光测试 — 请选择 PASS 或 FAIL");
             _statusBanner.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
             _timerText.Text = "BL";
 
             if (_btnBacklightNoHw != null)
             {
-                bool isConfirmedPresent = (_hwInfo != null && _hwInfo.HasKeyboardBacklight == true);
-                _btnBacklightNoHw.Visibility = isConfirmedPresent ? Visibility.Collapsed : Visibility.Visible;
+                _btnBacklightNoHw.Visibility = Visibility.Visible;
             }
 
-            UpdateBacklightInstructionText("Proveravam IBMPmDrv / EnergyDrv / WMI / Dynamic Lighting kontroler...");
+            UpdateBacklightInstructionText(HwTestLocalization.Pick("Proveravam IBMPmDrv / EnergyDrv / WMI / Dynamic Lighting kontroler...", "正在检测 IBMPmDrv / EnergyDrv / WMI / Dynamic Lighting 控制器..."));
             _backlightMode = "detecting";
             _backlightHardwarePulseSupported = false;
             _hwLevelChangedByUser = false;
@@ -2302,23 +2328,23 @@ namespace WIS.HwTest.Tests
 
                     if (detectedMode == "lenovo_ibmpm")
                     {
-                        UpdateBacklightInstructionText(string.Format("Automatsko pulsiranje aktivno ({0}: 0% -> 50% -> 100%). Gledajte tastaturu!", detailMsg));
+                        UpdateBacklightInstructionText(HwTestLocalization.PickFormat("Automatsko pulsiranje aktivno ({0}: 0% -> 50% -> 100%). Gledajte tastaturu!", "自动呼吸脉冲测试中 ({0}: 0% -> 50% -> 100%)。请观察键盘背光！", detailMsg));
                     }
                     else if (detectedMode == "lenovo_energydrv")
                     {
-                        UpdateBacklightInstructionText("Automatsko pulsiranje aktivno (Lenovo EnergyDrv: 0% -> 50% -> 100%). Gledajte tastaturu!");
+                        UpdateBacklightInstructionText(HwTestLocalization.Pick("Automatsko pulsiranje aktivno (Lenovo EnergyDrv: 0% -> 50% -> 100%). Gledajte tastaturu!", "自动呼吸脉冲测试中 (Lenovo EnergyDrv: 0% -> 50% -> 100%)。请观察键盘背光！"));
                     }
                     else if (detectedMode == "lenovo_wmi")
                     {
-                        UpdateBacklightInstructionText("Automatsko pulsiranje aktivno (Lenovo WMI: nivo 0 -> 1 -> 2). Gledajte tastaturu!");
+                        UpdateBacklightInstructionText(HwTestLocalization.Pick("Automatsko pulsiranje aktivno (Lenovo WMI: nivo 0 -> 1 -> 2). Gledajte tastaturu!", "自动呼吸脉冲测试中 (Lenovo WMI: 亮度等级 0 -> 1 -> 2)。请观察键盘背光！"));
                     }
                     else if (detectedMode == "dell_wmi")
                     {
-                        UpdateBacklightInstructionText(string.Format("Automatsko pulsiranje aktivno ({0}). Gledajte tastaturu!", detailMsg));
+                        UpdateBacklightInstructionText(HwTestLocalization.PickFormat("Automatsko pulsiranje aktivno ({0}). Gledajte tastaturu!", "自动呼吸脉冲测试中 ({0})。请观察键盘背光！", detailMsg));
                     }
                     else if (detectedMode == "lamp_array")
                     {
-                        UpdateBacklightInstructionText("Automatsko pulsiranje aktivno (Windows Dynamic Lighting / LampArray). Gledajte tastaturu!");
+                        UpdateBacklightInstructionText(HwTestLocalization.Pick("Automatsko pulsiranje aktivno (Windows Dynamic Lighting / LampArray). Gledajte tastaturu!", "自动呼吸脉冲测试中 (Windows Dynamic Lighting / LampArray)。请观察键盘背光！"));
                     }
                     else
                     {
@@ -2349,23 +2375,24 @@ namespace WIS.HwTest.Tests
         private string BuildManualBacklightHint()
         {
             string mfg = (_hwInfo != null ? (_hwInfo.Manufacturer ?? "") : "").ToUpperInvariant();
-            string hotkey = "Fn + taster za osvetljenje (ikonica tastature)";
-            if (mfg.Contains("HP") || mfg.Contains("HEWLETT")) hotkey = "HP prečica: Fn + F9 / F11 (ili samo F9 / F11)";
-            else if (mfg.Contains("LENOVO")) hotkey = "Lenovo prečica: Fn + Space";
-            else if (mfg.Contains("DELL")) hotkey = "Dell prečica: Fn + F5 / F10 (ili F6)";
+            string hotkey = HwTestLocalization.Pick("Fn + taster za osvetljenje (ikonica tastature)", "Fn + 背光快捷键（键盘图标按键）");
+            if (mfg.Contains("HP") || mfg.Contains("HEWLETT")) hotkey = HwTestLocalization.Pick("HP prečica: Fn + F9 / F11 (ili samo F9 / F11)", "HP 快捷键: Fn + F9 / F11（或直接按 F9 / F11）");
+            else if (mfg.Contains("LENOVO")) hotkey = HwTestLocalization.Pick("Lenovo prečica: Fn + Space", "Lenovo 快捷键: Fn + Space");
+            else if (mfg.Contains("DELL")) hotkey = HwTestLocalization.Pick("Dell prečica: Fn + F5 / F10 (ili F6)", "Dell 快捷键: Fn + F5 / F10（或 F6）");
 
             string biosWarn = "";
             if (_hwInfo != null && _hwInfo.KeyboardBacklightBiosDisabled)
             {
-                biosWarn = "\n⚠ BIOS upozorenje: '" + (_hwInfo.KeyboardBacklightEvidence ?? "Backlight Disabled") + "'";
+                biosWarn = HwTestLocalization.Pick("\n⚠ BIOS upozorenje: '", "\n⚠ BIOS 警告: '") + (_hwInfo.KeyboardBacklightEvidence ?? "Backlight Disabled") + "'";
             }
             else if (_hwInfo != null && !string.IsNullOrEmpty(_hwInfo.KeyboardBacklightEvidence))
             {
-                biosWarn = "\nDetektovano: " + _hwInfo.KeyboardBacklightEvidence;
+                biosWarn = HwTestLocalization.Pick("\nDetektovano: ", "\n已检测到: ") + _hwInfo.KeyboardBacklightEvidence;
             }
 
-            return string.Format(
+            return HwTestLocalization.PickFormat(
                 "Kontroler na ovom modelu upravlja LED diodama hardverski (EC).\nPritisnite {0} ako svetlo nije uključeno i proverite rad dok indikator pulsira.{1}",
+                "该机型的键盘 LED 背光由硬件控制器 (EC) 控制。\n如果背光未亮起，请按 {0} 并在指示灯闪烁期间检查背光是否工作。{1}",
                 hotkey, biosWarn);
         }
 
@@ -2391,7 +2418,7 @@ namespace WIS.HwTest.Tests
                 {
                     _backlightBulbBadge.Background = new SolidColorBrush(Color.FromRgb(42, 46, 58));
                     _backlightBulbBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(120, 125, 140));
-                    _backlightPulseStatusText.Text = "INICIJALIZACIJA KONTROLERA...";
+                    _backlightPulseStatusText.Text = HwTestLocalization.Pick("INICIJALIZACIJA KONTROLERA...", "正在初始化控制器...");
                     _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
                 }
                 return;
@@ -2404,10 +2431,14 @@ namespace WIS.HwTest.Tests
                 {
                     if (_hwLevelChangedByUser && _lastObservedHwLevel >= 0)
                     {
-                        string lvlLabel = _lastObservedHwLevel == 0 ? "0% (UGAŠENO)" : (_lastObservedHwLevel == 1 ? "50% (SREDNJE)" : "100% (PUNO)");
+                        string lvlLabel = _lastObservedHwLevel == 0
+                            ? HwTestLocalization.Pick("0% (UGAŠENO)", "0%（关闭）")
+                            : (_lastObservedHwLevel == 1
+                                ? HwTestLocalization.Pick("50% (SREDNJE)", "50%（中亮）")
+                                : HwTestLocalization.Pick("100% (PUNO)", "100%（最亮）"));
                         _backlightBulbBadge.Background = new SolidColorBrush(Color.FromRgb(30, 95, 58));
                         _backlightBulbBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-                        _backlightPulseStatusText.Text = "DETEKTOVAN HARDVERSKI NIVO: " + lvlLabel + " (Fn prečica potvrđena!)";
+                        _backlightPulseStatusText.Text = HwTestLocalization.PickFormat("DETEKTOVAN HARDVERSKI NIVO: {0} (Fn prečica potvrđena!)", "检测到硬件背光级别: {0}（Fn 快捷键已确认！）", lvlLabel);
                         _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(120, 235, 170));
                     }
                     else
@@ -2415,7 +2446,7 @@ namespace WIS.HwTest.Tests
                         bool tickAlt = (_backlightPulseStep % 2) == 0;
                         _backlightBulbBadge.Background = tickAlt ? new SolidColorBrush(Color.FromRgb(65, 55, 24)) : new SolidColorBrush(Color.FromRgb(42, 46, 58));
                         _backlightBulbBadge.BorderBrush = tickAlt ? new SolidColorBrush(Color.FromRgb(255, 193, 7)) : new SolidColorBrush(Color.FromRgb(160, 140, 60));
-                        _backlightPulseStatusText.Text = "RUČNA PROVERA: Pritisnite prečicu na tastaturi (npr. Fn + Space / Fn + F5)";
+                        _backlightPulseStatusText.Text = HwTestLocalization.Pick("RUČNA PROVERA: Pritisnite prečicu na tastaturi (npr. Fn + Space / Fn + F5)", "手动检测：请按下键盘背光快捷键（例如 Fn + Space / Fn + F5）");
                         _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 210, 90));
                     }
                 }
@@ -2456,21 +2487,21 @@ namespace WIS.HwTest.Tests
                 {
                     _backlightBulbBadge.Background = new SolidColorBrush(Color.FromRgb(34, 38, 48));
                     _backlightBulbBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(100, 106, 120));
-                    _backlightPulseStatusText.Text = "PULS: 0% (UGAŠENO)";
+                    _backlightPulseStatusText.Text = HwTestLocalization.Pick("PULS: 0% (UGAŠENO)", "脉冲: 0%（关闭）");
                     _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(160, 168, 180));
                 }
                 else if (level == 1)
                 {
                     _backlightBulbBadge.Background = new SolidColorBrush(Color.FromRgb(95, 78, 22));
                     _backlightBulbBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(235, 180, 35));
-                    _backlightPulseStatusText.Text = "PULS: 50% (SREDNJE)";
+                    _backlightPulseStatusText.Text = HwTestLocalization.Pick("PULS: 50% (SREDNJE)", "脉冲: 50%（中亮）");
                     _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(245, 200, 66));
                 }
                 else
                 {
                     _backlightBulbBadge.Background = new SolidColorBrush(Color.FromRgb(165, 130, 18));
                     _backlightBulbBadge.BorderBrush = new SolidColorBrush(Color.FromRgb(255, 230, 90));
-                    _backlightPulseStatusText.Text = "PULS: 100% (PUNO OSVETLJENJE)";
+                    _backlightPulseStatusText.Text = HwTestLocalization.Pick("PULS: 100% (PUNO OSVETLJENJE)", "脉冲: 100%（全亮）");
                     _backlightPulseStatusText.Foreground = new SolidColorBrush(Color.FromRgb(255, 232, 102));
                 }
             }
@@ -2686,12 +2717,45 @@ namespace WIS.HwTest.Tests
                 return false;
             }
 
-            _initialBacklightLevel = 0;
+            uint beforeState = 0u;
+            bool readBefore = HardwareProbe.TryReadLenovoEnergyDrvBacklightRaw(out beforeState);
+            _initialBacklightLevel = readBefore ? (int)(beforeState & 0x03u) : 0;
+
             bool writeOk = SetLenovoEnergyDrvBacklightLevel(1);
+            if (!writeOk)
+            {
+                HwTestLogger.Info(
+                    "KEYBOARD_BACKLIGHT",
+                    string.Format("EnergyDrv detekcija: {0}, probeWrite(1)=False", probeDetail));
+                return false;
+            }
+
+            System.Threading.Thread.Sleep(40);
+            uint afterOnState = 0u;
+            bool readAfterOn = HardwareProbe.TryReadLenovoEnergyDrvBacklightRaw(out afterOnState);
+            bool readbackVerified = true;
+
+            if (readBefore && readAfterOn)
+            {
+                if (afterOnState == beforeState)
+                {
+                    SetLenovoEnergyDrvBacklightLevel(0);
+                    System.Threading.Thread.Sleep(40);
+                    uint afterOffState = 0u;
+                    bool readAfterOff = HardwareProbe.TryReadLenovoEnergyDrvBacklightRaw(out afterOffState);
+                    SetLenovoEnergyDrvBacklightLevel(1);
+                    if (readAfterOff && afterOffState == afterOnState)
+                    {
+                        readbackVerified = false;
+                    }
+                }
+            }
+
             HwTestLogger.Info(
                 "KEYBOARD_BACKLIGHT",
-                string.Format("EnergyDrv detekcija: {0}, probeWrite(1)={1}", probeDetail, writeOk));
-            return writeOk;
+                string.Format("EnergyDrv detekcija: {0}, probeWrite(1)={1}, readbackVerified={2}",
+                    probeDetail, writeOk, readbackVerified));
+            return readbackVerified;
         }
 
         private static bool SetLenovoEnergyDrvBacklightLevel(int level)
@@ -3169,8 +3233,10 @@ namespace WIS.HwTest.Tests
             Result.Details["pressed_keys"] = CountPressedActiveKeys();
             Result.Details["removed_keys"] = new List<string>(_removedKeys);
             Result.Details["added_keys"] = new List<string>(_addedKeys);
-            Result.Details["backlight_tested"] = (_backlightTestPassed.HasValue || !string.IsNullOrEmpty(_backlightReason));
-            Result.Details["backlight_passed"] = _backlightTestPassed.HasValue ? (_backlightTestPassed.Value ? "true" : "false") : "n/a";
+            Result.Details["backlight_tested"] = (_backlightTestPassed.HasValue || _backlightNoHardwareSelected || !string.IsNullOrEmpty(_backlightReason));
+            Result.Details["backlight_passed"] = _backlightNoHardwareSelected
+                ? "no_hardware"
+                : (_backlightTestPassed.HasValue ? (_backlightTestPassed.Value ? "true" : "false") : "n/a");
             Result.Details["backlight_method"] = _backlightMode;
             if (!string.IsNullOrEmpty(_backlightReason))
             {
@@ -3195,10 +3261,11 @@ namespace WIS.HwTest.Tests
 
             Result.Details["failed_keys"] = new List<string>(missingLabels);
             string reason = missingLabels.Count > 0
-                ? string.Format("Neispravni tasteri na tastaturi ({0}): {1}",
+                ? HwTestLocalization.PickFormat("Neispravni tasteri na tastaturi ({0}): {1}",
+                    "键盘存在故障按键 ({0}): {1}",
                     missingLabels.Count,
                     string.Join(", ", missingLabels.GetRange(0, Math.Min(12, missingLabels.Count)).ToArray()) + (missingLabels.Count > 12 ? "..." : ""))
-                : "Kvar tastera tastature (prijavio serviser)";
+                : HwTestLocalization.Pick("Kvar tastera tastature (prijavio serviser)", "键盘按键故障（技术员报告）");
             FinishFail(reason);
         }
 
@@ -3222,8 +3289,10 @@ namespace WIS.HwTest.Tests
             Result.Details["mandatory_keys_total"] = GetMandatoryKeyCount();
             Result.Details["optional_keys_pressed"] = CountPressedOptionalKeys();
             Result.Details["pressed_keys"] = CountPressedActiveKeys();
-            Result.Details["backlight_tested"] = (_backlightTestPassed.HasValue || !string.IsNullOrEmpty(_backlightReason));
-            Result.Details["backlight_passed"] = _backlightTestPassed.HasValue ? (_backlightTestPassed.Value ? "true" : "false") : "n/a";
+            Result.Details["backlight_tested"] = (_backlightTestPassed.HasValue || _backlightNoHardwareSelected || !string.IsNullOrEmpty(_backlightReason));
+            Result.Details["backlight_passed"] = _backlightNoHardwareSelected
+                ? "no_hardware"
+                : (_backlightTestPassed.HasValue ? (_backlightTestPassed.Value ? "true" : "false") : "n/a");
             Result.Details["backlight_method"] = _backlightMode;
             SafeCloseDialog(false);
         }

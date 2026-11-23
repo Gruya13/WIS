@@ -278,9 +278,73 @@
         </Grid>
 
         <!-- ========================================================= -->
-        <!-- TABCONTROL SA 5 TABOVA                                    -->
+        <!-- CENTRALNI SADRŽAJ: UPOZORENJE ZA TESTOVE + TABCONTROL     -->
         <!-- ========================================================= -->
-        <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="14,10,14,6" Background="Transparent" SelectionChanged="MainTabControl_SelectionChanged">
+        <Grid Grid.Row="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Trajna gornja traka upozorenja kad interaktivni testovi nisu završeni (Odluka 3A) -->
+            <Border Tag="PendingInteractiveTestsBanner"
+                    Grid.Row="0"
+                    Background="#33220A"
+                    BorderBrush="#F39C12"
+                    BorderThickness="1.5"
+                    CornerRadius="6"
+                    Padding="14,9"
+                    Margin="14,10,14,0"
+                    Visibility="Collapsed">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                        <TextBlock Tag="PendingBannerTitleText"
+                                   Text="{Binding Loc[XamlPendingBannerTitle]}"
+                                   TextWrapping="Wrap"
+                                   FontSize="12.5"
+                                   FontWeight="Bold"
+                                   Foreground="#FBBF24" />
+                        <TextBlock Tag="PendingBannerDetailText"
+                                   Text="{Binding Loc[XamlPendingBannerDetail]}"
+                                   FontSize="11.5"
+                                   Foreground="#FDE68A"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="0,2,0,0" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                        <Button Tag="BtnBannerResumeTests"
+                                Content="{Binding Loc[XamlBtnBannerResumeTests]}"
+                                Background="#E67E22"
+                                Foreground="#111111"
+                                BorderBrush="#F5B041"
+                                BorderThickness="1"
+                                FontSize="12"
+                                FontWeight="Bold"
+                                Padding="14,6"
+                                Margin="0,0,8,0"
+                                Cursor="Hand" />
+                        <Button Tag="BtnBannerEmergencySkip"
+                                Content="{Binding Loc[XamlBtnEmergencySkip]}"
+                                Background="#2A1616"
+                                Foreground="#F5B7B1"
+                                BorderBrush="#C0392B"
+                                BorderThickness="1"
+                                FontSize="11.5"
+                                FontWeight="SemiBold"
+                                Padding="10,6"
+                                Cursor="Hand" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ===================================================== -->
+            <!-- TABCONTROL SA 5 TABOVA                                -->
+            <!-- ===================================================== -->
+            <TabControl x:Name="MainTabControl" Grid.Row="1" Margin="14,10,14,6" Background="Transparent" SelectionChanged="MainTabControl_SelectionChanged">
             <!-- ===================================================== -->
             <!-- TAB 1: PREGLED                                        -->
             <!-- ===================================================== -->
@@ -302,7 +366,7 @@
                         <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,12" Margin="0,0,0,12">
                             <Grid>
                             <StackPanel>
-                                <TextBlock Text="{Binding Loc[InstallationFlowTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,10" />
+                                <TextBlock Text="{Binding Loc[InstallationFlowTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,2,144,12" />
                                 <ItemsControl ItemsSource="{Binding Phases}">
                                     <ItemsControl.ItemsPanel>
                                         <ItemsPanelTemplate>
@@ -394,20 +458,20 @@
                             <Button Tag="PhasesCollapseToggleBtn"
                                     Style="{StaticResource ActionButtonStyle}"
                                     Command="{Binding TogglePhasesExpandedCommand}"
-                                    Content="{Binding PhasesToggleGlyph}"
+                                    Content="{Binding PhasesToggleText}"
                                     ToolTip="{Binding PhasesToggleToolTip}"
                                     HorizontalAlignment="Right"
-                                    VerticalAlignment="Bottom"
-                                    Width="28"
-                                    Height="22"
-                                    Margin="0,0,7,8"
-                                    Padding="0"
-                                    Background="#252526"
+                                    VerticalAlignment="Top"
+                                    MinWidth="136"
+                                    Height="24"
+                                    Margin="0,-2,0,0"
+                                    Padding="10,2"
+                                    Background="#2D2D30"
                                     Foreground="#CCCCCC"
                                     BorderBrush="#4E4E56"
                                     BorderThickness="1"
-                                    FontSize="10"
-                                    FontWeight="Bold"
+                                    FontSize="10.5"
+                                    FontWeight="SemiBold"
                                     Panel.ZIndex="10" />
                             </Grid>
                         </Border>
@@ -430,7 +494,7 @@
                                                 <RowDefinition Height="*" />
                                             </Grid.RowDefinitions>
 
-                                            <TextBlock Grid.Row="0" Text="INFORMACIJE O UREĐAJU" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
+                                            <TextBlock Grid.Row="0" Text="{Binding Loc[XamlOverviewDeviceInfoTitle]}" FontSize="11" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
 
                                             <!-- PLAVI DEO: Proizvođač i model -->
                                             <Border Tag="OverviewDeviceModelBanner" Grid.Row="1" Background="#1E1E1E" BorderBrush="#333338" BorderThickness="1" CornerRadius="5" Padding="12,8" Margin="0,0,0,10">
@@ -439,7 +503,7 @@
                                                         <ColumnDefinition Width="Auto" />
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="PROIZVOĐAČ / MODEL" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,12,0" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewManufacturerModel]}" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,12,0" VerticalAlignment="Center" />
                                                     <TextBlock Grid.Column="1" Text="{Binding ComputerModel}" FontSize="14" FontWeight="Bold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding ComputerModel}" />
                                                 </Grid>
                                             </Border>
@@ -486,7 +550,7 @@
                                                                         <ColumnDefinition Width="125" />
                                                                         <ColumnDefinition Width="*" />
                                                                     </Grid.ColumnDefinitions>
-                                                                    <TextBlock Grid.Column="0" Text="Disk" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewDiskLabel]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                                     <TextBlock Grid.Column="1" Text="{Binding DiskInfo}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding DiskInfo}" />
                                                                 </Grid>
                                                             </Border>
@@ -496,7 +560,7 @@
                                                                         <ColumnDefinition Width="125" />
                                                                         <ColumnDefinition Width="*" />
                                                                     </Grid.ColumnDefinitions>
-                                                                    <TextBlock Grid.Column="0" Text="Rezolucija ekrana" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewScreenResolution]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                                     <TextBlock Grid.Column="1" Text="{Binding HardwareInfo.OverviewResolution}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding HardwareInfo.OverviewResolutionTooltip}" />
                                                                 </Grid>
                                                             </Border>
@@ -526,7 +590,7 @@
                                                                         <ColumnDefinition Width="125" />
                                                                         <ColumnDefinition Width="*" />
                                                                     </Grid.ColumnDefinitions>
-                                                                    <TextBlock Grid.Column="0" Text="Battery wear" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewBatteryWear]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                                     <TextBlock Grid.Column="1" Text="{Binding HardwareInfo.BatteryWear}" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.BatteryHealthBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding HardwareInfo.BatteryWear}" />
                                                                 </Grid>
                                                             </Border>
@@ -535,7 +599,7 @@
                                                         <!-- DODATNE PERIFERIJE -->
                                                         <Border Tag="OverviewPeripheralsSection" Grid.Row="1" BorderBrush="#333338" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
                                                             <StackPanel>
-                                                                <TextBlock Text="DODATNE PERIFERIJE" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
+                                                                <TextBlock Text="{Binding Loc[RbtExtraPeripheralsHeader]}" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
                                                                 <ItemsControl ItemsSource="{Binding HardwareInfo.OverviewPeripherals}">
                                                                     <ItemsControl.ItemsPanel>
                                                                         <ItemsPanelTemplate>
@@ -571,8 +635,8 @@
                                                     <Border Tag="OverviewHardwareMonitorCard" Grid.Row="0" Background="#1E1E1E" BorderBrush="#333338" BorderThickness="1" CornerRadius="5" Padding="12,9">
                                                         <StackPanel>
                                                             <Grid Margin="0,0,0,8">
-                                                                <TextBlock Text="HARDVER MONITOR" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
-                                                                <TextBlock Text="● Uživo" FontSize="10" Foreground="#4EC9B0" HorizontalAlignment="Right" VerticalAlignment="Center" />
+                                                                <TextBlock Text="{Binding Loc[XamlOverviewHwMonitorTitle]}" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
+                                                                <TextBlock Text="{Binding Loc[XamlOverviewLive]}" FontSize="10" Foreground="#4EC9B0" HorizontalAlignment="Right" VerticalAlignment="Center" />
                                                             </Grid>
 
                                                             <!-- Opterećenje CPU i RAM -->
@@ -585,7 +649,7 @@
 
                                                                 <StackPanel Grid.Column="0">
                                                                     <Grid Margin="0,0,0,4">
-                                                                        <TextBlock Text="CPU opterećenje" FontSize="10" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewCpuLoad]}" FontSize="10" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding CpuUsageShortText}" FontSize="11" FontWeight="Bold" Foreground="{Binding CpuUsageBrush}" HorizontalAlignment="Right" FontFamily="Consolas" />
                                                                     </Grid>
                                                                     <ProgressBar Value="{Binding CpuUsagePercent}" Maximum="100" Height="5" Background="#2D2D30" Foreground="{Binding CpuUsageBrush}" BorderThickness="0" />
@@ -593,7 +657,7 @@
 
                                                                 <StackPanel Grid.Column="2">
                                                                     <Grid Margin="0,0,0,4">
-                                                                        <TextBlock Text="RAM zauzeće" FontSize="10" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewRamUsage]}" FontSize="10" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding RamUsageShortText}" FontSize="10" FontWeight="Bold" Foreground="{Binding RamUsageBrush}" HorizontalAlignment="Right" FontFamily="Consolas" TextTrimming="CharacterEllipsis" ToolTip="{Binding RamUsage}" />
                                                                     </Grid>
                                                                     <ProgressBar Value="{Binding RamUsagePercent}" Maximum="100" Height="5" Background="#2D2D30" Foreground="{Binding RamUsageBrush}" BorderThickness="0" />
@@ -604,25 +668,25 @@
                                                             <UniformGrid Columns="4" Margin="0,0,0,8">
                                                                 <Border Background="#252528" BorderBrush="#333338" BorderThickness="1" CornerRadius="4" Padding="6,4" Margin="0,0,4,0" ToolTip="{Binding CpuTempText}">
                                                                     <StackPanel>
-                                                                        <TextBlock Text="CPU TEMP" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewCpuTemp]}" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding CpuTempShortText}" FontSize="11" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding CpuTempBrush}" Margin="0,1,0,0" />
                                                                     </StackPanel>
                                                                 </Border>
                                                                 <Border Background="#252528" BorderBrush="#333338" BorderThickness="1" CornerRadius="4" Padding="6,4" Margin="0,0,4,0" ToolTip="{Binding GpuTempText}">
                                                                     <StackPanel>
-                                                                        <TextBlock Text="GPU TEMP" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewGpuTemp]}" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding GpuTempShortText}" FontSize="11" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding GpuTempBrush}" Margin="0,1,0,0" />
                                                                     </StackPanel>
                                                                 </Border>
                                                                 <Border Background="#252528" BorderBrush="#333338" BorderThickness="1" CornerRadius="4" Padding="6,4" Margin="0,0,4,0" ToolTip="{Binding SsdTempText}">
                                                                     <StackPanel>
-                                                                        <TextBlock Text="SSD TEMP" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewSsdTemp]}" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding SsdTempShortText}" FontSize="11" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding SsdTempBrush}" Margin="0,1,0,0" />
                                                                     </StackPanel>
                                                                 </Border>
                                                                 <Border Background="#252528" BorderBrush="#333338" BorderThickness="1" CornerRadius="4" Padding="6,4" ToolTip="{Binding MbTempText}">
                                                                     <StackPanel>
-                                                                        <TextBlock Text="MB TEMP" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewMbTemp]}" FontSize="8.5" FontWeight="Bold" Foreground="#888888" />
                                                                         <TextBlock Text="{Binding MbTempShortText}" FontSize="11" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding MbTempBrush}" Margin="0,1,0,0" />
                                                                     </StackPanel>
                                                                 </Border>
@@ -655,7 +719,7 @@
                                                             </Grid.RowDefinitions>
 
                                                             <Grid Grid.Row="0" Margin="0,0,0,8">
-                                                                <TextBlock Text="UPOZORENJA" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
+                                                                <TextBlock Text="{Binding Loc[XamlOverviewAlertsTitle]}" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
                                                                 <Border Background="{Binding OverviewAlertsBadgeBrush}" CornerRadius="9" Padding="7,1" HorizontalAlignment="Right" VerticalAlignment="Center">
                                                                     <TextBlock Text="{Binding OverviewAlertsCountText}" FontSize="10" FontWeight="Bold" Foreground="#FFFFFF" />
                                                                 </Border>
@@ -694,8 +758,8 @@
                                                                 <Border Background="#1B2A21" BorderBrush="#2D5A3F" BorderThickness="1" CornerRadius="4" Padding="10,8" VerticalAlignment="Center"
                                                                         Visibility="{Binding ShowNoOverviewAlerts, Converter={StaticResource BoolToVis}}">
                                                                     <StackPanel>
-                                                                        <TextBlock Text="✓ Nema aktivnih upozorenja" FontSize="11" FontWeight="SemiBold" Foreground="#2ECC71" />
-                                                                        <TextBlock Text="Temperature, Autopilot, drajveri i programi su u normalnom stanju." FontSize="10" Foreground="#A8C5B4" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewNoAlerts]}" FontSize="11" FontWeight="SemiBold" Foreground="#2ECC71" />
+                                                                        <TextBlock Text="{Binding Loc[XamlOverviewNoAlertsDesc]}" FontSize="10" Foreground="#A8C5B4" TextWrapping="Wrap" Margin="0,2,0,0" />
                                                                     </StackPanel>
                                                                 </Border>
                                                             </Grid>
@@ -714,7 +778,7 @@
                                                 <RowDefinition Height="*" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Grid.Row="0" Text="KARTON UREĐAJA (SERVISHUB)" FontSize="11" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                                            <TextBlock Grid.Row="0" Text="{Binding Loc[RbtDeviceCardHeader]}" FontSize="11" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" Margin="0,0,0,8" />
 
                                             <Viewbox Grid.Row="1" StretchDirection="DownOnly" HorizontalAlignment="Center" VerticalAlignment="Center">
                                                 <Grid>
@@ -722,7 +786,7 @@
                                                         <Image Source="{Binding DeviceCardQrImage}" Width="260" Height="260" Stretch="Uniform" RenderOptions.BitmapScalingMode="NearestNeighbor" />
                                                     </Border>
                                                     <Border Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="8" Width="260" Height="260" Padding="16" Visibility="{Binding ShowDeviceCardQrPlaceholder, Converter={StaticResource BoolToVis}}">
-                                                        <TextBlock Text="QR kod će se pojaviti kada se otkrije ServisHub..." FontSize="12" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding Loc[RbtQrPlaceholder]}" FontSize="12" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" />
                                                     </Border>
                                                 </Grid>
                                             </Viewbox>
@@ -752,7 +816,7 @@
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Grid.Column="0" Text="UKUPAN NAPREDAK PROCESA" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,10,0" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlGlobalProgressTitle]}" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,10,0" VerticalAlignment="Center" />
                                     <TextBlock Grid.Column="1" Text="{Binding GlobalProgressSummary}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                 </Grid>
                                 <TextBlock Grid.Column="1"
@@ -779,10 +843,10 @@
                                             Margin="10,0,0,0"
                                             MinWidth="178"
                                             ToolTip="{Binding BenchmarkSourceTooltip}">
-                                    <TextBlock Text="Traje " FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Loc[XamlElapsedPrefix]}" FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
                                     <TextBlock Text="{Binding GlobalElapsedText}" FontSize="11" FontFamily="Consolas" FontWeight="SemiBold" Foreground="#E0E0E0" VerticalAlignment="Center" />
                                     <TextBlock Text="  |  " FontSize="10" Foreground="#4E4E56" VerticalAlignment="Center" />
-                                    <TextBlock Text="ETA " FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Loc[XamlEtaPrefix]}" FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
                                     <TextBlock Text="{Binding GlobalEtaText}" FontSize="11" FontFamily="Consolas" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </Grid>
@@ -790,7 +854,7 @@
                             <Border Height="1" Background="#3E3E42" Margin="0,0,0,7" />
 
                             <!-- Status barovi za trenutni korak i sve paralelne korake -->
-                            <TextBlock Text="AKTIVNI KORACI" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,5" />
+                            <TextBlock Text="{Binding Loc[XamlActiveSteps]}" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,5" />
                             <ScrollViewer Tag="ActiveStepBarsScroll" MaxHeight="160" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                                 <ItemsControl ItemsSource="{Binding ActiveStepBars}">
                                     <ItemsControl.ItemTemplate>
@@ -838,10 +902,10 @@
                                                                     Margin="10,0,0,0"
                                                                     MinWidth="178"
                                                                     ToolTip="{Binding TimingTooltip}">
-                                                            <TextBlock Text="Traje " FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding DataContext.Loc[XamlElapsedPrefix], RelativeSource={RelativeSource AncestorType=Window}}" FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
                                                             <TextBlock Text="{Binding ElapsedText}" FontSize="10" FontFamily="Consolas" FontWeight="SemiBold" Foreground="#CCCCCC" VerticalAlignment="Center" />
                                                             <TextBlock Text="  |  " FontSize="10" Foreground="#4E4E56" VerticalAlignment="Center" />
-                                                            <TextBlock Text="ETA " FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
+                                                            <TextBlock Text="{Binding DataContext.Loc[XamlEtaPrefix], RelativeSource={RelativeSource AncestorType=Window}}" FontSize="10" Foreground="#888888" VerticalAlignment="Center" />
                                                             <TextBlock Text="{Binding EtaText}" FontSize="10" FontFamily="Consolas" FontWeight="SemiBold" Foreground="#4EC9B0" VerticalAlignment="Center" />
                                                         </StackPanel>
                                                     </Grid>
@@ -1709,12 +1773,12 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <WrapPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                                    <TextBlock Text="DETALJAN HARDVER MONITOR" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding Loc[XamlHwMonitorDetailTitle]}" FontSize="12" FontWeight="Bold" Foreground="#4EC9B0" VerticalAlignment="Center" />
                                     <TextBlock Text="{Binding ThermalSensorStatus}" FontSize="11" FontWeight="SemiBold" Foreground="{Binding ThermalSensorStatusBrush}" VerticalAlignment="Center" Margin="14,0,0,0" />
                                     <TextBlock Text="{Binding HwSystemStatsText}" FontSize="11" FontFamily="Consolas" Foreground="#AAAAAA" VerticalAlignment="Center" Margin="14,0,0,0" />
                                 </WrapPanel>
                                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                    <Button Content="↺ Reset Min/Max"
+                                    <Button Content="{Binding Loc[BtnResetMinMax]}"
                                             Command="{Binding ResetCoreClocksCommand}"
                                             Background="#2D2D30" Foreground="#CCCCCC" BorderBrush="#3E3E42" BorderThickness="1"
                                             Padding="10,5" Margin="0,0,8,0" FontSize="11" FontWeight="SemiBold" Cursor="Hand" />
@@ -1778,7 +1842,7 @@
                             <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="12,10" Margin="0,0,8,0">
                                 <StackPanel>
                                     <Grid>
-                                        <TextBlock Text="DISK / SSD" FontSize="10" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Loc[XamlHwMonitorDiskSsd]}" FontSize="10" FontWeight="Bold" Foreground="#888888" />
                                         <TextBlock Text="{Binding SsdTempShortText}" FontSize="12" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding SsdTempBrush}" HorizontalAlignment="Right" />
                                     </Grid>
                                     <TextBlock Text="{Binding DiskWearText}" FontSize="15" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding SmartStatusBrush}" Margin="0,4,0,6" TextTrimming="CharacterEllipsis" />
@@ -1791,7 +1855,7 @@
                             <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="12,10">
                                 <StackPanel ToolTip="{Binding PowerMonitorTooltip}">
                                     <Grid>
-                                        <TextBlock Text="NAPAJANJE" FontSize="10" FontWeight="Bold" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Loc[XamlHwMonitorPower]}" FontSize="10" FontWeight="Bold" Foreground="#888888" />
                                         <TextBlock Text="{Binding BatteryChargePercent, StringFormat='{}{0}%'}" FontSize="11" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding PowerStatusBrush}" HorizontalAlignment="Right" Visibility="{Binding HasBatteryLive, Converter={StaticResource BoolToVis}}" />
                                     </Grid>
                                     <TextBlock Text="{Binding PowerDrawText}" FontSize="15" FontWeight="Bold" FontFamily="Consolas" Foreground="{Binding PowerDrawBrush}" Margin="0,4,0,6" TextTrimming="CharacterEllipsis" />
@@ -1891,7 +1955,7 @@
                             <!-- LEVA KOLONA: DETALJNI SENZORI (TRENUTNO / MIN / MAX) -->
                             <Border Grid.Column="0" Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,12">
                                 <StackPanel>
-                                    <TextBlock Text="DETALJNI SENZORI (MIN / TRENUTNO / MAX)" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,8" />
+                                    <TextBlock Text="{Binding Loc[XamlHwMonitorSensorsTitle]}" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,8" />
 
                                     <Border Background="#1E1E1E" BorderBrush="#3E3E42" BorderThickness="1,1,1,0" CornerRadius="4,4,0,0" Padding="10,6">
                                         <Grid>
@@ -1901,10 +1965,10 @@
                                                 <ColumnDefinition Width="1*" />
                                                 <ColumnDefinition Width="1*" />
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="Senzor / Parametar" FontSize="10" FontWeight="Bold" Foreground="#888888" />
-                                            <TextBlock Grid.Column="1" Text="Trenutno" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
-                                            <TextBlock Grid.Column="2" Text="Min" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
-                                            <TextBlock Grid.Column="3" Text="Max" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
+                                            <TextBlock Grid.Column="0" Text="{Binding Loc[XamlHwMonitorSensorParam]}" FontSize="10" FontWeight="Bold" Foreground="#888888" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Loc[XamlHwMonitorCurrent]}" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
+                                            <TextBlock Grid.Column="2" Text="{Binding Loc[XamlHwMonitorMin]}" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
+                                            <TextBlock Grid.Column="3" Text="{Binding Loc[XamlHwMonitorMax]}" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Right" />
                                         </Grid>
                                     </Border>
 
@@ -1988,32 +2052,32 @@
                                 <!-- KARTICA: PODSISTEMI — NAPAJANJE, SSD S.M.A.R.T. I MEMORIJA -->
                                 <Border Background="#252526" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Padding="14,12">
                                     <StackPanel>
-                                        <TextBlock Text="PODSISTEMI — NAPAJANJE, SSD S.M.A.R.T. I MEMORIJA" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,8" />
+                                        <TextBlock Text="{Binding Loc[XamlHwMonitorSubsystemsTitle]}" FontSize="11" FontWeight="Bold" Foreground="#4EC9B0" Margin="0,0,0,8" />
 
                                         <Grid Margin="0,2">
-                                            <TextBlock Text="Memorija (RAM / Commit):" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding Loc[XamlHwMonitorMemoryCommit]}" FontSize="11" Foreground="#888888" />
                                             <TextBlock Text="{Binding HwRamCommitText}" HorizontalAlignment="Right" FontSize="11" FontFamily="Consolas" FontWeight="SemiBold" Foreground="#FFFFFF" />
                                         </Grid>
                                         <Grid Margin="0,2">
-                                            <TextBlock Text="SSD S.M.A.R.T. / TBW:" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding Loc[XamlHwMonitorSsdSmartTbw]}" FontSize="11" Foreground="#888888" />
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                                 <TextBlock Text="{Binding SmartStatus}" FontSize="11" FontWeight="Bold" Foreground="{Binding SmartStatusBrush}" />
                                                 <TextBlock Text="{Binding DiskTbw, StringFormat=' • TBW: {0}'}" FontSize="11" Foreground="#CCCCCC" />
                                             </StackPanel>
                                         </Grid>
                                         <Grid Margin="0,2">
-                                            <TextBlock Text="Realocirani sektori / Upozorenja:" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding Loc[XamlHwMonitorReallocWarnings]}" FontSize="11" Foreground="#888888" />
                                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                                                 <TextBlock Text="{Binding ReallocatedSectors}" FontSize="11" FontFamily="Consolas" Foreground="#FFFFFF" />
                                                 <TextBlock Text="{Binding CriticalWarnings, StringFormat=' / {0}'}" FontSize="11" FontFamily="Consolas" Foreground="#FFFFFF" />
                                             </StackPanel>
                                         </Grid>
                                         <Grid Margin="0,2">
-                                            <TextBlock Text="Baterija zdravlje / Ciklusi:" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding Loc[XamlHwMonitorBatteryHealthCycles]}" FontSize="11" Foreground="#888888" />
                                             <TextBlock Text="{Binding HwPowerSubText}" HorizontalAlignment="Right" FontSize="11" FontWeight="SemiBold" Foreground="{Binding BatteryHealthBrush}" />
                                         </Grid>
                                         <Grid Margin="0,2">
-                                            <TextBlock Text="Mrežni protok:" FontSize="11" Foreground="#888888" />
+                                            <TextBlock Text="{Binding Loc[XamlHwMonitorNetThroughput]}" FontSize="11" Foreground="#888888" />
                                             <TextBlock Text="{Binding HwNetRateText}" HorizontalAlignment="Right" FontSize="11" FontFamily="Consolas" Foreground="#4EC9B0" />
                                         </Grid>
                                         <Grid Margin="0,2">
@@ -2535,6 +2599,7 @@
                 </ScrollViewer>
             </TabItem>
         </TabControl>
+        </Grid>
 
         <!-- ========================================================= -->
         <!-- DONJA TRAKA ZA AKCIJE: Pauza, Preskoči, Odloži restart   -->
@@ -2562,7 +2627,7 @@
                 <TextBlock Tag="FooterCopyrightText"
                            Grid.Column="0"
                            Grid.ColumnSpan="2"
-                           Text="Razvija i održava IG-Systems. Sva prava zadržana"
+                           Text="{Binding Loc[XamlFooterCopyright]}"
                            FontSize="11"
                            Foreground="#888888"
                            HorizontalAlignment="Center"
@@ -2575,21 +2640,21 @@
                     <!-- 0. Kontekstualna traka za oporavak kad je neka faza pala (_failedPhase > 0) -->
                     <StackPanel Tag="FailedPhaseRecoveryPanel" Orientation="Horizontal" Visibility="Collapsed" Margin="0,0,8,0">
                         <Button Tag="BtnFailedPhaseRecheck"
-                                Content="Proveri ponovo i nastavi"
+                                Content="{Binding Loc[XamlBtnFailedPhaseRecheck]}"
                                 Background="#1F6FEB" Foreground="#FFFFFF" FontWeight="Bold" FontSize="11"
                                 BorderBrush="#388BFD" BorderThickness="1"
                                 Padding="12,6"
                                 Margin="0,0,6,0"
                                 Cursor="Hand" />
                         <Button Tag="BtnFailedPhaseRetry"
-                                Content="Ponovi Fazu"
+                                Content="{Binding Loc[XamlBtnFailedPhaseRetry]}"
                                 Background="#D29922" Foreground="#111111" FontWeight="Bold" FontSize="11"
                                 BorderBrush="#E3B341" BorderThickness="1"
                                 Padding="12,6"
                                 Margin="0,0,6,0"
                                 Cursor="Hand" />
                         <Button Tag="BtnFailedPhaseSkip"
-                                Content="Preskoči na sledeću fazu"
+                                Content="{Binding Loc[XamlBtnFailedPhaseSkip]}"
                                 Background="#21262D" Foreground="#FFFFFF" FontWeight="SemiBold" FontSize="11"
                                 BorderBrush="#DA3633" BorderThickness="1"
                                 Padding="12,6"
@@ -2670,7 +2735,7 @@
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,3">
                                         <TextBlock Text="SN: " FontSize="11" Foreground="#888888" />
                                         <TextBlock Text="{Binding SerialNumber}" FontSize="11" FontWeight="SemiBold" Foreground="#CCCCCC" />
-                                        <TextBlock Text="  •  Programi: " FontSize="11" Foreground="#888888" />
+                                        <TextBlock Text="{Binding Loc[RbtProgramsPrefix]}" FontSize="11" Foreground="#888888" />
                                         <TextBlock Text="{Binding AppsSummaryText}" FontSize="11" FontWeight="SemiBold" Foreground="#58A6FF" />
                                     </StackPanel>
                                     <TextBlock Text="{Binding CompletionAlertsSummaryText}"
@@ -2682,7 +2747,7 @@
                                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                                     <Border Background="#1E1E1E" BorderBrush="#333338" BorderThickness="1" CornerRadius="5" Padding="12,6" Margin="12,0,8,0">
                                         <StackPanel HorizontalAlignment="Center">
-                                            <TextBlock Text="TRAJANJE" FontSize="9" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" />
+                                            <TextBlock Text="{Binding Loc[RbtDurationHeader]}" FontSize="9" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" />
                                             <TextBlock Text="{Binding DurationString}" FontSize="15" FontWeight="Bold" FontFamily="Consolas" Foreground="#4EC9B0" Margin="0,1,0,0" HorizontalAlignment="Center" />
                                         </StackPanel>
                                     </Border>
@@ -2744,7 +2809,7 @@
                                                         <ColumnDefinition Width="125" />
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="Disk" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewDiskLabel]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                     <TextBlock Grid.Column="1" Text="{Binding DiskInfo}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding DiskInfo}" />
                                                 </Grid>
                                             </Border>
@@ -2754,7 +2819,7 @@
                                                         <ColumnDefinition Width="125" />
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="Rezolucija ekrana" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewScreenResolution]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                     <TextBlock Grid.Column="1" Text="{Binding HardwareInfo.OverviewResolution}" FontSize="11" FontWeight="SemiBold" Foreground="#FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding HardwareInfo.OverviewResolutionTooltip}" />
                                                 </Grid>
                                             </Border>
@@ -2784,7 +2849,7 @@
                                                         <ColumnDefinition Width="125" />
                                                         <ColumnDefinition Width="*" />
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Grid.Column="0" Text="Battery wear" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
+                                                    <TextBlock Grid.Column="0" Text="{Binding Loc[XamlOverviewBatteryWear]}" FontSize="11" Foreground="#888888" VerticalAlignment="Center" />
                                                     <TextBlock Grid.Column="1" Text="{Binding HardwareInfo.BatteryWear}" FontSize="11" FontWeight="SemiBold" Foreground="{Binding HardwareInfo.BatteryHealthBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding HardwareInfo.BatteryWear}" />
                                                 </Grid>
                                             </Border>
@@ -2792,7 +2857,7 @@
 
                                         <Border Grid.Row="1" BorderBrush="#333338" BorderThickness="0,1,0,0" Margin="0,8,0,0" Padding="0,8,0,0">
                                             <StackPanel>
-                                                <TextBlock Text="DODATNE PERIFERIJE" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
+                                                <TextBlock Text="{Binding Loc[RbtExtraPeripheralsHeader]}" FontSize="10" FontWeight="Bold" Foreground="#888888" Margin="0,0,0,8" />
                                                 <ItemsControl ItemsSource="{Binding HardwareInfo.OverviewPeripherals}">
                                                     <ItemsControl.ItemsPanel>
                                                         <ItemsPanelTemplate>
@@ -2827,14 +2892,14 @@
                                     <!-- QR KOD KARTONA -->
                                     <Border Grid.Row="0" Background="#1E1E1E" BorderBrush="#333338" BorderThickness="1" CornerRadius="6" Padding="12,10">
                                         <StackPanel>
-                                            <TextBlock Text="KARTON UREĐAJA (SERVISHUB)" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" />
+                                            <TextBlock Text="{Binding Loc[RbtDeviceCardHeader]}" FontSize="10" FontWeight="Bold" Foreground="#888888" HorizontalAlignment="Center" />
                                             <Viewbox StretchDirection="DownOnly" HorizontalAlignment="Center" Margin="0,6,0,6">
                                                 <Grid>
                                                     <Border Background="#FFFFFF" CornerRadius="6" Padding="8" Visibility="{Binding HasDeviceCardQr, Converter={StaticResource BoolToVis}}">
                                                         <Image Source="{Binding DeviceCardQrImage}" Width="168" Height="168" Stretch="Uniform" RenderOptions.BitmapScalingMode="NearestNeighbor" />
                                                     </Border>
                                                     <Border Background="#252528" BorderBrush="#3E3E42" BorderThickness="1" CornerRadius="6" Width="168" Height="168" Padding="12" Visibility="{Binding ShowDeviceCardQrPlaceholder, Converter={StaticResource BoolToVis}}">
-                                                        <TextBlock Text="QR kod će se pojaviti kada se otkrije ServisHub..." FontSize="11" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" />
+                                                        <TextBlock Text="{Binding Loc[RbtQrPlaceholder]}" FontSize="11" Foreground="#888888" TextWrapping="Wrap" TextAlignment="Center" VerticalAlignment="Center" />
                                                     </Border>
                                                 </Grid>
                                             </Viewbox>
@@ -2852,7 +2917,7 @@
                                             </Grid.RowDefinitions>
 
                                             <Grid Grid.Row="0" Margin="0,0,0,8">
-                                                <TextBlock Text="UPOZORENJA SA KOJIMA JE PROCES ZAVRŠEN" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding Loc[RbtWarningsHeader]}" FontSize="10" FontWeight="Bold" Foreground="#888888" VerticalAlignment="Center" />
                                                 <Border Background="{Binding OverviewAlertsBadgeBrush}" CornerRadius="9" Padding="7,1" HorizontalAlignment="Right" VerticalAlignment="Center">
                                                     <TextBlock Text="{Binding OverviewAlertsCountText}" FontSize="10" FontWeight="Bold" Foreground="#FFFFFF" />
                                                 </Border>
@@ -2891,8 +2956,8 @@
                                                 <Border Background="#1B2A21" BorderBrush="#2D5A3F" BorderThickness="1" CornerRadius="4" Padding="10,8" VerticalAlignment="Center"
                                                         Visibility="{Binding ShowNoOverviewAlerts, Converter={StaticResource BoolToVis}}">
                                                     <StackPanel>
-                                                        <TextBlock Text="✓ Proces završen bez upozorenja" FontSize="11" FontWeight="SemiBold" Foreground="#2ECC71" />
-                                                        <TextBlock Text="Temperature, Autopilot, drajveri, programi i hardver su u normalnom stanju." FontSize="10" Foreground="#A8C5B4" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                        <TextBlock Text="{Binding Loc[RbtNoWarningsTitle]}" FontSize="11" FontWeight="SemiBold" Foreground="#2ECC71" />
+                                                        <TextBlock Text="{Binding Loc[RbtNoWarningsDesc]}" FontSize="10" Foreground="#A8C5B4" TextWrapping="Wrap" Margin="0,2,0,0" />
                                                     </StackPanel>
                                                 </Border>
                                             </Grid>
@@ -2918,6 +2983,109 @@
                                         Margin="6,5"
                                         Cursor="Hand" />
                                 <Button Content="{Binding Loc[BtnStayInApp]}" Command="{Binding CancelShutdownCommand}" Style="{StaticResource AccentButtonStyle}" Padding="16,10" Margin="6,5" Cursor="Hand" ToolTip="{Binding Loc[TooltipStayInApp]}" />
+                            </WrapPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+        </Border>
+
+        <!-- ========================================================= -->
+        <!-- EKRANSKO UPOZORENJE ZA OBAVEZNE INTERAKTIVNE TESTOVE      -->
+        <!-- ========================================================= -->
+        <Border Tag="PendingInteractiveTestsOverlay"
+                Grid.Row="0" Grid.RowSpan="3"
+                Background="#EB121214"
+                Visibility="Collapsed"
+                Panel.ZIndex="90">
+            <Grid>
+                <Border Background="#1F1912"
+                        BorderBrush="#F39C12"
+                        BorderThickness="2"
+                        CornerRadius="10"
+                        MinWidth="680"
+                        MaxWidth="940"
+                        Margin="24"
+                        Padding="26,22"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Center">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel>
+                            <Border Background="#F39C12" CornerRadius="4" Padding="10,4" HorizontalAlignment="Left">
+                                <TextBlock Tag="PendingOverlayBadgeText"
+                                           Text="{Binding Loc[XamlPendingOverlayBadge]}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Foreground="#111111" />
+                            </Border>
+                            <TextBlock Tag="PendingOverlayTitleText"
+                                       Text="{Binding Loc[XamlPendingOverlayTitle]}"
+                                       FontSize="20"
+                                       FontWeight="Bold"
+                                       Foreground="#FFB74D"
+                                       TextWrapping="Wrap"
+                                       Margin="0,10,0,6" />
+                            <TextBlock Tag="PendingOverlaySubtitleText"
+                                       Text="{Binding Loc[XamlPendingOverlaySubtitle]}"
+                                       FontSize="13"
+                                       Foreground="#F2E6D8"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,14" />
+                            <Border Background="#16120D"
+                                    BorderBrush="#D97706"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="14,12"
+                                    Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Tag="PendingOverlayCountText"
+                                               Text="{Binding Loc[XamlPendingOverlayCount]}"
+                                               FontSize="13"
+                                               FontWeight="Bold"
+                                               Foreground="#FBBF24"
+                                               Margin="0,0,0,8" />
+                                    <TextBlock Tag="PendingOverlayListText"
+                                               Text=""
+                                               FontSize="12.5"
+                                               Foreground="#FFFFFF"
+                                               TextWrapping="Wrap"
+                                               LineHeight="20" />
+                                </StackPanel>
+                            </Border>
+                            <WrapPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,4,0,0">
+                                <Button Tag="BtnPendingStartTests"
+                                        Content="{Binding Loc[XamlBtnPendingStartTests]}"
+                                        Background="#E67E22"
+                                        Foreground="#111111"
+                                        BorderBrush="#F5B041"
+                                        BorderThickness="1.5"
+                                        FontSize="14"
+                                        FontWeight="Bold"
+                                        Padding="20,11"
+                                        Margin="6,4"
+                                        Cursor="Hand" />
+                                <Button Tag="BtnPendingBrowseTabs"
+                                        Content="{Binding Loc[XamlBtnPendingBrowseTabs]}"
+                                        Background="#2D2D30"
+                                        Foreground="#FFFFFF"
+                                        BorderBrush="#66666E"
+                                        BorderThickness="1"
+                                        FontSize="13"
+                                        FontWeight="SemiBold"
+                                        Padding="16,11"
+                                        Margin="6,4"
+                                        Cursor="Hand" />
+                                <Button Tag="BtnPendingEmergencySkip"
+                                        Content="{Binding Loc[XamlBtnEmergencySkip]}"
+                                        Background="#2A1616"
+                                        Foreground="#F5B7B1"
+                                        BorderBrush="#C0392B"
+                                        BorderThickness="1"
+                                        FontSize="12"
+                                        FontWeight="SemiBold"
+                                        Padding="14,11"
+                                        Margin="6,4"
+                                        Cursor="Hand" />
                             </WrapPanel>
                         </StackPanel>
                     </ScrollViewer>

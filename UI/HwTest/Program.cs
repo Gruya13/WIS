@@ -49,6 +49,7 @@ namespace WIS.HwTest
             string sku = "";
             string hubUrl = "";
             string lang = "sr";
+            bool langExplicit = false;
             bool standalone = false;
             bool hasExplicitOut = false;
 
@@ -84,6 +85,12 @@ namespace WIS.HwTest
                 else if (arg.Equals("--lang", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                 {
                     lang = args[++i];
+                    langExplicit = true;
+                }
+                else if (arg.StartsWith("--lang=", StringComparison.OrdinalIgnoreCase))
+                {
+                    lang = arg.Substring(7);
+                    langExplicit = true;
                 }
                 else if (arg.Equals("--standalone", StringComparison.OrdinalIgnoreCase))
                 {
@@ -94,6 +101,11 @@ namespace WIS.HwTest
             if (!hasExplicitOut)
             {
                 standalone = true;
+            }
+
+            if (langExplicit)
+            {
+                HwTestLocalization.SetLanguage(lang);
             }
 
             ModelProfileClient bootClient = new ModelProfileClient(string.IsNullOrEmpty(hubUrl) ? null : hubUrl);

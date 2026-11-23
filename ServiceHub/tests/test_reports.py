@@ -12,6 +12,8 @@ import unittest
 from servishub.reports import (
     _extract_license_summary,
     _mask_license_keys,
+    _sanitize_report_license_fields,
+    compute_handover_status,
     generate_markdown_report,
     save_device_report,
 )
@@ -263,6 +265,103 @@ class TestReports(unittest.TestCase):
         self.assertIn("*****-*****-*****-*****-9Z8X7", saved_json["office_license_detail"])
         self.assertIn("*****-*****-*****-*****-KLMNO", saved_json["licenses"]["office_license_detail"])
         self.assertIn("*****-*****-*****-*****-9Z8X7", saved_md)
+
+    def test_v343_02_windows_license_fields_extraction_masking_and_markdown(self):
+        """V343-02: Nova Windows polja licenciranja se čitaju, maskiraju i prikazuju u Markdown izveštaju."""
+        win_key = "W269N-WFGWX-YVC9B-4J6C9-T83GX"
+        extra_key = "NPPR9-FWDCX-D2C8J-H872K-2YT43"
+        payload = {
+            "device_id": "TK-MINI-PC-YJ02G0RF",
+            "computer_name": "DESKTOP-B9UQHQL",
+            "status": "COMPLETED",
+            "windows_activated": False,
+            "windows_oa3_present": False,
+            "windows_edition": "Windows 11 Pro",
+            "windows_license_method": "KMS",
+            "windows_license_detail": f"slmgr /ipk {win_key} -> 0xC004F074 KMS unreachable",
+            "windows_product_key": extra_key,
+            "office_installed": True,
+            "office_activated": False,
+            "office_activation_mode": "Auto",
+            "office_license_method": "KMS",
+            "office_license_detail": "0x4004F00C",
+        }
+
+        summary = _extract_license_summary(payload)
+        self.assertIsNotNone(summary)
+        self.assertFalse(summary["windows_activated"])
+        self.assertFalse(summary["windows_oa3_present"])
+        self.assertEqual(summary["windows_edition"], "Windows 11 Pro")
+        self.assertEqual(summary["windows_license_method"], "KMS")
+        self.assertNotIn(win_key, summary["windows_license_detail"])
+        self.assertIn("*****-*****-*****-*****-T83GX", summary["windows_license_detail"])
+
+        sanitized = _sanitize_report_license_fields(payload)
+        self.assertNotIn(win_key, sanitized["windows_license_detail"])
+        self.assertNotIn(extra_key, sanitized["windows_product_key"])
+        self.assertEqual(sanitized["windows_product_key"], "*****-*****-*****-*****-2YT43")
+
+        md = generate_markdown_report(payload)
+        self.assertIn("- **Windows Status:** ⚠️ Nije aktiviran", md)
+        self.assertIn("- **Windows Edicija:** Windows 11 Pro", md)
+        self.assertIn("- **BIOS OA3x OEM Ključ:** Nije pronađen", md)
+        self.assertIn("- **Metod Aktivacije (Windows):** KMS", md)
+        self.assertIn("- **Detalji Licenciranja (Windows):** slmgr /ipk *****-*****-*****-*****-T83GX -> 0xC004F074 KMS unreachable", md)
+        self.assertNotIn(win_key, md)
+
+        j_fp, m_fp, _, _ = save_device_report("TK-MINI-PC-YJ02G0RF", payload, self.test_dir)
+        with open(j_fp, "r", encoding="utf-8") as jf:
+            raw_json = jf.read()
+        with open(m_fp, "r", encoding="utf-8") as mf:
+            raw_md = mf.read()
+        self.assertNotIn(win_key, raw_json)
+        self.assertNotIn(extra_key, raw_json)
+        self.assertNotIn(win_key, raw_md)
+
+    def test_v343_03_skipped_interactive_vs_automated_hwtest(self):
+        """V343-03: Preskočeni interaktivni testovi daju NEEDS_SERVICE i ⚠️ NEPOTPUNO; samo automatski SKIP zadržava READY_WITH_NOTE."""
+        rec_interactive_skip = {
+            "device_id": "TK-LAPTOP-PW0LPRLT",
+            "status": "COMPLETED",
+            "diagnostics_status": "OK",
+            "cooling_verified": True,
+            "manual_check_required": False,
+            "hwtest": {
+                "summary": {"overall": "PASS_WITH_SKIP", "pass": 7, "fail": 0, "skip": 2, "na": 1},
+                "tests": [
+                    {"id": "auto_cpu", "automated": True, "status": "PASS"},
+                    {"id": "display", "automated": False, "status": "SKIP", "reason": "Timeout"},
+                    {"id": "keyboard", "automated": False, "status": "PENDING"},
+                ],
+            },
+        }
+        self.assertEqual(compute_handover_status(rec_interactive_skip), "NEEDS_SERVICE")
+        md_skip = generate_markdown_report(rec_interactive_skip)
+        self.assertIn("- **Status Predaje (Handover):** `NEEDS_SERVICE`", md_skip)
+        self.assertIn("- **Ukupan Ishod:** ⚠️ NEPOTPUNO (preskočeni interaktivni testovi)", md_skip)
+        self.assertIn("| `keyboard` | ⏳ PENDING |", md_skip)
+        self.assertNotIn("- **Ukupan Ishod:** ✅ PASS", md_skip)
+
+        # Ako je preskočen samo automatski test (npr. auto_gpu), zadržava se READY_WITH_NOTE i ✅ PASS
+        rec_auto_skip_only = {
+            "device_id": "TK-LAPTOP-AUTO01",
+            "status": "COMPLETED",
+            "diagnostics_status": "OK",
+            "cooling_verified": True,
+            "manual_check_required": False,
+            "hwtest": {
+                "summary": {"overall": "PASS_WITH_SKIP", "pass": 13, "fail": 0, "skip": 1, "na": 0},
+                "tests": [
+                    {"id": "auto_gpu", "automated": True, "status": "SKIP", "reason": "Driver nije spreman"},
+                    {"id": "display", "automated": False, "status": "PASS"},
+                    {"id": "keyboard", "automated": False, "status": "PASS"},
+                ],
+            },
+        }
+        self.assertEqual(compute_handover_status(rec_auto_skip_only), "READY_WITH_NOTE")
+        md_auto = generate_markdown_report(rec_auto_skip_only)
+        self.assertIn("- **Status Predaje (Handover):** `READY_WITH_NOTE`", md_auto)
+        self.assertIn("- **Ukupan Ishod:** ✅ PASS", md_auto)
 
 
 if __name__ == "__main__":

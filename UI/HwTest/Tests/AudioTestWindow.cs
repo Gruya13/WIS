@@ -52,13 +52,15 @@ namespace WIS.HwTest.Tests
 
         public AudioTestWindow()
         {
-            Title = "WIS — Test Zvuka (Levi i Desni Zvučnik)";
+            Title = HwTestLocalization.Pick("WIS — Test Zvuka (Levi i Desni Zvučnik)", "WIS — 音频测试（左/右声道扬声器）");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Background = new SolidColorBrush(Color.FromRgb(24, 24, 28));
             Topmost = true;
 
-            Result = new TestItemResult("audio", "Zvuk (Levi / Desni kanal)", "Test nezavisnih stereo kanala zvučnika izgovorom nasumičnih cifara");
+            Result = new TestItemResult("audio",
+                HwTestLocalization.Pick("Zvuk (Levi / Desni kanal)", "音频（左/右声道）"),
+                HwTestLocalization.Pick("Test nezavisnih stereo kanala zvučnika izgovorom nasumičnih cifara", "通过随机数字语音测试左右独立立体声扬声器声道"));
 
             // Izbor nasumičnih cifara
             Random rnd = new Random();
@@ -90,7 +92,7 @@ namespace WIS.HwTest.Tests
             StackPanel spH = new StackPanel();
             TextBlock title = new TextBlock
             {
-                Text = "🔊 TEST STEREO ZVUČNIKA (LEVI I DESNI KANAL)",
+                Text = HwTestLocalization.Pick("🔊 TEST STEREO ZVUČNIKA (LEVI I DESNI KANAL)", "🔊 立体声扬声器测试（左/右声道）"),
                 FontSize = 18,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176))
@@ -100,7 +102,7 @@ namespace WIS.HwTest.Tests
             StackPanel spCh = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
             _statusLeft = new TextBlock
             {
-                Text = "Levi zvučnik: ⏳ Čeka",
+                Text = HwTestLocalization.Pick("Levi zvučnik: ⏳ Čeka", "左声道扬声器: ⏳ 等待中"),
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold,
@@ -108,7 +110,7 @@ namespace WIS.HwTest.Tests
             };
             _statusRight = new TextBlock
             {
-                Text = "Desni zvučnik: ⏳ Čeka",
+                Text = HwTestLocalization.Pick("Desni zvučnik: ⏳ Čeka", "右声道扬声器: ⏳ 等待中"),
                 Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 170)),
                 FontSize = 14,
                 FontWeight = FontWeights.SemiBold
@@ -135,7 +137,7 @@ namespace WIS.HwTest.Tests
             StackPanel spCenter = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
             _speakerIndicator = new TextBlock
             {
-                Text = "🎵 PROVERA KVALITETA ZVUKA (30% → 100%)",
+                Text = HwTestLocalization.Pick("🎵 PROVERA KVALITETA ZVUKA (30% → 100%)", "🎵 音质检查（音量 30% → 100%）"),
                 FontSize = 24,
                 FontWeight = FontWeights.ExtraBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
@@ -146,7 +148,8 @@ namespace WIS.HwTest.Tests
 
             _subInstruction = new TextBlock
             {
-                Text = "Slušajte melodiju (8 sekundi) — jačina ide od 30% do 100% i ostaje na maksimumu ~3.5s:",
+                Text = HwTestLocalization.Pick("Slušajte melodiju (8 sekundi) — jačina ide od 30% do 100% i ostaje na maksimumu ~3.5s:",
+                    "请聆听测试旋律（8 秒）— 音量将从 30% 升至 100% 并在最大音量保持约 3.5 秒："),
                 FontSize = 15,
                 Foreground = Brushes.White,
                 TextAlignment = TextAlignment.Center,
@@ -164,7 +167,7 @@ namespace WIS.HwTest.Tests
             };
             _musicVolumeText = new TextBlock
             {
-                Text = "🔊 Jačina zvuka: 30%",
+                Text = HwTestLocalization.Pick("🔊 Jačina zvuka: 30%", "🔊 音量: 30%"),
                 FontSize = 20,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)),
@@ -192,7 +195,7 @@ namespace WIS.HwTest.Tests
             };
             _btnMusicPass = new Button
             {
-                Content = "✓ Zvuk čist (PASS) — Nastavi na L/D",
+                Content = HwTestLocalization.Pick("✓ Zvuk čist (PASS) — Nastavi na L/D", "✓ 音质清晰 (PASS) — 继续左右声道测试"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -206,19 +209,19 @@ namespace WIS.HwTest.Tests
 
             Button btnCrackleFail = new Button
             {
-                Content = "❌ Zvučnici krče (FAIL)",
+                Content = HwTestLocalization.Pick("❌ Zvučnici krče (FAIL)", "❌ 扬声器破音/杂音 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
                 Padding = new Thickness(14, 10, 14, 10),
                 Margin = new Thickness(4)
             };
-            btnCrackleFail.Click += (s, e) => FinishFail("Zvučnici krče ili izobličavaju zvuk (30-100%).");
+            btnCrackleFail.Click += (s, e) => FinishFail(HwTestLocalization.Pick("Zvučnici krče ili izobličavaju zvuk (30-100%).", "扬声器存在破音或失真 (30-100%)。"));
             spMusicBtns.Children.Add(btnCrackleFail);
 
             _btnReplayMusic = new Button
             {
-                Content = "🔁 Pusti ponovo",
+                Content = HwTestLocalization.Pick("🔁 Pusti ponovo", "🔁 重新播放"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -250,7 +253,7 @@ namespace WIS.HwTest.Tests
             // Replay Button
             _btnReplay = new Button
             {
-                Content = "🔁 Ponovi izgovor broja (preostalo: 1)",
+                Content = HwTestLocalization.Pick("🔁 Ponovi izgovor broja (preostalo: 1)", "🔁 重播数字语音（剩余: 1 次）"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
@@ -276,14 +279,14 @@ namespace WIS.HwTest.Tests
 
             Button btnFooterFail = new Button
             {
-                Content = "❌ Zvučnici krče / ne rade (FAIL)",
+                Content = HwTestLocalization.Pick("❌ Zvučnici krče / ne rade (FAIL)", "❌ 扬声器破音 / 无声 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontWeight = FontWeights.Bold,
                 Padding = new Thickness(15, 8, 15, 8),
                 HorizontalAlignment = HorizontalAlignment.Left
             };
-            btnFooterFail.Click += (s, e) => FinishFail("Tehničar označio neispravne/krčeće zvučnike.");
+            btnFooterFail.Click += (s, e) => FinishFail(HwTestLocalization.Pick("Tehničar označio neispravne/krčeće zvučnike.", "技术员标记扬声器故障或存在破音。"));
             Grid.SetColumn(btnFooterFail, 0);
             fgFooter.Children.Add(btnFooterFail);
 
@@ -401,10 +404,11 @@ namespace WIS.HwTest.Tests
             _btnReplay.Visibility = Visibility.Collapsed;
             _btnMusicPass.IsEnabled = false;
             _btnMusicPass.Opacity = 0.45;
-            _speakerIndicator.Text = "🎵 PROVERA KVALITETA ZVUKA (30% → 100%)";
+            _speakerIndicator.Text = HwTestLocalization.Pick("🎵 PROVERA KVALITETA ZVUKA (30% → 100%)", "🎵 音质检查（音量 30% → 100%）");
             _speakerIndicator.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
-            _subInstruction.Text = "Slušajte melodiju (8 sekundi) — jačina ide od 30% do 100% i ostaje na maksimumu ~3.5s:";
-            _musicVolumeText.Text = "🔊 Jačina zvuka: 30% (pojačavanje...)";
+            _subInstruction.Text = HwTestLocalization.Pick("Slušajte melodiju (8 sekundi) — jačina ide od 30% do 100% i ostaje na maksimumu ~3.5s:",
+                "请聆听测试旋律（8 秒）— 音量将从 30% 升至 100% 并在最大音量保持约 3.5 秒：");
+            _musicVolumeText.Text = HwTestLocalization.Pick("🔊 Jačina zvuka: 30% (pojačavanje...)", "🔊 音量: 30%（正在提升...）");
             _musicProgressBar.Value = 30;
             SetMasterVolumeScalarSafe(0.30f);
 
@@ -441,8 +445,8 @@ namespace WIS.HwTest.Tests
                             lastPct = pct;
                             lastHolding = holding;
                             string label = holding
-                                ? "🔊 Jačina zvuka: 100% — Zadržavanje na maksimumu!"
-                                : string.Format("🔊 Jačina zvuka: {0}% (pojačavanje...)", pct);
+                                ? HwTestLocalization.Pick("🔊 Jačina zvuka: 100% — Zadržavanje na maksimumu!", "🔊 音量: 100% — 保持最大音量测试中！")
+                                : HwTestLocalization.PickFormat("🔊 Jačina zvuka: {0}% (pojačavanje...)", "🔊 音量: {0}%（正在提升...）", pct);
                             Dispatcher.BeginInvoke(new Action(() => {
                                 if (myGen == _musicGeneration && !_stopMusic)
                                 {
@@ -464,9 +468,10 @@ namespace WIS.HwTest.Tests
                     Dispatcher.BeginInvoke(new Action(() => {
                         if (myGen == _musicGeneration && !_stopMusic)
                         {
-                            _musicVolumeText.Text = "✅ Melodija završena (100% testirano) — Izaberite PASS ili FAIL:";
+                            _musicVolumeText.Text = HwTestLocalization.Pick("✅ Melodija završena (100% testirano) — Izaberite PASS ili FAIL:", "✅ 旋律测试完成（已完成 100% 音量测试）— 请选择 PASS 或 FAIL：");
                             _musicProgressBar.Value = 100;
-                            _subInstruction.Text = "Da li je zvuk čist na 100%? Kliknite PASS za nastavak na test levog/desnog kanala ili FAIL ako krči:";
+                            _subInstruction.Text = HwTestLocalization.Pick("Da li je zvuk čist na 100%? Kliknite PASS za nastavak na test levog/desnog kanala ili FAIL ako krči:",
+                                "100% 音量下声音是否清晰？清晰请点击 PASS 继续左右声道测试，若有破音请点击 FAIL：");
                             _btnMusicPass.IsEnabled = true;
                             _btnMusicPass.Opacity = 1.0;
                         }
@@ -697,11 +702,13 @@ namespace WIS.HwTest.Tests
             int digit = (_currentChannel == 0) ? _expectedLeftDigit : _expectedRightDigit;
             bool isLeft = (_currentChannel == 0);
 
-            _speakerIndicator.Text = isLeft ? "◀ SLUŠAJTE LEVI ZVUČNIK" : "SLUŠAJTE DESNI ZVUČNIK ▶";
+            _speakerIndicator.Text = isLeft
+                ? HwTestLocalization.Pick("◀ SLUŠAJTE LEVI ZVUČNIK", "◀ 请聆听左声道扬声器")
+                : HwTestLocalization.Pick("SLUŠAJTE DESNI ZVUČNIK ▶", "请聆听右声道扬声器 ▶");
             _speakerIndicator.Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176));
             _subInstruction.Text = isLeft
-                ? "Slušajte broj koji izgovara LEVI zvučnik i unesite ga ispod:"
-                : "Slušajte broj koji izgovara DESNI zvučnik i unesite ga ispod:";
+                ? HwTestLocalization.Pick("Slušajte broj koji izgovara LEVI zvučnik i unesite ga ispod:", "请听左声道扬声器播报的英文数字，并在下方输入：")
+                : HwTestLocalization.Pick("Slušajte broj koji izgovara DESNI zvučnik i unesite ga ispod:", "请听右声道扬声器播报的英文数字，并在下方输入：");
 
             PlayDigitPanned(digit, isLeft);
         }
@@ -713,7 +720,7 @@ namespace WIS.HwTest.Tests
                 if (_leftReplays >= 1) return;
                 _leftReplays++;
                 _btnReplay.IsEnabled = false;
-                _btnReplay.Content = "🔁 Ponovi izgovor (iskorišćeno)";
+                _btnReplay.Content = HwTestLocalization.Pick("🔁 Ponovi izgovor (iskorišćeno)", "🔁 重播数字语音（已用完）");
                 PlayCurrentChannel();
             }
             else
@@ -721,7 +728,7 @@ namespace WIS.HwTest.Tests
                 if (_rightReplays >= 1) return;
                 _rightReplays++;
                 _btnReplay.IsEnabled = false;
-                _btnReplay.Content = "🔁 Ponovi izgovor (iskorišćeno)";
+                _btnReplay.Content = HwTestLocalization.Pick("🔁 Ponovi izgovor (iskorišćeno)", "🔁 重播数字语音（已用完）");
                 PlayCurrentChannel();
             }
         }
@@ -865,13 +872,13 @@ namespace WIS.HwTest.Tests
                 _leftAttempts++;
                 if (digit == _expectedLeftDigit)
                 {
-                    _statusLeft.Text = string.Format("Levi zvučnik: ✓ Tačno ({0})", digit);
+                    _statusLeft.Text = HwTestLocalization.PickFormat("Levi zvučnik: ✓ Tačno ({0})", "左声道扬声器: ✓ 正确 ({0})", digit);
                     _statusLeft.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
 
                     // Prelazak na desni kanal
                     _currentChannel = 1;
                     _btnReplay.IsEnabled = true;
-                    _btnReplay.Content = "🔁 Ponovi izgovor broja (preostalo: 1)";
+                    _btnReplay.Content = HwTestLocalization.Pick("🔁 Ponovi izgovor broja (preostalo: 1)", "🔁 重播数字语音（剩余: 1 次）");
                     _statusRight.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                     PlayCurrentChannel();
                 }
@@ -879,11 +886,14 @@ namespace WIS.HwTest.Tests
                 {
                     if (_leftAttempts >= 2)
                     {
-                        FinishFail("Netačan broj za levi zvučnik.");
+                        FinishFail(HwTestLocalization.Pick("Netačan broj za levi zvučnik.", "左声道数字输入错误。"));
                     }
                     else
                     {
-                        MessageBox.Show("Netačan broj za levi zvučnik! Imate još jedan pokušaj.", "Upozorenje", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show(
+                            HwTestLocalization.Pick("Netačan broj za levi zvučnik! Imate još jedan pokušaj.", "左声道数字输入有误！您还有一次重试机会。"),
+                            HwTestLocalization.Pick("Upozorenje", "警告"),
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
                         PlayCurrentChannel();
                     }
                 }
@@ -893,7 +903,7 @@ namespace WIS.HwTest.Tests
                 _rightAttempts++;
                 if (digit == _expectedRightDigit)
                 {
-                    _statusRight.Text = string.Format("Desni zvučnik: ✓ Tačno ({0})", digit);
+                    _statusRight.Text = HwTestLocalization.PickFormat("Desni zvučnik: ✓ Tačno ({0})", "右声道扬声器: ✓ 正确 ({0})", digit);
                     _statusRight.Foreground = new SolidColorBrush(Color.FromRgb(40, 167, 69));
                     FinishPass();
                 }
@@ -901,11 +911,14 @@ namespace WIS.HwTest.Tests
                 {
                     if (_rightAttempts >= 2)
                     {
-                        FinishFail("Netačan broj za desni zvučnik.");
+                        FinishFail(HwTestLocalization.Pick("Netačan broj za desni zvučnik.", "右声道数字输入错误。"));
                     }
                     else
                     {
-                        MessageBox.Show("Netačan broj za desni zvučnik! Imate još jedan pokušaj.", "Upozorenje", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        MessageBox.Show(
+                            HwTestLocalization.Pick("Netačan broj za desni zvučnik! Imate još jedan pokušaj.", "右声道数字输入有误！您还有一次重试机会。"),
+                            HwTestLocalization.Pick("Upozorenje", "警告"),
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
                         PlayCurrentChannel();
                     }
                 }

@@ -2100,13 +2100,39 @@ namespace WIS.HwTest.Interop
             }
         }
 
-        public static bool IsLocationPolicyDisabled()
+        private static bool IsConsentLocationDenied(Microsoft.Win32.RegistryKey root, string subKey)
         {
+            if (root == null || string.IsNullOrEmpty(subKey)) return false;
             try
             {
+                using (Microsoft.Win32.RegistryKey consent = root.OpenSubKey(subKey, false))
+                {
+                    if (consent != null)
+                    {
+                        object v = consent.GetValue("Value");
+                        if (v != null && string.Equals(v.ToString().Trim(), "Deny", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public static bool IsLocationPolicyDisabled()
+        {
+            const string consentSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location";
+            const string consentNonPackagedSubKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged";
+            try
+            {
+                Microsoft.Win32.RegistryView regView = Environment.Is64BitOperatingSystem
+                    ? Microsoft.Win32.RegistryView.Registry64
+                    : Microsoft.Win32.RegistryView.Default;
+
                 using (Microsoft.Win32.RegistryKey hklm = Microsoft.Win32.RegistryKey.OpenBaseKey(
-                    Microsoft.Win32.RegistryHive.LocalMachine,
-                    Environment.Is64BitOperatingSystem ? Microsoft.Win32.RegistryView.Registry64 : Microsoft.Win32.RegistryView.Default))
+                    Microsoft.Win32.RegistryHive.LocalMachine, regView))
                 {
                     using (Microsoft.Win32.RegistryKey locPol = hklm.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors", false))
                     {
@@ -2140,16 +2166,20 @@ namespace WIS.HwTest.Interop
                         }
                     }
 
-                    using (Microsoft.Win32.RegistryKey consent = hklm.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location", false))
+                    if (IsConsentLocationDenied(hklm, consentSubKey) ||
+                        IsConsentLocationDenied(hklm, consentNonPackagedSubKey))
                     {
-                        if (consent != null)
-                        {
-                            object v = consent.GetValue("Value");
-                            if (v != null && string.Equals(v.ToString().Trim(), "Deny", StringComparison.OrdinalIgnoreCase))
-                            {
-                                return true;
-                            }
-                        }
+                        return true;
+                    }
+                }
+
+                using (Microsoft.Win32.RegistryKey hkcu = Microsoft.Win32.RegistryKey.OpenBaseKey(
+                    Microsoft.Win32.RegistryHive.CurrentUser, regView))
+                {
+                    if (IsConsentLocationDenied(hkcu, @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location") ||
+                        IsConsentLocationDenied(hkcu, @"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged"))
+                    {
+                        return true;
                     }
                 }
             }

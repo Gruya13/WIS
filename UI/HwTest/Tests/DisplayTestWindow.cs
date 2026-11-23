@@ -31,21 +31,23 @@ namespace WIS.HwTest.Tests
         private bool _brightnessTestStarted;
         private bool _brightnessRampOk;
         private int _initialBrightnessPct = -1;
-        private string _brightnessRampDetail = "Provera u toku...";
+        private string _brightnessRampDetail = HwTestLocalization.Pick("Provera u toku...", "正在检测...");
         private int _activeMonitorCount = 1;
 
         public TestItemResult Result { get; private set; }
 
         public DisplayTestWindow()
         {
-            Title = "WIS — Test Ekrana (Mrtvi Pikseli, Gradijent i HDMI)";
+            Title = HwTestLocalization.Pick("WIS — Test Ekrana (Mrtvi Pikseli, Gradijent i HDMI)", "WIS — 屏幕测试（坏点、渐变与 HDMI 输出）");
             WindowStyle = WindowStyle.None;
             WindowState = WindowState.Maximized;
             Topmost = true;
             Background = Brushes.Black;
             Cursor = Cursors.None;
 
-            Result = new TestItemResult("display", "Ekran (mrtvi pikseli)", "Provera defekata matrice, gradijenta, osvetljenja i HDMI izlaza");
+            Result = new TestItemResult("display",
+                HwTestLocalization.Pick("Ekran (mrtvi pikseli)", "屏幕检测（坏点/漏光）"),
+                HwTestLocalization.Pick("Provera defekata matrice, gradijenta, osvetljenja i HDMI izlaza", "检测面板坏点、灰阶渐变、亮度调节及 HDMI 外接显示"));
 
             _colors = new List<Color>
             {
@@ -89,7 +91,7 @@ namespace WIS.HwTest.Tests
             StackPanel spMenu = new StackPanel { Orientation = Orientation.Vertical };
             spMenu.Children.Add(new TextBlock
             {
-                Text = "Ciklus ekrana i gradijenta je završen",
+                Text = HwTestLocalization.Pick("Ciklus ekrana i gradijenta je završen", "屏幕纯色与渐变测试已完成"),
                 FontSize = 22,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -98,7 +100,8 @@ namespace WIS.HwTest.Tests
             });
             spMenu.Children.Add(new TextBlock
             {
-                Text = "Provereno: 6 osnovnih boja + 7. korak (gradijent i kontrast mreža).\nIzaberite rezultat provere ili ponovite ciklus:",
+                Text = HwTestLocalization.Pick("Provereno: 6 osnovnih boja + 7. korak (gradijent i kontrast mreža).\nIzaberite rezultat provere ili ponovite ciklus:",
+                    "已完成 6 种基础纯色及第 7 步（灰阶渐变与对比度网格）检测。\n请选择测试结果或重新运行测试："),
                 FontSize = 14,
                 Foreground = new SolidColorBrush(Color.FromRgb(185, 190, 200)),
                 TextAlignment = TextAlignment.Center,
@@ -118,7 +121,7 @@ namespace WIS.HwTest.Tests
             StackPanel spLiveInfo = new StackPanel { Orientation = Orientation.Vertical };
             _brightnessBadge = new TextBlock
             {
-                Text = "💡 Automatski WMI test osvetljenja: provera u toku...",
+                Text = HwTestLocalization.Pick("💡 Automatski WMI test osvetljenja: provera u toku...", "💡 自动 WMI 亮度调节测试：正在检测..."),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(200, 210, 225)),
@@ -127,7 +130,7 @@ namespace WIS.HwTest.Tests
             };
             _externalMonitorBadge = new TextBlock
             {
-                Text = "🔌 Eksterni monitor (HDMI/DP/USB-C): skeniram...",
+                Text = HwTestLocalization.Pick("🔌 Eksterni monitor (HDMI/DP/USB-C): skeniram...", "🔌 外接显示器 (HDMI/DP/USB-C)：正在扫描..."),
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = new SolidColorBrush(Color.FromRgb(185, 195, 210)),
@@ -146,7 +149,7 @@ namespace WIS.HwTest.Tests
 
             Button btnPass = new Button
             {
-                Content = "✓ PASS",
+                Content = HwTestLocalization.Pick("✓ PASS", "✓ 通过 (PASS)"),
                 Background = new SolidColorBrush(Color.FromRgb(40, 167, 69)),
                 Foreground = Brushes.White,
                 FontSize = 15,
@@ -163,7 +166,7 @@ namespace WIS.HwTest.Tests
 
             Button btnFail = new Button
             {
-                Content = "✗ FAIL",
+                Content = HwTestLocalization.Pick("✗ FAIL", "✗ 失败 (FAIL)"),
                 Background = new SolidColorBrush(Color.FromRgb(220, 53, 69)),
                 Foreground = Brushes.White,
                 FontSize = 15,
@@ -180,7 +183,7 @@ namespace WIS.HwTest.Tests
 
             Button btnRepeat = new Button
             {
-                Content = "↻ Ponovi",
+                Content = HwTestLocalization.Pick("↻ Ponovi", "↻ 重新测试"),
                 Background = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 Foreground = Brushes.White,
                 FontSize = 15,
@@ -234,7 +237,7 @@ namespace WIS.HwTest.Tests
             StackPanel sp = new StackPanel { Orientation = Orientation.Vertical };
             sp.Children.Add(new TextBlock
             {
-                Text = "TEST MONITORA / EKRANA JE POKRENUT",
+                Text = HwTestLocalization.Pick("TEST MONITORA / EKRANA JE POKRENUT", "屏幕 / 显示器测试已启动"),
                 FontSize = 22,
                 FontWeight = FontWeights.Bold,
                 Foreground = new SolidColorBrush(Color.FromRgb(125, 211, 252)),
@@ -244,7 +247,8 @@ namespace WIS.HwTest.Tests
             });
             sp.Children.Add(new TextBlock
             {
-                Text = "Korak 1/7: Crna pozadina — provera mrtvih piksela i probijanja pozadinskog osvetljenja.",
+                Text = HwTestLocalization.Pick("Korak 1/7: Crna pozadina — provera mrtvih piksela i probijanja pozadinskog osvetljenja.",
+                    "第 1/7 步：纯黑背景 — 请检查亮点与背光漏光情况。"),
                 FontSize = 15,
                 Foreground = Brushes.White,
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -254,7 +258,8 @@ namespace WIS.HwTest.Tests
             });
             sp.Children.Add(new TextBlock
             {
-                Text = "Kliknite mišem bilo gde ili pritisnite SPACE / ENTER za sledeću boju   |   H = sakrij/prikaži natpis   |   ESC = pregled rezultata",
+                Text = HwTestLocalization.Pick("Kliknite mišem bilo gde ili pritisnite SPACE / ENTER za sledeću boju   |   H = sakrij/prikaži natpis   |   ESC = pregled rezultata",
+                    "点击鼠标任意位置或按 SPACE / ENTER 切换下一颜色   |   H = 隐藏/显示提示   |   ESC = 查看结果"),
                 FontSize = 13,
                 Foreground = new SolidColorBrush(Color.FromRgb(186, 198, 214)),
                 HorizontalAlignment = HorizontalAlignment.Center,
@@ -346,7 +351,8 @@ namespace WIS.HwTest.Tests
             };
             badge.Child = new TextBlock
             {
-                Text = "Korak 7/7: Gradijent sive skale, RGB opseg i kontrast mreža — kliknite / Enter za završetak",
+                Text = HwTestLocalization.Pick("Korak 7/7: Gradijent sive skale, RGB opseg i kontrast mreža — kliknite / Enter za završetak",
+                    "第 7/7 步：灰阶渐变、RGB 色阶与对比度网格 — 点击或按 Enter 完成"),
                 Foreground = Brushes.White,
                 FontSize = 13,
                 FontWeight = FontWeights.SemiBold
@@ -543,25 +549,25 @@ namespace WIS.HwTest.Tests
                     else
                     {
                         _brightnessRampOk = false;
-                        _brightnessRampDetail = "WMI kontrola nije podržana (eksterni/DDC ekran)";
+                        _brightnessRampDetail = HwTestLocalization.Pick("WMI kontrola nije podržana (eksterni/DDC ekran)", "不支持 WMI 亮度控制（外接或 DDC 显示器）");
                     }
                 }
                 catch (Exception ex)
                 {
                     _brightnessRampOk = false;
-                    _brightnessRampDetail = "WMI nedostupan: " + ex.Message;
+                    _brightnessRampDetail = HwTestLocalization.Pick("WMI nedostupan: ", "WMI 不可用: ") + ex.Message;
                 }
 
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
                     if (_brightnessRampOk)
                     {
-                        _brightnessBadge.Text = string.Format("💡 Automatski WMI test osvetljenja: {0} ✓", _brightnessRampDetail);
+                        _brightnessBadge.Text = HwTestLocalization.PickFormat("💡 Automatski WMI test osvetljenja: {0} ✓", "💡 自动 WMI 亮度测试: {0} ✓", _brightnessRampDetail);
                         _brightnessBadge.Foreground = new SolidColorBrush(Color.FromRgb(78, 235, 125));
                     }
                     else
                     {
-                        _brightnessBadge.Text = string.Format("💡 Kontrola osvetljenja (WMI): {0}", _brightnessRampDetail);
+                        _brightnessBadge.Text = HwTestLocalization.PickFormat("💡 Kontrola osvetljenja (WMI): {0}", "💡 亮度控制 (WMI): {0}", _brightnessRampDetail);
                         _brightnessBadge.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7));
                     }
                 }));
@@ -611,18 +617,18 @@ namespace WIS.HwTest.Tests
 
                 if (active >= 2)
                 {
-                    _externalMonitorBadge.Text = string.Format("🔌 Eksterni monitor (HDMI/DP/USB-C): DETEKTOVAN ({0} aktivna ekrana) ✓", active);
+                    _externalMonitorBadge.Text = HwTestLocalization.PickFormat("🔌 Eksterni monitor (HDMI/DP/USB-C): DETEKTOVAN ({0} aktivna ekrana) ✓", "🔌 外接显示器 (HDMI/DP/USB-C): 已检测到 ({0} 个活动屏幕) ✓", active);
                     _externalMonitorBadge.Foreground = new SolidColorBrush(Color.FromRgb(78, 235, 125));
                 }
                 else
                 {
-                    _externalMonitorBadge.Text = string.Format("🔌 Eksterni monitor (HDMI/DP/USB-C): Priključite HDMI/DP kabl za detekciju (aktivno: {0})", active);
+                    _externalMonitorBadge.Text = HwTestLocalization.PickFormat("🔌 Eksterni monitor (HDMI/DP/USB-C): Priključite HDMI/DP kabl za detekciju (aktivno: {0})", "🔌 外接显示器 (HDMI/DP/USB-C): 请连接 HDMI/DP 线缆进行检测（当前活动屏幕: {0}）", active);
                     _externalMonitorBadge.Foreground = new SolidColorBrush(Color.FromRgb(185, 195, 210));
                 }
             }
             catch
             {
-                _externalMonitorBadge.Text = "🔌 Eksterni monitor: WMI proveru nije moguće očitati na ovom uređaju";
+                _externalMonitorBadge.Text = HwTestLocalization.Pick("🔌 Eksterni monitor: WMI proveru nije moguće očitati na ovom uređaju", "🔌 外接显示器: 当前设备无法读取 WMI 显示信息");
             }
         }
 
@@ -685,7 +691,7 @@ namespace WIS.HwTest.Tests
             int totalCycles = Math.Max(1, _cyclesCompleted);
             Result.Status = TestStatus.Fail;
             Result.Attempts = totalCycles;
-            Result.Reason = "Prijavljen defekt ekrana nakon pregleda ciklusa boja i gradijenta.";
+            Result.Reason = HwTestLocalization.Pick("Prijavljen defekt ekrana nakon pregleda ciklusa boja i gradijenta.", "在完成纯色与渐变检查后报告屏幕存在缺陷。");
             Result.Details["cycles_completed"] = totalCycles;
             Result.Details["gradient_grid_checked"] = true;
             Result.Details["brightness_ramp_ok"] = _brightnessRampOk;

@@ -47,7 +47,9 @@ $Global:WisTelemetryConfig = @{
 function Disable-LocationPrivacyPrompts {
     <#
     .SYNOPSIS
-        Potiskuje Windows 11 24H2+ modalni prozor "Your location is currently turned off / Got it" (ShowGlobalPrompts=0).
+        Omogućava pristup lokaciji za Win32/NonPackaged aplikacije (ConsentStore\location Value="Allow")
+        i potiskuje Windows 11 24H2+ modalni prozor (ShowGlobalPrompts=0) u svim profilima,
+        uz uklanjanje zaostale polise DisableLocation=1 i osiguranje da servis lfsvc nije Disabled.
     #>
     [CmdletBinding()]
     param()
@@ -59,6 +61,13 @@ function Disable-LocationPrivacyPrompts {
                 New-Item -Path $rootPath -Force -ErrorAction SilentlyContinue | Out-Null
             }
             Set-ItemProperty -Path $rootPath -Name "ShowGlobalPrompts" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path $rootPath -Name "Value" -Type String -Value "Allow" -Force -ErrorAction SilentlyContinue
+
+            $nonPkgPath = Join-Path $rootPath "NonPackaged"
+            if (-not (Test-Path $nonPkgPath)) {
+                New-Item -Path $nonPkgPath -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-ItemProperty -Path $nonPkgPath -Name "Value" -Type String -Value "Allow" -Force -ErrorAction SilentlyContinue
         } catch {}
     }
 
@@ -73,11 +82,18 @@ function Disable-LocationPrivacyPrompts {
                     New-Item -Path $userLocPath -Force -ErrorAction SilentlyContinue | Out-Null
                 }
                 Set-ItemProperty -Path $userLocPath -Name "ShowGlobalPrompts" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+                Set-ItemProperty -Path $userLocPath -Name "Value" -Type String -Value "Allow" -Force -ErrorAction SilentlyContinue
+
+                $userNonPkgPath = Join-Path $userLocPath "NonPackaged"
+                if (-not (Test-Path $userNonPkgPath)) {
+                    New-Item -Path $userNonPkgPath -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Set-ItemProperty -Path $userNonPkgPath -Name "Value" -Type String -Value "Allow" -Force -ErrorAction SilentlyContinue
             } catch {}
         }
     } catch {}
 
-    # Primena na C:\Users\Default\NTUSER.DAT da se prozor ne pojavljuje ni buducim korisnicima
+    # Primena na C:\Users\Default\NTUSER.DAT da se dozvola i potiskivanje upita prenesu i na buduce korisnike
     $defaultHive = "C:\Users\Default\NTUSER.DAT"
     if (Test-Path $defaultHive) {
         $mountKey = "HKU\WIS_DefaultLoc"
@@ -87,6 +103,8 @@ function Disable-LocationPrivacyPrompts {
             if ($LASTEXITCODE -eq 0) {
                 $loaded = $true
                 & reg.exe add "$mountKey\$subKey" /v "ShowGlobalPrompts" /t REG_DWORD /d 0 /f >$null 2>&1
+                & reg.exe add "$mountKey\$subKey" /v "Value" /t REG_SZ /d "Allow" /f >$null 2>&1
+                & reg.exe add "$mountKey\$subKey\NonPackaged" /v "Value" /t REG_SZ /d "Allow" /f >$null 2>&1
             }
         } catch {}
         finally {
@@ -96,6 +114,80 @@ function Disable-LocationPrivacyPrompts {
             }
         }
     }
+
+    # Uklanjanje eventualne zaostale polise DisableLocation=1
+    try {
+        $locPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"
+        if (Test-Path $locPolicyPath) {
+            $dlProp = Get-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -ErrorAction SilentlyContinue
+            if ($null -ne $dlProp -and $null -ne $dlProp.DisableLocation -and [int]$dlProp.DisableLocation -eq 1) {
+                Remove-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -Force -ErrorAction SilentlyContinue
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Uklonjena zaostala LocationAndSensors\DisableLocation=1 polisa." -Level "INFO" -Component "Branding"
+                }
+            }
+        }
+    } catch {}
+
+    # Osiguranje da Windows Location Service (lfsvc) nije Disabled i da radi ako je zaustavljen
+    try {
+        $lfsvcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\lfsvc"
+        if (Test-Path $lfsvcRegPath) {
+            $lfStart = (Get-ItemProperty -Path $lfsvcRegPath -Name "Start" -ErrorAction SilentlyContinue).Start
+            if ($null -ne $lfStart -and [int]$lfStart -eq 4) {
+                Set-Service -Name "lfsvc" -StartupType Manual -ErrorAction SilentlyContinue
+                if (Get-Command sc.exe -ErrorAction SilentlyContinue) {
+                    & sc.exe config lfsvc start= demand >$null 2>&1
+                }
+            }
+        }
+        $lfsvcSvc = Get-Service -Name "lfsvc" -ErrorAction SilentlyContinue
+        if ($lfsvcSvc) {
+            if ($lfsvcSvc.StartType -eq "Disabled") {
+                Set-Service -Name "lfsvc" -StartupType Manual -ErrorAction SilentlyContinue
+            }
+            if ($lfsvcSvc.Status -ne "Running") {
+                Start-Service -Name "lfsvc" -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
+function Test-WisLocationAccessEnabled {
+    <#
+    .SYNOPSIS
+        Proverava da li je Location ConsentStore postavljen na "Allow" (HKLM/HKCU + NonPackaged),
+        da ne postoji DisableLocation=1 i da lfsvc nije Disabled.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $subKey = "Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location"
+    foreach ($rootPath in @("HKLM:\$subKey", "HKCU:\$subKey")) {
+        $val = (Get-ItemProperty -Path $rootPath -Name "Value" -ErrorAction SilentlyContinue).Value
+        if ("$val" -ine "Allow") { return $false }
+
+        $nonPkgVal = (Get-ItemProperty -Path (Join-Path $rootPath "NonPackaged") -Name "Value" -ErrorAction SilentlyContinue).Value
+        if ("$nonPkgVal" -ine "Allow") { return $false }
+    }
+
+    $locPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"
+    if (Test-Path $locPolicyPath) {
+        $dlProp = Get-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -ErrorAction SilentlyContinue
+        if ($null -ne $dlProp -and $null -ne $dlProp.DisableLocation -and [int]$dlProp.DisableLocation -eq 1) {
+            return $false
+        }
+    }
+
+    $lfsvcRegPath = "HKLM:\SYSTEM\CurrentControlSet\Services\lfsvc"
+    if (Test-Path $lfsvcRegPath) {
+        $lfStart = (Get-ItemProperty -Path $lfsvcRegPath -Name "Start" -ErrorAction SilentlyContinue).Start
+        if ($null -ne $lfStart -and [int]$lfStart -eq 4) {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 function Set-OptimalDisplayScaling {
@@ -648,6 +740,11 @@ function Invoke-Phase3Optimization {
             }
         }
 
+        if (-not (Test-WisLocationAccessEnabled)) {
+            $allOk = $false
+            $unmatched += "LocationAllow != Allow"
+        }
+
         if ($allOk) {
             return @{ Done = $true; Reason = "Telemetrija i servisi za praćenje su već uspešno deaktivirani" }
         } else {
@@ -963,4 +1060,5 @@ Export-ModuleMember -Function `
     Set-OptimalDisplayScaling, `
     Invoke-ServisInterimReboot, `
     Invoke-Phase3Optimization, `
-    Disable-LocationPrivacyPrompts
+    Disable-LocationPrivacyPrompts, `
+    Test-WisLocationAccessEnabled

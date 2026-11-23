@@ -234,7 +234,7 @@ namespace WIS.UI
             metaRow.Children.Add(snTb);
             metaRow.Children.Add(new TextBlock
             {
-                Text = "  •  Programi: ",
+                Text = LocalizationService.Get("RbtProgramsPrefix", "  •  Programi: "),
                 FontSize = 11,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136)
             });
@@ -277,7 +277,7 @@ namespace WIS.UI
             var durStack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center };
             durStack.Children.Add(new TextBlock
             {
-                Text = "TRAJANJE",
+                Text = LocalizationService.Get("RbtDurationHeader", "TRAJANJE"),
                 FontSize = 9,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -359,7 +359,7 @@ namespace WIS.UI
             var periphStack = new StackPanel();
             periphStack.Children.Add(new TextBlock
             {
-                Text = "DODATNE PERIFERIJE",
+                Text = LocalizationService.Get("RbtExtraPeripheralsHeader", "DODATNE PERIFERIJE"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -414,7 +414,7 @@ namespace WIS.UI
             var qrStack = new StackPanel();
             qrStack.Children.Add(new TextBlock
             {
-                Text = "KARTON UREĐAJA (SERVISHUB)",
+                Text = LocalizationService.Get("RbtDeviceCardHeader", "KARTON UREĐAJA (SERVISHUB)"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -459,7 +459,7 @@ namespace WIS.UI
             qrPlaceholder.SetBinding(UIElement.VisibilityProperty, new System.Windows.Data.Binding("ShowDeviceCardQrPlaceholder") { Converter = boolToVis });
             qrPlaceholder.Child = new TextBlock
             {
-                Text = "QR kod će se pojaviti kada se otkrije ServisHub...",
+                Text = LocalizationService.Get("RbtQrPlaceholder", "QR kod će se pojaviti kada se otkrije ServisHub..."),
                 FontSize = 11,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
                 TextWrapping = TextWrapping.Wrap,
@@ -512,7 +512,7 @@ namespace WIS.UI
             var alertsHdr = new Grid { Margin = new Thickness(0, 0, 0, 8) };
             alertsHdr.Children.Add(new TextBlock
             {
-                Text = "UPOZORENJA SA KOJIMA JE PROCES ZAVRŠEN",
+                Text = LocalizationService.Get("RbtWarningsHeader", "UPOZORENJA SA KOJIMA JE PROCES ZAVRŠEN"),
                 FontSize = 10,
                 FontWeight = FontWeights.Bold,
                 Foreground = MainViewModel.CreateFrozenBrush(136, 136, 136),
@@ -577,14 +577,14 @@ namespace WIS.UI
             var noAlertsStack = new StackPanel();
             noAlertsStack.Children.Add(new TextBlock
             {
-                Text = "✓ Proces završen bez upozorenja",
+                Text = LocalizationService.Get("RbtNoWarningsTitle", "✓ Proces završen bez upozorenja"),
                 FontSize = 11,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = MainViewModel.CreateFrozenBrush(46, 204, 113)
             });
             noAlertsStack.Children.Add(new TextBlock
             {
-                Text = "Temperature, Autopilot, drajveri, programi i hardver su u normalnom stanju.",
+                Text = LocalizationService.Get("RbtNoWarningsDesc", "Temperature, Autopilot, drajveri, programi i hardver su u normalnom stanju."),
                 FontSize = 10,
                 Foreground = MainViewModel.CreateFrozenBrush(168, 197, 180),
                 TextWrapping = TextWrapping.Wrap,
@@ -620,7 +620,7 @@ namespace WIS.UI
             Dispatcher.BeginInvoke((Action)(() =>
             {
                 ViewModel.AddLog("WARN", "TaskRunner", "Faza 3 uspešno završena. Pripremam međurestart radi rasterećenja CBS/MSI podsistema...");
-                ViewModel.LiveStatus = "Kontrolisani međurestart za 5 sekundi...";
+                ViewModel.LiveStatus = LocalizationService.Get("RbtControlledReboot5s", "Kontrolisani međurestart za 5 sekundi...");
             }));
 
             // 1. Zapis stanja phase: 4 u C:\setup\deploy-state.json
@@ -641,11 +641,11 @@ namespace WIS.UI
                     int remMin = (int)Math.Floor(remaining.TotalMinutes);
                     int remSec = remaining.Seconds;
                     string dueLocalStr = dueUtc.ToLocalTime().ToString("HH:mm:ss");
-                    string waitMsg = string.Format("Međurestart odložen od strane servisera — preostalo {0:D2}:{1:D2} (do {2})", remMin, remSec, dueLocalStr);
+                    string waitMsg = string.Format(LocalizationService.Get("RbtRebootDelayedMsg", "Međurestart odložen od strane servisera — preostalo {0:D2}:{1:D2} (do {2})"), remMin, remSec, dueLocalStr);
 
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
-                        ViewModel.SubPhase = string.Format("Međurestart odložen (do {0})", dueLocalStr);
+                        ViewModel.SubPhase = string.Format(LocalizationService.Get("RbtRebootDelayedSubPhase", "Međurestart odložen (do {0})"), dueLocalStr);
                         ViewModel.LiveStatus = waitMsg;
                     }));
 
@@ -665,7 +665,7 @@ namespace WIS.UI
                     int currentSec = sec;
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
-                        ViewModel.LiveStatus = string.Format("Kontrolisani međurestart za {0}s... (Kliknite '+10m Restart' za odlaganje)", currentSec);
+                        ViewModel.LiveStatus = string.Format(LocalizationService.Get("RbtControlledRebootCountdown", "Kontrolisani međurestart za {0}s... (Kliknite '+10m Restart' za odlaganje)"), currentSec);
                     }));
                     Thread.Sleep(1000);
                 }
@@ -839,6 +839,18 @@ namespace WIS.UI
 
         private void ExecuteShowCompletionSummary(object param)
         {
+            if (HasUnfinishedInteractiveHwTests())
+            {
+                if (ViewModel != null)
+                {
+                    ViewModel.IsCompleted = false;
+                    ViewModel.AddLog("WARN", "Hardver", "Završni karton je zaključan dok se svi obavezni interaktivni hardverski testovi ne završe.");
+                }
+                ShowPendingInteractiveTestsWarning(GetPendingInteractiveHwTestNames(), true, true);
+                return;
+            }
+
+            HidePendingInteractiveTestsWarning();
             if (ViewModel != null)
             {
                 ViewModel.RebuildOverviewAlerts();
@@ -889,9 +901,9 @@ namespace WIS.UI
 
         private void ExecuteCleanAndShutdown(object param)
         {
-            ViewModel.AddLog("INFO", "Sistem", "Čišćenje servisnih tragova i restartovanje računara...");
-            ViewModel.CompletionTitle = "ČIŠĆENJE I RESTART...";
-            ViewModel.CompletionSummary = "Čišćenje servisnih tragova i restartovanje računara...";
+            ViewModel.AddLog("INFO", "Sistem", LocalizationService.Get("RbtCleanupSummary", "Čišćenje servisnih tragova i restartovanje računara..."));
+            ViewModel.CompletionTitle = LocalizationService.Get("RbtCleanupTitle", "ČIŠĆENJE I RESTART...");
+            ViewModel.CompletionSummary = LocalizationService.Get("RbtCleanupSummary", "Čišćenje servisnih tragova i restartovanje računara...");
 
             ThreadPool.QueueUserWorkItem(delegate(object _)
             {

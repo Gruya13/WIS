@@ -38,8 +38,8 @@ def main():
         "[assembly: AssemblyCompany(\"IG-Systems\")]\n"
         "[assembly: AssemblyProduct(\"WIS Hardware Test Suite\")]\n"
         "[assembly: AssemblyCopyright(\"Copyright © IG-Systems 2026\")]\n"
-        "[assembly: AssemblyVersion(\"3.4.2.0\")]\n"
-        "[assembly: AssemblyFileVersion(\"3.4.2.0\")]\n",
+        "[assembly: AssemblyVersion(\"3.4.3.0\")]\n"
+        "[assembly: AssemblyFileVersion(\"3.4.3.0\")]\n",
         encoding="utf-8"
     )
 
@@ -59,6 +59,7 @@ def main():
         str(ROOT / "UI" / "ThermalSensorEngine.cs"),
         str(HWTEST_DIR / "Core" / "ResultModel.cs"),
         str(HWTEST_DIR / "Core" / "HwTestLogger.cs"),
+        str(HWTEST_DIR / "Core" / "HwTestLocalization.cs"),
         str(HWTEST_DIR / "Core" / "ModelProfileClient.cs"),
         str(HWTEST_DIR / "Core" / "HardwareProbe.cs"),
         str(HWTEST_DIR / "Core" / "FactorySpecProbe.cs"),

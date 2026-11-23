@@ -1584,26 +1584,53 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "profile": profile}, 200)
             return
 
-        if path == "/api/model-profile/usb":
+        if path in ("/api/model-profile/usb", "/api/model-profile/usb-override"):
             if not isinstance(payload, dict):
                 self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
                 return
             model_name = str(payload.get("model", "")).strip()
+            if not model_name or len(model_name) > 200:
+                self._send_json({"error": "Nedostaje ili je nevalidno polje 'model'"}, 400)
+                return
+
             port_count = payload.get("port_count")
-            if not model_name or port_count is None:
+            target_ports = payload.get("target_ports")
+            detected_ports = payload.get("detected_ports")
+            physical_port_locations = payload.get("physical_port_locations")
+            charger_ports_count = payload.get("charger_ports_count")
+            max_typec_cap = payload.get("max_typec_cap")
+            manual_override = payload.get("manual_override")
+            serial = payload.get("serial") if payload.get("serial") is not None else payload.get("serial_number", "")
+            by = payload.get("by", "serviser")
+
+            has_autolearn = any(
+                v is not None
+                for v in (target_ports, detected_ports, physical_port_locations, charger_ports_count, max_typec_cap)
+            )
+            if port_count is None and not has_autolearn:
                 self._send_json({"error": "Nedostaje polje 'model' ili 'port_count'"}, 400)
                 return
-            try:
-                port_count_int = int(port_count)
-            except (ValueError, TypeError):
-                self._send_json({"error": "Polje 'port_count' mora biti ceo broj"}, 400)
+            if manual_override is True and port_count is None:
+                self._send_json({"error": "Nedostaje polje 'port_count' za manual_override"}, 400)
                 return
+
             from servishub.model_profiles import update_usb_override
-            profile = update_usb_override(
-                model_name=model_name,
-                port_count=port_count_int,
-                by=payload.get("by", "serviser")
-            )
+            try:
+                profile = update_usb_override(
+                    model_name=model_name,
+                    port_count=port_count,
+                    by=by,
+                    target_ports=target_ports,
+                    detected_ports=detected_ports,
+                    physical_port_locations=physical_port_locations,
+                    charger_ports_count=charger_ports_count,
+                    max_typec_cap=max_typec_cap,
+                    manual_override=manual_override,
+                    serial=serial,
+                )
+            except ValueError as ve:
+                self._send_json({"error": str(ve)}, 400)
+                return
             self._send_json({"status": "ok", "profile": profile}, 200)
             return
 

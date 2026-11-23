@@ -572,15 +572,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.4.2 / ServiceHub v3.6.2 u root version.json i komponentama
+        # 1. Verzije v3.4.3 / ServiceHub v3.6.3 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.4.2")
-        self.assertEqual(root_ver["release_package"]["version"], "3.4.2")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.2")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.2")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.2")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.2")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.2")
+        self.assertEqual(root_ver["version"], "3.4.3")
+        self.assertEqual(root_ver["release_package"]["version"], "3.4.3")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.3")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.3")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.3")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.3")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.3")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -741,12 +741,19 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("isDarkBlinkFrame", cam_src)
         self.assertIn("new int[] { 28, 36, 46, 58, 72, 88 }", cam_src)
 
-        # 3. Faza 5 nocno cekanje na rucne testove bez nasilnog preskoka posle 45min + zatvaranje dijaloga pri ForceComplete
+        # 3. Faza 5 nocno cekanje na rucne testove bez nasilnog 45m/24h auto-skipa + zatvaranje dijaloga pri ForceComplete (azurirano za V343-03)
         self.assertIn("IsWaitingForManualTests", shell_src)
         self.assertIn("_activePeripheralDialog", shell_src)
         self.assertIn("activeDlg.Close()", shell_src)
         self.assertIn("IsWaitingForManualTests", ui_hw_src)
-        self.assertIn("manualWaitLimitMs", ui_hw_src)
+        self.assertNotIn("manualWaitLimitMs", ui_hw_src)
+        for tok in (
+            "HasUnfinishedInteractiveHwTests",
+            "ShowPendingInteractiveTestsWarning",
+            "RequestEmergencySkipPhase5WithConfirmation",
+            "ForceCompletePhase5SkipPending",
+        ):
+            self.assertIn(tok, ui_hw_src)
 
     def test_wis_task_242_suppress_windows_location_prompt(self):
         native_src = (HWTEST_DIR / "Interop" / "NativeMethods.cs").read_text(encoding="utf-8")
@@ -842,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.4.2";', result_src)
+        self.assertIn('AppVersion = "3.4.3";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1334,6 +1341,96 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("_failedPhase == 4", retry_block)
         self.assertIn("PerformPhase4RealityCheck()", retry_block)
         self.assertIn("StartPhaseExecution(5)", retry_block)
+
+    def test_wis_task_268_v343_hwtest_and_ui_contracts(self):
+        """Proverava ugovore za WIS v3.4.3 / ServiceHub v3.6.3 (V343-01..V343-07)."""
+        import re
+
+        ui_dir = ROOT / "UI"
+        native_src = (HWTEST_DIR / "Interop" / "NativeMethods.cs").read_text(encoding="utf-8")
+        probe_src = (HWTEST_DIR / "Core" / "HardwareProbe.cs").read_text(encoding="utf-8")
+        spec_src = (HWTEST_DIR / "Core" / "FactorySpecProbe.cs").read_text(encoding="utf-8")
+        mpc_src = (HWTEST_DIR / "Core" / "ModelProfileClient.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        kbd_src = (HWTEST_DIR / "Tests" / "KeyboardTestWindow.cs").read_text(encoding="utf-8")
+        usb_src = (HWTEST_DIR / "Tests" / "UsbPortTestWindow.cs").read_text(encoding="utf-8")
+        tel_cs = (ui_dir / "TelemetryService.cs").read_text(encoding="utf-8")
+        xaml_src = (ui_dir / "MainWindow.xaml").read_text(encoding="utf-8")
+        models_cs = (ui_dir / "Models.cs").read_text(encoding="utf-8")
+        main_xaml_cs = (ui_dir / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        hw_cs = (ui_dir / "MainWindow.Hardware.cs").read_text(encoding="utf-8")
+        ui_hw_cs = (ui_dir / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+
+        # V343-01: Location Allow + sveza P5.AutoDiag sinhronizacija
+        self.assertIn(r"ConsentStore\location", native_src)
+        self.assertIn("IsConsentLocationDenied", native_src)
+        self.assertIn("FormatAutoDiagIssueSummary", shell_src)
+        self.assertIn("P5.AutoDiag", shell_src)
+
+        # V343-02: Windows licencni metadata i reupload u TelemetryService
+        for tok in ("windows_oa3_present", "windows_license_method", "ReuploadUpdatedReportAfterHwTestAsync"):
+            self.assertIn(tok, tel_cs)
+
+        # V343-03: Pending interactive overlay/banner + hard gate bez 24h auto-skipa
+        self.assertIn('Tag="PendingInteractiveTestsBanner"', xaml_src)
+        self.assertIn('Tag="PendingInteractiveTestsOverlay"', xaml_src)
+        self.assertNotIn("manualWaitLimitMs", ui_hw_cs)
+        for tok in (
+            "HasUnfinishedInteractiveHwTests",
+            "ShowPendingInteractiveTestsWarning",
+            "RequestEmergencySkipPhase5WithConfirmation",
+        ):
+            self.assertIn(tok, ui_hw_cs)
+        for tok in (
+            "GetPendingInteractiveTestNames",
+            "PendingInteractiveTestsRequired",
+            "ForceCompletePhase5SkipPending(string customReason)",
+        ):
+            self.assertIn(tok, shell_src)
+
+        # V343-04: Tastatura bez laznih detektora, EnergyDrv + BOM override + uvek vidljiv no_hardware
+        hw_cs_code = re.sub(r"//.*", "", hw_cs)
+        for forbidden in ("LEN0071", "DELLABCE", "Lenovo_SetKeyboardBacklightStatus", "HP_BIOSSetting", "DCIM_BiosEnumeration"):
+            self.assertNotIn(forbidden, hw_cs_code, f"Lazni detektor {forbidden} ne sme postojati u kodu MainWindow.Hardware.cs")
+        self.assertIn("ApplyBacklitKeyboardVerdict", hw_cs)
+        self.assertIn("ApplyBacklitKeyboardVerdict", models_cs)
+        self.assertIn("TryProbeLenovoEnergyDrvBacklight", probe_src)
+        self.assertIn("FactoryKeyboardBacklight", spec_src)
+        self.assertIn("_btnBacklightNoHw", kbd_src)
+        self.assertIn('"no_hardware"', kbd_src)
+
+        # V343-05: Faza Tracker sklopljen po difoltu
+        self.assertIn("private bool _isPhasesExpanded = false;", models_cs)
+        self.assertIn("private bool _showStepsInOverview = false;", models_cs)
+        self.assertIn("PhasesToggleText", models_cs)
+        self.assertIn("PhasesCollapseToggleBtn", xaml_src)
+        self.assertIn("PhasesCollapseToggleBtn", main_xaml_cs)
+
+        # V343-06: USB fizicke lokacije i Type-C PD kontrolerski limit
+        for tok in (
+            "physical_port_locations",
+            "DetectTypeCControllerCap",
+            "_maxTypeCChargerCap",
+            "hasTypeCController",
+            "max_typec_cap",
+        ):
+            self.assertIn(tok, usb_src)
+        self.assertIn("physical_port_locations", mpc_src)
+
+        # V343-07: Pregled periferija bez Web kamere/TB, sa BT verzijom, 4G/5G, eSIM i osvezavanjem posle drajvera
+        rebuild_blk = models_cs.split("public void RebuildOverviewPeripherals(", 1)[1].split("private void AddPeripheralBadge(", 1)[0]
+        self.assertNotIn("Web kamera", rebuild_blk)
+        self.assertNotIn("Thunderbolt / USB4", rebuild_blk)
+        for tok in ("HasEsim", "_bluetoothVersionLabel", "_wwanInfo"):
+            self.assertIn(tok, models_cs)
+        for tok in (
+            "A92F26CA-EDA7-4B1D-9DB2-27B68AA5A2EB",
+            "HasEsimIndicatorInMbnOutput",
+            "mbn show interfaces",
+            "RefreshPeripheralsAfterDrivers",
+        ):
+            self.assertIn(tok, hw_cs)
+        self.assertIn("RefreshPeripheralsAfterDrivers()", main_xaml_cs)
 
 
 if __name__ == "__main__":

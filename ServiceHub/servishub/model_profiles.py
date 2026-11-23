@@ -15,6 +15,108 @@ from servishub.config import active_config
 
 logger = logging.getLogger("servishub.model_profiles")
 
+_MAX_USB_PORTS = 64
+_MAX_CHARGER_PORTS = 64
+_DEFAULT_MAX_TYPEC_CAP = 2
+_MAX_TYPEC_CAP = 16
+_MAX_LOCATION_LEN = 256
+_MAX_LOCATIONS_LIMIT = 64
+_MAX_OBSERVED_COUNTS = 20
+_STRONG_USB_LOCATION_RE = re.compile(
+    r"^(?:PCIROOT|ACPI)\([A-Za-z0-9_.:-]+\)(?:#[A-Za-z0-9_.:-]+\([A-Za-z0-9_.:-]+\))+$",
+    re.IGNORECASE,
+)
+
+
+def _is_strong_usb_location(loc: str) -> bool:
+    """Proverava da li je lokacija jaka PCIROOT / ACPI putanja (nikada AUTO-USBC-CHARGER)."""
+    if not isinstance(loc, str):
+        return False
+    clean = loc.strip()
+    if not clean or len(clean) > _MAX_LOCATION_LEN:
+        return False
+    if "AUTO-USBC-CHARGER" in clean.upper():
+        return False
+    return bool(_STRONG_USB_LOCATION_RE.match(clean))
+
+
+def _sanitize_physical_locations(raw_locations) -> list:
+    """Validira, filtrira samo jake PCIROOT/ACPI lokacije i deduplikuje (case-insensitive)."""
+    if raw_locations is None:
+        return []
+    if not isinstance(raw_locations, (list, tuple, set)):
+        raise ValueError("Polje 'physical_port_locations' mora biti lista stringova")
+    seen_upper = set()
+    cleaned = []
+    for item in list(raw_locations)[:_MAX_LOCATIONS_LIMIT]:
+        if not isinstance(item, str):
+            continue
+        loc = item.strip()
+        if not _is_strong_usb_location(loc):
+            continue
+        key = loc.upper()
+        if key not in seen_upper:
+            seen_upper.add(key)
+            cleaned.append(loc)
+    return cleaned
+
+
+def _parse_bounded_int(val, field_name: str, min_val: int, max_val: int) -> Optional[int]:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        raise ValueError(f"Polje '{field_name}' ne može biti boolean")
+    if isinstance(val, float) and not val.is_integer():
+        raise ValueError(f"Polje '{field_name}' mora biti ceo broj")
+    try:
+        ival = int(val)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Polje '{field_name}' mora biti ceo broj") from exc
+    if ival < min_val or ival > max_val:
+        raise ValueError(f"Polje '{field_name}' mora biti između {min_val} i {max_val}")
+    return ival
+
+
+def _normalize_usb_section(raw_usb) -> dict:
+    """Normalizuje USB sekciju profila uz unazadnu kompatibilnost za stare profile."""
+    usb = dict(raw_usb) if isinstance(raw_usb, dict) else {}
+    port_count = usb.get("port_count")
+    if isinstance(port_count, bool):
+        port_count = None
+    elif port_count is not None:
+        try:
+            port_count = int(port_count)
+        except (ValueError, TypeError):
+            port_count = None
+    if port_count is not None and (port_count < 1 or port_count > _MAX_USB_PORTS):
+        port_count = None
+
+    usb["port_count"] = port_count
+    if isinstance(usb.get("confirmed"), bool):
+        confirmed = usb["confirmed"]
+    else:
+        confirmed = port_count is not None
+    usb["confirmed"] = confirmed
+
+    source = usb.get("source")
+    if source is not None:
+        source = str(source).strip()[:64] or None
+    if source is None and port_count is not None:
+        source = "manual_override"
+    usb["source"] = source
+
+    try:
+        usb["known_port_locations"] = _sanitize_physical_locations(usb.get("known_port_locations") or [])
+    except ValueError:
+        usb["known_port_locations"] = []
+
+    raw_obs = usb.get("observed_counts")
+    if isinstance(raw_obs, list):
+        usb["observed_counts"] = [x for x in raw_obs if isinstance(x, dict)][-_MAX_OBSERVED_COUNTS:]
+    else:
+        usb["observed_counts"] = []
+    return usb
+
 def normalize_model_name(raw_model: str) -> str:
     """Normalizuje naziv modela u bezbedan identifikator za fajl sistem."""
     if not raw_model or not isinstance(raw_model, str):
@@ -48,6 +150,7 @@ def load_model_profile(model_name: str) -> dict:
                 data.setdefault("manufacturer", "")
                 data.setdefault("preferred_os_build", "")
                 data.setdefault("known_hwids", [])
+                data["usb"] = _normalize_usb_section(data.get("usb"))
                 return data
         except Exception as e:
             logger.warning(f"Neuspešno čitanje profila za {model_name}: {e}")
@@ -68,7 +171,11 @@ def load_model_profile(model_name: str) -> dict:
             "added_keys": []
         },
         "usb": {
-            "port_count": None
+            "port_count": None,
+            "confirmed": False,
+            "source": None,
+            "known_port_locations": [],
+            "observed_counts": [],
         },
         "history": []
     }
@@ -158,20 +265,175 @@ def update_keyboard_override(model_name: str, removed_keys: list = None, added_k
     save_model_profile(profile)
     return profile
 
-def update_usb_override(model_name: str, port_count: int, by: str = "serviser") -> dict:
-    """Ažurira broj USB portova za model sa revizijom istorije."""
+def update_usb_override(
+    model_name: str,
+    port_count: Optional[int] = None,
+    by: str = "serviser",
+    target_ports: Optional[int] = None,
+    detected_ports: Optional[int] = None,
+    physical_port_locations: Optional[list] = None,
+    charger_ports_count: Optional[int] = None,
+    max_typec_cap: Optional[int] = None,
+    manual_override: Optional[bool] = None,
+    serial: str = "",
+) -> dict:
+    """
+    Ažurira USB profil modela uz unazadnu kompatibilnost (manual override)
+    i samoučenje fizičkih USB portova sa anti-poisoning zaštitom.
+    """
+    if not isinstance(model_name, str) or not model_name.strip():
+        raise ValueError("Nedostaje validno ime modela")
+
+    port_count_int = _parse_bounded_int(port_count, "port_count", 1, _MAX_USB_PORTS)
+    target_int = _parse_bounded_int(target_ports, "target_ports", 0, _MAX_USB_PORTS)
+    detected_int = _parse_bounded_int(detected_ports, "detected_ports", 0, _MAX_USB_PORTS)
+    charger_int = _parse_bounded_int(charger_ports_count, "charger_ports_count", 0, _MAX_CHARGER_PORTS)
+    cap_int = _parse_bounded_int(max_typec_cap, "max_typec_cap", 0, _MAX_TYPEC_CAP)
+    effective_cap = _DEFAULT_MAX_TYPEC_CAP if cap_int is None else max(0, cap_int)
+
+    if manual_override is not None and not isinstance(manual_override, bool):
+        raise ValueError("Polje 'manual_override' mora biti boolean")
+    if by is not None and not isinstance(by, str):
+        raise ValueError("Polje 'by' mora biti string")
+    if serial is not None and not isinstance(serial, str):
+        raise ValueError("Polje 'serial' mora biti string")
+
+    clean_locs = _sanitize_physical_locations(physical_port_locations)
+
+    has_autolearn_fields = any(
+        v is not None
+        for v in (target_ports, detected_ports, physical_port_locations, charger_ports_count, max_typec_cap)
+    )
+    is_manual = (not has_autolearn_fields) if manual_override is None else bool(manual_override)
+
+    if is_manual and port_count_int is None:
+        raise ValueError("Nedostaje polje 'port_count' za manual override")
+
+    clean_by = str(by or "serviser").strip()[:64] or "serviser"
+    clean_serial = re.sub(r"[^A-Za-z0-9_-]", "", str(serial or "").strip().upper())[:64]
+
     profile = load_model_profile(model_name)
-    profile.setdefault("usb", {})["port_count"] = int(port_count)
+    usb = _normalize_usb_section(profile.get("usb"))
+    profile["usb"] = usb
 
     now_iso = datetime.now().isoformat()
-    profile.setdefault("history", []).append({
-        "type": "usb_override",
-        "timestamp": now_iso,
-        "by": by,
-        "details": {
-            "port_count": int(port_count)
+
+    # Unija jakih PCIROOT / ACPI fizičkih lokacija (uvek deduplikovano i ograničeno)
+    known_locs = list(usb.get("known_port_locations") or [])
+    known_upper = {loc.upper() for loc in known_locs}
+    for loc in clean_locs:
+        if len(known_locs) >= _MAX_LOCATIONS_LIMIT:
+            break
+        key = loc.upper()
+        if key not in known_upper:
+            known_upper.add(key)
+            known_locs.append(loc)
+    usb["known_port_locations"] = known_locs
+
+    if is_manual:
+        # Pravilo 3: Ručni override postavlja port_count, source="manual_override", confirmed=True
+        prev_port_count = usb.get("port_count")
+        usb["port_count"] = int(port_count_int)
+        usb["confirmed"] = True
+        usb["source"] = "manual_override"
+        usb["observed_counts"] = []
+
+        profile.setdefault("history", []).append({
+            "type": "usb_override",
+            "timestamp": now_iso,
+            "by": clean_by,
+            "details": {
+                "port_count": int(port_count_int),
+                "previous_port_count": prev_port_count,
+                "manual_override": True,
+                "serial": clean_serial,
+            },
+        })
+        save_model_profile(profile)
+        return profile
+
+    # Auto-learn mod (Pravilo 1 i Pravilo 2)
+    prev_port_count = usb.get("port_count")
+    was_confirmed = bool(usb.get("confirmed", False)) and prev_port_count is not None
+    current_count = int(prev_port_count) if prev_port_count is not None else 0
+
+    physical_count = len(clean_locs)
+    charger_count = charger_int if charger_int is not None else 0
+    capped_charger = min(charger_count, effective_cap)
+    effective_ports = physical_count + capped_charger
+
+    observed = list(usb.get("observed_counts") or [])
+    if physical_count > 0 or charger_count > 0 or (detected_int is not None and detected_int > 0):
+        obs_entry = {
+            "detected": int(detected_int if detected_int is not None else effective_ports),
+            "physical": physical_count,
+            "charger": charger_count,
+            "effective": effective_ports,
+            "serial": clean_serial,
+            "ts": now_iso,
         }
-    })
+        observed.append(obs_entry)
+        observed = observed[-_MAX_OBSERVED_COUNTS:]
+        usb["observed_counts"] = observed
+
+    known_count = len(known_locs)
+    new_count = current_count
+    autolearn_reason = None
+
+    # Pravilo 1: Nepobitni fizički dokaz iz unije known_port_locations
+    if known_count > new_count:
+        new_count = known_count
+        autolearn_reason = "known_port_locations"
+
+    # Pravilo 2: Kombinacija fizičkih portova + ograničen USB-C punjač
+    if effective_ports > 0:
+        if not was_confirmed:
+            if effective_ports > new_count:
+                new_count = effective_ports
+                autolearn_reason = autolearn_reason or "initial_effective_ports"
+            elif new_count > 0 and not autolearn_reason:
+                autolearn_reason = "initial_confirm"
+        elif effective_ports > new_count:
+            confirming_serials = set()
+            for item in observed:
+                item_sn = str(item.get("serial") or "").strip().upper()
+                if not item_sn:
+                    continue
+                item_eff = item.get("effective")
+                if item_eff is None:
+                    try:
+                        item_eff = int(item.get("physical", 0)) + min(int(item.get("charger", 0)), _DEFAULT_MAX_TYPEC_CAP)
+                    except (ValueError, TypeError):
+                        item_eff = 0
+                if int(item_eff) >= effective_ports:
+                    confirming_serials.add(item_sn)
+            if len(confirming_serials) >= 2:
+                new_count = effective_ports
+                autolearn_reason = "multi_serial_effective_ports"
+
+    if new_count > 0 and (known_count > 0 or effective_ports > 0) and (new_count != current_count or not was_confirmed):
+        usb["port_count"] = int(new_count)
+        usb["confirmed"] = True
+        usb["source"] = "autolearn"
+        profile.setdefault("history", []).append({
+            "type": "usb_autolearn",
+            "timestamp": now_iso,
+            "by": "serviser_autolearn",
+            "details": {
+                "port_count": int(new_count),
+                "previous_port_count": prev_port_count,
+                "known_locations_count": known_count,
+                "effective_ports": effective_ports,
+                "physical_count": physical_count,
+                "charger_ports_count": charger_count,
+                "max_typec_cap": effective_cap,
+                "target_ports": target_int,
+                "detected_ports": detected_int,
+                "serial": clean_serial,
+                "rule": autolearn_reason or "autolearn",
+            },
+        })
+
     save_model_profile(profile)
     return profile
 

@@ -208,7 +208,7 @@ namespace WIS.UI
         private string _status = "Pending"; // "Pending", "Active", "Completed", "Skipped", "Warning"
         private ObservableCollection<StepItem> _steps;
         private bool _isExpanded = true;
-        private bool _showStepsInOverview = true;
+        private bool _showStepsInOverview = false;
 
         public PhaseItem()
         {
@@ -367,7 +367,7 @@ namespace WIS.UI
         {
             PhaseAveragesSeconds = new Dictionary<int, double>();
             ModelAveragesSeconds = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-            SourceLabel = "Podrazumevani WIS v3 benchmark";
+            SourceLabel = LocalizationService.Get("MdlDefaultBenchmarkSource", "Podrazumevani WIS v3 benchmark");
         }
     }
 
@@ -382,7 +382,7 @@ namespace WIS.UI
         private bool _isIndeterminate;
         private string _elapsedText = "00:00";
         private string _etaText = "--:--";
-        private string _timingTooltip = "Trajanje i benchmark ETA procena";
+        private string _timingTooltip = LocalizationService.Get("MdlTimingTooltip", "Trajanje i benchmark ETA procena");
         private Brush _barBrush = CreateFrozenBrush(78, 201, 176);
         private Brush _badgeBrush = CreateFrozenBrush(0, 122, 204);
 
@@ -437,7 +437,7 @@ namespace WIS.UI
         {
             get
             {
-                return _isIndeterminate ? "U toku..." : string.Format("{0}%", _progress);
+                return _isIndeterminate ? LocalizationService.Get("MdlInProgress", "U toku...") : string.Format("{0}%", _progress);
             }
         }
     }
@@ -466,7 +466,7 @@ namespace WIS.UI
 
             if (normSev == "CRITICAL")
             {
-                badge = "KRITIČNO";
+                badge = LocalizationService.Get("MdlAlertCritBadge", "KRITIČNO");
                 accent = CreateFrozenBrush(231, 76, 60);
                 bg = CreateFrozenBrush(45, 27, 30);
                 border = CreateFrozenBrush(110, 43, 43);
@@ -474,7 +474,7 @@ namespace WIS.UI
             }
             else if (normSev == "WARNING")
             {
-                badge = "UPOZORENJE";
+                badge = LocalizationService.Get("MdlAlertWarnBadge", "UPOZORENJE");
                 accent = CreateFrozenBrush(243, 156, 18);
                 bg = CreateFrozenBrush(44, 36, 24);
                 border = CreateFrozenBrush(107, 81, 34);
@@ -482,7 +482,7 @@ namespace WIS.UI
             }
             else
             {
-                badge = "INFO";
+                badge = LocalizationService.Get("MdlAlertInfoBadge", "INFO");
                 accent = CreateFrozenBrush(56, 189, 248);
                 bg = CreateFrozenBrush(25, 36, 46);
                 border = CreateFrozenBrush(45, 78, 102);
@@ -510,7 +510,8 @@ namespace WIS.UI
         private string _id;
         private string _name;
         private string _status = "WAIT"; // "WAIT", "RUNNING", "OK", "WARN", "ERROR", "SKIPPED"
-        private string _detail = "U redu čekanja";
+        private string _detail = LocalizationService.Get("MdlAppDetailQueue", "U redu čekanja");
+        private string _detailLocKey = "MdlAppDetailQueue";
         private string _iconGlyph = "📦";
 
         public string Id
@@ -555,13 +556,14 @@ namespace WIS.UI
 
                 if (SetProperty(ref _status, norm))
                 {
-                    if (norm == "SKIPPED_DONE" && (string.IsNullOrEmpty(_detail) || _detail == "U redu čekanja"))
+                    bool isQueueDefault = string.IsNullOrEmpty(_detail) || _detailLocKey == "MdlAppDetailQueue" || _detail == "U redu čekanja";
+                    if (norm == "SKIPPED_DONE" && isQueueDefault)
                     {
-                        Detail = "Već instalirano";
+                        SetLocalizedDetail("MdlAppDetailSkippedDone", "Već instalirano");
                     }
-                    else if (norm == "SKIPPED_USER" && (string.IsNullOrEmpty(_detail) || _detail == "U redu čekanja"))
+                    else if (norm == "SKIPPED_USER" && isQueueDefault)
                     {
-                        Detail = "Preskočeno na zahtev servisera";
+                        SetLocalizedDetail("MdlAppDetailSkippedUser", "Preskočeno na zahtev servisera");
                     }
                     OnPropertyChanged("BadgeBackground");
                     OnPropertyChanged("BadgeForeground");
@@ -581,7 +583,17 @@ namespace WIS.UI
         public string Detail
         {
             get { return _detail; }
-            set { SetProperty(ref _detail, value); }
+            set
+            {
+                _detailLocKey = null;
+                SetProperty(ref _detail, value);
+            }
+        }
+
+        public void SetLocalizedDetail(string key, string fallback)
+        {
+            _detailLocKey = key;
+            SetProperty(ref _detail, LocalizationService.Get(key, fallback), "Detail");
         }
 
         public string StatusDisplay { get { return Status; } }
@@ -596,12 +608,12 @@ namespace WIS.UI
 
         public string RetryButtonText
         {
-            get { return LocalizationService.Get("AppRetryBtn", LocalizationService.Instance.IsChinese ? "↻ 重试" : "↻ Retry"); }
+            get { return LocalizationService.Get("AppRetryBtn", "↻ Retry"); }
         }
 
         public string RetryButtonTooltip
         {
-            get { return LocalizationService.Get("AppRetryTooltip", LocalizationService.Instance.IsChinese ? "重试安装此应用程序" : "Ponovo pokreni instalaciju ovog programa"); }
+            get { return LocalizationService.Get("AppRetryTooltip", "Ponovo pokreni instalaciju ovog programa"); }
         }
 
         public Brush BadgeBackground
@@ -654,24 +666,27 @@ namespace WIS.UI
         {
             get
             {
-                bool isZh = LocalizationService.Instance.IsChinese;
                 switch (Status)
                 {
-                    case "OK": return isZh ? "✓ 完成" : "✓ OK";
-                    case "RUNNING": return isZh ? "⚙ 正在进行" : "⚙ RAD";
-                    case "WARN": return isZh ? "⚠ 未完成" : "⚠ UPOZ.";
-                    case "ERROR": return isZh ? "✗ 错误" : "✗ GREŠKA";
-                    case "SKIPPED_DONE": return isZh ? "» 已跳过" : "» PRESKOČENO";
+                    case "OK": return LocalizationService.Get("MdlAppStatusOk", "✓ OK");
+                    case "RUNNING": return LocalizationService.Get("MdlAppStatusRunning", "⚙ RAD");
+                    case "WARN": return LocalizationService.Get("MdlAppStatusWarn", "⚠ UPOZ.");
+                    case "ERROR": return LocalizationService.Get("MdlAppStatusError", "✗ GREŠKA");
+                    case "SKIPPED_DONE": return LocalizationService.Get("MdlAppStatusSkippedDone", "» PRESKOČENO");
                     case "SKIPPED_USER":
-                    case "SKIPPED": return isZh ? "⏭ 已跳过" : "⏭ PRESKOČENO";
+                    case "SKIPPED": return LocalizationService.Get("MdlAppStatusSkipped", "⏭ PRESKOČENO");
                     case "WAIT":
-                    default: return isZh ? "⏳ 等待中" : "⏳ ČEKA";
+                    default: return LocalizationService.Get("MdlAppStatusWait", "⏳ ČEKA");
                 }
             }
         }
 
         public void RefreshLocalization()
         {
+            if (!string.IsNullOrEmpty(_detailLocKey))
+            {
+                SetProperty(ref _detail, LocalizationService.Get(_detailLocKey, _detail), "Detail");
+            }
             OnPropertyChanged("IconText");
             OnPropertyChanged("RetryButtonText");
             OnPropertyChanged("RetryButtonTooltip");
@@ -742,10 +757,10 @@ namespace WIS.UI
 
     public class PnpProblemDevice : BaseViewModel
     {
-        private string _name = "Nepoznat uređaj";
+        private string _name = LocalizationService.Get("MdlUnknownDevice", "Nepoznat uređaj");
         private string _deviceId = "";
         private int _errorCode = 0;
-        private string _errorStatus = "Greška drajvera";
+        private string _errorStatus = LocalizationService.Get("MdlDriverError", "Greška drajvera");
 
         public string Name { get { return _name; } set { SetProperty(ref _name, value); } }
         public string DeviceId { get { return _deviceId; } set { SetProperty(ref _deviceId, value); } }
@@ -762,38 +777,38 @@ namespace WIS.UI
     {
         private string _matrixCode = "PENDING";
         private string _statusLevel = "INFO";
-        private string _statusTitle = "PROVERA AUTOPILOTA U TOKU...";
-        private string _statusDescription = "Sistem vrši duboku forenziku registra, sertifikata i proveru Microsoft ZTD oblaka.";
-        private string _recommendedAction = "Sačekajte završetak automatske analize...";
+        private string _statusTitle = LocalizationService.Get("ApMatrixTitle_Scanning", "PROVERA AUTOPILOTA U TOKU...");
+        private string _statusDescription = LocalizationService.Get("ApMatrixDesc_Scanning", "Sistem vrši duboku forenziku registra, sertifikata i proveru Microsoft ZTD oblaka.");
+        private string _recommendedAction = LocalizationService.Get("ApMatrixRec_Scanning", "Sačekajte završetak automatske analize...");
         private Brush _statusBrush = CreateFrozenBrush(140, 140, 140);
 
         // Hardverski otisak
-        private string _hwManufacturer = "Učitavanje...";
-        private string _hwModel = "Učitavanje...";
-        private string _hwSerialNumber = "Učitavanje...";
-        private string _hwSmbiosUuid = "Učitavanje...";
+        private string _hwManufacturer = LocalizationService.Get("MdlLoading", "Učitavanje...");
+        private string _hwModel = LocalizationService.Get("MdlLoading", "Učitavanje...");
+        private string _hwSerialNumber = LocalizationService.Get("MdlLoading", "Učitavanje...");
+        private string _hwSmbiosUuid = LocalizationService.Get("MdlLoading", "Učitavanje...");
         private bool _tpmPresent = false;
         private bool _tpmReady = false;
-        private string _tpmStatusText = "Provera...";
+        private string _tpmStatusText = LocalizationService.Get("MdlChecking", "Provera...");
         private Brush _tpmStatusBrush = CreateFrozenBrush(140, 140, 140);
 
         // Lokalna forenzika
         private bool _hasLocalTraces = false;
-        private string _localTracesText = "Čisto (Nema registarskih tragova)";
+        private string _localTracesText = LocalizationService.Get("ApTracesClean", "Čisto (Nema registarskih tragova)");
         private Brush _localTracesBrush = CreateFrozenBrush(46, 204, 113);
-        private string _tenantDomain = "Nema (Nije dodeljen)";
+        private string _tenantDomain = LocalizationService.Get("MdlApNoneNotAssigned", "Nema (Nije dodeljen)");
         private string _tenantId = "N/A";
         private string _assignedDeviceName = "N/A";
-        private string _azureAdStatus = "Nije pridružen (NO)";
-        private string _mdmStatus = "Nije upisan (NO)";
+        private string _azureAdStatus = LocalizationService.Get("MdlApNotJoined", "Nije pridružen (NO)");
+        private string _mdmStatus = LocalizationService.Get("MdlApNotEnrolled", "Nije upisan (NO)");
         private int _orgCertificatesCount = 0;
 
         // Cloud ZTD
         private bool _cloudChecked = false;
         private bool _isRegistered = false;
         private bool _isLocked = false;
-        private string _cloudCheckedText = "Čeka se provera...";
-        private string _cloudStatusText = "Povezivanje sa ztd.dds.microsoft.com...";
+        private string _cloudCheckedText = LocalizationService.Get("MdlApCloudWaiting", "Čeka se provera...");
+        private string _cloudStatusText = LocalizationService.Get("MdlApCloudConnecting", "Povezivanje sa ztd.dds.microsoft.com...");
         private Brush _cloudStatusBrush = CreateFrozenBrush(140, 140, 140);
         private string _ztdErrorCode = "N/A";
         private string _profileTenantDomain = "";
@@ -803,7 +818,7 @@ namespace WIS.UI
         // UI Stanje
         private bool _isAlertActive = false;
         private bool _isScanning = false;
-        private string _lastScanTime = "Nije pokrenuto";
+        private string _lastScanTime = LocalizationService.Get("MdlNotStarted", "Nije pokrenuto");
         private ICommand _rescanCommand;
 
         public bool IsAlertActive { get { return _isAlertActive; } set { SetProperty(ref _isAlertActive, value); } }
@@ -876,7 +891,7 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _hasLocalTraces, value))
                 {
-                    LocalTracesText = value ? "PRONAĐENI TRAGOVI U REGISTRU" : "Čisto (Nema registarskih zapisa)";
+                    UpdateTracesDisplay();
                     LocalTracesBrush = value ? CreateFrozenBrush(231, 76, 60) : CreateFrozenBrush(46, 204, 113);
                 }
             }
@@ -898,7 +913,9 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _cloudChecked, value))
                 {
-                    CloudCheckedText = value ? "Završena online provera" : "Offline / Nije provereno";
+                    CloudCheckedText = value
+                        ? LocalizationService.Get("ApCloudOnlineChecked", "Završena online provera")
+                        : LocalizationService.Get("ApCloudOffline", "Offline / Nije provereno");
                 }
             }
         }
@@ -1104,7 +1121,7 @@ namespace WIS.UI
     public class HardwareInfoViewModel : BaseViewModel
     {
         // CPU
-        private string _cpuModel = "Učitavanje CPU...";
+        private string _cpuModel = LocalizationService.Get("MdlHwLoadingCpu", "Učitavanje CPU...");
         private string _cpuCoresThreads = "N/A";
         private string _cpuClock = "N/A";
         private string _cpuSocket = "N/A";
@@ -1115,12 +1132,12 @@ namespace WIS.UI
         public string CpuSocket { get { return _cpuSocket; } set { SetProperty(ref _cpuSocket, value); } }
 
         // RAM
-        private string _ramSummary = "Učitavanje RAM...";
+        private string _ramSummary = LocalizationService.Get("MdlHwLoadingRam", "Učitavanje RAM...");
         private string _ramDetails = "N/A";
         private string _ramSpeed = "N/A";
         private string _ramType = "N/A";
         private bool _isRamSoldered = false;
-        private string _ramSolderedBadge = "Standardni moduli (SO-DIMM)";
+        private string _ramSolderedBadge = LocalizationService.Get("HwRamSodimm", "Standardni moduli (SO-DIMM)");
 
         public string RamSummary { get { return _ramSummary; } set { SetProperty(ref _ramSummary, value); } }
         public string RamDetails { get { return _ramDetails; } set { SetProperty(ref _ramDetails, value); } }
@@ -1141,21 +1158,20 @@ namespace WIS.UI
 
         public void RefreshLocalization()
         {
-            bool isZh = LocalizationService.Instance.IsChinese;
             if (_isRamSoldered)
             {
-                RamSolderedBadge = isZh ? "板载集成 (LPDDR / 焊接)" : "Integrisan (LPDDR / Soldered)";
+                RamSolderedBadge = LocalizationService.Get("MdlRamSoldered", "Integrisan (LPDDR / Soldered)");
             }
             else
             {
-                RamSolderedBadge = isZh ? "标准模块 (SO-DIMM)" : "Standardni moduli (SO-DIMM)";
+                RamSolderedBadge = LocalizationService.Get("HwRamSodimm", "Standardni moduli (SO-DIMM)");
             }
 
             if (_hasIrCamera)
             {
                 IrCameraStatus = LocalizationService.Instance.GetString("HwIrYes", "👁️ Da (Windows Hello Face)");
             }
-            else if (_irCameraStatus != "Detekcija IR..." && _irCameraStatus != "检测中...")
+            else if (_irCameraStatus != "Detekcija IR..." && _irCameraStatus != "检测中..." && _irCameraStatus != LocalizationService.Get("MdlHwDetectingIr", "Detekcija IR..."))
             {
                 IrCameraStatus = LocalizationService.Instance.GetString("HwIrNo", "Ne (Standardna RGB kamera)");
             }
@@ -1165,29 +1181,29 @@ namespace WIS.UI
                 string devName = !string.IsNullOrEmpty(_fingerprintDeviceName) ? _fingerprintDeviceName : "Sensor";
                 FingerprintSensor = string.Format(LocalizationService.Instance.GetString("HwFpYes", "👆 Da ({0})"), devName);
             }
-            else if (_fingerprintSensor != "Detekcija senzora..." && _fingerprintSensor != "检测中...")
+            else if (_fingerprintSensor != "Detekcija senzora..." && _fingerprintSensor != "检测中..." && _fingerprintSensor != LocalizationService.Get("MdlHwDetectingSensor", "Detekcija senzora..."))
             {
                 FingerprintSensor = LocalizationService.Instance.GetString("HwFpNo", "Nije detektovan");
             }
 
-            if (_hasBacklitKeyboard)
+            if (_hasBacklitKeyboard || _backlitKeyboardConfirmed == true)
             {
                 BacklitKeyboardStatus = LocalizationService.Instance.GetString("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
             }
-            else if (_backlitIsManual)
-            {
-                BacklitKeyboardStatus = LocalizationService.Instance.GetString("HwKbCheckManual", "Standardna / Proveri ručno (Fn+Space)");
-            }
-            else if (_backlitKeyboardStatus != "Detekcija..." && _backlitKeyboardStatus != "检测中...")
+            else if (_backlitKeyboardConfirmed == false)
             {
                 BacklitKeyboardStatus = LocalizationService.Instance.GetString("HwKbNo", "Standardna (Bez osvetljenja)");
+            }
+            else if (_backlitIsManual || (_backlitKeyboardStatus != "Detekcija..." && _backlitKeyboardStatus != "检测中..." && _backlitKeyboardStatus != LocalizationService.Get("MdlDetecting", "Detekcija...")))
+            {
+                BacklitKeyboardStatus = LocalizationService.Get("HwKbUnconfirmed", "Nije potvrđeno (provera u Fazi 5)");
             }
 
             if (_hasTouchscreen)
             {
                 TouchscreenStatus = LocalizationService.Instance.GetString("HwTouchYesSimple", "🖐️ Podržan (Touchscreen)");
             }
-            else if (_touchscreenStatus != "Detekcija..." && _touchscreenStatus != "检测中...")
+            else if (_touchscreenStatus != "Detekcija..." && _touchscreenStatus != "检测中..." && _touchscreenStatus != LocalizationService.Get("MdlDetecting", "Detekcija..."))
             {
                 TouchscreenStatus = LocalizationService.Instance.GetString("HwTouchNo", "Nije detektovan (Standardni displej)");
             }
@@ -1196,7 +1212,7 @@ namespace WIS.UI
             {
                 AudioSpeakers = "🔊 " + _speakersDeviceName;
             }
-            else if (_audioSpeakers != "Detekcija..." && _audioSpeakers != "检测中...")
+            else if (_audioSpeakers != "Detekcija..." && _audioSpeakers != "检测中..." && _audioSpeakers != LocalizationService.Get("MdlDetecting", "Detekcija..."))
             {
                 AudioSpeakers = LocalizationService.Instance.GetString("HwAudioSpeakersDefault", "Standardni Audio uređaj");
             }
@@ -1205,23 +1221,27 @@ namespace WIS.UI
             {
                 MicrophoneStatus = string.Format(LocalizationService.Instance.GetString("HwMicYes", "🎤 Da ({0})"), _micDeviceName);
             }
-            else if (_microphoneStatus != "Detekcija..." && _microphoneStatus != "检测中...")
+            else if (_microphoneStatus != "Detekcija..." && _microphoneStatus != "检测中..." && _microphoneStatus != LocalizationService.Get("MdlDetecting", "Detekcija..."))
             {
                 MicrophoneStatus = LocalizationService.Instance.GetString("HwMicNo", "Nije detektovan");
             }
+
+            OnPropertyChanged("OverviewResolution");
+            OnPropertyChanged("OverviewResolutionTooltip");
+            RebuildOverviewPeripherals(false);
         }
-        private string _ramSlotsSummary = "Detekcija slotova...";
+        private string _ramSlotsSummary = LocalizationService.Get("MdlHwDetectingSlots", "Detekcija slotova...");
         public string RamSlotsSummary { get { return _ramSlotsSummary; } set { SetProperty(ref _ramSlotsSummary, value); } }
         public int RamTotalSlots { get; set; }
         public int RamUsedSlots { get; set; }
         public int RamFreeSlots { get; set; }
 
         // SSD / Skladište
-        private string _storageModel = "Učitavanje SSD/Diska...";
+        private string _storageModel = LocalizationService.Get("MdlHwLoadingStorage", "Učitavanje SSD/Diska...");
         private string _storageType = "NVMe / SATA";
         private string _storageHealth = "100%";
-        private string _storageHours = "N/A (Zahteva S.M.A.R.T.)";
-        private string _storageTemp = "N/A (Senzor nedostupan)";
+        private string _storageHours = LocalizationService.Get("MdlHwStorageHoursNa", "N/A (Zahteva S.M.A.R.T.)");
+        private string _storageTemp = LocalizationService.Get("MdlHwStorageTempNa", "N/A (Senzor nedostupan)");
         private SolidColorBrush _storageHealthBrush = CreateFrozenBrush(46, 204, 113);
 
         public string StorageModel { get { return _storageModel; } set { SetProperty(ref _storageModel, value); } }
@@ -1245,10 +1265,10 @@ namespace WIS.UI
         public SolidColorBrush BatteryHealthBrush { get { return _batteryHealthBrush; } set { SetProperty(ref _batteryHealthBrush, value); } }
 
         // GPU & Displej
-        private string _gpuPrimary = "Učitavanje GPU...";
+        private string _gpuPrimary = LocalizationService.Get("MdlHwLoadingGpu", "Učitavanje GPU...");
         private string _gpuSecondary = "";
         private bool _hasDualGpu = false;
-        private string _displaySpec = "Detekcija displeja...";
+        private string _displaySpec = LocalizationService.Get("MdlHwDetectingDisplay", "Detekcija displeja...");
 
         public string GpuPrimary
         {
@@ -1278,7 +1298,7 @@ namespace WIS.UI
             }
         }
 
-        private string _gpuPrimaryVram = "Učitavanje...";
+        private string _gpuPrimaryVram = LocalizationService.Get("MdlLoading", "Učitavanje...");
         public string GpuPrimaryVram
         {
             get { return _gpuPrimaryVram; }
@@ -1297,13 +1317,13 @@ namespace WIS.UI
             get { return _hasTouchscreen; }
             set { if (SetProperty(ref _hasTouchscreen, value)) RebuildOverviewPeripherals(false); }
         }
-        private string _touchscreenStatus = "Detekcija...";
+        private string _touchscreenStatus = LocalizationService.Get("MdlDetecting", "Detekcija...");
         public string TouchscreenStatus { get { return _touchscreenStatus; } set { SetProperty(ref _touchscreenStatus, value); } }
         private SolidColorBrush _touchscreenBrush = CreateFrozenBrush(136, 136, 136);
         public SolidColorBrush TouchscreenBrush { get { return _touchscreenBrush; } set { SetProperty(ref _touchscreenBrush, value); } }
 
         // Matična ploča & BIOS
-        private string _motherboardModel = "Učitavanje ploče...";
+        private string _motherboardModel = LocalizationService.Get("MdlHwLoadingMb", "Učitavanje ploče...");
         private string _motherboardManufacturer = "N/A";
         private string _serialNumber = "N/A";
         private string _biosVersionDate = "N/A";
@@ -1316,7 +1336,7 @@ namespace WIS.UI
         public string SecureBootStatus { get { return _secureBootStatus; } set { SetProperty(ref _secureBootStatus, value); } }
 
         // Periferije & Biometrija (v2.7.2)
-        private string _webcamModel = "Učitavanje kamere...";
+        private string _webcamModel = LocalizationService.Get("HwCamDetecting", "Detekcija kamere...");
         private bool _hasWebcam = false;
         private SolidColorBrush _webcamBrush = CreateFrozenBrush(136, 136, 136);
 
@@ -1328,7 +1348,7 @@ namespace WIS.UI
         }
         public SolidColorBrush WebcamBrush { get { return _webcamBrush; } set { SetProperty(ref _webcamBrush, value); } }
 
-        private string _irCameraStatus = "Detekcija IR...";
+        private string _irCameraStatus = LocalizationService.Get("MdlHwDetectingIr", "Detekcija IR...");
         private bool _hasIrCamera = false;
         private SolidColorBrush _irCameraBrush = CreateFrozenBrush(136, 136, 136);
 
@@ -1340,8 +1360,11 @@ namespace WIS.UI
         }
         public SolidColorBrush IrCameraBrush { get { return _irCameraBrush; } set { SetProperty(ref _irCameraBrush, value); } }
 
-        private string _backlitKeyboardStatus = "Detekcija...";
+        private string _backlitKeyboardStatus = LocalizationService.Get("MdlDetecting", "Detekcija...");
         private bool _hasBacklitKeyboard = false;
+        private bool? _backlitKeyboardConfirmed = null;
+        private string _backlitKeyboardReason = "";
+        private bool _hasAuthoritativeBacklitVerdict = false;
         private SolidColorBrush _backlitKeyboardBrush = CreateFrozenBrush(136, 136, 136);
 
         public string BacklitKeyboardStatus { get { return _backlitKeyboardStatus; } set { SetProperty(ref _backlitKeyboardStatus, value); } }
@@ -1350,9 +1373,84 @@ namespace WIS.UI
             get { return _hasBacklitKeyboard; }
             set { if (SetProperty(ref _hasBacklitKeyboard, value)) RebuildOverviewPeripherals(false); }
         }
+        public bool? BacklitKeyboardConfirmed
+        {
+            get { return _backlitKeyboardConfirmed; }
+            set { SetProperty(ref _backlitKeyboardConfirmed, value); }
+        }
+        public string BacklitKeyboardReason
+        {
+            get { return _backlitKeyboardReason; }
+            set { SetProperty(ref _backlitKeyboardReason, value); }
+        }
+        public bool HasAuthoritativeBacklitVerdict
+        {
+            get { return _hasAuthoritativeBacklitVerdict; }
+            set { SetProperty(ref _hasAuthoritativeBacklitVerdict, value); }
+        }
         public SolidColorBrush BacklitKeyboardBrush { get { return _backlitKeyboardBrush; } set { SetProperty(ref _backlitKeyboardBrush, value); } }
 
-        private string _fingerprintSensor = "Detekcija senzora...";
+        /// <summary>
+        /// Primenjuje autoritativnu odluku za pozadinsko osvetljenje tastature (iz Faze 5 HwTest-a ili OEM BOM-a).
+        /// </summary>
+        public void ApplyBacklitKeyboardVerdict(bool? confirmed, string sourceReason)
+        {
+            ApplyBacklitKeyboardState(confirmed, sourceReason, confirmed.HasValue);
+        }
+
+        internal void ApplyDetectedBacklitKeyboard(bool? confirmed, string sourceReason)
+        {
+            if (_hasAuthoritativeBacklitVerdict && _backlitKeyboardConfirmed.HasValue)
+            {
+                return;
+            }
+            ApplyBacklitKeyboardState(confirmed, sourceReason, false);
+        }
+
+        private void ApplyBacklitKeyboardState(bool? confirmed, string sourceReason, bool isAuthoritative)
+        {
+            _backlitKeyboardConfirmed = confirmed;
+            _backlitKeyboardReason = sourceReason ?? "";
+            if (isAuthoritative)
+            {
+                _hasAuthoritativeBacklitVerdict = true;
+            }
+            else if (!confirmed.HasValue)
+            {
+                _hasAuthoritativeBacklitVerdict = false;
+            }
+
+            if (confirmed == true)
+            {
+                _hasBacklitKeyboard = true;
+                _backlitIsManual = false;
+                BacklitKeyboardStatus = LocalizationService.Get("HwKbYes", "💡 Da (Pozadinsko osvetljenje)");
+                BacklitKeyboardBrush = CreateFrozenBrush(78, 201, 176);
+            }
+            else if (confirmed == false)
+            {
+                _hasBacklitKeyboard = false;
+                _backlitIsManual = false;
+                BacklitKeyboardStatus = LocalizationService.Get("HwKbNo", "Standardna (Bez osvetljenja)");
+                BacklitKeyboardBrush = CreateFrozenBrush(136, 136, 136);
+            }
+            else
+            {
+                _hasBacklitKeyboard = false;
+                _backlitIsManual = true;
+                BacklitKeyboardStatus = LocalizationService.Get("HwKbUnconfirmed", "Nije potvrđeno (provera u Fazi 5)");
+                BacklitKeyboardBrush = CreateFrozenBrush(241, 196, 15);
+            }
+
+            OnPropertyChanged("HasBacklitKeyboard");
+            OnPropertyChanged("BacklitIsManual");
+            OnPropertyChanged("BacklitKeyboardConfirmed");
+            OnPropertyChanged("BacklitKeyboardReason");
+            OnPropertyChanged("HasAuthoritativeBacklitVerdict");
+            RebuildOverviewPeripherals(false);
+        }
+
+        private string _fingerprintSensor = LocalizationService.Get("MdlHwDetectingSensor", "Detekcija senzora...");
         private bool _hasFingerprint = false;
         private SolidColorBrush _fingerprintBrush = CreateFrozenBrush(136, 136, 136);
 
@@ -1510,7 +1608,7 @@ namespace WIS.UI
                 {
                     return _displaySpec;
                 }
-                return "Detekcija...";
+                return LocalizationService.Get("MdlDetecting", "Detekcija...");
             }
         }
 
@@ -1620,12 +1718,14 @@ namespace WIS.UI
         private static string FormatGpuWithVram(string name, string vram)
         {
             string n = (name ?? "").Trim();
-            if (string.IsNullOrEmpty(n)) return "Detekcija...";
+            if (string.IsNullOrEmpty(n)) return LocalizationService.Get("MdlDetecting", "Detekcija...");
             string v = (vram ?? "").Trim();
             if (string.IsNullOrEmpty(v) ||
                 string.Equals(v, "N/A", StringComparison.OrdinalIgnoreCase) ||
                 v.IndexOf("Učitavanje", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 v.IndexOf("Detekcija", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                v.IndexOf("加载", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                v.IndexOf("检测", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 n.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 return n;
@@ -1634,9 +1734,9 @@ namespace WIS.UI
         }
 
         // Audio zvučnici i mikrofon (v2.14.0 - HW-07)
-        private string _audioSpeakers = "Detekcija...";
+        private string _audioSpeakers = LocalizationService.Get("MdlDetecting", "Detekcija...");
         private SolidColorBrush _audioSpeakersBrush = CreateFrozenBrush(136, 136, 136);
-        private string _microphoneStatus = "Detekcija...";
+        private string _microphoneStatus = LocalizationService.Get("MdlDetecting", "Detekcija...");
         private SolidColorBrush _microphoneBrush = CreateFrozenBrush(136, 136, 136);
 
         public string AudioSpeakers { get { return _audioSpeakers; } set { SetProperty(ref _audioSpeakers, value); } }
@@ -1657,20 +1757,23 @@ namespace WIS.UI
         private string _micDeviceName = "";
         public string MicDeviceName { get { return _micDeviceName; } set { SetProperty(ref _micDeviceName, value); } }
 
-        // Dodatne periferije i Wi-Fi verzija za karticu Pregleda (WIS-TASK-261)
+        // Dodatne periferije i Wi-Fi verzija za karticu Pregleda (WIS-TASK-261 / V343-07)
         private string _wifiAdapterName = "";
         private string _wifiStandardLabel = "";
         private bool _hasWifi = false;
         private bool _hasBluetooth = false;
         private string _bluetoothInfo = "";
+        private string _bluetoothVersionLabel = "";
         private bool _hasWwan = false;
         private string _wwanInfo = "";
         private string _wwanAdapterName = "";
+        private bool _hasEsim = false;
+        private string _esimInfo = "";
         private bool _hasSmartCard = false;
         private bool _hasNfc = false;
         private bool _hasThunderbolt = false;
         private bool _peripheralsDetectionCompleted = false;
-        private string _overviewPeripheralsEmptyText = "Detekcija periferija...";
+        private string _overviewPeripheralsEmptyText = LocalizationService.Get("MdlPeriphEmptyDetecting", "Detekcija periferija...");
         private readonly ObservableCollection<PeripheralBadgeItem> _overviewPeripherals = new ObservableCollection<PeripheralBadgeItem>();
 
         public string WifiAdapterName { get { return _wifiAdapterName; } set { SetProperty(ref _wifiAdapterName, value); } }
@@ -1690,6 +1793,11 @@ namespace WIS.UI
             set { if (SetProperty(ref _hasBluetooth, value)) RebuildOverviewPeripherals(false); }
         }
         public string BluetoothInfo { get { return _bluetoothInfo; } set { SetProperty(ref _bluetoothInfo, value); } }
+        public string BluetoothVersionLabel
+        {
+            get { return _bluetoothVersionLabel; }
+            set { if (SetProperty(ref _bluetoothVersionLabel, value)) RebuildOverviewPeripherals(false); }
+        }
         public bool HasWwan
         {
             get { return _hasWwan; }
@@ -1701,6 +1809,16 @@ namespace WIS.UI
             set { if (SetProperty(ref _wwanInfo, value)) RebuildOverviewPeripherals(false); }
         }
         public string WwanAdapterName { get { return _wwanAdapterName; } set { SetProperty(ref _wwanAdapterName, value); } }
+        public bool HasEsim
+        {
+            get { return _hasEsim; }
+            set { if (SetProperty(ref _hasEsim, value)) RebuildOverviewPeripherals(false); }
+        }
+        public string EsimInfo
+        {
+            get { return _esimInfo; }
+            set { if (SetProperty(ref _esimInfo, value)) RebuildOverviewPeripherals(false); }
+        }
         public bool HasSmartCard
         {
             get { return _hasSmartCard; }
@@ -1748,55 +1866,60 @@ namespace WIS.UI
             }
             if (_hasWwan)
             {
-                string wwanLabel = !string.IsNullOrWhiteSpace(_wwanInfo) ? _wwanInfo : "4G LTE / 5G modem";
+                string wwanLabel = !string.IsNullOrWhiteSpace(_wwanInfo) ? _wwanInfo : LocalizationService.Get("MdlPeriphWwanFallback", "4G LTE / 5G kartica");
                 string wwanDetail = !string.IsNullOrWhiteSpace(_wwanAdapterName) ? _wwanAdapterName : wwanLabel;
                 AddPeripheralBadge(wwanLabel, wwanDetail, neutralAccent, neutralBorder, neutralBg);
             }
+            if (_hasEsim)
+            {
+                string esimDetail = !string.IsNullOrWhiteSpace(_esimInfo) ? _esimInfo : LocalizationService.Get("MdlPeriphEsimFallback", "Podržan eSIM (eUICC)");
+                AddPeripheralBadge("eSIM", esimDetail, neutralAccent, neutralBorder, neutralBg);
+            }
             if (_hasBluetooth)
             {
-                AddPeripheralBadge("Bluetooth", _bluetoothInfo, neutralAccent, neutralBorder, neutralBg);
+                string btLabel = !string.IsNullOrWhiteSpace(_bluetoothVersionLabel) ? _bluetoothVersionLabel : LocalizationService.Get("MdlPeriphBluetooth", "Bluetooth");
+                AddPeripheralBadge(btLabel, _bluetoothInfo, neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasBacklitKeyboard)
             {
-                AddPeripheralBadge("Svetleća tastatura", _backlitKeyboardStatus, neutralAccent, neutralBorder, neutralBg);
+                string kbDetail = !string.IsNullOrWhiteSpace(_backlitKeyboardReason) ? _backlitKeyboardReason : _backlitKeyboardStatus;
+                AddPeripheralBadge(LocalizationService.Get("MdlPeriphBacklitKb", "Svetleća tastatura"), kbDetail, neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasIrCamera)
             {
-                AddPeripheralBadge("IR kamera (Hello)", _irCameraStatus, neutralAccent, neutralBorder, neutralBg);
+                AddPeripheralBadge(LocalizationService.Get("MdlPeriphIrCam", "IR kamera (Hello)"), _irCameraStatus, neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasFingerprint)
             {
                 string fpDetail = !string.IsNullOrWhiteSpace(_fingerprintDeviceName) ? _fingerprintDeviceName : _fingerprintSensor;
-                AddPeripheralBadge("Fingerprint reader", fpDetail, neutralAccent, neutralBorder, neutralBg);
+                AddPeripheralBadge(LocalizationService.Get("MdlPeriphFingerprint", "Fingerprint reader"), fpDetail, neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasTouchscreen)
             {
-                AddPeripheralBadge("Touchscreen", _touchscreenStatus, neutralAccent, neutralBorder, neutralBg);
-            }
-            if (_hasWebcam)
-            {
-                AddPeripheralBadge("Web kamera", _webcamModel, neutralAccent, neutralBorder, neutralBg);
-            }
-            if (_hasThunderbolt)
-            {
-                AddPeripheralBadge("Thunderbolt / USB4", "Podržan Thunderbolt / USB4 kontroler", neutralAccent, neutralBorder, neutralBg);
+                AddPeripheralBadge(LocalizationService.Get("MdlPeriphTouchscreen", "Touchscreen"), _touchscreenStatus, neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasSmartCard)
             {
-                AddPeripheralBadge("SmartCard čitač", "Detektovan čitač pametnih kartica", neutralAccent, neutralBorder, neutralBg);
+                AddPeripheralBadge(
+                    LocalizationService.Get("MdlPeriphSmartCard", "SmartCard čitač"),
+                    LocalizationService.Get("MdlPeriphSmartCardDetail", "Detektovan čitač pametnih kartica"),
+                    neutralAccent, neutralBorder, neutralBg);
             }
             if (_hasNfc)
             {
-                AddPeripheralBadge("NFC", "Detektovan NFC / Proximity uređaj", neutralAccent, neutralBorder, neutralBg);
+                AddPeripheralBadge(
+                    LocalizationService.Get("MdlPeriphNfc", "NFC"),
+                    LocalizationService.Get("MdlPeriphNfcDetail", "Detektovan NFC / Proximity uređaj"),
+                    neutralAccent, neutralBorder, neutralBg);
             }
 
             if (_peripheralsDetectionCompleted && _overviewPeripherals.Count == 0)
             {
-                OverviewPeripheralsEmptyText = "Nema detektovanih dodatnih periferija";
+                OverviewPeripheralsEmptyText = LocalizationService.Get("MdlPeriphEmptyNone", "Nema detektovanih dodatnih periferija");
             }
             else if (_overviewPeripherals.Count == 0)
             {
-                OverviewPeripheralsEmptyText = "Detekcija periferija...";
+                OverviewPeripheralsEmptyText = LocalizationService.Get("MdlPeriphEmptyDetecting", "Detekcija periferija...");
             }
 
             OnPropertyChanged("HasOverviewPeripherals");
@@ -1822,8 +1945,8 @@ namespace WIS.UI
 
     public class DriverItemViewModel : BaseViewModel
     {
-        private string _name = "Nepoznat uređaj";
-        private string _manufacturer = "Nepoznato";
+        private string _name = LocalizationService.Get("MdlUnknownDevice", "Nepoznat uređaj");
+        private string _manufacturer = LocalizationService.Get("MdlUnknown", "Nepoznato");
         private string _driverVersion = "N/A";
         private string _driverDate = "N/A";
         private string _deviceId = "";
@@ -2120,7 +2243,7 @@ namespace WIS.UI
         private ObservableCollection<DriverItemViewModel> _missingDevices;
         private ObservableCollection<DriverCategoryViewModel> _categories;
         private bool _hasMissingDevices = false;
-        private string _missingSummaryText = "Učitavanje statusa drajvera...";
+        private string _missingSummaryText = LocalizationService.Get("MdlDrvLoadingSummary", "Učitavanje statusa drajvera...");
         private SolidColorBrush _missingSummaryBrush = CreateFrozenBrush(140, 140, 140);
         private bool _isScanning = false;
         private string _searchQuery = "";
@@ -2477,11 +2600,11 @@ namespace WIS.UI
     public class MainViewModel : BaseViewModel
     {
         // ------------------ HEADER ------------------
-        private string _computerModel = "Učitavanje konfiguracije...";
+        private string _computerModel = LocalizationService.Get("MdlLoadingConfig", "Učitavanje konfiguracije...");
         private string _serialNumber = "N/A";
-        private string _cpuInfo = "Detekcija CPU-a...";
-        private string _ramInfo = "Detekcija RAM-a...";
-        private string _diskInfo = "Detekcija SSD/NVMe diska...";
+        private string _cpuInfo = LocalizationService.Get("MdlDetectingCpu", "Detekcija CPU-a...");
+        private string _ramInfo = LocalizationService.Get("MdlDetectingRam", "Detekcija RAM-a...");
+        private string _diskInfo = LocalizationService.Get("MdlDetectingDisk", "Detekcija SSD/NVMe diska...");
         private string _durationString = "00:00:00";
         private TimeSpan _elapsedDuration = TimeSpan.Zero;
         private string _appVersionText = "WIS UI v" + System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
@@ -2509,7 +2632,7 @@ namespace WIS.UI
         // ------------------ SREDNJI PANEL: QR KOD KARTONA UREĐAJA (SERVISHUB) ------------------
         private string _deviceCardHubUrl = "";
         private string _deviceCardUrl = "";
-        private string _deviceCardStatusText = "Povezivanje sa ServisHub serverom...";
+        private string _deviceCardStatusText = LocalizationService.Get("MdlHubConnecting", "Povezivanje sa ServisHub serverom...");
         private BitmapSource _deviceCardQrImage;
         private bool _hasDeviceCardQr = false;
 
@@ -2575,7 +2698,7 @@ namespace WIS.UI
                 DeviceCardUrl = "";
                 DeviceCardQrImage = null;
                 HasDeviceCardQr = false;
-                DeviceCardStatusText = "Povezivanje sa ServisHub serverom...";
+                DeviceCardStatusText = LocalizationService.Get("MdlHubConnecting", "Povezivanje sa ServisHub serverom...");
                 return;
             }
 
@@ -2600,6 +2723,7 @@ namespace WIS.UI
             string url = _deviceCardHubUrl + "/device/" + Uri.EscapeDataString(deviceId);
             if (string.Equals(url, _deviceCardUrl, StringComparison.Ordinal) && _deviceCardQrImage != null)
             {
+                DeviceCardStatusText = LocalizationService.Get("MdlQrScanPrompt", "Skeniraj telefonom za karton uređaja");
                 return;
             }
 
@@ -2608,8 +2732,8 @@ namespace WIS.UI
             DeviceCardQrImage = bmp;
             HasDeviceCardQr = (bmp != null);
             DeviceCardStatusText = (bmp != null)
-                ? "Skeniraj telefonom za karton uređaja"
-                : "QR generator nedostupan";
+                ? LocalizationService.Get("MdlQrScanPrompt", "Skeniraj telefonom za karton uređaja")
+                : LocalizationService.Get("MdlQrUnavailable", "QR generator nedostupan");
         }
 
         private static bool IsPlaceholderSerial(string val)
@@ -2699,14 +2823,14 @@ namespace WIS.UI
 
         // ------------------ TAB 1: PREGLED ------------------
         private int _currentPhase = 1;
-        private string _phaseName = "Faza 1: Mreža i povezivanje";
-        private string _subPhase = "Inicijalizacija mrežnih servisa...";
-        private string _liveStatus = "Sistem priprema konfiguraciju servisa...";
+        private string _phaseName = LocalizationService.Get("MdlInitPhaseName", "Faza 1: Mreža i povezivanje");
+        private string _subPhase = LocalizationService.Get("MdlInitSubPhase", "Inicijalizacija mrežnih servisa...");
+        private string _liveStatus = LocalizationService.Get("MdlInitLiveStatus", "Sistem priprema konfiguraciju servisa...");
         private int _progress = 0;
         private int _globalProgress = 0;
-        private string _globalProgressSummary = "0 / 28 koraka";
+        private string _globalProgressSummary = LocalizationService.Get("MdlInitGlobalSummary", "0 / 28 koraka");
         private bool _usbFree = false;
-        private string _usbBannerText = "✓ USB FLEŠ DISK JE BEZBEDNO ODVOJEN (Možete slobodno izvaditi fleš disk)";
+        private string _usbBannerText = LocalizationService.Get("MdlUsbBannerText", "✓ USB FLEŠ DISK JE BEZBEDNO ODVOJEN (Možete slobodno izvaditi fleš disk)");
 
         public ObservableCollection<PhaseItem> Phases { get; private set; }
         public ObservableCollection<ActiveStepProgressItem> ActiveStepBars { get; private set; }
@@ -3167,27 +3291,26 @@ namespace WIS.UI
         {
             get
             {
-                bool isZh = LocalizationService.Instance.IsChinese;
                 switch (_backgroundWuStatus)
                 {
                     case "COMPLETED":
-                        return isZh ? "✓ 已完成" : "✓ ZAVRŠENO";
+                        return LocalizationService.Get("MdlBgWuCompleted", "✓ ZAVRŠENO");
                     case "SKIPPED":
-                        return isZh ? "⏭ 已跳过" : "⏭ PRESKOČENO";
+                        return LocalizationService.Get("MdlBgWuSkipped", "⏭ PRESKOČENO");
                     case "WAITING_MSI":
-                        return isZh ? "⏳ 等待 MSI" : "⏳ ČEKA MSI";
+                        return LocalizationService.Get("MdlBgWuWaitingMsi", "⏳ ČEKA MSI");
                     case "DOWNLOADING":
-                        return isZh ? "⬇ 下载中" : "⬇ PREUZIMANJE";
+                        return LocalizationService.Get("MdlBgWuDownloading", "⬇ PREUZIMANJE");
                     case "INSTALLING":
-                        return isZh ? "⚙ 安装中" : "⚙ INSTALACIJA";
+                        return LocalizationService.Get("MdlBgWuInstalling", "⚙ INSTALACIJA");
                     case "HARVESTING":
-                        return isZh ? "⬆ 缓存至NAS" : "⬆ NAS KEŠ";
+                        return LocalizationService.Get("MdlBgWuHarvesting", "⬆ NAS KEŠ");
                     case "WARN":
-                        return isZh ? "⚠ 警告" : "⚠ UPOZORENJE";
+                        return LocalizationService.Get("MdlBgWuWarn", "⚠ UPOZORENJE");
                     case "STARTING":
                     case "SEARCHING":
                     default:
-                        return isZh ? "🔄 搜索中" : "🔄 U TOKU";
+                        return LocalizationService.Get("MdlBgWuInProgress", "🔄 U TOKU");
                 }
             }
         }
@@ -3268,25 +3391,25 @@ namespace WIS.UI
 
         // ------------------ TAB 2: DIJAGNOSTIKA ------------------
         private int _diskWear = 100;
-        private string _diskWearText = "100% Zdravlje";
+        private string _diskWearText = LocalizationService.Get("MdlDiskWearInit", "100% Zdravlje");
         private string _diskTbw = "N/A";
         private long _diskPowerOnHours = -1;
-        private string _smartStatus = "Healthy (Ispravan)";
+        private string _smartStatus = LocalizationService.Get("MdlSmartHealthyInit", "Healthy (Ispravan)");
         private int _reallocatedSectors = 0;
         private int _criticalWarnings = 0;
         private Brush _smartStatusBrush = CreateFrozenBrush(46, 204, 113);
 
         private int _batteryHealth = 0;
-        private string _batteryHealthText = "Fiksno napajanje (Desktop)";
+        private string _batteryHealthText = LocalizationService.Get("MdlBatteryHealthInit", "Fiksno napajanje (Desktop)");
         private string _batteryCycles = "N/A";
-        private string _batteryStatus = "AC Napajanje / Desktop";
+        private string _batteryStatus = LocalizationService.Get("MdlBatteryStatusInit", "AC Napajanje / Desktop");
         private bool _isLaptop = false;
         private Brush _batteryHealthBrush = CreateFrozenBrush(100, 100, 100);
 
-        private string _cpuDetail = "Detekcija CPU-a...";
-        private string _cpuUsage = "Očitavanje...";
-        private string _ramDetail = "Detekcija RAM-a...";
-        private string _ramUsage = "Očitavanje...";
+        private string _cpuDetail = LocalizationService.Get("MdlDetectingCpu", "Detekcija CPU-a...");
+        private string _cpuUsage = LocalizationService.Get("MdlReading", "Očitavanje...");
+        private string _ramDetail = LocalizationService.Get("MdlDetectingRam", "Detekcija RAM-a...");
+        private string _ramUsage = LocalizationService.Get("MdlReading", "Očitavanje...");
 
         public int DiskWear
         {
@@ -3294,7 +3417,7 @@ namespace WIS.UI
             set
             {
                 SetProperty(ref _diskWear, value);
-                DiskWearText = string.Format("{0}% Preostalo zdravlje", value);
+                DiskWearText = string.Format(LocalizationService.Get("MdlDiskWearRemaining", "{0}% Preostalo zdravlje"), value);
                 SmartStatusBrush = value >= 80 ? CreateFrozenBrush(46, 204, 113) :
                                    value >= 50 ? CreateFrozenBrush(241, 196, 15) :
                                                  CreateFrozenBrush(231, 76, 60);
@@ -3315,7 +3438,7 @@ namespace WIS.UI
             set
             {
                 SetProperty(ref _batteryHealth, value);
-                BatteryHealthText = string.Format("{0}% Fabrički kapacitet", value);
+                BatteryHealthText = string.Format(LocalizationService.Get("MdlBatteryFactoryCap", "{0}% Fabrički kapacitet"), value);
                 BatteryHealthBrush = value >= 75 ? CreateFrozenBrush(46, 204, 113) :
                                      value >= 50 ? CreateFrozenBrush(241, 196, 15) :
                                                    CreateFrozenBrush(231, 76, 60);
@@ -3335,12 +3458,20 @@ namespace WIS.UI
                     OnPropertyChanged("DeviceTypeText");
                     if (!_isLaptop)
                     {
-                        UpdateAppStatus("BatteryBar", "SKIPPED", "Nije primenjivo na desktopu");
+                        UpdateAppStatus("BatteryBar", "SKIPPED", LocalizationService.Get("MdlAppNotApplicableDesktop", "Nije primenjivo na desktopu"));
                     }
                 }
             }
         }
-        public string DeviceTypeText { get { return IsLaptop ? "Laptop računar" : "Desktop (Fiksno napajanje)"; } }
+        public string DeviceTypeText
+        {
+            get
+            {
+                return IsLaptop
+                    ? LocalizationService.Get("MdlDeviceTypeLaptop", "Laptop računar")
+                    : LocalizationService.Get("MdlDeviceTypeDesktop", "Desktop (Fiksno napajanje)");
+            }
+        }
         public Brush BatteryHealthBrush { get { return _batteryHealthBrush; } set { SetProperty(ref _batteryHealthBrush, value); } }
 
         public string CpuDetail { get { return _cpuDetail; } set { SetProperty(ref _cpuDetail, value); } }
@@ -3353,7 +3484,7 @@ namespace WIS.UI
         private string _cpuUsageShortText = "0%";
         private Brush _cpuUsageBrush = CreateFrozenBrush(78, 201, 176);
         private double _ramUsagePercent = 0.0;
-        private string _ramUsageShortText = "Očitavanje...";
+        private string _ramUsageShortText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _ramUsageBrush = CreateFrozenBrush(78, 201, 176);
 
         private string _cpuTempShortText = "N/A";
@@ -3368,9 +3499,12 @@ namespace WIS.UI
         private int _batteryChargePercent = 0;
         private double _batteryRateWatts = 0.0;
         private double _batteryCurrentAmps = 0.0;
-        private string _powerStatusTitle = "Očitavanje napajanja...";
+        private string _powerStatusTitle = LocalizationService.Get("MdlPwrReadingTitle", "Očitavanje napajanja...");
         private string _powerDrawText = "—";
-        private string _powerMonitorTooltip = "Očitavanje stanja baterije i punjača...";
+        private string _powerMonitorTooltip = LocalizationService.Get("MdlPwrReadingTooltip", "Očitavanje stanja baterije i punjača...");
+        private bool _hasPowerSample = false;
+        private double _lastPowerVoltageV = 0.0;
+        private int _lastPowerLifeRemainingSec = 0;
         private Brush _powerStatusBrush = CreateFrozenBrush(204, 204, 204);
         private Brush _powerDrawBrush = CreateFrozenBrush(78, 201, 176);
         private Brush _batteryLevelBrush = CreateFrozenBrush(46, 204, 113);
@@ -3447,15 +3581,18 @@ namespace WIS.UI
             BatteryChargePercent = chargePercent;
             BatteryRateWatts = watts;
             BatteryCurrentAmps = amps;
+            _hasPowerSample = true;
+            _lastPowerVoltageV = voltageV;
+            _lastPowerLifeRemainingSec = lifeRemainingSec;
 
             if (!hasBattery)
             {
-                PowerStatusTitle = "Fiksno AC napajanje";
-                PowerDrawText = "Desktop (AC)";
+                PowerStatusTitle = LocalizationService.Get("MdlPwrFixedAc", "Fiksno AC napajanje");
+                PowerDrawText = LocalizationService.Get("MdlPwrDesktopAc", "Desktop (AC)");
                 PowerStatusBrush = CreateFrozenBrush(180, 180, 180);
                 PowerDrawBrush = CreateFrozenBrush(78, 201, 176);
                 BatteryLevelBrush = CreateFrozenBrush(100, 100, 100);
-                PowerMonitorTooltip = "Desktop računar bez sistemske baterije (stalno AC napajanje).";
+                PowerMonitorTooltip = LocalizationService.Get("MdlPwrDesktopTooltip", "Desktop računar bez sistemske baterije (stalno AC napajanje).");
                 return;
             }
 
@@ -3476,7 +3613,7 @@ namespace WIS.UI
 
             if (isOnAc)
             {
-                PowerStatusTitle = string.Format("Punjač priključen • {0}%", chargePercent);
+                PowerStatusTitle = string.Format(LocalizationService.Get("MdlPwrChargerConnected", "Punjač priključen • {0}%"), chargePercent);
                 PowerStatusBrush = CreateFrozenBrush(78, 201, 176);
                 if (isDischarging && watts >= 1.0)
                 {
@@ -3494,18 +3631,20 @@ namespace WIS.UI
                 }
                 else if (chargePercent >= 98)
                 {
-                    PowerDrawText = "Puna (AC)";
+                    PowerDrawText = LocalizationService.Get("MdlPwrFullAc", "Puna (AC)");
                     PowerDrawBrush = CreateFrozenBrush(46, 204, 113);
                 }
                 else
                 {
-                    PowerDrawText = isCharging ? "Punjenje (AC)" : "AC napajanje";
+                    PowerDrawText = isCharging
+                        ? LocalizationService.Get("MdlPwrChargingAc", "Punjenje (AC)")
+                        : LocalizationService.Get("MdlPwrAc", "AC napajanje");
                     PowerDrawBrush = CreateFrozenBrush(78, 201, 176);
                 }
             }
             else
             {
-                PowerStatusTitle = string.Format("Na bateriji • {0}%", chargePercent);
+                PowerStatusTitle = string.Format(LocalizationService.Get("MdlPwrOnBattery", "Na bateriji • {0}%"), chargePercent);
                 PowerStatusBrush = chargePercent <= 20
                     ? CreateFrozenBrush(231, 76, 60)
                     : CreateFrozenBrush(243, 156, 18);
@@ -3531,7 +3670,7 @@ namespace WIS.UI
                 }
                 else
                 {
-                    PowerDrawText = "Pražnjenje (DC)";
+                    PowerDrawText = LocalizationService.Get("MdlPwrDischargingDc", "Pražnjenje (DC)");
                 }
 
                 PowerDrawBrush = chargePercent <= 20
@@ -3543,28 +3682,28 @@ namespace WIS.UI
             tt.Append(PowerStatusTitle);
             if (watts >= 0.5)
             {
-                tt.AppendFormat(" | Snaga: {0:0.0} W", watts);
+                tt.AppendFormat(LocalizationService.Get("MdlPwrTtPower", " | Snaga: {0:0.0} W"), watts);
             }
             if (amps > 0.05)
             {
-                tt.AppendFormat(" | Struja: {0:0.00} A", amps);
+                tt.AppendFormat(LocalizationService.Get("MdlPwrTtCurrent", " | Struja: {0:0.00} A"), amps);
             }
             if (voltageV > 1.0)
             {
-                tt.AppendFormat(" | Napon baterije: {0:0.00} V", voltageV);
+                tt.AppendFormat(LocalizationService.Get("MdlPwrTtVoltage", " | Napon baterije: {0:0.00} V"), voltageV);
             }
             if (!string.IsNullOrEmpty(remText))
             {
-                tt.AppendFormat(" | Preostalo: {0}", remText);
+                tt.AppendFormat(LocalizationService.Get("MdlPwrTtRemaining", " | Preostalo: {0}"), remText);
             }
             PowerMonitorTooltip = tt.ToString();
         }
 
         // Grafička karta & Ekran
-        private string _gpuName = "Detekcija GPU-a...";
+        private string _gpuName = LocalizationService.Get("MdlDetectingGpu", "Detekcija GPU-a...");
         private string _gpuVram = "N/A";
         private string _gpuDriverVersion = "N/A";
-        private string _displayResolution = "Detekcija displeja...";
+        private string _displayResolution = LocalizationService.Get("MdlHwDetectingDisplay", "Detekcija displeja...");
         private string _displayRefreshRate = "60 Hz";
         private string _displayDpiScale = "100%";
 
@@ -3576,11 +3715,11 @@ namespace WIS.UI
         public string DisplayDpiScale { get { return _displayDpiScale; } set { SetProperty(ref _displayDpiScale, value); } }
 
         // Matična ploča & BIOS & TPM
-        private string _motherboardModel = "Detekcija matične ploče...";
-        private string _biosVersion = "Detekcija BIOS-a...";
+        private string _motherboardModel = LocalizationService.Get("MdlDetectingMb", "Detekcija matične ploče...");
+        private string _biosVersion = LocalizationService.Get("MdlDetectingBios", "Detekcija BIOS-a...");
         private string _biosReleaseDate = "N/A";
-        private string _secureBootStatus = "Nepoznato";
-        private string _tpmStatusSummary = "Provera TPM čipa...";
+        private string _secureBootStatus = LocalizationService.Get("MdlUnknown", "Nepoznato");
+        private string _tpmStatusSummary = LocalizationService.Get("MdlCheckingTpm", "Provera TPM čipa...");
 
         public string MotherboardModel { get { return _motherboardModel; } set { SetProperty(ref _motherboardModel, value); } }
         public string BiosVersion { get { return _biosVersion; } set { SetProperty(ref _biosVersion, value); } }
@@ -3591,7 +3730,7 @@ namespace WIS.UI
         // PnP Problematic Devices
         public ObservableCollection<PnpProblemDevice> PnpProblemDevices { get; private set; }
         private bool _hasPnpProblems = false;
-        private string _pnpSummaryText = "✓ Svi sistemski drajveri su ispravno instalirani";
+        private string _pnpSummaryText = LocalizationService.Get("MdlPnpAllOkInit", "✓ Svi sistemski drajveri su ispravno instalirani");
         private Brush _pnpStatusBrush = CreateFrozenBrush(46, 204, 113);
 
         public bool HasPnpProblems { get { return _hasPnpProblems; } set { SetProperty(ref _hasPnpProblems, value); } }
@@ -3603,13 +3742,13 @@ namespace WIS.UI
             if (PnpProblemDevices.Count > 0)
             {
                 HasPnpProblems = true;
-                PnpSummaryText = string.Format("⚠ {0} uređaja zahteva pažnju", PnpProblemDevices.Count);
+                PnpSummaryText = string.Format(LocalizationService.Get("MdlPnpAttentionCount", "⚠ {0} uređaja zahteva pažnju"), PnpProblemDevices.Count);
                 PnpStatusBrush = CreateFrozenBrush(241, 196, 15);
             }
             else
             {
                 HasPnpProblems = false;
-                PnpSummaryText = "✓ Svi sistemski drajveri su ispravno instalirani (0 problema)";
+                PnpSummaryText = LocalizationService.Get("MdlPnpAllOk", "✓ Svi sistemski drajveri su ispravno instalirani (0 problema)");
                 PnpStatusBrush = CreateFrozenBrush(46, 204, 113);
             }
             RebuildOverviewAlerts();
@@ -3617,30 +3756,30 @@ namespace WIS.UI
 
         // Termalna telemetrija, 5-minutni grafikon i taktovi jezgara (v2.15.0 - WIS-TASK-131)
         private float _cpuTemp = 0.0f;
-        private string _cpuTempText = "Očitavanje...";
+        private string _cpuTempText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _cpuTempBrush = CreateFrozenBrush(78, 201, 176);
 
         private float _gpuTemp = 0.0f;
-        private string _gpuTempText = "Očitavanje...";
+        private string _gpuTempText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _gpuTempBrush = CreateFrozenBrush(78, 201, 176);
 
         private float _mbTemp = 0.0f;
-        private string _mbTempText = "Očitavanje...";
+        private string _mbTempText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _mbTempBrush = CreateFrozenBrush(78, 201, 176);
 
         private float _ssdTemp = 0.0f;
-        private string _ssdTempText = "Očitavanje...";
+        private string _ssdTempText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _ssdTempBrush = CreateFrozenBrush(78, 201, 176);
 
         private float _throttlingPercent = 0.0f;
-        private string _throttlingText = "Nije dostupno";
+        private string _throttlingText = LocalizationService.Get("MdlNotAvailable", "Nije dostupno");
         private Brush _throttlingBrush = CreateFrozenBrush(140, 140, 140);
 
         private int _fanRpm = 0;
-        private string _fanSpeedText = "Očitavanje...";
+        private string _fanSpeedText = LocalizationService.Get("MdlReading", "Očitavanje...");
         private Brush _fanSpeedBrush = CreateFrozenBrush(78, 201, 176);
 
-        private string _thermalSensorStatus = "● Senzori aktivni";
+        private string _thermalSensorStatus = LocalizationService.Get("MdlSensorsActive", "● Senzori aktivni");
         private Brush _thermalSensorStatusBrush = CreateFrozenBrush(78, 201, 176);
 
         private PointCollection _cpuGraphPoints = new PointCollection();
@@ -3654,18 +3793,18 @@ namespace WIS.UI
         private string _legendGpuText = "● GPU: N/A";
         private string _legendMbText = "● MB: N/A";
         private string _legendSsdText = "● SSD: N/A";
-        private string _legendThrottleText = "● Throttling: Nije dostupno";
+        private string _legendThrottleText = LocalizationService.Get("MdlLegendThrottleNa", "● Throttling: Nije dostupno");
         private string _legendCpuLoadText = "● CPU Load: 0%";
 
         private string _hwCpuAvgClockText = "—";
-        private string _hwCpuKpiSubText = "Temp: Očitavanje...";
-        private string _hwRamAvailableText = "Slobodno: N/A";
+        private string _hwCpuKpiSubText = LocalizationService.Get("MdlKpiTempReading", "Temp: Očitavanje...");
+        private string _hwRamAvailableText = LocalizationService.Get("MdlKpiRamFreeNa", "Slobodno: N/A");
         private string _hwRamCommitText = "Commit: N/A";
         private string _hwGpuKpiSubText = "VRAM / Senzor: N/A";
-        private string _hwDiskIoText = "R/W: Očitavanje...";
+        private string _hwDiskIoText = LocalizationService.Get("MdlKpiDiskIoReading", "R/W: Očitavanje...");
         private double _hwDiskActivePercent = 0.0;
-        private string _hwPowerVoltageText = "Napon: Očitavanje...";
-        private string _hwPowerSubText = "Zdravlje baterije";
+        private string _hwPowerVoltageText = LocalizationService.Get("MdlKpiPowerVoltageReading", "Napon: Očitavanje...");
+        private string _hwPowerSubText = LocalizationService.Get("MdlKpiPowerSubInit", "Zdravlje baterije");
         private string _hwSystemStatsText = "Procesi: -- • Uptime: 00:00:00";
         private string _hwNetRateText = "RX 0.0 MB/s • TX 0.0 MB/s";
 
@@ -3727,28 +3866,65 @@ namespace WIS.UI
         public string HwSystemStatsText { get { return _hwSystemStatsText; } set { SetProperty(ref _hwSystemStatsText, value); } }
         public string HwNetRateText { get { return _hwNetRateText; } set { SetProperty(ref _hwNetRateText, value); } }
 
+        private static string GetHwSensorLabel(string key)
+        {
+            switch (key)
+            {
+                case "hdr_temp": return LocalizationService.Get("MdlSensorHdrTemp", "TEMPERATURA");
+                case "temp_cpu": return LocalizationService.Get("MdlSensorTempCpu", "CPU Package / ACPI");
+                case "temp_gpu": return LocalizationService.Get("MdlSensorTempGpu", "GPU Jezgro");
+                case "temp_mb": return LocalizationService.Get("MdlSensorTempMb", "Matična ploča (MB)");
+                case "temp_ssd": return LocalizationService.Get("MdlSensorTempSsd", "NVMe / SSD Disk");
+                case "hdr_load": return LocalizationService.Get("MdlSensorHdrLoad", "OPTEREĆENJE I STABILNOST");
+                case "load_cpu": return LocalizationService.Get("MdlSensorLoadCpu", "CPU Ukupno opterećenje");
+                case "load_ram": return LocalizationService.Get("MdlSensorLoadRam", "RAM Zauzeće memorije");
+                case "load_throttle": return LocalizationService.Get("MdlSensorLoadThrottle", "CPU Thermal Throttling");
+                case "io_disk": return LocalizationService.Get("MdlSensorIoDisk", "Disk I/O aktivnost");
+                case "io_net": return LocalizationService.Get("MdlSensorIoNet", "Mrežni protok (RX + TX)");
+                case "hdr_power": return LocalizationService.Get("MdlSensorHdrPower", "HLAĐENJE I NAPAJANJE");
+                case "fan_rpm": return LocalizationService.Get("MdlSensorFanRpm", "Ventilator (Fan RPM)");
+                case "pwr_watts": return LocalizationService.Get("MdlSensorPwrWatts", "Snaga baterije / punjača");
+                case "pwr_amps": return LocalizationService.Get("MdlSensorPwrAmps", "Struja (A)");
+                case "pwr_volts": return LocalizationService.Get("MdlSensorPwrVolts", "Napon baterije (V)");
+                default: return key;
+            }
+        }
+
         private void InitializeHwMonitorSensors()
         {
             if (HwMonitorSensors == null) return;
             HwMonitorSensors.Clear();
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_temp", "TEMPERATURA"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_cpu", "CPU Package / ACPI", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_gpu", "GPU Jezgro", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_mb", "Matična ploča (MB)", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_ssd", "NVMe / SSD Disk", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_temp", GetHwSensorLabel("hdr_temp")));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_cpu", GetHwSensorLabel("temp_cpu"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_gpu", GetHwSensorLabel("temp_gpu"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_mb", GetHwSensorLabel("temp_mb"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("temp_ssd", GetHwSensorLabel("temp_ssd"), "N/A"));
 
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_load", "OPTEREĆENJE I STABILNOST"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_cpu", "CPU Ukupno opterećenje", "0 %"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_ram", "RAM Zauzeće memorije", "0 %"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_throttle", "CPU Thermal Throttling", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_disk", "Disk I/O aktivnost", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_net", "Mrežni protok (RX + TX)", "0.0 MB/s"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_load", GetHwSensorLabel("hdr_load")));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_cpu", GetHwSensorLabel("load_cpu"), "0 %"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_ram", GetHwSensorLabel("load_ram"), "0 %"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("load_throttle", GetHwSensorLabel("load_throttle"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_disk", GetHwSensorLabel("io_disk"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("io_net", GetHwSensorLabel("io_net"), "0.0 MB/s"));
 
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_power", "HLAĐENJE I NAPAJANJE"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("fan_rpm", "Ventilator (Fan RPM)", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_watts", "Snaga baterije / punjača", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_amps", "Struja (A)", "N/A"));
-            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_volts", "Napon baterije (V)", "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateHeader("hdr_power", GetHwSensorLabel("hdr_power")));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("fan_rpm", GetHwSensorLabel("fan_rpm"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_watts", GetHwSensorLabel("pwr_watts"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_amps", GetHwSensorLabel("pwr_amps"), "N/A"));
+            HwMonitorSensors.Add(HwMonitorSensorRow.CreateSensor("pwr_volts", GetHwSensorLabel("pwr_volts"), "N/A"));
+        }
+
+        public void RefreshHwMonitorSensorLabels()
+        {
+            if (HwMonitorSensors == null) return;
+            for (int i = 0; i < HwMonitorSensors.Count; i++)
+            {
+                HwMonitorSensorRow row = HwMonitorSensors[i];
+                if (row != null && !string.IsNullOrEmpty(row.Key))
+                {
+                    row.Name = GetHwSensorLabel(row.Key);
+                }
+            }
         }
 
         private HwMonitorSensorRow FindHwSensorRow(string key)
@@ -3796,7 +3972,7 @@ namespace WIS.UI
             HwMonitorSensorRow cpuRow = FindHwSensorRow("temp_cpu");
             if (cpuRow != null && cpuRow.HasValue)
             {
-                HwCpuKpiSubText = string.Format("Temp {0:0}°C • Min {1:0}° / Max {2:0}°", cpuRow.CurrentNumeric, cpuRow.MinNumeric, cpuRow.MaxNumeric);
+                HwCpuKpiSubText = string.Format(LocalizationService.Get("MdlKpiTempMinMax", "Temp {0:0}°C • Min {1:0}° / Max {2:0}°"), cpuRow.CurrentNumeric, cpuRow.MinNumeric, cpuRow.MaxNumeric);
             }
             else
             {
@@ -3816,7 +3992,7 @@ namespace WIS.UI
                 HwGpuKpiSubText = string.Format("VRAM {0} • Driver {1}", vramLabel, GpuDriverVersion);
             }
 
-            HwPowerSubText = string.Format("Zdravlje {0} • Ciklusi: {1}", BatteryHealthText, BatteryCycles);
+            HwPowerSubText = string.Format(LocalizationService.Get("MdlKpiPowerHealthCycles", "Zdravlje {0} • Ciklusi: {1}"), BatteryHealthText, BatteryCycles);
         }
 
         public ICommand ResetCoreClocksCommand
@@ -3829,11 +4005,11 @@ namespace WIS.UI
         private bool _isStressTestRunning = false;
         private int _stressTestProgress = 0;
         private string _stressTestTimeText = "0 / 30s";
-        private string _stressTestStatusText = "Spremno za testiranje hlađenja i stabilnosti";
-        private string _thermalVerdictTitle = "Nije testirano";
-        private string _thermalVerdictDescription = "Pokrenite test za procenu termalne paste i hladnjaka.";
+        private string _stressTestStatusText = LocalizationService.Get("MdlStressReady", "Spremno za testiranje hlađenja i stabilnosti");
+        private string _thermalVerdictTitle = LocalizationService.Get("MdlThermalNotTested", "Nije testirano");
+        private string _thermalVerdictDescription = LocalizationService.Get("MdlThermalNotTestedDesc", "Pokrenite test za procenu termalne paste i hladnjaka.");
         private Brush _thermalVerdictBrush = CreateFrozenBrush(136, 136, 136); // #888888
-        private string _thermalRecommendation = "Preporuka: Kliknite [▶ Start Stres] za dijagnozu.";
+        private string _thermalRecommendation = LocalizationService.Get("MdlThermalRecStart", "Preporuka: Kliknite [▶ Start Stres] za dijagnozu.");
         private bool _emergencyAbortTriggered = false;
         private float _maxTempReached = 0.0f;
         private ICommand _runThermalStressCommand;
@@ -3900,14 +4076,14 @@ namespace WIS.UI
         public AutopilotViewModel Autopilot { get; private set; }
 
         // ------------------ TAB 3: MREŽA ------------------
-        private string _wifiSsid = "Nije povezano";
+        private string _wifiSsid = LocalizationService.Get("MdlNotConnected", "Nije povezano");
         private string _ipAddress = "127.0.0.1";
-        private string _connectionType = "Detekcija mrežnih kartica...";
-        private string _connectionStatusText = "Detekcija mreže...";
+        private string _connectionType = LocalizationService.Get("MdlNetDetectingNic", "Detekcija mrežnih kartica...");
+        private string _connectionStatusText = LocalizationService.Get("MdlNetDetecting", "Detekcija mreže...");
         private Brush _connectionStatusBrush = CreateFrozenBrush(136, 136, 136); // #888888
-        private string _distributionSourceText = "Lokalni skladišni keš (NAS / USB)";
-        private string _nasLatency = "Provera veze ka NAS-u...";
-        private string _nasStatus = "Povezivanje...";
+        private string _distributionSourceText = LocalizationService.Get("MdlNetDistSource", "Lokalni skladišni keš (NAS / USB)");
+        private string _nasLatency = LocalizationService.Get("MdlNetNasChecking", "Provera veze ka NAS-u...");
+        private string _nasStatus = LocalizationService.Get("MdlConnecting", "Povezivanje...");
         private string _downloadedMb = "0 MB";
         private Brush _networkStatusBrush = CreateFrozenBrush(46, 204, 113);
 
@@ -3924,7 +4100,7 @@ namespace WIS.UI
 
         // ------------------ PRED-START KARTICA (SERVIS SPREMAN) ------------------
         private bool _isServiceReadyVisible = true;
-        private string _autoStartMessage = "Automatski start za 15s... (Kliknite za trenutni start ili prebacite tab za pauzu)";
+        private string _autoStartMessage = LocalizationService.Get("MdlAutoStartMsg", "Automatski start za 15s... (Kliknite za trenutni start ili prebacite tab za pauzu)");
 
         public bool IsServiceReadyVisible
         {
@@ -3975,9 +4151,9 @@ namespace WIS.UI
 
         // ------------------ ACTION BAR & IPC ------------------
         private bool _isPaused = false;
-        private string _pauseButtonText = "⏸ Pauza";
+        private string _pauseButtonText = LocalizationService.Get("BtnPause", "⏸ Pauza");
         private bool _ipcConnected = true;
-        private string _ipcStatusText = "IPC Povezan";
+        private string _ipcStatusText = LocalizationService.Get("MdlIpcConnected", "IPC Povezan");
 
         public bool IsPaused
         {
@@ -3986,7 +4162,9 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _isPaused, value))
                 {
-                    PauseButtonText = value ? "▶ Nastavi" : "⏸ Pauza";
+                    PauseButtonText = value
+                        ? LocalizationService.Get("BtnResume", "▶ Nastavi")
+                        : LocalizationService.Get("BtnPause", "⏸ Pauza");
                 }
             }
         }
@@ -4022,7 +4200,7 @@ namespace WIS.UI
         public ICommand TogglePhasesExpandedCommand { get; set; }
 
         // ------------------ SKUPLJANJE / ŠIRENJE KARTICE FAZA ------------------
-        private bool _isPhasesExpanded = true;
+        private bool _isPhasesExpanded = false;
         public bool IsPhasesExpanded
         {
             get { return _isPhasesExpanded; }
@@ -4041,6 +4219,7 @@ namespace WIS.UI
                         }
                     }
                     OnPropertyChanged("PhasesToggleGlyph");
+                    OnPropertyChanged("PhasesToggleText");
                     OnPropertyChanged("PhasesToggleToolTip");
                 }
             }
@@ -4051,14 +4230,29 @@ namespace WIS.UI
             get { return _isPhasesExpanded ? "\u25B2" : "\u25BC"; }
         }
 
+        public string PhasesToggleText
+        {
+            get
+            {
+                return _isPhasesExpanded
+                    ? LocalizationService.Get("MdlPhasesHideSteps", "\u25B2 Sakrij korake")
+                    : LocalizationService.Get("MdlPhasesShowSteps", "\u25BC Prikaži korake");
+            }
+        }
+
         public string PhasesToggleToolTip
         {
-            get { return _isPhasesExpanded ? "Skupi prikaz koraka faza" : "Prikaži sve korake faza"; }
+            get
+            {
+                return _isPhasesExpanded
+                    ? LocalizationService.Get("MdlPhasesHideTooltip", "Skupi prikaz koraka faza")
+                    : LocalizationService.Get("MdlPhasesShowTooltip", "Prikaži sve korake faza");
+            }
         }
 
         // ------------------ HARDWARE TEST (WIS-TASK-189) ------------------
         private bool _isHwTestFinished = false;
-        private string _hwTestOverallStatus = "Nije pokrenut";
+        private string _hwTestOverallStatus = LocalizationService.Get("MdlNotLaunched", "Nije pokrenut");
         private string _hwTestSummaryText = "";
         private SolidColorBrush _hwTestBadgeBrush = CreateFrozenBrush(108, 117, 125);
         private Dictionary<string, object> _hwTestFullResult = null;
@@ -4142,11 +4336,11 @@ namespace WIS.UI
         private string _deploymentStatus = "RUNNING";
         private string _stressResultStatus = "UNKNOWN";
         private string _stressResultReason = "";
-        private string _completionTitle = "INSTALACIJA ZAVRŠENA";
-        private string _completionSummary = "Instalacioni tok je završen. Rezultat dijagnostike hlađenja prikazan je odvojeno.";
+        private string _completionTitle = LocalizationService.Get("CompletionDefaultTitle", "INSTALACIJA ZAVRŠENA");
+        private string _completionSummary = LocalizationService.Get("CompletionDefaultSummary", "Instalacioni tok je završen. Rezultat dijagnostike hlađenja prikazan je odvojeno.");
         private int _shutdownCountdown = 0;
         private bool _shutdownTimerActive = false;
-        private string _countdownText = "Računar je spreman za isporuku.";
+        private string _countdownText = LocalizationService.Get("MdlReadyForDelivery", "Računar je spreman za isporuku.");
 
         public bool IsCompleted
         {
@@ -4215,14 +4409,14 @@ namespace WIS.UI
             get
             {
                 if (string.Equals(_stressResultStatus, "THERMAL_CRITICAL", StringComparison.OrdinalIgnoreCase))
-                    return "Hlađenje: KRITIČNO — predaja je blokirana.";
+                    return LocalizationService.Get("MdlCoolingCritical", "Hlađenje: KRITIČNO — predaja je blokirana.");
                 if (IsDiagnosticsUnavailable)
-                    return "Hlađenje: NEPROVERENO — obavezna ručna provera ventilatora i hladnjaka.";
+                    return LocalizationService.Get("MdlCoolingUnknown", "Hlađenje: NEPROVERENO — obavezna ručna provera ventilatora i hladnjaka.");
                 if (string.Equals(_stressResultStatus, "PASS", StringComparison.OrdinalIgnoreCase))
-                    return "Hlađenje: test završen bez termalnog upozorenja.";
+                    return LocalizationService.Get("MdlCoolingPass", "Hlađenje: test završen bez termalnog upozorenja.");
                 if (string.Equals(_stressResultStatus, "WARN", StringComparison.OrdinalIgnoreCase))
-                    return "Hlađenje: UPOZORENJE — potrebna servisna provera.";
-                return "Hlađenje: test nije uspešno završen — potrebna ručna provera.";
+                    return LocalizationService.Get("MdlCoolingWarn", "Hlađenje: UPOZORENJE — potrebna servisna provera.");
+                return LocalizationService.Get("MdlCoolingFail", "Hlađenje: test nije uspešno završen — potrebna ručna provera.");
             }
         }
 
@@ -4269,10 +4463,9 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _shutdownCountdown, value))
                 {
-                    bool isZh = LocalizationService.Instance.IsChinese;
-                    CountdownText = isZh
-                        ? string.Format("自动关机倒计时: {0} 秒 (WIS Service)", value)
-                        : string.Format("Automatsko gašenje računara za: {0}s (WIS Service)", value);
+                    CountdownText = string.Format(
+                        LocalizationService.Get("MdlShutdownCountdown", "Automatsko gašenje računara za: {0}s (WIS Service)"),
+                        value);
                 }
             }
         }
@@ -4349,11 +4542,11 @@ namespace WIS.UI
             };
 
             // Inicijalizacija 5 vidljivih faza (interni Number 2..6 ostaje nepromenjen zbog IPC/PS faza)
-            Phases.Add(new PhaseItem { Number = 2, DisplayNumber = 1, Title = "1. Update", Subtitle = "Drajveri i zakrpe", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 3, DisplayNumber = 2, Title = "2. Optimizacija", Subtitle = "Debloat i brendiranje", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 4, DisplayNumber = 3, Title = "3. Programi", Subtitle = "Paketi i OEM licenca", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 5, DisplayNumber = 4, Title = "4. Hardverski test", Subtitle = "Stres + Periferije", Status = "Pending" });
-            Phases.Add(new PhaseItem { Number = 6, DisplayNumber = 5, Title = "5. Završetak", Subtitle = "Dijagnostika i rezime", Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 2, DisplayNumber = 1, Title = LocalizationService.Get("MdlPhase2Title", "1. Update"), Subtitle = LocalizationService.Get("MdlPhase2Subtitle", "Drajveri i zakrpe"), Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 3, DisplayNumber = 2, Title = LocalizationService.Get("MdlPhase3Title", "2. Optimizacija"), Subtitle = LocalizationService.Get("MdlPhase3Subtitle", "Debloat i brendiranje"), Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 4, DisplayNumber = 3, Title = LocalizationService.Get("MdlPhase4Title", "3. Programi"), Subtitle = LocalizationService.Get("MdlPhase4Subtitle", "Paketi i OEM licenca"), Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 5, DisplayNumber = 4, Title = LocalizationService.Get("MdlPhase5Title", "4. Hardverski test"), Subtitle = LocalizationService.Get("MdlPhase5Subtitle", "Stres + Periferije"), Status = "Pending" });
+            Phases.Add(new PhaseItem { Number = 6, DisplayNumber = 5, Title = LocalizationService.Get("MdlPhase6Title", "5. Završetak"), Subtitle = LocalizationService.Get("MdlPhase6Subtitle", "Dijagnostika i rezime"), Status = "Pending" });
             InitializeDefaultPhaseSteps();
 
             // Inicijalizacija standardnih WIS aplikacija
@@ -4361,6 +4554,43 @@ namespace WIS.UI
             UpdatePhases();
             RefreshProgressBars();
             RebuildOverviewAlerts();
+        }
+
+        public static string GetStepTitleKey(string stepId)
+        {
+            if (string.IsNullOrEmpty(stepId)) return null;
+            switch (stepId.Trim())
+            {
+                case "P2.Identify": return "Step_P2_Identify";
+                case "P2.NasCache": return "Step_P2_NasCache";
+                case "P2.Vmd": return "Step_P2_Vmd";
+                case "P2.Pnp": return "Step_P2_Pnp";
+                case "P2.Diag": return "Step_P2_Diag";
+                case "P2.WuDrivers": return "Step_P2_WuDrivers";
+                case "P3.Debloat": return "Step_P3_Debloat";
+                case "P3.Telemetry": return "Step_P3_Telemetry";
+                case "P3.Oem": return "Step_P3_Oem";
+                case "P3.Scaling": return "Step_P3_Scaling";
+                case "P3.VcRedist": return "Step_P3_VcRedist";
+                case "P3.UsbFree": return "Step_P3_UsbFree";
+                case "P4.Runtimes": return "Step_P4_Runtimes";
+                case "P4.WinRAR": return "Step_P4_WinRAR";
+                case "P4.Chrome": return "Step_P4_Chrome";
+                case "P4.Acrobat": return "Step_P4_Acrobat";
+                case "P4.Office": return "Step_P4_Office";
+                case "P4.BatteryBar": return "Step_P4_BatteryBar";
+                case "P4.Shortcuts": return "Step_P4_Shortcuts";
+                case "P4.PdfDefault": return "Step_P4_PdfDefault";
+                case "P4.Activation": return "Step_P4_Activation";
+                case "P5.AutoDiag": return "Step_P5_AutoDiag";
+                case "P5.Stress": return "Step_P5_Stress";
+                case "P5.Peripherals": return "Step_P5_Peripherals";
+                case "P6.WuSecondPass": return "Step_P6_WuSecondPass";
+                case "P6.Report": return "Step_P6_Report";
+                case "P6.Security": return "Step_P6_Security";
+                case "P6.Finalize": return "Step_P6_Finalize";
+                default: return null;
+            }
         }
 
         private void InitializeDefaultPhaseSteps()
@@ -4375,42 +4605,42 @@ namespace WIS.UI
                 switch (phase.Number)
                 {
                     case 2:
-                        phase.Steps.Add(new StepItem { Id = "P2.Identify", Title = "Identifikacija računara i hardvera", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P2.NasCache", Title = "TrueNAS model drajveri i pre-patch zakrpe", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P2.Vmd", Title = "Intel VMD / RST skladišni drajveri", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P2.Pnp", Title = "PnP instalacija lokalnih drajvera", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P2.Diag", Title = "Dijagnostika preostalih uređaja", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P2.WuDrivers", Title = "Hardverski drajveri preko Windows Update-a", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Identify", Title = LocalizationService.Get("Step_P2_Identify", "Identifikacija računara i hardvera"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.NasCache", Title = LocalizationService.Get("Step_P2_NasCache", "TrueNAS model drajveri i pre-patch zakrpe"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Vmd", Title = LocalizationService.Get("Step_P2_Vmd", "Intel VMD / RST skladišni drajveri"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Pnp", Title = LocalizationService.Get("Step_P2_Pnp", "PnP instalacija lokalnih drajvera"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.Diag", Title = LocalizationService.Get("Step_P2_Diag", "Dijagnostika preostalih uređaja"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P2.WuDrivers", Title = LocalizationService.Get("Step_P2_WuDrivers", "Hardverski drajveri preko Windows Update-a"), Status = "WAIT" });
                         break;
                     case 3:
-                        phase.Steps.Add(new StepItem { Id = "P3.Debloat", Title = "Debloat neželjenih aplikacija", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P3.Telemetry", Title = "Gašenje telemetrije i praćenja", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P3.Oem", Title = "OEM brending i regionalna podešavanja", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P3.Scaling", Title = "Optimalno DPI skaliranje ekrana", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P3.VcRedist", Title = "Visual C++ Runtime biblioteke", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P3.UsbFree", Title = "Signal za oslobađanje USB medijuma", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Debloat", Title = LocalizationService.Get("Step_P3_Debloat", "Debloat neželjenih aplikacija"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Telemetry", Title = LocalizationService.Get("Step_P3_Telemetry", "Gašenje telemetrije i praćenja"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Oem", Title = LocalizationService.Get("Step_P3_Oem", "OEM brending i regionalna podešavanja"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.Scaling", Title = LocalizationService.Get("Step_P3_Scaling", "Optimalno DPI skaliranje ekrana"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.VcRedist", Title = LocalizationService.Get("Step_P3_VcRedist", "Visual C++ Runtime biblioteke"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P3.UsbFree", Title = LocalizationService.Get("Step_P3_UsbFree", "Signal za oslobađanje USB medijuma"), Status = "WAIT" });
                         break;
                     case 4:
-                        phase.Steps.Add(new StepItem { Id = "P4.Runtimes", Title = "Sistemski runtime paketi (VC++ / .NET)", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.WinRAR", Title = "WinRAR arhiver", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.Chrome", Title = "Google Chrome pregledač", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.Acrobat", Title = "Adobe Acrobat Pro", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.Office", Title = "Microsoft Office 2024", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.BatteryBar", Title = "BatteryBar indikator baterije", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.Shortcuts", Title = "Radne prečice na radnoj površini", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.PdfDefault", Title = "Podrazumevani PDF pregledač", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P4.Activation", Title = "Aktivacija Windows i Office paketa", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Runtimes", Title = LocalizationService.Get("Step_P4_Runtimes", "Sistemski runtime paketi (VC++ / .NET)"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.WinRAR", Title = LocalizationService.Get("Step_P4_WinRAR", "WinRAR arhiver"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Chrome", Title = LocalizationService.Get("Step_P4_Chrome", "Google Chrome pregledač"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Acrobat", Title = LocalizationService.Get("Step_P4_Acrobat", "Adobe Acrobat Pro"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Office", Title = LocalizationService.Get("Step_P4_Office", "Microsoft Office 2024"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.BatteryBar", Title = LocalizationService.Get("Step_P4_BatteryBar", "BatteryBar indikator baterije"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Shortcuts", Title = LocalizationService.Get("Step_P4_Shortcuts", "Radne prečice na radnoj površini"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.PdfDefault", Title = LocalizationService.Get("Step_P4_PdfDefault", "Podrazumevani PDF pregledač"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P4.Activation", Title = LocalizationService.Get("Step_P4_Activation", "Aktivacija Windows i Office paketa"), Status = "WAIT" });
                         break;
                     case 5:
-                        phase.Steps.Add(new StepItem { Id = "P5.AutoDiag", Title = "Automatska provera sistema", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P5.Stress", Title = "Stres test (Disk, RAM, CPU 30s, GPU 3D)", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P5.Peripherals", Title = "Interaktivni testovi periferija", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P5.AutoDiag", Title = LocalizationService.Get("Step_P5_AutoDiag", "Automatska provera sistema"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P5.Stress", Title = LocalizationService.Get("Step_P5_Stress", "Stres test (Disk, RAM, CPU 30s, GPU 3D)"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P5.Peripherals", Title = LocalizationService.Get("Step_P5_Peripherals", "Interaktivni testovi periferija"), Status = "WAIT" });
                         break;
                     case 6:
-                        phase.Steps.Add(new StepItem { Id = "P6.WuSecondPass", Title = "Dvoprolazni Update i WU barijera", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P6.Report", Title = "Servisni karton i flotni izveštaj", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P6.Security", Title = "Vraćanje bezbednosnih polisa i Anti-Leak", Status = "WAIT" });
-                        phase.Steps.Add(new StepItem { Id = "P6.Finalize", Title = "Završna verifikacija za isporuku", Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.WuSecondPass", Title = LocalizationService.Get("Step_P6_WuSecondPass", "Dvoprolazni Update i WU barijera"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Report", Title = LocalizationService.Get("Step_P6_Report", "Servisni karton i flotni izveštaj"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Security", Title = LocalizationService.Get("Step_P6_Security", "Vraćanje bezbednosnih polisa i Anti-Leak"), Status = "WAIT" });
+                        phase.Steps.Add(new StepItem { Id = "P6.Finalize", Title = LocalizationService.Get("Step_P6_Finalize", "Završna verifikacija za isporuku"), Status = "WAIT" });
                         break;
                 }
             }
@@ -4457,11 +4687,38 @@ namespace WIS.UI
             {
                 foreach (var appItem in Apps)
                 {
+                    if (appItem == null) continue;
+                    if (string.Equals(appItem.Id, "License", StringComparison.OrdinalIgnoreCase))
+                    {
+                        appItem.Name = LocalizationService.Get("MdlAppNameLicense", "OEM Licenca");
+                    }
+                    else if (string.Equals(appItem.Id, "Shortcuts", StringComparison.OrdinalIgnoreCase))
+                    {
+                        appItem.Name = LocalizationService.Get("MdlAppNameShortcuts", "Servisne Prečice");
+                    }
                     appItem.RefreshLocalization();
                 }
             }
 
-            bool isZh = LocalizationService.Instance.IsChinese;
+            if (Phases != null)
+            {
+                for (int i = 0; i < Phases.Count; i++)
+                {
+                    PhaseItem ph = Phases[i];
+                    if (ph == null || ph.Steps == null) continue;
+                    for (int j = 0; j < ph.Steps.Count; j++)
+                    {
+                        StepItem st = ph.Steps[j];
+                        if (st == null) continue;
+                        string stepKey = GetStepTitleKey(st.Id);
+                        if (!string.IsNullOrEmpty(stepKey))
+                        {
+                            st.Title = LocalizationService.Get(stepKey, st.Title);
+                        }
+                    }
+                }
+            }
+
             if (_completionTitle == "INSTALACIJA ZAVRŠENA" || _completionTitle == "服务完成 - 计算机已准备交付客户")
             {
                 CompletionTitle = LocalizationService.Instance["CompletionDefaultTitle"];
@@ -4472,20 +4729,49 @@ namespace WIS.UI
             }
             OnPropertyChanged("CompletionStatusBadgeText");
             OnPropertyChanged("CompletionAlertsSummaryText");
+            OnPropertyChanged("DiagnosticsSummary");
+            OnPropertyChanged("DeviceTypeText");
 
             if (_shutdownCountdown > 0)
             {
-                CountdownText = isZh
-                    ? string.Format("自动关机倒计时: {0} 秒 (WIS Service)", _shutdownCountdown)
-                    : string.Format("Automatsko gašenje računara za: {0}s (WIS Service)", _shutdownCountdown);
+                CountdownText = string.Format(
+                    LocalizationService.Get("MdlShutdownCountdown", "Automatsko gašenje računara za: {0}s (WIS Service)"),
+                    _shutdownCountdown);
             }
             else if (_countdownText == "Računar je spreman za isporuku." || _countdownText == "计算机已准备就绪交付。")
             {
-                CountdownText = isZh ? "计算机已准备就绪交付。" : "Računar je spreman za isporuku.";
+                CountdownText = LocalizationService.Get("MdlReadyForDelivery", "Računar je spreman za isporuku.");
             }
 
+            if (_hasPowerSample)
+            {
+                UpdatePowerMonitor(
+                    _hasBatteryLive,
+                    _isOnAcPower,
+                    _isBatteryCharging,
+                    _isBatteryDischarging,
+                    _batteryChargePercent,
+                    _batteryRateWatts,
+                    _batteryCurrentAmps,
+                    _lastPowerVoltageV,
+                    _lastPowerLifeRemainingSec);
+            }
+            else
+            {
+                PowerStatusTitle = LocalizationService.Get("MdlPwrReadingTitle", "Očitavanje napajanja...");
+                PowerMonitorTooltip = LocalizationService.Get("MdlPwrReadingTooltip", "Očitavanje stanja baterije i punjača...");
+            }
+
+            RefreshDeviceCardQr();
+            RefreshHwMonitorSensorLabels();
+            RefreshHwMonitorKpiSummaries();
             UpdateAppsSummary();
             UpdatePhases();
+            _lastOverviewAlertsSignature = null;
+            UpdatePnpStatus();
+            OnPropertyChanged("PhasesToggleGlyph");
+            OnPropertyChanged("PhasesToggleText");
+            OnPropertyChanged("PhasesToggleToolTip");
             OnPropertyChanged("BackgroundWuDisplayText");
             OnPropertyChanged("BackgroundWuBadgeText");
             OnPropertyChanged(string.Empty);
@@ -4496,23 +4782,32 @@ namespace WIS.UI
             Action initAction = delegate
             {
                 Apps.Clear();
-                Apps.Add(new AppItem { Id = "DotNet", Name = ".NET 8 Runtime", IconGlyph = "⚡", Status = "WAIT", Detail = "Čeka početak faze 4" });
-                Apps.Add(new AppItem { Id = "Chrome", Name = "Google Chrome", IconGlyph = "🌐", Status = "WAIT", Detail = "Čeka početak faze 4" });
-                Apps.Add(new AppItem { Id = "WinRAR", Name = "WinRAR x64", IconGlyph = "🗜️", Status = "WAIT", Detail = "Čeka početak faze 4" });
-                Apps.Add(new AppItem { Id = "Acrobat", Name = "Adobe Acrobat Pro", IconGlyph = "📄", Status = "WAIT", Detail = "Čeka početak faze 4" });
-                Apps.Add(new AppItem { Id = "Office", Name = "Microsoft Office 2024", IconGlyph = "📊", Status = "WAIT", Detail = "Čeka početak faze 4" });
+                string queueTxt = LocalizationService.Get("MdlAppDetailQueue", "U redu čekanja");
+                Apps.Add(new AppItem { Id = "DotNet", Name = ".NET 8 Runtime", IconGlyph = "⚡", Status = "WAIT", Detail = queueTxt });
+                Apps.Add(new AppItem { Id = "Chrome", Name = "Google Chrome", IconGlyph = "🌐", Status = "WAIT", Detail = queueTxt });
+                Apps.Add(new AppItem { Id = "WinRAR", Name = "WinRAR x64", IconGlyph = "🗜️", Status = "WAIT", Detail = queueTxt });
+                Apps.Add(new AppItem { Id = "Acrobat", Name = "Adobe Acrobat Pro", IconGlyph = "📄", Status = "WAIT", Detail = queueTxt });
+                Apps.Add(new AppItem { Id = "Office", Name = "Microsoft Office 2024", IconGlyph = "📊", Status = "WAIT", Detail = queueTxt });
 
                 if (!_isLaptop || _batteryHealth <= 0)
                 {
-                    Apps.Add(new AppItem { Id = "BatteryBar", Name = "BatteryBar", IconGlyph = "🔋", Status = "SKIPPED", Detail = "Nije primenjivo na desktopu" });
+                    var batApp = new AppItem { Id = "BatteryBar", Name = "BatteryBar", IconGlyph = "🔋", Status = "SKIPPED" };
+                    batApp.SetLocalizedDetail("MdlAppNotApplicableDesktop", "Nije primenjivo na desktopu");
+                    Apps.Add(batApp);
                 }
                 else
                 {
-                    Apps.Add(new AppItem { Id = "BatteryBar", Name = "BatteryBar", IconGlyph = "🔋", Status = "WAIT", Detail = "Čeka početak faze 4" });
+                    var batApp = new AppItem { Id = "BatteryBar", Name = "BatteryBar", IconGlyph = "🔋", Status = "WAIT" };
+                    batApp.SetLocalizedDetail("MdlAppDetailQueue", "U redu čekanja");
+                    Apps.Add(batApp);
                 }
 
-                Apps.Add(new AppItem { Id = "License", Name = "OEM Licenca", IconGlyph = "🔑", Status = "WAIT", Detail = "Čeka početak faze 4" });
-                Apps.Add(new AppItem { Id = "Shortcuts", Name = "Servisne Prečice", IconGlyph = "🔗", Status = "WAIT", Detail = "Čeka početak faze 4" });
+                Apps.Add(new AppItem { Id = "License", Name = LocalizationService.Get("MdlAppNameLicense", "OEM Licenca"), IconGlyph = "🔑", Status = "WAIT", Detail = queueTxt });
+                Apps.Add(new AppItem { Id = "Shortcuts", Name = LocalizationService.Get("MdlAppNameShortcuts", "Servisne Prečice"), IconGlyph = "🔗", Status = "WAIT", Detail = queueTxt });
+                for (int i = 0; i < Apps.Count; i++)
+                {
+                    if (Apps[i].Status == "WAIT") Apps[i].SetLocalizedDetail("MdlAppDetailQueue", "U redu čekanja");
+                }
                 UpdateAppsSummary();
             };
 
@@ -4531,31 +4826,30 @@ namespace WIS.UI
         {
             Action updateAction = delegate
             {
-                bool isZh = LocalizationService.Instance.IsChinese;
                 for (int i = 0; i < Phases.Count; i++)
                 {
                     int pNum = Phases[i].Number;
                     switch (pNum)
                     {
                         case 2:
-                            Phases[i].Title = isZh ? "1. 驱动更新" : "1. Update";
-                            Phases[i].Subtitle = isZh ? "驱动与补丁" : "Drajveri i zakrpe";
+                            Phases[i].Title = LocalizationService.Get("MdlPhase2Title", "1. Update");
+                            Phases[i].Subtitle = LocalizationService.Get("MdlPhase2Subtitle", "Drajveri i zakrpe");
                             break;
                         case 3:
-                            Phases[i].Title = isZh ? "2. 系统优化" : "2. Optimizacija";
-                            Phases[i].Subtitle = isZh ? "精简与个性化" : "Debloat i brendiranje";
+                            Phases[i].Title = LocalizationService.Get("MdlPhase3Title", "2. Optimizacija");
+                            Phases[i].Subtitle = LocalizationService.Get("MdlPhase3Subtitle", "Debloat i brendiranje");
                             break;
                         case 4:
-                            Phases[i].Title = isZh ? "3. 软件安装" : "3. Programi";
-                            Phases[i].Subtitle = isZh ? "软件包与 OEM 授权" : "Paketi i OEM licenca";
+                            Phases[i].Title = LocalizationService.Get("MdlPhase4Title", "3. Programi");
+                            Phases[i].Subtitle = LocalizationService.Get("MdlPhase4Subtitle", "Paketi i OEM licenca");
                             break;
                         case 5:
-                            Phases[i].Title = isZh ? "4. 硬件测试" : "4. Hardverski test";
-                            Phases[i].Subtitle = isZh ? "压力与外设" : "Stres + Periferije";
+                            Phases[i].Title = LocalizationService.Get("MdlPhase5Title", "4. Hardverski test");
+                            Phases[i].Subtitle = LocalizationService.Get("MdlPhase5Subtitle", "Stres + Periferije");
                             break;
                         case 6:
-                            Phases[i].Title = isZh ? "5. 完成交付" : "5. Završetak";
-                            Phases[i].Subtitle = isZh ? "诊断与总览" : "Dijagnostika i rezime";
+                            Phases[i].Title = LocalizationService.Get("MdlPhase6Title", "5. Završetak");
+                            Phases[i].Subtitle = LocalizationService.Get("MdlPhase6Subtitle", "Dijagnostika i rezime");
                             break;
                     }
 
@@ -4631,13 +4925,13 @@ namespace WIS.UI
                 {
                     GlobalProgress = 100;
                     GlobalProgressSummary = totalSteps > 0
-                        ? string.Format("{0} / {0} koraka • Završeno", totalSteps)
-                        : "100% • Završeno";
+                        ? string.Format(LocalizationService.Get("MdlProgressDoneSteps", "{0} / {0} koraka • Završeno"), totalSteps)
+                        : LocalizationService.Get("MdlProgressDone100", "100% • Završeno");
                 }
                 else if (_isServiceReadyVisible)
                 {
                     GlobalProgress = 0;
-                    GlobalProgressSummary = string.Format("0 / {0} koraka • Spremno", totalSteps);
+                    GlobalProgressSummary = string.Format(LocalizationService.Get("MdlProgressReadySteps", "0 / {0} koraka • Spremno"), totalSteps);
                 }
                 else
                 {
@@ -4651,7 +4945,7 @@ namespace WIS.UI
                         computed = Math.Min(99, Math.Max(1, _progress / Math.Max(1, Phases.Count)));
                     }
                     GlobalProgress = computed;
-                    GlobalProgressSummary = string.Format("{0} / {1} koraka • {2}", doneSteps, totalSteps, _phaseName);
+                    GlobalProgressSummary = string.Format(LocalizationService.Get("MdlProgressInProgressSteps", "{0} / {1} koraka • {2}"), doneSteps, totalSteps, _phaseName);
                 }
 
                 List<ActiveStepProgressItem> nextBars = new List<ActiveStepProgressItem>();
@@ -4661,9 +4955,9 @@ namespace WIS.UI
                     {
                         Id = "ready",
                         PhaseNumber = 0,
-                        PhaseLabel = "SPREMNO",
-                        Title = "Čekanje na početak instalacije",
-                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : "Kliknite 'ZAPOČNI INSTALACIJU' ili sačekajte automatski start.",
+                        PhaseLabel = LocalizationService.Get("MdlBarReadyLabel", "SPREMNO"),
+                        Title = LocalizationService.Get("MdlBarReadyTitle", "Čekanje na početak instalacije"),
+                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : LocalizationService.Get("MdlBarReadyDetail", "Kliknite 'ZAPOČNI INSTALACIJU' ili sačekajte automatski start."),
                         Progress = 0,
                         IsIndeterminate = false,
                         BarBrush = CreateFrozenBrush(0, 122, 204),
@@ -4676,9 +4970,9 @@ namespace WIS.UI
                     {
                         Id = "done",
                         PhaseNumber = 6,
-                        PhaseLabel = "ZAVRŠENO",
-                        Title = "Svi koraci su uspešno završeni",
-                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : "Računar je pripremljen i spreman za predaju.",
+                        PhaseLabel = LocalizationService.Get("MdlBarDoneLabel", "ZAVRŠENO"),
+                        Title = LocalizationService.Get("MdlBarDoneTitle", "Svi koraci su uspešno završeni"),
+                        Detail = !string.IsNullOrWhiteSpace(_liveStatus) ? _liveStatus : LocalizationService.Get("MdlBarDoneDetail", "Računar je pripremljen i spreman za predaju."),
                         Progress = 100,
                         IsIndeterminate = false,
                         BarBrush = CreateFrozenBrush(46, 204, 113),
@@ -4702,13 +4996,13 @@ namespace WIS.UI
                             bool indet = !(isPrimary && _progress > 0 && _progress < 100);
                             string detailTxt = !string.IsNullOrWhiteSpace(st.Reason)
                                 ? st.Reason
-                                : (isPrimary ? _liveStatus : "Izvršavanje koraka u toku...");
+                                : (isPrimary ? _liveStatus : LocalizationService.Get("MdlBarStepRunning", "Izvršavanje koraka u toku..."));
 
                             nextBars.Add(new ActiveStepProgressItem
                             {
                                 Id = !string.IsNullOrEmpty(st.Id) ? st.Id : ("run_" + runIdx),
                                 PhaseNumber = ph.Number,
-                                PhaseLabel = !string.IsNullOrEmpty(ph.Title) ? ph.Title.ToUpperInvariant() : "FAZA",
+                                PhaseLabel = !string.IsNullOrEmpty(ph.Title) ? ph.Title.ToUpperInvariant() : LocalizationService.Get("MdlBarPhaseFallback", "FAZA"),
                                 Title = !string.IsNullOrEmpty(st.Title) ? st.Title : st.Id,
                                 Detail = detailTxt,
                                 Progress = stepPct,
@@ -4726,7 +5020,7 @@ namespace WIS.UI
                         {
                             Id = "current",
                             PhaseNumber = _currentPhase,
-                            PhaseLabel = !string.IsNullOrWhiteSpace(_phaseName) ? _phaseName.ToUpperInvariant() : "U TOKU",
+                            PhaseLabel = !string.IsNullOrWhiteSpace(_phaseName) ? _phaseName.ToUpperInvariant() : LocalizationService.Get("MdlBarInProgressFallback", "U TOKU"),
                             Title = !string.IsNullOrWhiteSpace(_subPhase) ? _subPhase : _phaseName,
                             Detail = _liveStatus,
                             Progress = _progress,
@@ -4746,8 +5040,8 @@ namespace WIS.UI
                         {
                             Id = "bg_wu",
                             PhaseNumber = 0,
-                            PhaseLabel = "POZADINSKI WU",
-                            Title = "Pozadinski Windows Update",
+                            PhaseLabel = LocalizationService.Get("MdlBarBgWuLabel", "POZADINSKI WU"),
+                            Title = LocalizationService.Get("MdlBarBgWuTitle", "Pozadinski Windows Update"),
                             Detail = BackgroundWuDisplayText,
                             Progress = _backgroundWuProgress >= 0 ? _backgroundWuProgress : 0,
                             IsIndeterminate = (_backgroundWuProgress < 0),
@@ -4762,8 +5056,8 @@ namespace WIS.UI
                         {
                             Id = "drv_batch",
                             PhaseNumber = 0,
-                            PhaseLabel = "DRAJVERI",
-                            Title = "Grupna instalacija drajvera",
+                            PhaseLabel = LocalizationService.Get("MdlBarDriversLabel", "DRAJVERI"),
+                            Title = LocalizationService.Get("MdlBarDriversTitle", "Grupna instalacija drajvera"),
                             Detail = Drivers.BatchStatusText,
                             Progress = Drivers.BatchProgressPercent,
                             IsIndeterminate = (Drivers.BatchProgressPercent <= 0),
@@ -4782,8 +5076,8 @@ namespace WIS.UI
                             {
                                 Id = "drv_" + d,
                                 PhaseNumber = 0,
-                                PhaseLabel = "DRAJVER",
-                                Title = !string.IsNullOrWhiteSpace(dev.Name) ? dev.Name : "Instalacija drajvera",
+                                PhaseLabel = LocalizationService.Get("MdlBarDriverLabel", "DRAJVER"),
+                                Title = !string.IsNullOrWhiteSpace(dev.Name) ? dev.Name : LocalizationService.Get("MdlBarDriverTitle", "Instalacija drajvera"),
                                 Detail = dev.InstallStatusText,
                                 Progress = dev.InstallProgressPercent,
                                 IsIndeterminate = (dev.InstallProgressPercent <= 0),
@@ -4950,10 +5244,10 @@ namespace WIS.UI
                         }
                         else
                         {
-                            if (app.Status == "OK") app.Detail = "Instalacija uspešno verifikovana";
-                            else if (app.Status == "RUNNING") app.Detail = "Instalacija paketa u toku...";
-                            else if (app.Status == "WARN") app.Detail = "Instalacija nije potvrđena";
-                            else if (app.Status == "ERROR") app.Detail = "Greška tokom instalacije";
+                            if (app.Status == "OK") app.SetLocalizedDetail("MdlAppDetailOk", "Instalacija uspešno verifikovana");
+                            else if (app.Status == "RUNNING") app.SetLocalizedDetail("MdlAppDetailRunning", "Instalacija paketa u toku...");
+                            else if (app.Status == "WARN") app.SetLocalizedDetail("MdlAppDetailWarn", "Instalacija nije potvrđena");
+                            else if (app.Status == "ERROR") app.SetLocalizedDetail("MdlAppDetailError", "Greška tokom instalacije");
                         }
                         break;
                     }
@@ -5003,14 +5297,9 @@ namespace WIS.UI
             AppsSkippedCount = skipped;
             AppsErrorCount = error;
 
-            if (LocalizationService.Instance.IsChinese)
-            {
-                AppsSummaryText = string.Format("已安装 {0}/{1} • 进行中 {2} • 已跳过 {3} • 错误 {4}", completed, total, running, skipped, error);
-            }
-            else
-            {
-                AppsSummaryText = string.Format("{0} od {1} instalirano • {2} u toku • {3} preskočeno • {4} grešaka", completed, total, running, skipped, error);
-            }
+            AppsSummaryText = string.Format(
+                LocalizationService.Get("MdlAppsSummary", "{0} od {1} instalirano • {2} u toku • {3} preskočeno • {4} grešaka"),
+                completed, total, running, skipped, error);
             RebuildOverviewAlerts();
         }
 
@@ -5045,16 +5334,15 @@ namespace WIS.UI
         {
             get
             {
-                bool isZh = LocalizationService.Instance.IsChinese;
                 if (OverviewAlerts == null || OverviewAlerts.Count == 0)
                 {
-                    return isZh ? "✓ 服务已完成" : "✓ SERVIS USPEŠNO ZAVRŠEN";
+                    return LocalizationService.Get("MdlCompletionBadgeOk", "✓ SERVIS USPEŠNO ZAVRŠEN");
                 }
                 if (_hasCriticalOverviewAlerts)
                 {
-                    return isZh ? "⚠ 完成（存在严重警告）" : "⚠ SERVIS ZAVRŠEN SA KRITIČNIM UPOZORENJIMA";
+                    return LocalizationService.Get("MdlCompletionBadgeCrit", "⚠ SERVIS ZAVRŠEN SA KRITIČNIM UPOZORENJIMA");
                 }
-                return isZh ? "⚠ 完成（存在警告）" : "⚠ SERVIS ZAVRŠEN SA UPOZORENJIMA";
+                return LocalizationService.Get("MdlCompletionBadgeWarn", "⚠ SERVIS ZAVRŠEN SA UPOZORENJIMA");
             }
         }
 
@@ -5062,23 +5350,20 @@ namespace WIS.UI
         {
             get
             {
-                bool isZh = LocalizationService.Instance.IsChinese;
                 int count = OverviewAlerts != null ? OverviewAlerts.Count : 0;
                 if (count == 0)
                 {
-                    return isZh
-                        ? "所有硬件、驱动与软件验证通过 — 设备已可交付客户。"
-                        : "Proces je završen čisto — uređaj je spreman za predaju klijentu.";
+                    return LocalizationService.Get("MdlCompletionAlertsOk", "Proces je završen čisto — uređaj je spreman za predaju klijentu.");
                 }
                 if (_hasCriticalOverviewAlerts)
                 {
-                    return isZh
-                        ? string.Format("完成时发现 {0} 项警告（含严重警告）— 点击条目可查看详情。", count)
-                        : string.Format("Završeno sa {0} aktivnih upozorenja (uključujući kritična) — kliknite na stavku za pregled.", count);
+                    return string.Format(
+                        LocalizationService.Get("MdlCompletionAlertsCrit", "Završeno sa {0} aktivnih upozorenja (uključujući kritična) — kliknite na stavku za pregled."),
+                        count);
                 }
-                return isZh
-                    ? string.Format("完成时发现 {0} 项警告 — 交付前请检查。", count)
-                    : string.Format("Završeno sa {0} upozorenja — proverite stavke pre predaje klijentu.", count);
+                return string.Format(
+                    LocalizationService.Get("MdlCompletionAlertsWarn", "Završeno sa {0} upozorenja — proverite stavke pre predaje klijentu."),
+                    count);
             }
         }
 
@@ -5134,9 +5419,9 @@ namespace WIS.UI
                 if (_gpuTemp > 0.5f) parts.Add(string.Format("GPU {0:F0}°C", _gpuTemp));
                 if (_ssdTemp > 0.5f) parts.Add(string.Format("SSD {0:F0}°C", _ssdTemp));
                 if (_throttlingPercent >= 15.0f) parts.Add(string.Format("Throttling {0:F0}%", _throttlingPercent));
-                if (_emergencyAbortTriggered) parts.Add("Emergency Abort aktiviran");
-                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : "Detektovana kritična temperatura hardvera";
-                items.Add(OverviewAlertItem.Create("thermal", "CRITICAL", "Računar se pregrejava", detail, "diagnostics"));
+                if (_emergencyAbortTriggered) parts.Add(LocalizationService.Get("MdlAlertThermalEmergency", "Emergency Abort aktiviran"));
+                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : LocalizationService.Get("MdlAlertThermalCritDetail", "Detektovana kritična temperatura hardvera");
+                items.Add(OverviewAlertItem.Create("thermal", "CRITICAL", LocalizationService.Get("MdlAlertThermalCritTitle", "Računar se pregrejava"), detail, "diagnostics"));
             }
             else if (_cpuTemp >= 80.0f || _gpuTemp >= 82.0f || _ssdTemp >= 62.0f || _throttlingPercent >= 15.0f)
             {
@@ -5145,8 +5430,8 @@ namespace WIS.UI
                 if (_gpuTemp >= 82.0f) parts.Add(string.Format("GPU {0:F0}°C", _gpuTemp));
                 if (_ssdTemp >= 62.0f) parts.Add(string.Format("SSD {0:F0}°C", _ssdTemp));
                 if (_throttlingPercent >= 15.0f) parts.Add(string.Format("Throttling {0:F0}%", _throttlingPercent));
-                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : "Povišena radna temperatura";
-                items.Add(OverviewAlertItem.Create("thermal", "WARNING", "Povišena temperatura / trotlovanje", detail, "diagnostics"));
+                string detail = parts.Count > 0 ? string.Join(" • ", parts.ToArray()) : LocalizationService.Get("MdlAlertThermalWarnDetail", "Povišena radna temperatura");
+                items.Add(OverviewAlertItem.Create("thermal", "WARNING", LocalizationService.Get("MdlAlertThermalWarnTitle", "Povišena temperatura / trotlovanje"), detail, "diagnostics"));
             }
 
             // 2. Windows Autopilot / MDM
@@ -5157,17 +5442,20 @@ namespace WIS.UI
                     string.Equals(Autopilot.StatusLevel, "ERROR", StringComparison.OrdinalIgnoreCase))
                     ? "CRITICAL"
                     : "WARNING";
-                string title = Autopilot.IsLocked ? "Detektovan Windows Autopilot" : "Detektovan Autopilot / MDM";
+                string title = Autopilot.IsLocked
+                    ? LocalizationService.Get("MdlAlertApLockedTitle", "Detektovan Windows Autopilot")
+                    : LocalizationService.Get("MdlAlertApMdmTitle", "Detektovan Autopilot / MDM");
                 string tenant = !string.IsNullOrWhiteSpace(Autopilot.ProfileTenantDomain)
                     ? Autopilot.ProfileTenantDomain
                     : Autopilot.TenantDomain;
                 if (string.IsNullOrWhiteSpace(tenant) ||
                     tenant.StartsWith("Nema", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(tenant, LocalizationService.Get("MdlApNoneNotAssigned", "Nema (Nije dodeljen)"), StringComparison.OrdinalIgnoreCase) ||
                     tenant == "N/A")
                 {
                     tenant = !string.IsNullOrWhiteSpace(Autopilot.StatusTitle)
                         ? Autopilot.StatusTitle
-                        : "Proverite Autopilot karticu za detalje";
+                        : LocalizationService.Get("MdlAlertApCheckTab", "Proverite Autopilot karticu za detalje");
                 }
                 else
                 {
@@ -5245,15 +5533,17 @@ namespace WIS.UI
                 string detail;
                 if (totalDrvProblems > 0)
                 {
-                    string prefix = totalDrvProblems == 1 ? "1 uređaj bez drajvera" : string.Format("{0} uređaja sa greškom", totalDrvProblems);
+                    string prefix = totalDrvProblems == 1
+                        ? LocalizationService.Get("MdlAlertDrvOneMissing", "1 uređaj bez drajvera")
+                        : string.Format(LocalizationService.Get("MdlAlertDrvManyErrors", "{0} uređaja sa greškom"), totalDrvProblems);
                     string namesText = FormatCompactNamesList(devNames, 2);
                     detail = !string.IsNullOrEmpty(namesText) ? string.Format("{0} ({1})", prefix, namesText) : prefix;
                 }
                 else
                 {
-                    detail = "Korak instalacije drajvera prijavio je grešku ili upozorenje.";
+                    detail = LocalizationService.Get("MdlAlertDrvStepDetail", "Korak instalacije drajvera prijavio je grešku ili upozorenje.");
                 }
-                items.Add(OverviewAlertItem.Create("drivers", sev, "Nisu instalirani svi drajveri", detail, "drivers"));
+                items.Add(OverviewAlertItem.Create("drivers", sev, LocalizationService.Get("MdlAlertDrvTitle", "Nisu instalirani svi drajveri"), detail, "drivers"));
             }
 
             // 4. Neinstalirani ili neuspeli programi (Apps ERROR/WARN + Phase 4 ERROR/WARN koraci)
@@ -5299,8 +5589,8 @@ namespace WIS.UI
 
             if (failedAppNames.Count > 0)
             {
-                string detail = "Neuspelo: " + FormatCompactNamesList(failedAppNames, 3);
-                items.Add(OverviewAlertItem.Create("apps", hasAppCritical ? "CRITICAL" : "WARNING", "Neki program nije instaliran", detail, "apps"));
+                string detail = LocalizationService.Get("MdlAlertAppsFailedPrefix", "Neuspelo: ") + FormatCompactNamesList(failedAppNames, 3);
+                items.Add(OverviewAlertItem.Create("apps", hasAppCritical ? "CRITICAL" : "WARNING", LocalizationService.Get("MdlAlertAppsTitle", "Neki program nije instaliran"), detail, "apps"));
             }
 
             // 5. Hardverski testovi (HwTest) i Stres test
@@ -5322,8 +5612,8 @@ namespace WIS.UI
             {
                 string detail = !string.IsNullOrWhiteSpace(_hwTestSummaryText)
                     ? _hwTestSummaryText
-                    : (!string.IsNullOrWhiteSpace(_thermalVerdictTitle) ? _thermalVerdictTitle : "Proverite rezultate hardverskih testova.");
-                items.Add(OverviewAlertItem.Create("hwtest", hwTestCrit ? "CRITICAL" : "WARNING", "Hardverski test prijavio problem", detail, "hwtest"));
+                    : (!string.IsNullOrWhiteSpace(_thermalVerdictTitle) ? _thermalVerdictTitle : LocalizationService.Get("MdlAlertHwTestFallback", "Proverite rezultate hardverskih testova."));
+                items.Add(OverviewAlertItem.Create("hwtest", hwTestCrit ? "CRITICAL" : "WARNING", LocalizationService.Get("MdlAlertHwTestTitle", "Hardverski test prijavio problem"), detail, "hwtest"));
             }
 
             // 6. Baterija i punjač
@@ -5332,8 +5622,8 @@ namespace WIS.UI
                 items.Add(OverviewAlertItem.Create(
                     "weak_charger",
                     "WARNING",
-                    "Slab punjač — baterija se prazni",
-                    string.Format("Punjač priključen, a baterija gubi -{0:0.0} W ({1}%)", _batteryRateWatts, _batteryChargePercent),
+                    LocalizationService.Get("MdlAlertWeakChargerTitle", "Slab punjač — baterija se prazni"),
+                    string.Format(LocalizationService.Get("MdlAlertWeakChargerDetail", "Punjač priključen, a baterija gubi -{0:0.0} W ({1}%)"), _batteryRateWatts, _batteryChargePercent),
                     "hardware"));
             }
             if (_hasBatteryLive && !_isOnAcPower && _batteryChargePercent > 0 && _batteryChargePercent <= 20)
@@ -5341,8 +5631,8 @@ namespace WIS.UI
                 items.Add(OverviewAlertItem.Create(
                     "low_battery",
                     "CRITICAL",
-                    "Nizak nivo baterije",
-                    string.Format("Preostalo samo {0}% — priključite punjač!", _batteryChargePercent),
+                    LocalizationService.Get("MdlAlertLowBatTitle", "Nizak nivo baterije"),
+                    string.Format(LocalizationService.Get("MdlAlertLowBatDetail", "Preostalo samo {0}% — priključite punjač!"), _batteryChargePercent),
                     "hardware"));
             }
             if (_isLaptop && _batteryHealth > 0 && _batteryHealth < 55)
@@ -5350,15 +5640,15 @@ namespace WIS.UI
                 string detail = (HardwareInfo != null && !string.IsNullOrWhiteSpace(HardwareInfo.BatteryWear))
                     ? HardwareInfo.BatteryWear
                     : _batteryHealthText;
-                items.Add(OverviewAlertItem.Create("battery_wear", "WARNING", "Visoka istrošenost baterije", detail, "hardware"));
+                items.Add(OverviewAlertItem.Create("battery_wear", "WARNING", LocalizationService.Get("MdlAlertBatWearTitle", "Visoka istrošenost baterije"), detail, "hardware"));
             }
 
             // 7. SMART diska
             if ((_diskWear > 0 && _diskWear < 70) || _reallocatedSectors > 0 || _criticalWarnings > 0)
             {
                 string sev = ((_diskWear > 0 && _diskWear < 50) || _criticalWarnings > 0) ? "CRITICAL" : "WARNING";
-                string detail = string.Format("Zdravlje: {0}% • SMART: {1}", _diskWear, _smartStatus);
-                items.Add(OverviewAlertItem.Create("smart_disk", sev, "Upozorenje za zdravlje diska (SMART)", detail, "hardware"));
+                string detail = string.Format(LocalizationService.Get("MdlAlertSmartDetail", "Zdravlje: {0}% • SMART: {1}"), _diskWear, _smartStatus);
+                items.Add(OverviewAlertItem.Create("smart_disk", sev, LocalizationService.Get("MdlAlertSmartTitle", "Upozorenje za zdravlje diska (SMART)"), detail, "hardware"));
             }
 
             // 8. Ostale greške/upozorenja u koracima faza
@@ -5396,7 +5686,7 @@ namespace WIS.UI
                 items.Add(OverviewAlertItem.Create(
                     "other_steps",
                     hasOtherStepCrit ? "CRITICAL" : "WARNING",
-                    "Upozorenje u koracima instalacije",
+                    LocalizationService.Get("MdlAlertOtherStepsTitle", "Upozorenje u koracima instalacije"),
                     FormatCompactNamesList(otherStepNames, 2),
                     "logs"));
             }

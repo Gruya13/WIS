@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.4.2 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.4.2 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.4.2 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.4.3 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.4.3 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.4.3 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -972,6 +972,176 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("$retryDelaysClean = @(0, 1, 2)", p6_fin_fn)
         self.assertIn('$Global:WisFinalReportSentStatus = "COMPLETED"', p6_fin_fn)
         self.assertIn('$Global:WisFinalReportSentStatus -ne "COMPLETED"', phase6_src)
+
+    def test_24_v343_01_location_allow_and_sync_parity(self):
+        """V343-01: Location ConsentStore=Allow (HKLM/HKCU/HKU/DefaultUser), uklonjen DisableLocation=1, lfsvc aktivan i paritet WIS.Branding/SetupComplete."""
+        setup_canon = (ROOT / "ISO" / "SetupComplete.ps1").read_bytes()
+        setup_skripte = (ROOT / "ISO" / "Skripte" / "SetupComplete.ps1").read_bytes()
+        setup_media = (ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "SetupComplete.ps1").read_bytes()
+        self.assertEqual(setup_canon, setup_skripte, "ISO/Skripte/SetupComplete.ps1 mora biti identičan sa ISO/SetupComplete.ps1")
+        self.assertEqual(setup_canon, setup_media, "ISO/media/oem/.../SetupComplete.ps1 mora biti identičan sa ISO/SetupComplete.ps1")
+
+        setup_txt = setup_canon.decode("utf-8")
+        self.assertIn(r"ConsentStore\location", setup_txt)
+        self.assertIn("NonPackaged", setup_txt)
+        self.assertIn("'Allow'", setup_txt)
+        self.assertIn("ShowGlobalPrompts", setup_txt)
+        self.assertIn("DisableLocation", setup_txt)
+        self.assertIn("lfsvc", setup_txt)
+
+        branding_ui = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_bytes()
+        branding_oem = (ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_bytes()
+        self.assertEqual(branding_ui, branding_oem, "ISO $OEM$ WIS.Branding.psm1 mora biti 100% identičan sa UI/Skripte/Modules/WIS.Branding.psm1")
+
+        branding_src = branding_ui.decode("utf-8-sig")
+        loc_fn = branding_src.split("function Disable-LocationPrivacyPrompts", 1)[1].split("function Set-OptimalDisplayScaling", 1)[0]
+        self.assertIn('"Allow"', loc_fn)
+        self.assertIn("NonPackaged", loc_fn)
+        self.assertIn("ShowGlobalPrompts", loc_fn)
+        self.assertIn("DisableLocation", loc_fn)
+        self.assertIn("lfsvc", loc_fn)
+        self.assertIn("function Test-WisLocationAccessEnabled", loc_fn)
+
+        p3_tel = branding_src.split('-StepId "P3.Telemetry"', 1)[1].split('-StepId "P3.Oem"', 1)[0]
+        self.assertIn("Test-WisLocationAccessEnabled", p3_tel)
+        self.assertIn("Disable-LocationPrivacyPrompts", p3_tel)
+
+        export_blk = branding_src.split("Export-ModuleMember", 1)[1]
+        self.assertIn("Test-WisLocationAccessEnabled", export_blk)
+
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        self.assertNotIn('ConsentStore\\location', phase6_src)
+
+    def test_25_v343_02_windows_licensing_diagnostics_and_activation_flow(self):
+        """V343-02: Get-WindowsLicenseStatus, Windows [Licensing] parametri, slmgr /ato bez OA3x i prošireni license-status.json."""
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        ini_root = (ROOT / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+        ini_iso = (ROOT / "ISO" / "Wifi-Servis.example.ini").read_text(encoding="utf-8")
+
+        self.assertEqual(ini_root, ini_iso)
+        for ini_txt in (ini_root, ini_iso):
+            for tok in ("; WindowsActivationMode=Auto", "; WindowsKmsHost=", "; WindowsKmsPort=1688", "; WindowsProductKey="):
+                self.assertIn(tok, ini_txt)
+
+        core_lic_blk = core_src.split("function Get-ServisLicensingSettings", 1)[1].split("function Test-NasHostOnline", 1)[0]
+        for tok in ("WindowsActivationMode", "WindowsKmsHost", "WindowsKmsPort", "WindowsProductKey"):
+            self.assertIn(tok, core_lic_blk)
+
+        local_lic_blk = apps_src.split("function Get-WisLicensingSettingsLocal", 1)[1].split("function Write-WisLicenseStatusFile", 1)[0]
+        for tok in ("WindowsActivationMode", "WindowsKmsHost", "WindowsKmsPort", "WindowsProductKey"):
+            self.assertIn(tok, local_lic_blk)
+
+        self.assertIn("function Get-WindowsLicenseStatus", apps_src)
+        win_stat_blk = apps_src.split("function Get-WindowsLicenseStatus", 1)[1].split("function Test-WindowsActivated", 1)[0]
+        self.assertIn("55c92734-d682-4d71-98e3-d6ec3f16059f", win_stat_blk)
+        self.assertIn("SoftwareLicensingProduct", win_stat_blk)
+        self.assertIn("LicenseStatusReason", win_stat_blk)
+        self.assertIn("Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @(\"/xpr\") -TimeoutSec 25", win_stat_blk)
+
+        test_win_blk = apps_src.split("function Test-WindowsActivated", 1)[1].split("function Test-OfficeInstalled", 1)[0]
+        self.assertIn("Get-WindowsLicenseStatus", test_win_blk)
+        self.assertNotIn("cscript //nologo", test_win_blk)
+
+        act_blk = apps_src.split("function Invoke-WindowsOfficeActivation", 1)[1].split("function Invoke-AppsPhase", 1)[0]
+        self.assertIn("OA3xOriginalProductKeyDescription", act_blk)
+        self.assertIn("$winEditionMismatch", act_blk)
+        self.assertIn("Invoke-CscriptWithTimeout -ScriptPath $slmgrPath -Arguments @(\"/ato\") -TimeoutSec 25", act_blk)
+        self.assertIn("WindowsKmsHost", act_blk)
+        self.assertIn("WindowsProductKey", act_blk)
+        self.assertIn("$winNeedsHook", act_blk)
+        self.assertIn("windows_oa3_present", act_blk)
+        self.assertIn("windows_edition", act_blk)
+        self.assertIn("windows_license_method", act_blk)
+        self.assertIn("windows_license_detail", act_blk)
+
+        write_lic_blk = apps_src.split("function Write-WisLicenseStatusFile", 1)[1].split("function Test-BatteryPresent", 1)[0]
+        for field in ("windows_oa3_present", "windows_edition", "windows_license_method", "windows_license_detail"):
+            self.assertIn(field, write_lic_blk)
+        self.assertIn("Protect-WisLicenseLogText -Text $WindowsLicenseDetail", write_lic_blk)
+
+        export_blk = apps_src.split("Export-ModuleMember", 1)[1]
+        self.assertIn("Get-WindowsLicenseStatus", export_blk)
+
+        for field in ("windows_oa3_present", "windows_edition", "windows_license_method", "windows_license_detail"):
+            self.assertIn(field, phase6_src)
+
+    def test_26_v343_03_phase6_hwtest_hard_gate(self):
+        """V343-03: Phase6-Finalize.ps1 blokira DONE/COMPLETED kada hwtest-result.json ima preskočene/nezavršene interaktivne testove."""
+        phase6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+        self.assertIn("hwtest-result.json", phase6_src)
+        self.assertIn("$unfinishedInteractiveTests", phase6_src)
+        self.assertIn('"SKIP", "PENDING"', phase6_src)
+        self.assertIn("$hwTestIncomplete = $true", phase6_src)
+        self.assertIn("$blockHandover = $true", phase6_src)
+        self.assertIn("Send-FleetFinalReport -Status \"NEEDS_ATTENTION\"", phase6_src)
+        idx_finally = phase6_src.find("} finally {")
+        idx_clear = phase6_src.find("Clear-ServisWifiSecrets -LocalSetupDir")
+        self.assertGreater(idx_clear, idx_finally)
+
+    def test_27_v343_04_hardware_backlit_kb_no_false_positives(self):
+        """V343-04: WIS.Hardware.psm1 uklanja lažne PnP/WMI/BIOS detektore i daje prioritet hwtest-result.json (backlight_passed)."""
+        hw_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Hardware.psm1").read_text(encoding="utf-8")
+        diag_blk = hw_src.split("function Get-HardwareDiagnosticsInfo", 1)[1].split("function Test-BatteryPresent", 1)[0]
+        for forbidden_tok in (
+            "LEN0071",
+            "DELLABCE",
+            "Lenovo_SetKeyboardBacklightStatus",
+            "HP_BIOSSetting",
+            "DCIM_BiosEnumeration",
+        ):
+            self.assertNotIn(forbidden_tok, diag_blk, f"Lažni detektor {forbidden_tok} ne sme ostati u WIS.Hardware.psm1")
+
+        self.assertIn("hwtest-result.json", diag_blk)
+        self.assertIn("backlight_passed", diag_blk)
+        self.assertIn('"no_hardware"', diag_blk)
+        self.assertIn('"Da (Pozadinsko osvetljenje)"', diag_blk)
+        self.assertIn('"Standardna (Bez osvetljenja)"', diag_blk)
+        self.assertIn("Nije potvrđeno (provera u Fazi 5)", diag_blk)
+
+    def test_28_v343_05_07_models_and_peripherals_contract(self):
+        """V343-05 (Models.cs) i V343-07 (Models.cs + MainWindow.Hardware.cs): sklopljene faze po difoltu, bez Web kamera/TB bedževa, BT verzija, 4G/5G i eSIM."""
+        models_src = (ROOT / "UI" / "Models.cs").read_text(encoding="utf-8")
+        hw_cs_src = (ROOT / "UI" / "MainWindow.Hardware.cs").read_text(encoding="utf-8")
+
+        # V343-05 u Models.cs
+        self.assertIn("private bool _showStepsInOverview = false;", models_src)
+        self.assertIn("private bool _isPhasesExpanded = false;", models_src)
+        self.assertIn("Prikaži korake", models_src)
+        self.assertIn("Sakrij korake", models_src)
+
+        # V343-07 u RebuildOverviewPeripherals
+        rebuild_blk = models_src.split("public void RebuildOverviewPeripherals(", 1)[1].split("private void AddPeripheralBadge(", 1)[0]
+        self.assertNotIn("Web kamera", rebuild_blk)
+        self.assertNotIn("Thunderbolt / USB4", rebuild_blk)
+        self.assertIn("IR kamera (Hello)", rebuild_blk)
+        self.assertIn('AddPeripheralBadge("eSIM"', rebuild_blk)
+        self.assertIn("_bluetoothVersionLabel", rebuild_blk)
+        self.assertIn("_wwanInfo", rebuild_blk)
+
+        # V343-07 u MainWindow.Hardware.cs
+        self.assertIn("public void RefreshPeripheralsAfterDrivers()", hw_cs_src)
+        self.assertIn("A92F26CA-EDA7-4B1D-9DB2-27B68AA5A2EB", hw_cs_src)
+        self.assertIn("private static void DetectEsimSupport(", hw_cs_src)
+        self.assertIn("mbn show interfaces", hw_cs_src)
+        self.assertIn("WwanSvc", hw_cs_src)
+
+    def test_29_v343_02_licensing_antileak_no_plaintext_kms_or_raw_output(self):
+        """V343-02 Anti-Leak: WIS.Apps.psm1 ne sme logovati plain-text KMS hostove niti nezaštićene slmgr/ospp izlaze."""
+        apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        protect_blk = apps_src.split("function Protect-WisLicenseLogText", 1)[1].split("function Format-Win32CommandLineArgument", 1)[0]
+        self.assertIn("[string[]]$SensitiveHosts = @()", protect_blk)
+        self.assertIn("***KMS_HOST_MASKIRANO***", protect_blk)
+
+        act_blk = apps_src.split("function Invoke-WindowsOfficeActivation", 1)[1].split("function Invoke-AppsPhase", 1)[0]
+        self.assertNotIn("($skmsTarget)", act_blk)
+        self.assertNotIn("(${officeKmsHost}:$officeKmsPort)", act_blk)
+        self.assertNotIn("${winKmsHost}:$winKmsPort", act_blk)
+        self.assertIn("$shMsg = Protect-WisLicenseLogText", act_blk)
+        self.assertIn("$spMsg = Protect-WisLicenseLogText", act_blk)
+        self.assertIn("$inpMsg = Protect-WisLicenseLogText", act_blk)
+        self.assertIn("$cleanAct = Protect-WisLicenseLogText", act_blk)
 
 
 if __name__ == "__main__":
