@@ -176,6 +176,9 @@ namespace WIS.HwTest
         private bool _checkpointRestored = false;
         private int _checkpointRestoredCount = 0;
         private int _checkpointTotalApplicable = 0;
+        private volatile bool _initialHardwareProbeCompleted = false;
+        private readonly ManualResetEvent _initialProbeDoneEvent = new ManualResetEvent(false);
+        private string _pendingRebootReasonTestId = "";
 
         private void MarkOperatorInteraction()
         {
@@ -895,7 +898,8 @@ namespace WIS.HwTest
             _testItems.Add(trackPoint);
 
             // 5. Touchscreen (+ Stylus olovka)
-            bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || _hwInfo.TouchscreenPnpPresent || _hwInfo.FactoryTouchscreen == true);
+            bool tsPnpAllowed = _hwInfo.TouchscreenPnpPresent && _hwInfo.FactoryTouchscreen != false;
+            bool tsExpected = isLaptop && (_hwInfo.HasTouchscreen || tsPnpAllowed || _hwInfo.FactoryTouchscreen == true);
             bool tsNeedsBiosAction = tsExpected && (_hwInfo.TouchscreenDisabledInBios || (!_hwInfo.HasTouchscreen && _hwInfo.FactoryTouchscreen == true));
             string tsTitle = _hwInfo.HasStylusPen ? HwTestLocalization.Pick("Touchscreen + Olovka (Stylus)", "触摸屏 + 手写笔 (Stylus)") : HwTestLocalization.Pick("Ekran na dodir (Touchscreen)", "触摸屏 (Touchscreen)");
             string tsDesc = _hwInfo.HasStylusPen
@@ -903,7 +907,7 @@ namespace WIS.HwTest
                 : HwTestLocalization.Pick("Prolazak kroz lavirint prstom i multitouch detekcija", "用手指穿过迷宫及多点触控检测");
             if (tsExpected && _hwInfo.TouchscreenDisabledInBios && !_hwInfo.HasTouchscreen)
                 tsDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN — Touchscreen je ONEMOGUĆEN u BIOS-u ({0})!", "⚠️ 出厂配备 — 触摸屏已在 BIOS 中禁用（{0}）！", _hwInfo.TouchscreenBiosStatus);
-            else if (tsExpected && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || _hwInfo.TouchscreenPnpPresent))
+            else if (tsExpected && !_hwInfo.HasTouchscreen && (_hwInfo.FactoryTouchscreen == true || tsPnpAllowed))
                 tsDesc = HwTestLocalization.PickFormat("⚠️ FABRIČKI PRISUTAN ({0}), ali nije aktivan u Windowsu!", "⚠️ 出厂配备（{0}），但 Windows 中未激活！", !string.IsNullOrEmpty(_hwInfo.FactoryTouchscreenEvidence) ? _hwInfo.FactoryTouchscreenEvidence : "PnP");
 
             TestItemResult ts = new TestItemResult("touchscreen", tsTitle, tsDesc);
@@ -1851,6 +1855,11 @@ namespace WIS.HwTest
                 if (!dispatchedToUi)
                 {
                     Interlocked.Exchange(ref _probeRefreshInFlight, 0);
+                    if (!_initialHardwareProbeCompleted)
+                    {
+                        _initialHardwareProbeCompleted = true;
+                        try { _initialProbeDoneEvent.Set(); } catch { }
+                    }
                 }
             }
         }
@@ -1970,6 +1979,11 @@ namespace WIS.HwTest
                     _subTitleBlock.Text = BuildSubTitleText();
                 }
 
+                if (!_initialHardwareProbeCompleted)
+                {
+                    try { TryRestorePersistedTestState(); } catch { }
+                }
+
                 RefreshCardVisibility();
                 UpdateSummaryBadge();
                 if (isPostDriverRefresh)
@@ -1982,6 +1996,14 @@ namespace WIS.HwTest
             catch (Exception ex)
             {
                 HwTestLogger.Warn("PROBE_REFRESH", "Greška pri primeni hardverske probe na UI: " + ex.Message);
+            }
+            finally
+            {
+                if (!_initialHardwareProbeCompleted)
+                {
+                    _initialHardwareProbeCompleted = true;
+                    try { _initialProbeDoneEvent.Set(); } catch { }
+                }
             }
         }
 
@@ -3240,13 +3262,13 @@ namespace WIS.HwTest
                 }
             }
 
-            bool reportAlreadyExists = _reportSavedInSession ||
-                (!string.IsNullOrEmpty(_outJsonPath) && File.Exists(_outJsonPath)) ||
-                File.Exists(@"C:\setup\hwtest-result.json");
-
-            if (pendingOrPreliminary == 0 || reportAlreadyExists)
+            if (pendingOrPreliminary == 0)
             {
                 SaveCurrentReport(false, false, "", false);
+            }
+            else if (HasAnyRealCompletedTestsForCheckpoint())
+            {
+                try { SaveCheckpoint(""); } catch { }
             }
         }
 
@@ -3724,156 +3746,7 @@ namespace WIS.HwTest
             Action<string, string, string, string> onStepProgress,
             Action<HwTestRunResult, int, float, float, bool, bool> onPhase5Finished)
         {
-            if (!_checkpointRestored)
-            {
-                try { TryRestorePersistedTestState(); } catch { }
-            }
-
-            // V344-01: Osvezi hardversku probu nakon instalacije drajvera u Fazi 2 (nikada ne gazi vec zavrsene ili restaurirane testove)
-            DriverGateState preGate = EvaluateEffectiveDriverGateState();
-            if (preGate != null && preGate.IsUnlocked && !_hardwareProbeRefreshedAfterDrivers)
-            {
-                try { RefreshHardwareProbeAfterDrivers(); } catch { }
-            }
-
-            TestItemResult existingCpu = FindItemById("auto_cpu");
-            bool preserveRestoredThermalMetrics = existingCpu != null && IsFinalTestStatus(existingCpu.Status) &&
-                                                  (_checkpointRestored || _restoredTestIds.Contains("auto_cpu") || _phase5CpuDurationSec > 0);
-
             _cancelPassiveAutoChecks = true;
-
-            lock (_phase5Lock)
-            {
-                _phase5WorkflowActive = true;
-                _phase5CompletedNotified = false;
-                _phase5StepCallback = onStepProgress;
-                _phase5FinishedCallback = onPhase5Finished;
-                if (!preserveRestoredThermalMetrics)
-                {
-                    _phase5CpuDurationSec = 0;
-                    _phase5PeakCpuTemp = 0f;
-                    _phase5MaxCpuThrottle = 0f;
-                    _phase5ThermalCritical = false;
-                }
-            }
-
-            _autoStressCancel.Reset();
-            if (!preserveRestoredThermalMetrics)
-            {
-                _phase5ThermalCritical = false;
-                _phase5ThermalNote = "";
-            }
-            _autoTestsFinishedUtc = null;
-            _firstOperatorInteractionUtc = null;
-
-            // V344-03: Ako su svi primenljivi automatski i interaktivni testovi vec zavrseni pre restarta (0 Pending / Running),
-            // odmah popuni P5.AutoDiag, P5.Stress, P5.Peripherals iz restauriranih rezultata i zavrsi Fazu 5 bez ponovnog testiranja.
-            int pendingOrRunningCount = 0;
-            int preliminaryCount = 0;
-            int autoFailCount = 0;
-            int totalApplicableCount = 0;
-            int manualApplicableDoneCount = 0;
-            int manualWarnOrFailEarly = 0;
-            for (int i = 0; i < _testItems.Count; i++)
-            {
-                TestItemResult t = _testItems[i];
-                if (t.Status == TestStatus.NotApplicable) continue;
-                totalApplicableCount++;
-                if (t.IsPassivePreliminary)
-                {
-                    preliminaryCount++;
-                }
-                if (t.IsAutomated && t.Status == TestStatus.Fail)
-                {
-                    autoFailCount++;
-                }
-                if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
-                {
-                    pendingOrRunningCount++;
-                }
-                else if (!t.IsAutomated)
-                {
-                    manualApplicableDoneCount++;
-                    if (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip)
-                        manualWarnOrFailEarly++;
-                }
-            }
-
-            if (pendingOrRunningCount == 0 && preliminaryCount == 0 && autoFailCount == 0 && totalApplicableCount > 0)
-            {
-                string[] passiveIdsEarly = new string[] { "auto_battery", "auto_network", "auto_security" };
-                bool autoDiagWarnEarly = false;
-                List<string> autoDiagIssuesEarly = new List<string>();
-                for (int i = 0; i < passiveIdsEarly.Length; i++)
-                {
-                    TestItemResult pi = FindItemById(passiveIdsEarly[i]);
-                    if (pi != null && (pi.HasWarning || pi.Status == TestStatus.Fail))
-                    {
-                        autoDiagWarnEarly = true;
-                        autoDiagIssuesEarly.Add(FormatAutoDiagIssueSummary(passiveIdsEarly[i], pi));
-                    }
-                }
-                EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"),
-                    autoDiagWarnEarly ? "WARN" : "OK", string.Join(" | ", autoDiagIssuesEarly.ToArray()));
-
-                string[] stressIdsEarly = new string[] { "auto_disk", "auto_ram", "auto_cpu", "auto_gpu" };
-                bool stressWarnEarly = false;
-                for (int i = 0; i < stressIdsEarly.Length; i++)
-                {
-                    TestItemResult si = FindItemById(stressIdsEarly[i]);
-                    if (si != null && (si.HasWarning || si.Status == TestStatus.Fail))
-                        stressWarnEarly = true;
-                }
-                if (_phase5ThermalCritical)
-                {
-                    EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "WARN",
-                        HwTestLocalization.PickFormat("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", "注意：CPU 过热 ({0:F1}°C)", _phase5PeakCpuTemp));
-                }
-                else
-                {
-                    EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"),
-                        stressWarnEarly ? "WARN" : "OK", "");
-                }
-
-                if (_hwInfo != null && _hwInfo.IsLaptop && manualApplicableDoneCount > 0)
-                {
-                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
-                        manualWarnOrFailEarly > 0 ? "WARN" : "OK", "");
-                }
-                else
-                {
-                    string skipPeriphReasonEarly = (_hwInfo != null && !_hwInfo.IsLaptop)
-                        ? HwTestLocalization.Pick("Desktop računar — ručni testovi periferija nisu potrebni", "台式机 — 无需手动外设测试")
-                        : HwTestLocalization.Pick("Nema primenljivih periferijskih testova", "没有适用的外设测试");
-                    EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
-                        "SKIPPED_DONE", skipPeriphReasonEarly);
-                }
-
-                Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    if (_autoSectionStatus != null)
-                    {
-                        _autoSectionStatus.Text = HwTestLocalization.PickFormat(
-                            "♻️ Svi hardverski testovi ({0}/{0}) su već završeni pre restarta — preskačem ponovno testiranje.",
-                            "♻️ 所有硬件测试 ({0}/{0}) 在重启前已完成 — 跳过重复测试。",
-                            totalApplicableCount);
-                        _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
-                    }
-                    UpdateSummaryBadge();
-                    SaveCurrentReport(false, false, "", false);
-                }));
-                return;
-            }
-
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (_autoSectionStatus != null)
-                {
-                    _autoSectionStatus.Text = _checkpointRestored
-                        ? HwTestLocalization.PickFormat("♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova. Nastavljam Fazu 5...", "♻️ UEFI BIOS 重启后继续 — 已恢复 {0}/{1} 项已完成的测试。正在继续阶段 5...", _checkpointRestoredCount, _checkpointTotalApplicable)
-                        : HwTestLocalization.Pick("🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...", "🔄 阶段 5 进行中：正在启动自动诊断和压力测试...");
-                }
-            }));
 
             if (_autoStressRunning)
             {
@@ -3883,14 +3756,169 @@ namespace WIS.HwTest
             }
 
             _autoStressRunning = true;
-            Dispatcher.BeginInvoke(new Action(() => SetAutoControlsBusy(true)));
 
             Thread th = new Thread(() =>
             {
                 bool autoDiagWarn = false;
                 bool stressWarn = false;
+                bool didEarlyExit = false;
                 try
                 {
+                    // V352-01: Na pozadinskoj niti sacekaj zavrsetak pocetne hardverske probe pre evaluacije i restauracije checkpointa (max 8s)
+                    if (!_initialHardwareProbeCompleted)
+                    {
+                        try { _initialProbeDoneEvent.WaitOne(8000); } catch { }
+                    }
+
+                    Dispatcher.Invoke(new Action(() =>
+                    {
+                        try { TryRestorePersistedTestState(); } catch { }
+
+                        // V344-01: Osvezi hardversku probu nakon instalacije drajvera u Fazi 2 (nikada ne gazi vec zavrsene ili restaurirane testove)
+                        DriverGateState preGate = EvaluateEffectiveDriverGateState();
+                        if (preGate != null && preGate.IsUnlocked && !_hardwareProbeRefreshedAfterDrivers)
+                        {
+                            try { RefreshHardwareProbeAfterDrivers(); } catch { }
+                        }
+
+                        TestItemResult existingCpu = FindItemById("auto_cpu");
+                        bool preserveRestoredThermalMetrics = existingCpu != null && IsFinalTestStatus(existingCpu.Status) &&
+                                                              (_checkpointRestored || _restoredTestIds.Contains("auto_cpu") || _phase5CpuDurationSec > 0);
+
+                        lock (_phase5Lock)
+                        {
+                            _phase5WorkflowActive = true;
+                            _phase5CompletedNotified = false;
+                            _phase5StepCallback = onStepProgress;
+                            _phase5FinishedCallback = onPhase5Finished;
+                            if (!preserveRestoredThermalMetrics)
+                            {
+                                _phase5CpuDurationSec = 0;
+                                _phase5PeakCpuTemp = 0f;
+                                _phase5MaxCpuThrottle = 0f;
+                                _phase5ThermalCritical = false;
+                            }
+                        }
+
+                        _autoStressCancel.Reset();
+                        if (!preserveRestoredThermalMetrics)
+                        {
+                            _phase5ThermalCritical = false;
+                            _phase5ThermalNote = "";
+                        }
+                        _autoTestsFinishedUtc = null;
+                        _firstOperatorInteractionUtc = null;
+
+                        int pendingOrRunningCount = 0;
+                        int preliminaryCount = 0;
+                        int autoFailCount = 0;
+                        int totalApplicableCount = 0;
+                        int manualApplicableDoneCount = 0;
+                        int manualWarnOrFailEarly = 0;
+                        for (int i = 0; i < _testItems.Count; i++)
+                        {
+                            TestItemResult t = _testItems[i];
+                            if (t.Status == TestStatus.NotApplicable) continue;
+                            totalApplicableCount++;
+                            if (t.IsPassivePreliminary)
+                            {
+                                preliminaryCount++;
+                            }
+                            if (t.IsAutomated && t.Status == TestStatus.Fail)
+                            {
+                                autoFailCount++;
+                            }
+                            if (t.Status == TestStatus.Pending || t.Status == TestStatus.Running)
+                            {
+                                pendingOrRunningCount++;
+                            }
+                            else if (!t.IsAutomated)
+                            {
+                                manualApplicableDoneCount++;
+                                if (t.Status == TestStatus.Fail || t.HasWarning || t.Status == TestStatus.Skip)
+                                    manualWarnOrFailEarly++;
+                            }
+                        }
+
+                        if (pendingOrRunningCount == 0 && preliminaryCount == 0 && autoFailCount == 0 && totalApplicableCount > 0)
+                        {
+                            didEarlyExit = true;
+                            string[] passiveIdsEarly = new string[] { "auto_battery", "auto_network", "auto_security" };
+                            bool autoDiagWarnEarly = false;
+                            List<string> autoDiagIssuesEarly = new List<string>();
+                            for (int i = 0; i < passiveIdsEarly.Length; i++)
+                            {
+                                TestItemResult pi = FindItemById(passiveIdsEarly[i]);
+                                if (pi != null && (pi.HasWarning || pi.Status == TestStatus.Fail))
+                                {
+                                    autoDiagWarnEarly = true;
+                                    autoDiagIssuesEarly.Add(FormatAutoDiagIssueSummary(passiveIdsEarly[i], pi));
+                                }
+                            }
+                            EmitPhase5Step("P5.AutoDiag", HwTestLocalization.Pick("Automatska provera sistema", "系统自动检测"),
+                                autoDiagWarnEarly ? "WARN" : "OK", string.Join(" | ", autoDiagIssuesEarly.ToArray()));
+
+                            string[] stressIdsEarly = new string[] { "auto_disk", "auto_ram", "auto_cpu", "auto_gpu" };
+                            bool stressWarnEarly = false;
+                            for (int i = 0; i < stressIdsEarly.Length; i++)
+                            {
+                                TestItemResult si = FindItemById(stressIdsEarly[i]);
+                                if (si != null && (si.HasWarning || si.Status == TestStatus.Fail))
+                                    stressWarnEarly = true;
+                            }
+                            if (_phase5ThermalCritical)
+                            {
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"), "WARN",
+                                    HwTestLocalization.PickFormat("NAPOMENA: Pregrevanje CPU ({0:F1}°C)", "注意：CPU 过热 ({0:F1}°C)", _phase5PeakCpuTemp));
+                            }
+                            else
+                            {
+                                EmitPhase5Step("P5.Stress", HwTestLocalization.Pick("Stres test (Disk, RAM, CPU 30s, GPU 3D)", "压力测试（磁盘、内存、CPU 30s、GPU 3D）"),
+                                    stressWarnEarly ? "WARN" : "OK", "");
+                            }
+
+                            if (_hwInfo != null && _hwInfo.IsLaptop && manualApplicableDoneCount > 0)
+                            {
+                                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
+                                    manualWarnOrFailEarly > 0 ? "WARN" : "OK", "");
+                            }
+                            else
+                            {
+                                string skipPeriphReasonEarly = (_hwInfo != null && !_hwInfo.IsLaptop)
+                                    ? HwTestLocalization.Pick("Desktop računar — ručni testovi periferija nisu potrebni", "台式机 — 无需手动外设测试")
+                                    : HwTestLocalization.Pick("Nema primenljivih periferijskih testova", "没有适用的外设测试");
+                                EmitPhase5Step("P5.Peripherals", HwTestLocalization.Pick("Interaktivni testovi periferija", "外设交互式测试"),
+                                    "SKIPPED_DONE", skipPeriphReasonEarly);
+                            }
+
+                            if (_autoSectionStatus != null)
+                            {
+                                _autoSectionStatus.Text = HwTestLocalization.PickFormat(
+                                    "♻️ Svi hardverski testovi ({0}/{0}) su već završeni pre restarta — preskačem ponovno testiranje.",
+                                    "♻️ 所有硬件测试 ({0}/{0}) 在重启前已完成 — 跳过重复测试。",
+                                    totalApplicableCount);
+                                _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+                            }
+                            UpdateSummaryBadge();
+                            SaveCurrentReport(false, false, "", false);
+                            return;
+                        }
+
+                        if (_autoSectionStatus != null)
+                        {
+                            _autoSectionStatus.Text = _checkpointRestored
+                                ? HwTestLocalization.PickFormat("♻️ Nastavak posle UEFI BIOS restarta — restaurirano {0}/{1} već završenih testova. Nastavljam Fazu 5...", "♻️ UEFI BIOS 重启后继续 — 已恢复 {0}/{1} 项已完成的测试。正在继续阶段 5...", _checkpointRestoredCount, _checkpointTotalApplicable)
+                                : HwTestLocalization.Pick("🔄 Faza 5 u toku: pokrećem automatsku dijagnostiku i stres test...", "🔄 阶段 5 进行中：正在启动自动诊断和压力测试...");
+                        }
+                        SetAutoControlsBusy(true);
+                    }));
+
+                    if (didEarlyExit)
+                    {
+                        _autoStressRunning = false;
+                        return;
+                    }
+
                     // Otkloni race condition sa inicijalnim StartPassiveAutoChecks() thread-om iz Faze 2
                     Thread passiveTh = _passiveAutoThread;
                     if (passiveTh != null && passiveTh.IsAlive)
@@ -3965,7 +3993,13 @@ namespace WIS.HwTest
                         {
                             TestItemResult si = FindItemById(allStressIds[i]);
                             if (si == null) continue;
+                            bool cpuDoneAfterUefi = string.Equals(si.Id, "auto_cpu", StringComparison.OrdinalIgnoreCase) &&
+                                                    !string.IsNullOrEmpty(_pendingRebootReasonTestId) &&
+                                                    si.Status == TestStatus.Pass &&
+                                                    !si.IsPassivePreliminary &&
+                                                    si.DurationSeconds > 0;
                             bool canSkipStress = (si.Status == TestStatus.Pass && !si.HasWarning && !si.IsPassivePreliminary) ||
+                                                 cpuDoneAfterUefi ||
                                                  si.Status == TestStatus.Skip ||
                                                  si.Status == TestStatus.NotApplicable;
                             if (!canSkipStress)
@@ -4003,8 +4037,15 @@ namespace WIS.HwTest
                                 if (_uefiBiosRebootRequested || _autoStressCancel.IsCancelled || !_phase5WorkflowActive) break;
                                 string id = seq[i];
                                 TestItemResult item = FindItemById(id);
+                                bool cpuDoneAfterUefiItem = item != null &&
+                                    string.Equals(item.Id, "auto_cpu", StringComparison.OrdinalIgnoreCase) &&
+                                    !string.IsNullOrEmpty(_pendingRebootReasonTestId) &&
+                                    item.Status == TestStatus.Pass &&
+                                    !item.IsPassivePreliminary &&
+                                    item.DurationSeconds > 0;
                                 bool canSkipAutoStressItem = item == null ||
                                     (item.Status == TestStatus.Pass && !item.HasWarning && !item.IsPassivePreliminary) ||
+                                    cpuDoneAfterUefiItem ||
                                     item.Status == TestStatus.Skip ||
                                     item.Status == TestStatus.NotApplicable;
                                 if (canSkipAutoStressItem)
@@ -4661,6 +4702,10 @@ namespace WIS.HwTest
         public void SaveCheckpoint(string rebootReasonTestId)
         {
             string reasonId = string.IsNullOrEmpty(rebootReasonTestId) ? "" : rebootReasonTestId.Trim();
+            if (!_initialHardwareProbeCompleted && string.IsNullOrEmpty(reasonId))
+            {
+                return;
+            }
             List<object> completedTests = new List<object>();
 
             for (int i = 0; i < _testItems.Count; i++)
@@ -4679,8 +4724,7 @@ namespace WIS.HwTest
 
                 if (t.Status == TestStatus.Pass ||
                     t.Status == TestStatus.Fail ||
-                    t.Status == TestStatus.NotApplicable ||
-                    t.Status == TestStatus.Skip)
+                    (t.Status == TestStatus.Skip && !string.IsNullOrEmpty(t.Reason)))
                 {
                     Dictionary<string, object> itemDict = new Dictionary<string, object>
                     {
@@ -4896,6 +4940,11 @@ namespace WIS.HwTest
                     if (!string.IsNullOrEmpty(rebootReasonId))
                     {
                         activeRebootReasonId = rebootReasonId;
+                        _pendingRebootReasonTestId = rebootReasonId;
+                    }
+                    else if (!string.IsNullOrEmpty(_pendingRebootReasonTestId))
+                    {
+                        activeRebootReasonId = _pendingRebootReasonTestId;
                     }
 
                     string emergencyOverride = ReadCpString(root, "driver_gate_emergency_override_reason");
@@ -4952,14 +5001,15 @@ namespace WIS.HwTest
                                 string id = ReadCpString(td, "id");
                                 if (string.IsNullOrEmpty(id)) continue;
 
-                                if (!string.IsNullOrEmpty(rebootReasonId) &&
-                                    string.Equals(id, rebootReasonId, StringComparison.OrdinalIgnoreCase))
+                                string effRebootReason = !string.IsNullOrEmpty(rebootReasonId) ? rebootReasonId : activeRebootReasonId;
+                                if (!string.IsNullOrEmpty(effRebootReason) &&
+                                    string.Equals(id, effRebootReason, StringComparison.OrdinalIgnoreCase))
                                 {
                                     continue;
                                 }
 
                                 // V344-03: auto_security se preskace pri restauraciji ISKLJUCIVO kod stvarnog UEFI BIOS restarta
-                                if (!string.IsNullOrEmpty(rebootReasonId) &&
+                                if (!string.IsNullOrEmpty(effRebootReason) &&
                                     string.Equals(id, "auto_security", StringComparison.OrdinalIgnoreCase))
                                 {
                                     continue;
@@ -5011,6 +5061,14 @@ namespace WIS.HwTest
                                 }
 
                                 if (item.Status == TestStatus.NotApplicable && parsedStatus != TestStatus.Skip)
+                                {
+                                    continue;
+                                }
+
+                                bool alreadyCompletedInSession = !_restoredTestIds.Contains(item.Id) &&
+                                    !item.IsPassivePreliminary &&
+                                    (item.Status == TestStatus.Pass || item.Status == TestStatus.Fail || item.Status == TestStatus.Running);
+                                if (alreadyCompletedInSession)
                                 {
                                     continue;
                                 }

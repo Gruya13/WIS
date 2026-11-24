@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.5.1 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.5.1 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.5.1 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.2 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.2 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.2 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -1240,7 +1240,7 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
 
         p4_pdf_blk = apps_src.split("# 8. PODRAZUMEVANI PDF PREGLEDAČ - P4.PdfDefault", 1)[1].split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[0]
         self.assertIn("SKIPPED_ERROR", p4_pdf_blk)
-        self.assertIn('-State "FAIL"', p4_pdf_blk)
+        self.assertIn('-State "ERROR"', p4_pdf_blk)
 
         p4_act_blk = apps_src.split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[1].split("# Režim pojedinačnog Retry-a", 1)[0]
         self.assertIn("$officePlannedButMissing", p4_act_blk)
@@ -1367,6 +1367,31 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("driver_ver", delta_blk)
         self.assertIn("hwids", delta_blk)
         self.assertIn("packages", delta_blk)
+
+    def test_38_v352_imp74_send_ipc_step_validateset_guard(self):
+        """WIS-TASK-275 (IMP-74, v3.5.2): Svi Send-IpcStep pozivi koriste samo dozvoljene ValidateSet vrednosti i 1:1 ISO paritet."""
+        import re
+
+        valid_states = {"WAIT", "RUNNING", "OK", "SKIPPED_DONE", "SKIPPED_USER", "WARN", "ERROR"}
+        skripte_dir = ROOT / "UI" / "Skripte"
+        state_re = re.compile(r"Send-IpcStep\b[^\r\n]*?-State\s+[\"']([^\"'$]+)[\"']", re.IGNORECASE)
+        checked = 0
+        for ps_path in sorted(list(skripte_dir.rglob("*.ps1")) + list(skripte_dir.rglob("*.psm1"))):
+            text = ps_path.read_text(encoding="utf-8")
+            for m in state_re.finditer(text):
+                st_val = m.group(1).strip()
+                self.assertIn(st_val, valid_states, f"Nevalidan Send-IpcStep -State '{st_val}' u {ps_path.name}")
+                checked += 1
+        self.assertGreater(checked, 0)
+
+        apps_src = (skripte_dir / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        p4_pdf_blk = apps_src.split("# 8. PODRAZUMEVANI PDF PREGLEDAČ - P4.PdfDefault", 1)[1].split("# 9. PROVERA OEM I SISTEMSKIH LICENCI - P4.Activation", 1)[0]
+        self.assertIn('-State "ERROR"', p4_pdf_blk)
+        self.assertNotIn('-State "FAIL"', p4_pdf_blk)
+
+        iso_apps = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules" / "WIS.Apps.psm1"
+        if iso_apps.is_file():
+            self.assertEqual((skripte_dir / "Modules" / "WIS.Apps.psm1").read_bytes(), iso_apps.read_bytes())
 
 
 if __name__ == "__main__":

@@ -6265,7 +6265,7 @@ function Invoke-Phase4Apps {
             $stepPdf = @{ State = "SKIPPED_ERROR"; Reason = $pdfErrReason; Executed = $true; DurationMs = 0 }
         }
         if (Get-Command Send-IpcStep -ErrorAction SilentlyContinue) {
-            Send-IpcStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -State "FAIL" -Reason $pdfErrReason
+            Send-IpcStep -Phase 4 -StepId "P4.PdfDefault" -Title "Podrazumevani PDF pregledač" -State "ERROR" -Reason $pdfErrReason
         }
     }
     }

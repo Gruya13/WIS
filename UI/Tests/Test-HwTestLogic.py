@@ -572,14 +572,14 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.5.1 / ServiceHub v3.7.0 u root version.json i komponentama
+        # 1. Verzije v3.5.2 / ServiceHub v3.7.0 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.5.1")
-        self.assertEqual(root_ver["release_package"]["version"], "3.5.1")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.1")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.1")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.1")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.1")
+        self.assertEqual(root_ver["version"], "3.5.2")
+        self.assertEqual(root_ver["release_package"]["version"], "3.5.2")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.2")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.2")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.2")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.2")
         self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.7.0")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
@@ -849,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.5.1";', result_src)
+        self.assertIn('AppVersion = "3.5.2";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1532,7 +1532,7 @@ class TestHwTestComponents(unittest.TestCase):
         boot_py = (ROOT / "ISO" / "Skripte" / "Patch-BootWim.py").read_text(encoding="utf-8")
 
         # V350-01 & IMP-61: Preliminarni Basic Display status ne truje checkpoint / izvestaj
-        self.assertIn('AppVersion = "3.5.1";', result_src)
+        self.assertIn('AppVersion = "3.5.2";', result_src)
         self.assertIn("public bool IsPassivePreliminary { get; set; }", result_src)
         self.assertIn("res.IsPassivePreliminary = true;", auto_src)
         self.assertIn("HasAnyRealCompletedTestsForCheckpoint", shell_src)
@@ -1633,6 +1633,39 @@ class TestHwTestComponents(unittest.TestCase):
         # V351-01 u MainWindow.HwTest.cs: CurrentPhase < 5 osigurac u ExecutePhase5IntegratedHwTest & deploy-state fallback
         self.assertIn("if (ViewModel != null && ViewModel.CurrentPhase < 5)", main_hwt_cs)
         self.assertIn('dsRoot["phase"].AsInt(1) >= 5', main_hwt_cs)
+
+    def test_wis_task_275_v352_hotfix_contracts(self):
+        """Proverava WIS-TASK-275 (v3.5.2): V352-01 checkpoint/UEFI BIOS restore, V352-01D Reconcile guard i V352-02 anti-touchpad filter."""
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        probe_src = (HWTEST_DIR / "Core" / "HardwareProbe.cs").read_text(encoding="utf-8")
+
+        # V352-01: Sinhronizacija pocetne probe i checkpoint restauracije + zabrana snimanja NotApplicable
+        self.assertIn("private volatile bool _initialHardwareProbeCompleted = false;", shell_src)
+        self.assertIn("private readonly ManualResetEvent _initialProbeDoneEvent = new ManualResetEvent(false);", shell_src)
+        self.assertIn('private string _pendingRebootReasonTestId = "";', shell_src)
+        self.assertIn("_initialProbeDoneEvent.WaitOne(8000)", shell_src)
+        self.assertIn("if (!_initialHardwareProbeCompleted && string.IsNullOrEmpty(reasonId))", shell_src)
+
+        apply_blk = shell_src.split("private void ApplyHardwareProbeSnapshotOnUi(", 1)[1].split("private static void CopyHardwareProbeResult(", 1)[0]
+        self.assertIn("TryRestorePersistedTestState()", apply_blk)
+        self.assertIn("_initialHardwareProbeCompleted = true;", apply_blk)
+
+        save_cp_blk = shell_src.split("public void SaveCheckpoint(string rebootReasonTestId)", 1)[1].split("private void TryRestoreCheckpoint()", 1)[0]
+        self.assertNotIn("TestStatus.NotApplicable", save_cp_blk)
+
+        rec_blk = shell_src.split("private void ReconcilePhase5StateAndReportAfterTest()", 1)[1].split("public void SyncFinalReportBeforeCompletion()", 1)[0]
+        self.assertNotIn("reportAlreadyExists", rec_blk)
+        self.assertIn("if (pendingOrPreliminary == 0)", rec_blk)
+        idx_save = rec_blk.find("SaveCurrentReport(")
+        idx_if = rec_blk.find("if (pendingOrPreliminary == 0)")
+        self.assertGreater(idx_save, idx_if)
+
+        # V352-02: Anti-touchpad filter u HardwareProbe i FactoryTouchscreen != false hijerarhija u HwTestShell
+        self.assertIn("public static bool IsTouchscreenPnpMatch(string pnpClass, string combinedText)", probe_src)
+        for token in ("TOUCHPAD", "TOUCH PAD", "TRACKPAD", "CLICKPAD"):
+            self.assertIn(f'"{token}"', probe_src)
+        self.assertIn("TouchscreenPnP:", probe_src)
+        self.assertIn("bool tsPnpAllowed = _hwInfo.TouchscreenPnpPresent && _hwInfo.FactoryTouchscreen != false;", shell_src)
 
 
 if __name__ == "__main__":

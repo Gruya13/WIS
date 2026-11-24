@@ -175,6 +175,28 @@ namespace WIS.HwTest.Core
             return worker.Join(timeoutMs);
         }
 
+        public static bool IsTouchscreenPnpMatch(string pnpClass, string combinedText)
+        {
+            if (string.IsNullOrEmpty(combinedText)) return false;
+            string upper = combinedText.ToUpperInvariant();
+            bool hasExplicitScreen = upper.Contains("TOUCH SCREEN") ||
+                                     upper.Contains("TOUCHSCREEN") ||
+                                     upper.Contains("TOUCH DISPLAY");
+            bool isTouchpad = upper.Contains("TOUCHPAD") ||
+                              upper.Contains("TOUCH PAD") ||
+                              upper.Contains("TRACKPAD") ||
+                              upper.Contains("TRACK PAD") ||
+                              upper.Contains("CLICKPAD") ||
+                              upper.Contains("PRECISION TOUCHPAD") ||
+                              upper.Contains("SYNAPTICS") ||
+                              upper.Contains("ALPS");
+            if (isTouchpad && !hasExplicitScreen)
+            {
+                return false;
+            }
+            return hasExplicitScreen || upper.Contains("DIGITIZER");
+        }
+
         public static HardwareProbeResult DetectHardware()
         {
             HardwareProbeResult res = new HardwareProbeResult();
@@ -505,15 +527,14 @@ namespace WIS.HwTest.Core
                         string upId = devId.ToUpperInvariant();
                         string combinedText = (name + " " + desc + " " + svc + " " + pnpClass).ToUpperInvariant();
 
-                        // Touchscreen PnP detekcija (i kad fali drajver ili je isključen)
-                        if (combinedText.Contains("TOUCH SCREEN") ||
-                            combinedText.Contains("TOUCHSCREEN") ||
-                            combinedText.Contains("DIGITIZER") ||
-                            (pnpClass.Equals("HIDClass", StringComparison.OrdinalIgnoreCase) &&
-                             (combinedText.Contains("ELAN") || combinedText.Contains("GOODIX") || combinedText.Contains("WACOM")) &&
-                             combinedText.Contains("TOUCH")))
+                        // Touchscreen PnP detekcija (uz iskljucenje ELAN/Synaptics/ALPS Touchpad-a — V352-02)
+                        if (IsTouchscreenPnpMatch(pnpClass, combinedText))
                         {
                             res.TouchscreenPnpPresent = true;
+                            if (res.PnpAuditNotes.Count < 45)
+                            {
+                                res.PnpAuditNotes.Add(string.Format("TouchscreenPnP: {0} [{1}] ({2})", name, pnpClass, devId));
+                            }
                         }
 
                         // Aktivna olovka / Wacom AES / EMR Stylus PnP detekcija

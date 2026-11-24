@@ -7,17 +7,17 @@
     "ui": {
       "framework": "WPF / C# .NET Framework 4.8",
       "binary": "WIS.UI.exe",
-      "version": "3.5.1"
+      "version": "3.5.2"
     },
     "launcher": {
       "framework": "WinForms / C# .NET Framework 4.0",
       "binary": "WIS.Launcher.exe",
-      "version": "3.5.1"
+      "version": "3.5.2"
     },
     "iso": {
-      "version": "3.5.1",
+      "version": "3.5.2",
       "directory": "ISO",
-      "embedded_launcher_version": "3.5.1"
+      "embedded_launcher_version": "3.5.2"
     },
     "servicehub": {
       "version": "3.7.0",
@@ -28,13 +28,13 @@
   "windows_validation": "pending",
   "release_package": {
     "name": "WIS paket izdanja",
-    "version": "3.5.1"
+    "version": "3.5.2"
   },
   "compatibility": {
     "min_launcher_version": "3.1.0",
     "payload_schema_version": 2,
     "version_field": "wis_release_package"
   },
-  "wis_release_version": "3.5.1",
+  "wis_release_version": "3.5.2",
   "generated_from": "../version.json"
 }

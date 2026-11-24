@@ -4,6 +4,24 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.2] / ServiceHub [v3.7.0] — 2026-11-24
+
+### Hitni Hotfix: Checkpoint Posle UEFI BIOS Restarta, Lažni HP Pavilion Touchscreen & `P4.PdfDefault` ValidateSet Crash (`WIS-TASK-275`, `V352-01`, `V352-02`, `IMP-74`)
+
+- **`V352-01` (P0) — Očuvanje interaktivnih testova posle UEFI BIOS restarta i zabrana preranog snimanja izveštaja (`UI/HwTest/HwTestShell.cs`):**
+  - Uvedena sinhronizacija početne asinhrone hardverske probe (`_initialHardwareProbeCompleted`, `_initialProbeDoneEvent`, `_pendingRebootReasonTestId`): `ApplyHardwareProbeSnapshotOnUi()` po završetku prve probe ponovo poziva idempotentni `TryRestorePersistedTestState()` kako bi se restaurirali svi završeni interaktivni testovi koji su u konstruktoru privremeno bili `NotApplicable`.
+  - `SaveCheckpoint()` ne prepisuje `hwtest-checkpoint.json` dok početna proba ne završi (osim kod eksplicitnog `rebootReasonTestId`) i više ne snima `TestStatus.NotApplicable` stavke u `completed_tests`.
+  - `StartPhase5FullWorkflow()` na pozadinskoj niti čeka `_initialProbeDoneEvent.WaitOne(8000)` pre provere ranog izlaza i testova, uz preskakanje već završenog `auto_cpu` nakon UEFI BIOS restarta.
+  - `ReconcilePhase5StateAndReportAfterTest()` uklanja `|| reportAlreadyExists`: snima konačni izveštaj (`SaveCurrentReport`) **isključivo kada je `pendingOrPreliminary == 0`**, a inače čuva samo inkrementalni checkpoint.
+- **`V352-02` (P1) — Uklonjen lažno pozitivan `touchscreen` test na non-touch HP Pavilion laptopovima (`UI/HwTest/Core/HardwareProbe.cs`, `UI/HwTest/HwTestShell.cs`):**
+  - `HardwareProbe.IsTouchscreenPnpMatch()` uvodi anti-touchpad filter (`TOUCHPAD`, `TOUCH PAD`, `TRACKPAD`, `TRACK PAD`, `CLICKPAD`, `PRECISION TOUCHPAD`, `SYNAPTICS`, `ALPS`) i zahteva eksplicitni screen/digitizer indikator umesto opšteg `"TOUCH"`.
+  - `HwTestShell.cs` poštuje fabričku negaciju: PnP heuristika ne nadjačava `_hwInfo.FactoryTouchscreen == false` (`tsPnpAllowed = TouchscreenPnpPresent && FactoryTouchscreen != false`).
+- **`IMP-74` (P0) — Pad Faze 4 kad Adobe Acrobat nije instaliran (`UI/Skripte/Modules/WIS.Apps.psm1` + `1:1` ISO kopija):**
+  - `P4.PdfDefault` umesto nevalidnog `-State "FAIL"` šalje **`-State "ERROR"`** u `Send-IpcStep`, čime je sprečen `ValidateSet` `ExitCode 1` prekid Faze 4.
+- **Verzije:** `WIS 3.5.2` (`UI`, `Launcher`, `ISO`), dok `ServiceHub` ostaje `3.7.0`.
+
+---
+
 ## [v3.5.1] / ServiceHub [v3.7.0] — 2026-11-24
 
 ### Hitni Hotfix: P0 Phase 2→5 Regresija Zaključavanja Testova i Zaglavljen `driver-stage-status.json` (`WIS-TASK-273`, `V351-01` / `IMP-70`, `V351-02`)
