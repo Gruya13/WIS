@@ -270,6 +270,107 @@ function Rename-WisLocalAccountToBrand {
     return $false
 }
 
+function Set-DeferredWisAccountRename {
+    param(
+        [string]$SourceUser = "Korisnik",
+        [string]$Brand = "",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    if (-not $Brand) { return $false }
+    $cleanBrand = $Brand.Trim()
+    if (-not $cleanBrand -or $cleanBrand.Length -gt 20 -or ($cleanBrand -match '["/\\\[\]:;|=,+*?<>]')) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Preskacem Rename-LocalUser: nevalidno ili predugacko ime naloga '$cleanBrand' (max 20)." -Level "WARN" -Component "Branding"
+        }
+        return $false
+    }
+    if ($env:COMPUTERNAME -and $cleanBrand.ToUpperInvariant() -eq $env:COMPUTERNAME.Trim().ToUpperInvariant()) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Preskacem Rename-LocalUser: ime brenda '$cleanBrand' je jednako COMPUTERNAME ($($env:COMPUTERNAME))." -Level "WARN" -Component "Branding"
+        }
+        return $false
+    }
+    try {
+        $existingSrc = Get-LocalUser -Name $SourceUser -ErrorAction SilentlyContinue
+        if (-not $existingSrc) {
+            return $false
+        }
+        if (-not (Test-Path -LiteralPath $LocalSetupDir)) {
+            New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        $markerPath = Join-Path $LocalSetupDir "pending-account-rename.json"
+        $tmpPath = Join-Path $LocalSetupDir "pending-account-rename.tmp"
+        $payload = ([ordered]@{
+            source_user  = $SourceUser
+            target_brand = $cleanBrand
+            created_utc  = [datetime]::UtcNow.ToString("o")
+        } | ConvertTo-Json -Compress)
+        [System.IO.File]::WriteAllText($tmpPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -Path $tmpPath -Destination $markerPath -Force -ErrorAction Stop
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "V353-01: Odlozeno preimenovanje lokalnog naloga '$SourceUser' -> '$cleanBrand' do pred-restarta posle Faze 4B (zastita MSI instalera u Fazi 4)." -Level "INFO" -Component "Branding"
+        }
+        return $true
+    } catch {}
+    return $false
+}
+
+function Invoke-DeferredWisAccountRename {
+    param(
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    $markerPath = Join-Path $LocalSetupDir "pending-account-rename.json"
+    if (-not (Test-Path -LiteralPath $markerPath)) {
+        return $false
+    }
+    $renamed = $false
+    $shouldRemoveMarker = $false
+    try {
+        $raw = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            $shouldRemoveMarker = $true
+        } else {
+            $cfg = ConvertFrom-Json -InputObject $raw -ErrorAction Stop
+            $srcUser = if ($cfg -and $cfg.PSObject.Properties['source_user'] -and -not [string]::IsNullOrWhiteSpace([string]$cfg.source_user)) {
+                ([string]$cfg.source_user).Trim()
+            } else {
+                "Korisnik"
+            }
+            $targetBrand = if ($cfg -and $cfg.PSObject.Properties['target_brand'] -and -not [string]::IsNullOrWhiteSpace([string]$cfg.target_brand)) {
+                ([string]$cfg.target_brand).Trim()
+            } else {
+                ""
+            }
+            if ([string]::IsNullOrWhiteSpace($targetBrand)) {
+                $shouldRemoveMarker = $true
+            } elseif ($env:COMPUTERNAME -and $targetBrand.ToUpperInvariant() -eq $env:COMPUTERNAME.Trim().ToUpperInvariant()) {
+                $shouldRemoveMarker = $true
+            } else {
+                $renamed = [bool](Rename-WisLocalAccountToBrand -SourceUser $srcUser -Brand $targetBrand)
+                if ($renamed) {
+                    $shouldRemoveMarker = $true
+                } else {
+                    $srcExists = $null -ne (Get-LocalUser -Name $srcUser -ErrorAction SilentlyContinue)
+                    $targetExists = $null -ne (Get-LocalUser -Name $targetBrand -ErrorAction SilentlyContinue)
+                    if (-not $srcExists -and $targetExists) {
+                        Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value $targetBrand -ErrorAction SilentlyContinue
+                        $renamed = $true
+                        $shouldRemoveMarker = $true
+                    }
+                }
+            }
+        }
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "V353-01: Upozorenje pri odlozenom preimenovanju naloga: $($_.Exception.Message)" -Level "WARN" -Component "Branding"
+        }
+    }
+    if ($shouldRemoveMarker) {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+    }
+    return [bool]$renamed
+}
+
 function Set-OptimalDisplayScaling {
     <#
     .SYNOPSIS
@@ -462,7 +563,8 @@ function Invoke-SystemOptimizationAndBranding {
     param(
         [string]$Brand = "",
         [string]$LocalSetupDir = "C:\setup",
-        [string]$ProgramiDir = "C:\setup\Programi"
+        [string]$ProgramiDir = "C:\setup\Programi",
+        [switch]$DeferAccountRename
     )
 
     if (-not $Brand) {
@@ -515,7 +617,11 @@ function Invoke-SystemOptimizationAndBranding {
     } catch {}
 
     # C. Preimenovanje korisnika u marku (DELL, HP, LENOVO, Surface...)
-    $null = Rename-WisLocalAccountToBrand -SourceUser "Korisnik" -Brand $Brand
+    if ($DeferAccountRename) {
+        $null = Set-DeferredWisAccountRename -SourceUser "Korisnik" -Brand $Brand -LocalSetupDir $LocalSetupDir
+    } else {
+        $null = Rename-WisLocalAccountToBrand -SourceUser "Korisnik" -Brand $Brand
+    }
 
     # D. Iskljucivanje sleep-a, gasenja monitora i hibernacije kada je racunar na punjacu (AC napajanje)
     try {
@@ -899,7 +1005,7 @@ function Invoke-Phase3Optimization {
         }
 
         if (Get-Command Invoke-SystemOptimizationAndBranding -ErrorAction SilentlyContinue) {
-            Invoke-SystemOptimizationAndBranding -Brand $Brand -LocalSetupDir $LocalSetupDir -ProgramiDir (Join-Path $LocalSetupDir "Programi")
+            Invoke-SystemOptimizationAndBranding -Brand $Brand -LocalSetupDir $LocalSetupDir -ProgramiDir (Join-Path $LocalSetupDir "Programi") -DeferAccountRename
         } else {
             try {
                 $langList = Get-WinUserLanguageList
@@ -915,7 +1021,7 @@ function Invoke-Phase3Optimization {
                 Set-ItemProperty -Path $regIntl -Name "sShortTime" -Value "HH:mm" -Type String -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -Path $regIntl -Name "sLongTime"  -Value "HH:mm:ss" -Type String -Force -ErrorAction SilentlyContinue
 
-                $null = Rename-WisLocalAccountToBrand -SourceUser "Korisnik" -Brand $Brand
+                $null = Set-DeferredWisAccountRename -SourceUser "Korisnik" -Brand $Brand -LocalSetupDir $LocalSetupDir
             } catch {}
         }
     }
@@ -1150,6 +1256,9 @@ function Invoke-Phase3Optimization {
 
 Export-ModuleMember -Function `
     Resolve-WisOemBrand, `
+    Rename-WisLocalAccountToBrand, `
+    Set-DeferredWisAccountRename, `
+    Invoke-DeferredWisAccountRename, `
     Invoke-SystemOptimizationAndBranding, `
     Set-OptimalDisplayScaling, `
     Invoke-ServisInterimReboot, `

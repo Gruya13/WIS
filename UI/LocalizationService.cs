@@ -289,7 +289,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v3.5.2 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v3.5.3 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -1377,7 +1377,7 @@ namespace WIS.UI
             // ==========================================
             // ENGLESKI JEZIK (EN - English)
             // ==========================================
-            _enDict["AppTitle"] = "WIS v3.5.2 - Windows Installation Assistant";
+            _enDict["AppTitle"] = "WIS v3.5.3 - Windows Installation Assistant";
             _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
             _enDict["WorkTimeTitle"] = "Elapsed Time";
             _enDict["CpuLabel"] = "⚙ CPU:";
@@ -1473,7 +1473,7 @@ namespace WIS.UI
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v3.5.2 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v3.5.3 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";

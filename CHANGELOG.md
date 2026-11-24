@@ -4,6 +4,23 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.3] / ServiceHub [v3.7.0] — 2026-11-24
+
+### Hitni Hotfix: Odloženo Preimenovanje Lokalnog Naloga (`V353-01`), Zaštita Faze 4 MSI & Duplog WU Radnika (`V353-02`), Hub `/api/drivers/resolve` Parsiranje (`V353-03`) (`WIS-TASK-276`)
+
+- **`V353-01` (P0) — Odloženo preimenovanje lokalnog naloga bez vraćanja međurestarta posle Faze 3 (`WIS.Branding.psm1`, `WIS.Update.psm1` + `1:1` ISO kopije):**
+  - Uklanjanje međurestarta posle Faze 3 (`V350-06`) uz istovremeni `Rename-LocalUser` (`Korisnik` → brend npr. `HP`) u Fazi 3 izazivalo je nepodudaranje aktivnog Windows logon tokena i SAM naloga u Fazi 4, zbog čega su `msiexec`-zavisni instaleri (`.NET`, `Google Chrome`, `Adobe Acrobat Pro`) padali sve do restarta računara.
+  - Dodate funkcije `Set-DeferredWisAccountRename` i `Invoke-DeferredWisAccountRename` sa markerom `C:\setup\pending-account-rename.json`: `Invoke-Phase3Optimization` i `Invoke-SystemOptimizationAndBranding -DeferAccountRename` odlažu preimenovanje u Fazi 3 tako da cela Faza 4 teče pod usklađenim `Korisnik` tokenom.
+  - `Invoke-PendingBrandAccountRenameFromStage` se izvršava u `finally` bloku `Invoke-StagedDriverInstall` (Faza 4B, neposredno pre jedinog kontrolisanog restarta ka Fazi 5) uz fallback u `Invoke-PostRebootDriverFinalize` i zaštitu `DefaultUserName` u `Invoke-WindowsUpdateCycle`.
+- **`V353-02` (P1) — Sprečen dupli pozadinski WU radnik u Fazi 4 i poboljšano MSI logovanje (`WIS.Apps.psm1`):**
+  - `Invoke-Phase4Apps` preskače legacy `Start-BackgroundWindowsUpdateWorker` kada je aktivan `v3.5.x` staged `Download-Only` tok (`ServisWuDownloadOnly == 1` ili `C:\setup\driver-stage-status.json`).
+  - `Invoke-SafeMsi` prosleđuje `Send-IpcLog` upozorenje (`[SafeMsi]`) kad god `msiexec` vrati kod van `0`/`3010`.
+- **`V353-03` (P1) — Ispravno parsiranje `/api/drivers/resolve` odgovora u `Invoke-BackgroundDriverDownloadWorker` (`WIS.Update.psm1`):**
+  - Čita `$res.results` stavke sa `status == "ready"` i validnim `download_url` (uz fallback na top-level `download_url`), umesto ignorisanja `results[]` liste sa ServiceHub-a.
+- **Verzije:** `WIS 3.5.3` (`UI`, `Launcher`, `ISO`), dok `ServiceHub` ostaje `3.7.0`.
+
+---
+
 ## [v3.5.2] / ServiceHub [v3.7.0] — 2026-11-24
 
 ### Hitni Hotfix: Checkpoint Posle UEFI BIOS Restarta, Lažni HP Pavilion Touchscreen & `P4.PdfDefault` ValidateSet Crash (`WIS-TASK-275`, `V352-01`, `V352-02`, `IMP-74`)

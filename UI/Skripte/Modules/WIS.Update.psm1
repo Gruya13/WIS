@@ -3896,7 +3896,16 @@ function Invoke-WindowsUpdatePhase {
                 }
 
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "AutoAdminLogon" -Value "1" -ErrorAction SilentlyContinue
-                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value "Korisnik" -ErrorAction SilentlyContinue
+                $resumeUser = "Korisnik"
+                try {
+                    if (-not (Get-LocalUser -Name "Korisnik" -ErrorAction SilentlyContinue)) {
+                        $activeBrandUser = Get-LocalUser -ErrorAction SilentlyContinue | Where-Object {
+                            $_.Enabled -and $_.Name -notin @("Administrator", "Guest", "DefaultAccount", "WDAGUtilityAccount")
+                        } | Select-Object -ExpandProperty Name -First 1
+                        if ($activeBrandUser) { $resumeUser = $activeBrandUser }
+                    }
+                } catch {}
+                Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value $resumeUser -ErrorAction SilentlyContinue
 
                 $runCmd = "powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -File `"$LocalScriptPath`""
                 Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce" -Name "ServisDeployResume" -Value $runCmd -Force
@@ -6043,10 +6052,23 @@ function Invoke-BackgroundDriverDownloadWorker {
                         device_id   = [string]$dev.DeviceID
                     } | ConvertTo-Json -Compress)
                     $res = Invoke-RestMethod -Uri $resolveUrl -Method Post -Headers $headers -Body $reqBody -TimeoutSec 20 -ErrorAction SilentlyContinue
-                    if ($res -and $res.download_url) {
-                        $dlUrl = [string]$res.download_url
+                    $resolvedEntry = $null
+                    if ($res) {
+                        if ($res.PSObject.Properties['results'] -and $res.results) {
+                            $resolvedEntry = @($res.results) | Where-Object {
+                                $_ -and $_.PSObject.Properties['download_url'] -and -not [string]::IsNullOrWhiteSpace([string]$_.download_url) -and (
+                                    -not $_.PSObject.Properties['status'] -or [string]$_.status -eq 'ready'
+                                )
+                            } | Select-Object -First 1
+                        }
+                        if (-not $resolvedEntry -and $res.PSObject.Properties['download_url'] -and -not [string]::IsNullOrWhiteSpace([string]$res.download_url)) {
+                            $resolvedEntry = $res
+                        }
+                    }
+                    if ($resolvedEntry) {
+                        $dlUrl = [string]$resolvedEntry.download_url
                         if ($dlUrl -notmatch '^https?://') { $dlUrl = "$hubUrl/$($dlUrl.TrimStart('/'))" }
-                        $pkgName = if ($res.filename) { [string]$res.filename } else { ("hub_" + [Guid]::NewGuid().ToString().Substring(0, 8) + ".cab") }
+                        $pkgName = if ($resolvedEntry.PSObject.Properties['filename'] -and $resolvedEntry.filename) { [string]$resolvedEntry.filename } else { ("hub_" + [Guid]::NewGuid().ToString().Substring(0, 8) + ".cab") }
                         $dlFile = Join-Path $hubStageDir $pkgName
                         $dlHeaders = @{}
                         if (-not [string]::IsNullOrWhiteSpace($clientTok)) { $dlHeaders["X-ServisHub-Client-Token"] = $clientTok }
@@ -6161,6 +6183,30 @@ try {
     } catch {
         Write-DriverStageStatus -State "FAILED" -WorkerPid 0 -CurrentItem $_.Exception.Message -LocalSetupDir $LocalSetupDir
     }
+    return $false
+}
+
+function Invoke-PendingBrandAccountRenameFromStage {
+    param(
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    try {
+        $renameMarker = Join-Path $LocalSetupDir "pending-account-rename.json"
+        if (-not (Test-Path -LiteralPath $renameMarker)) {
+            return $false
+        }
+        if (-not (Get-Command Invoke-DeferredWisAccountRename -ErrorAction SilentlyContinue)) {
+            $brandMod = @(
+                (Join-Path $PSScriptRoot "WIS.Branding.psm1"),
+                (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Branding.psm1"),
+                "C:\setup\Skripte\Modules\WIS.Branding.psm1"
+            ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($brandMod) { Import-Module $brandMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+        }
+        if (Get-Command Invoke-DeferredWisAccountRename -ErrorAction SilentlyContinue) {
+            return [bool](Invoke-DeferredWisAccountRename -LocalSetupDir $LocalSetupDir)
+        }
+    } catch {}
     return $false
 }
 
@@ -6279,6 +6325,9 @@ function Invoke-StagedDriverInstall {
             Set-Content -Path (Join-Path $LocalSetupDir "driver-stage-installed.flag") -Value ([datetime]::UtcNow.ToString("o")) -Encoding UTF8 -Force -ErrorAction SilentlyContinue
         } catch {}
 
+        # V353-01: Izvrsi odlozeno preimenovanje lokalnog naloga neposredno pre jedinog restarta posle Faze 4B
+        $null = Invoke-PendingBrandAccountRenameFromStage -LocalSetupDir $LocalSetupDir
+
         if (-not [string]::IsNullOrWhiteSpace($stageErrMsg)) {
             Write-DriverStageStatus -State "FAILED" -WorkerPid 0 -HubStagedCount $hubInstalled -WuDownloadedCount $wuInstalled -TotalCount ($hubInstalled + $wuInstalled) -CurrentItem $stageErrMsg -LocalSetupDir $LocalSetupDir
         } else {
@@ -6322,6 +6371,9 @@ function Invoke-PostRebootDriverFinalize {
         } catch {}
         Remove-Item -Path $dpiFlag -Force -ErrorAction SilentlyContinue
     }
+
+    # 1b. V353-01 fallback: ako je odlozeno preimenovanje naloga preskoceno u 4B, izvrsi ga ovde
+    $null = Invoke-PendingBrandAccountRenameFromStage -LocalSetupDir $LocalSetupDir
 
     # 2. Brza post-reboot dopuna ako je ostao Code 28 ili prekinuti WU drajver (< 15s guard)
     try {

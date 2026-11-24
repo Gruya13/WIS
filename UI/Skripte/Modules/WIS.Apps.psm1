@@ -180,6 +180,9 @@ function Invoke-SafeMsi {
                 $mLevel = if ($proc.ExitCode -eq 0 -or $proc.ExitCode -eq 3010) { 'SUCCESS' } else { 'WARN' }
                 Write-ServisLog "msiexec zavrsen sa kodom: $desc" -Level $mLevel -Component "SafeMsi"
             }
+            if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010 -and (Get-Command Send-IpcLog -ErrorAction SilentlyContinue)) {
+                Send-IpcLog -Message "msiexec zavrsen sa kodom: $desc (pokusaj $retry/5)" -Level "WARN" -Tag "[SafeMsi]"
+            }
             if ($proc.ExitCode -eq 1618) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                     Write-ServisLog "Windows Installer zauzet (ExitCode 1618). Cekam oslobadjanje mutexa (Pokusaj $retry/5)..." -Level "WARN" -Component "SafeMsi"
@@ -5183,19 +5186,39 @@ function Invoke-Phase4Apps {
             Send-IpcProgress -Progress 5 -Phase 4 -PhaseName "Programi" -SubPhase "Inicijalizacija" -StatusMessage "Priprema skladišta programa..."
         }
 
-        # Nakon restarta u Fazi 3, ponovo osiguraj da je pozadinski Windows Update radnik aktivan tokom Faza 4 i 5
+        # V353-02: Preskoci legacy Start-BackgroundWindowsUpdateWorker ako je vec aktivan v3.5.x staged Download-Only tok
         try {
-            if (-not (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue)) {
-                $updMod = @(
-                    (Join-Path $PSScriptRoot "WIS.Update.psm1"),
-                    (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
-                    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
-                    "C:\setup\Skripte\Modules\WIS.Update.psm1"
-                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-                if ($updMod) { Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+            $stagedDriverFlowActive = $false
+            try {
+                $dlOnlyVal = (Get-ItemProperty -Path "HKLM:\SOFTWARE\WIS" -Name "ServisWuDownloadOnly" -ErrorAction SilentlyContinue).ServisWuDownloadOnly
+                if ($dlOnlyVal -eq 1) { $stagedDriverFlowActive = $true }
+            } catch {}
+            if (-not $stagedDriverFlowActive) {
+                $stageStatusPath = Join-Path $LocalSetupDir "driver-stage-status.json"
+                if (Test-Path -LiteralPath $stageStatusPath) {
+                    $stageStatusRaw = Get-Content -LiteralPath $stageStatusPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                    if ($stageStatusRaw -and ($stageStatusRaw -match '"state"\s*:\s*"(SEARCHING|DOWNLOADING|READY_TO_INSTALL|NONE_NEEDED|INSTALLING|DONE)"')) {
+                        $stagedDriverFlowActive = $true
+                    }
+                }
             }
-            if (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue) {
-                Start-BackgroundWindowsUpdateWorker | Out-Null
+            if ($stagedDriverFlowActive) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "V353-02: Preskacem legacy Start-BackgroundWindowsUpdateWorker jer je aktivan staged Download-Only driver tok." -Level "INFO" -Component "BgWinUpdate"
+                }
+            } else {
+                if (-not (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue)) {
+                    $updMod = @(
+                        (Join-Path $PSScriptRoot "WIS.Update.psm1"),
+                        (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
+                        (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
+                        "C:\setup\Skripte\Modules\WIS.Update.psm1"
+                    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                    if ($updMod) { Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+                }
+                if (Get-Command Start-BackgroundWindowsUpdateWorker -ErrorAction SilentlyContinue) {
+                    Start-BackgroundWindowsUpdateWorker | Out-Null
+                }
             }
         } catch {}
     }

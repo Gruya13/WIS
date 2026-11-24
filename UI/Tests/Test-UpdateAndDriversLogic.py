@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.5.2 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.5.2 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.5.2 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.3 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.3 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.3 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -1392,6 +1392,56 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         iso_apps = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules" / "WIS.Apps.psm1"
         if iso_apps.is_file():
             self.assertEqual((skripte_dir / "Modules" / "WIS.Apps.psm1").read_bytes(), iso_apps.read_bytes())
+
+    def test_39_v353_deferred_account_rename_and_phase4_contracts(self):
+        """WIS-TASK-276 (v3.5.3): Odlozeni Rename-LocalUser pred 4B reboot, bez duplog BgWU i sa results parsom za Hub resolve."""
+        skripte_dir = ROOT / "UI" / "Skripte" / "Modules"
+        brand_src = (skripte_dir / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        upd_src = (skripte_dir / "WIS.Update.psm1").read_text(encoding="utf-8")
+        apps_src = (skripte_dir / "WIS.Apps.psm1").read_text(encoding="utf-8")
+
+        # V353-01: Defer account rename u Fazi 3 + primena u 4B finally & PostRebootFinalize fallback
+        self.assertIn("function Set-DeferredWisAccountRename", brand_src)
+        self.assertIn("function Invoke-DeferredWisAccountRename", brand_src)
+        self.assertIn("pending-account-rename.json", brand_src)
+        self.assertIn("Invoke-Phase3Optimization", brand_src)
+        p3_blk = brand_src.split("function Invoke-Phase3Optimization", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("-DeferAccountRename", p3_blk)
+        self.assertIn("Set-DeferredWisAccountRename", p3_blk)
+        export_blk = brand_src.split("Export-ModuleMember", 1)[1]
+        for fn in ("Rename-WisLocalAccountToBrand", "Set-DeferredWisAccountRename", "Invoke-DeferredWisAccountRename"):
+            self.assertIn(fn, export_blk)
+
+        self.assertIn("function Invoke-PendingBrandAccountRenameFromStage", upd_src)
+        inst_blk = upd_src.split("function Invoke-StagedDriverInstall", 1)[1].split("function Invoke-PostRebootDriverFinalize", 1)[0]
+        self.assertIn("Invoke-PendingBrandAccountRenameFromStage", inst_blk.split("} finally {", 1)[1])
+        post_blk = upd_src.split("function Invoke-PostRebootDriverFinalize", 1)[1].split("function Invoke-DeltaDriverHarvest", 1)[0]
+        self.assertIn("Invoke-PendingBrandAccountRenameFromStage", post_blk)
+
+        # V353-02: Guard protiv legacy Start-BackgroundWindowsUpdateWorker + Send-IpcLog u Invoke-SafeMsi
+        p4_blk = apps_src.split("function Invoke-Phase4Apps", 1)[1]
+        self.assertIn("ServisWuDownloadOnly", p4_blk)
+        self.assertIn("driver-stage-status.json", p4_blk)
+        self.assertIn("V353-02: Preskacem legacy Start-BackgroundWindowsUpdateWorker", p4_blk)
+        safe_msi_blk = apps_src.split("function Invoke-SafeMsi", 1)[1].split("function Invoke-WingetAppInstall", 1)[0]
+        self.assertIn("Send-IpcLog", safe_msi_blk)
+        self.assertIn("[SafeMsi]", safe_msi_blk)
+
+        # V353-03: Hub /api/drivers/resolve results[] + status=='ready' parsanje u Invoke-BackgroundDriverDownloadWorker
+        bg_dl_blk = upd_src.split("function Invoke-BackgroundDriverDownloadWorker", 1)[1].split("function Start-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertIn("PSObject.Properties['results']", bg_dl_blk)
+        self.assertIn("PSObject.Properties['download_url']", bg_dl_blk)
+        self.assertIn("-eq 'ready'", bg_dl_blk)
+
+        # 1:1 ISO paritet za sva tri modula
+        iso_mods = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules"
+        if iso_mods.is_dir():
+            for mod_name in ("WIS.Branding.psm1", "WIS.Update.psm1", "WIS.Apps.psm1"):
+                self.assertEqual(
+                    (skripte_dir / mod_name).read_bytes(),
+                    (iso_mods / mod_name).read_bytes(),
+                    f"ISO paritet narusen za {mod_name}",
+                )
 
 
 if __name__ == "__main__":
