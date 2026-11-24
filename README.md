@@ -1,6 +1,6 @@
-# Windows Installation Assistant (WIS) v3.5.0 — IG-Systems
+# Windows Installation Assistant (WIS) v3.5.1 — IG-Systems
 
-[![Version](https://img.shields.io/badge/WIS-v3.5.0-blue.svg)](version.json)
+[![Version](https://img.shields.io/badge/WIS-v3.5.1-blue.svg)](version.json)
 [![ServiceHub](https://img.shields.io/badge/ServiceHub-v3.7.0-indigo.svg)](ServiceHub/)
 [![Windows Validation](https://github.com/Gruya13/WIS/actions/workflows/windows-validation.yml/badge.svg)](.github/workflows/windows-validation.yml)
 [![PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-012456.svg)](ISO/Skripte/Build-WIS.ps1)
@@ -11,9 +11,9 @@
 
 ---
 
-## Novo u WIS v3.5.0 / ServiceHub v3.7.0
+## Novo u WIS v3.5.0 / v3.5.1 (ServiceHub v3.7.0)
 
-- **Driver Staged P4B pipeline:** drajveri se traže i preuzimaju u Fazi 4 (status u `C:\setup\driver-stage-status.json`, max `15 min` čekanja), instaliraju u Fazi `4B`, uz **jedan kontrolisani reboot** i post-reboot finalizaciju pre Faze 5.
+- **Driver Staged P4B pipeline (`v3.5.1` hotfix):** drajveri se traže i preuzimaju u Fazi 4 (status u `C:\setup\driver-stage-status.json` sa `worker_pid` watchdog-om, max `15 min` čekanja), instaliraju u Fazi `4B` uz garantovani `try/finally` izlaz, uz **jedan kontrolisani reboot** i post-reboot finalizaciju pre Faze 5 bez lažnog vraćanja `CurrentPhase` na `2` (`IMP-70` / `V351-01`).
 - **Async Delta Harvest:** pozadinsko prikupljanje novih drajvera u Fazi 5 preko `/api/drivers/pool/delta-check` (klijentski upload token, fail-closed).
 - **Storage higijena:** `Archives/` se briše tek posle uspešnog SHA-256 ingesta; `ms_catalog` ima disk gard (pauza ispod `20 GB` slobodno); LRU kvote `bundles <= 12 GB / 24h` i `drivers_cache <= 25 GB`.
 - **UI:** progresivni prikaz ekrana (`hw.display` sync), UI nit bez blokada, aktivacija Windows/Office van panela `UPOZORENJA`.
@@ -50,9 +50,9 @@ Kanonski izvor verzija svih podsistema definisan je u [`version.json`](version.j
 
 | Celina / Alat | Verzija | Tehnologija | Odgovost |
 | :--- | :--- | :--- | :--- |
-| **[`ISO/`](ISO/)** | `3.5.0` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja Ultra-Lean Windows 11 ISO/USB medijuma, `boot.wim` LAN driver injection (`000_wis_net1ix64.inf_guard`), VMD podrška, Pre-OOBE bootstrap (`PreOOBE-Network.ps1`, `SetupComplete.ps1` sa trajnim `ConsentStore\location = Allow`, `Provera_autopilota.ps1`), [`Build-WIS.ps1`](ISO/Skripte/Build-WIS.ps1) i [`Release-WIS.py`](ISO/Skripte/Release-WIS.py). |
-| **[`Launcher/`](Launcher/)** | `3.5.0` (`min: 3.1.0`) | C# 5.0 / .NET Framework 4.0 | Samostalni bootstrapper (`WIS.Launcher.exe`): Wi-Fi profili (WPA2/WPA3/Open sa XML escaping-om), UDP/SMB otkrivanje Hub-a, RSA-2048 + SHA-256 + anti-downgrade verifikacija paketa (`MandatoryRelease310Files`), Zip-Slip/`.sys` zaštita i transakcioni rollback. |
-| **[`UI/`](UI/)** | `3.5.0` | C# 5.0 WPF (.NET 4.8) + PowerShell 5.1 | Glavni orkestrator `WIS.UI.exe` (`MainWindow.xaml.cs`, `MainWindow.Hardware.cs`, `MainWindow.HwTest.cs`, `MainWindow.Reboot.cs`, puna `SR` / `zh-CN` lokalizacija), ugrađeni [`UI/HwTest/`](UI/HwTest/) modul (`WIS.HwTest.exe` sa `DriverReadinessGate.cs` i `HwTestLocalization.cs`), 13 PowerShell modula (`UI/Skripte/Modules/`), 6 faza (`UI/Skripte/Phases/`) i Star TSP700II štampa (`LabelPrintService.cs`). |
+| **[`ISO/`](ISO/)** | `3.5.1` | PowerShell 5.1, Python 3, Unattend XML, WinPE Batch | Izgradnja Ultra-Lean Windows 11 ISO/USB medijuma, `boot.wim` LAN driver injection (`000_wis_net1ix64.inf_guard`), VMD podrška, Pre-OOBE bootstrap (`PreOOBE-Network.ps1`, `SetupComplete.ps1` sa trajnim `ConsentStore\location = Allow`, `Provera_autopilota.ps1`), [`Build-WIS.ps1`](ISO/Skripte/Build-WIS.ps1) i [`Release-WIS.py`](ISO/Skripte/Release-WIS.py). |
+| **[`Launcher/`](Launcher/)** | `3.5.1` (`min: 3.1.0`) | C# 5.0 / .NET Framework 4.0 | Samostalni bootstrapper (`WIS.Launcher.exe`): Wi-Fi profili (WPA2/WPA3/Open sa XML escaping-om), UDP/SMB otkrivanje Hub-a, RSA-2048 + SHA-256 + anti-downgrade verifikacija paketa (`MandatoryRelease310Files`), Zip-Slip/`.sys` zaštita i transakcioni rollback. |
+| **[`UI/`](UI/)** | `3.5.1` | C# 5.0 WPF (.NET 4.8) + PowerShell 5.1 | Glavni orkestrator `WIS.UI.exe` (`MainWindow.xaml.cs`, `MainWindow.Hardware.cs`, `MainWindow.HwTest.cs`, `MainWindow.Reboot.cs`, puna `SR` / `zh-CN` lokalizacija), ugrađeni [`UI/HwTest/`](UI/HwTest/) modul (`WIS.HwTest.exe` sa `DriverReadinessGate.cs` i `HwTestLocalization.cs`), 13 PowerShell modula (`UI/Skripte/Modules/`), 6 faza (`UI/Skripte/Phases/`) i Star TSP700II štampa (`LabelPrintService.cs`). |
 | **[`ServiceHub/`](ServiceHub/)** | `3.7.0` | Python 3.10+ (Stdlib HTTP + opcioni FastAPI), Docker | Centralni nadzorni server (`TCP 8080` / `UDP 8888`): jedinstveni CAS **Driver Pool** (`(size_bytes, mtime_ns)` + auto-ingest) + zvanični Dell/HP/Lenovo OEM XML katalozi (`drivers/pool.py`, `drivers/oem/catalogs.py`), fail-closed admin/client autentifikacija, CORS allowlist, `/device/<id>` deep-link rute, `disk_usage` low-disk alert i bezbedna rotacija logova, 1 Hz Screen Mirror, `READY` bezbednosne kapije (`reports.py`), `zh-CN` placeholder zaštita (`telemetry.py`), OEM BOM `has_keyboard_backlight` (`hardware_spec.py` `schema_version=3`), USB Auto-Learn (`model_profiles.py`), WIS Benchmark inkrementalni keš (`14400s` outlier filter), Predictive Cache i UEFI USB Builder sa ZFS zaštitom. |
 | **[`Tools/AutopilotAuditor/`](Tools/AutopilotAuditor/)** | `3.4.4` | C# 5.0 / .NET Framework 4.8 | Forenzički alat (`WIS-AutopilotAuditor.exe`) za tihu (`--silent` / `--no-console`) troslojnu Autopilot/ZTD analizu (CLI/GUI/JSON/HTML) uz očuvanje Pre-OOBE keša i strogu TLS proveru. |
 
@@ -145,7 +145,7 @@ Puni PXE/OOBE laboratorijski i Windows testovi nalaze se u [`UI/Tests/`](UI/Test
 - **[Interna bezbednosna revizija (`docs/security/`)](docs/security/NEZAVISNA_BEZBEDNOSNA_REVIZIJA.md)** — Security Self-Audit izveštaj (`CTRL-01..12`, `SEC-WIS-001..007` i dopunska sanacija `WIS-TASK-253`).
 - **[Arhitektura podsistema (`docs/architecture/`)](docs/architecture/overview.md)** — Pregledi pajplajna, drajvera, Windows Update toka, aplikacija, mreže i ServiceHub-a.
 - **[Arhitektonske odluke (`docs/decisions/`)](docs/decisions/)** — Zbirka ADR zapisa (`ADR-0001` .. [`ADR-0254`](docs/decisions/ADR-0254-wis-3-1-1-audio-deadlock-driver-resilience-and-ig-systems-ownership.md), [`ADR-0258`](docs/decisions/ADR-0258-jedinstveni-driver-pool-i-oem-katalozi.md)).
-- **[Dnevnik izmena (`CHANGELOG.md`)](CHANGELOG.md)** i **[Smernice za doprinos (`CONTRIBUTING.md`)](CONTRIBUTING.md)** — videti [`CHANGELOG.md`](CHANGELOG.md) za detalje izdanja **`v3.5.0` / `ServiceHub v3.7.0`** (i **`v3.4.3` / `ServiceHub v3.6.3`**).
+- **[Dnevnik izmena (`CHANGELOG.md`)](CHANGELOG.md)** i **[Smernice za doprinos (`CONTRIBUTING.md`)](CONTRIBUTING.md)** — videti [`CHANGELOG.md`](CHANGELOG.md) za detalje izdanja **`v3.5.1`** / **`v3.5.0` / `ServiceHub v3.7.0`**.
 
 ---
 

@@ -4,6 +4,22 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.1] / ServiceHub [v3.7.0] — 2026-11-24
+
+### Hitni Hotfix: P0 Phase 2→5 Regresija Zaključavanja Testova i Zaglavljen `driver-stage-status.json` (`WIS-TASK-273`, `V351-01` / `IMP-70`, `V351-02`)
+
+- **`V351-01` (`IMP-70`) — Uklonjeno trajno zaključavanje interaktivnih testova u Fazi 5 bez dugmeta za vanredno otključavanje (`Phase2-Drivers.ps1`, `UI/MainWindow.xaml.cs`, `UI/MainWindow.HwTest.cs`):**
+  - Pomoćni driver stage-ovi (`InstallStaged`, `PostRebootFinalize`, `DeltaHarvest`) u [`Phase2-Drivers.ps1`](UI/Skripte/Phases/Phase2-Drivers.ps1) više ne emituju `-Phase 2` kroz `Send-IpcProgress`/`Send-IpcLog` i ne otvaraju/zatvaraju benchmark Faze 2 (`$isPrimaryPhase2` važi samo za `FastNas` i `Full`).
+  - [`RunPhase2DriversStage`](UI/MainWindow.xaml.cs) prosleđuje `allowPhaseUpdate = false` u [`ProcessIncomingJson`](UI/MainWindow.xaml.cs) za pomoćne stage-ove, uz zaštitu od spuštanja `ViewModel.CurrentPhase` unazad kad je već `>= 4`.
+  - Posle `PostRebootFinalize` i `SaveDeployStatePhase(5, false)`, kao i na ulazu u [`ExecutePhase5IntegratedHwTest`](UI/MainWindow.HwTest.cs), `ViewModel.CurrentPhase` se eksplicitno osigurava na `5`, dok [`EvaluateInteractiveTestsDriverGate`](UI/MainWindow.HwTest.cs) ima dodatni osigurač preko `C:\setup\deploy-state.json`.
+- **`V351-02` — Prevencija i oporavak od zaglavljenog `C:\setup\driver-stage-status.json` (`UI/Skripte/Modules/WIS.Update.psm1`, `UI/HwTest/Core/DriverReadinessGate.cs`, `UI/MainWindow.xaml.cs`):**
+  - `Write-DriverStageStatus` sada beleži `worker_pid`; `Start-BackgroundDriverDownloadWorker` upisuje PID pokrenutog child procesa; `Invoke-StagedDriverInstall` koristi `try / catch / finally` da uvek završi sa `DONE` ili `FAILED` (`WorkerPid = 0`); `Invoke-PostRebootDriverFinalize` na startu čisti zaostale pre-reboot `SEARCHING`/`DOWNLOADING`/`INSTALLING` statuse.
+  - `DriverReadinessGate.ReadActiveDriverStageState()`, `WaitForBackgroundDriverDownloadIfActive()`, `RunPhase2DriversStage()` i `PollDriverStageStatusFile()` proveravaju vreme podizanja sistema (`GetTickCount64()`), živost PowerShell radnika (`Process.GetProcessById`) i TTL, automatski resetujući mrtav ili ubijen status tako da `CanEmergencyUnlock` ostane ispravan.
+- **Delta Harvest payload usklađivanje (`WIS.Update.psm1`):** `Invoke-DeltaDriverHarvest` šalje polja `packages`, `driver_ver` i `hwids` u skladu sa `ServiceHub v3.7.0` (`POST /api/drivers/pool/delta-check`).
+- **Verzije:** `WIS 3.5.1` (`UI`, `Launcher`, `ISO`), dok `ServiceHub` ostaje `3.7.0`.
+
+---
+
 ## [v3.5.0] / ServiceHub [v3.7.0] — 2026-11-24
 
 ### Orkestracija Faza 4→4B→5, Async Delta Harvest, Storage LRU Kvote, Progresivni Prikaz Ekrana \& UI Responsiveness (`WIS-TASK-271`, `WIS-TASK-272`, `V350-01`–`V350-08`, `IMP-53`–`IMP-69`, `[SECURITY GREEN]`)

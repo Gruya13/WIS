@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Management;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 
@@ -77,6 +80,54 @@ namespace WIS.HwTest.Core
         private const string DriverStageStatusPath = @"C:\setup\driver-stage-status.json";
         private const string DeployStatePath = @"C:\setup\deploy-state.json";
 
+        [DllImport("kernel32.dll")]
+        private static extern ulong GetTickCount64();
+
+        private static DateTime GetSystemBootTimeUtc()
+        {
+            try
+            {
+                ulong uptimeMs = GetTickCount64();
+                return DateTime.UtcNow.AddMilliseconds(-(double)uptimeMs);
+            }
+            catch
+            {
+                return DateTime.MinValue;
+            }
+        }
+
+        private static bool IsPowerShellWorkerAlive(int pid)
+        {
+            if (pid <= 0) return false;
+            try
+            {
+                using (Process p = Process.GetProcessById(pid))
+                {
+                    if (p == null || p.HasExited) return false;
+                    string pname = p.ProcessName ?? string.Empty;
+                    return pname.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           pname.IndexOf("pwsh", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryParseIsoUtc(string iso, out DateTime utc)
+        {
+            utc = DateTime.MinValue;
+            if (string.IsNullOrWhiteSpace(iso)) return false;
+            DateTime parsed;
+            if (DateTime.TryParse(iso.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out parsed))
+            {
+                utc = (parsed.Kind == DateTimeKind.Utc) ? parsed : parsed.ToUniversalTime();
+                return true;
+            }
+            return false;
+        }
+
         private static EnumerationOptions CreateWmiOptions(int timeoutMs)
         {
             return new EnumerationOptions
@@ -108,10 +159,50 @@ namespace WIS.HwTest.Core
                 string json = File.ReadAllText(DriverStageStatusPath);
                 if (string.IsNullOrEmpty(json)) return string.Empty;
                 Match m = Regex.Match(json, "\"state\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase);
-                if (m.Success)
+                if (!m.Success) return string.Empty;
+
+                string normState = m.Groups[1].Value.Trim().ToUpperInvariant();
+                if (normState == "SEARCHING" || normState == "DOWNLOADING" || normState == "INSTALLING")
                 {
-                    return m.Groups[1].Value.Trim().ToUpperInvariant();
+                    int workerPid = 0;
+                    Match mp = Regex.Match(json, "\"worker_pid\"\\s*:\\s*(\\d+)", RegexOptions.IgnoreCase);
+                    if (mp.Success)
+                    {
+                        int.TryParse(mp.Groups[1].Value, out workerPid);
+                    }
+
+                    DateTime updatedUtc = DateTime.MinValue;
+                    Match mt = Regex.Match(json, "\"updated_at_utc\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase);
+                    if (!mt.Success || !TryParseIsoUtc(mt.Groups[1].Value, out updatedUtc))
+                    {
+                        try { updatedUtc = File.GetLastWriteTimeUtc(DriverStageStatusPath); }
+                        catch { updatedUtc = DateTime.MinValue; }
+                    }
+
+                    DateTime bootUtc = GetSystemBootTimeUtc();
+                    if (bootUtc != DateTime.MinValue && updatedUtc != DateTime.MinValue && updatedUtc < bootUtc.AddSeconds(-5.0))
+                    {
+                        return string.Empty;
+                    }
+
+                    double ageSec = (updatedUtc != DateTime.MinValue) ? (DateTime.UtcNow - updatedUtc).TotalSeconds : 0.0;
+                    if (workerPid > 0)
+                    {
+                        if (!IsPowerShellWorkerAlive(workerPid) && ageSec >= 5.0)
+                        {
+                            return string.Empty;
+                        }
+                    }
+                    else
+                    {
+                        double maxStaleSec = (normState == "INSTALLING") ? 1800.0 : 1200.0;
+                        if (updatedUtc == DateTime.MinValue || ageSec > maxStaleSec)
+                        {
+                            return string.Empty;
+                        }
+                    }
                 }
+                return normState;
             }
             catch { }
             return string.Empty;

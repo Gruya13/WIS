@@ -5940,16 +5940,25 @@ function Write-DriverStageStatus {
         [int]$WuDownloadedCount = 0,
         [int]$TotalCount = 0,
         [string]$CurrentItem = "",
-        [string]$LocalSetupDir = "C:\setup"
+        [string]$LocalSetupDir = "C:\setup",
+        [int]$WorkerPid = 0
     )
     try {
         if (-not (Test-Path $LocalSetupDir)) {
             New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
         }
+        $effPid = if ($WorkerPid -gt 0) {
+            $WorkerPid
+        } elseif ($State -in @("SEARCHING", "DOWNLOADING", "INSTALLING")) {
+            [int]$PID
+        } else {
+            0
+        }
         $statusFile = Join-Path $LocalSetupDir "driver-stage-status.json"
         $tempFile = Join-Path $LocalSetupDir "driver-stage-status.tmp"
         $payload = [ordered]@{
             state               = $State
+            worker_pid          = $effPid
             hub_staged_count    = [int]([Math]::Max(0, $HubStagedCount))
             wu_downloaded_count = [int]([Math]::Max(0, $WuDownloadedCount))
             total_count         = [int]([Math]::Max(0, $TotalCount))
@@ -6128,8 +6137,6 @@ function Start-BackgroundDriverDownloadWorker {
     }
     if (-not $modDir) { return $false }
 
-    Write-DriverStageStatus -State "SEARCHING" -CurrentItem "Pokretanje Download-Only radnika..." -LocalSetupDir $LocalSetupDir
-
     $workerCmd = @"
 `$ErrorActionPreference = 'Continue'
 try {
@@ -6138,20 +6145,21 @@ try {
     Import-Module '$modDir\WIS.Update.psm1' -Force -DisableNameChecking -ErrorAction SilentlyContinue
     Invoke-BackgroundDriverDownloadWorker -LocalSetupDir '$LocalSetupDir' | Out-Null
 } catch {
-    Write-DriverStageStatus -State 'FAILED' -CurrentItem (`$_.Exception.Message) -LocalSetupDir '$LocalSetupDir'
+    Write-DriverStageStatus -State 'FAILED' -WorkerPid 0 -CurrentItem (`$_.Exception.Message) -LocalSetupDir '$LocalSetupDir'
 }
 "@
     $encodedCmd = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($workerCmd))
     try {
         $proc = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-EncodedCommand", $encodedCmd) -WindowStyle Hidden -PassThru -ErrorAction Stop
         if ($proc) {
+            Write-DriverStageStatus -State "SEARCHING" -WorkerPid ([int]$proc.Id) -CurrentItem "Pokretanje Download-Only radnika..." -LocalSetupDir $LocalSetupDir
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "Pokrenut BackgroundDriverDownloadWorker (Download-Only, PID: $($proc.Id))." -Level "SUCCESS" -Component "BgDriverDL"
             }
             return $true
         }
     } catch {
-        Write-DriverStageStatus -State "FAILED" -CurrentItem $_.Exception.Message -LocalSetupDir $LocalSetupDir
+        Write-DriverStageStatus -State "FAILED" -WorkerPid 0 -CurrentItem $_.Exception.Message -LocalSetupDir $LocalSetupDir
     }
     return $false
 }
@@ -6176,95 +6184,107 @@ function Invoke-StagedDriverInstall {
     $hubStageDir = Join-Path $LocalSetupDir "DriverStage\Hub"
     $hubInstalled = 0
     $wuInstalled = 0
+    $stageErrMsg = ""
 
-    Write-DriverStageStatus -State "INSTALLING" -CurrentItem "Instalacija lokalno preuzetih drajvera..." -LocalSetupDir $LocalSetupDir
+    Write-DriverStageStatus -State "INSTALLING" -WorkerPid ([int]$PID) -CurrentItem "Instalacija lokalno preuzetih drajvera..." -LocalSetupDir $LocalSetupDir
 
-    # 1. Lokalna instalacija C:\setup\DriverStage\Hub\*.inf sa IMP-54 zastitom
-    if (Test-Path $hubStageDir) {
-        $pnpRes = Invoke-SafePnpUtilAddDriver -Path $hubStageDir -LocalSetupDir $LocalSetupDir
-        if ($pnpRes) { $hubInstalled = [int]$pnpRes.Processed }
-    }
-
-    # 2. Instalacija vec preuzetih WUA drajvera (IsDownloaded == true) sa V350-05 circuit-breakerom
     try {
-        $wuSession = New-Object -ComObject "Microsoft.Update.Session"
-        $wuSearcher = $wuSession.CreateUpdateSearcher()
-        $searchResult = $wuSearcher.Search("IsInstalled=0 and Type='Driver'")
-        if ($searchResult -and $searchResult.Updates -and $searchResult.Updates.Count -gt 0) {
-            $readyUpdates = @()
-            foreach ($u in $searchResult.Updates) {
-                if ($u.IsDownloaded) { $readyUpdates += $u }
-            }
-            $consecutivePnpTimeout = 0
-            $consecutiveNotAllowed = 0
-            foreach ($drv in $readyUpdates) {
-                $drvInstalledOk = $false
-                $lastDrvHResult = ""
-                for ($drvTry = 1; $drvTry -le 2; $drvTry++) {
-                    try {
-                        $singleColl = New-Object -ComObject "Microsoft.Update.UpdateColl"
-                        [void]$singleColl.Add($drv)
-                        $installer = $wuSession.CreateUpdateInstaller()
-                        $installer.Updates = $singleColl
-                        $instRes = $installer.Install()
-                        $resCode = [int]$instRes.ResultCode
-                        $hResHex = ""
-                        try {
-                            $uRes0 = $instRes.GetUpdateResult(0)
-                            if ($uRes0) { $hResHex = ("0x{0:X8}" -f $uRes0.HResult) }
-                        } catch {}
-                        $lastDrvHResult = $hResHex
+        # 1. Lokalna instalacija C:\setup\DriverStage\Hub\*.inf sa IMP-54 zastitom
+        if (Test-Path $hubStageDir) {
+            $pnpRes = Invoke-SafePnpUtilAddDriver -Path $hubStageDir -LocalSetupDir $LocalSetupDir
+            if ($pnpRes) { $hubInstalled = [int]$pnpRes.Processed }
+        }
 
-                        if ($resCode -in @(2, 3)) {
-                            $drvInstalledOk = $true
-                            $wuInstalled++
-                            break
-                        } else {
-                            if ($hResHex -in @("0x80248007", "0x80070103", "0x800701E0", "0x800701E2")) {
+        # 2. Instalacija vec preuzetih WUA drajvera (IsDownloaded == true) sa V350-05 circuit-breakerom
+        try {
+            $wuSession = New-Object -ComObject "Microsoft.Update.Session"
+            $wuSearcher = $wuSession.CreateUpdateSearcher()
+            $searchResult = $wuSearcher.Search("IsInstalled=0 and Type='Driver'")
+            if ($searchResult -and $searchResult.Updates -and $searchResult.Updates.Count -gt 0) {
+                $readyUpdates = @()
+                foreach ($u in $searchResult.Updates) {
+                    if ($u.IsDownloaded) { $readyUpdates += $u }
+                }
+                $consecutivePnpTimeout = 0
+                $consecutiveNotAllowed = 0
+                foreach ($drv in $readyUpdates) {
+                    $drvInstalledOk = $false
+                    $lastDrvHResult = ""
+                    for ($drvTry = 1; $drvTry -le 2; $drvTry++) {
+                        try {
+                            $singleColl = New-Object -ComObject "Microsoft.Update.UpdateColl"
+                            [void]$singleColl.Add($drv)
+                            $installer = $wuSession.CreateUpdateInstaller()
+                            $installer.Updates = $singleColl
+                            $instRes = $installer.Install()
+                            $resCode = [int]$instRes.ResultCode
+                            $hResHex = ""
+                            try {
+                                $uRes0 = $instRes.GetUpdateResult(0)
+                                if ($uRes0) { $hResHex = ("0x{0:X8}" -f $uRes0.HResult) }
+                            } catch {}
+                            $lastDrvHResult = $hResHex
+
+                            if ($resCode -in @(2, 3)) {
+                                $drvInstalledOk = $true
+                                $wuInstalled++
                                 break
+                            } else {
+                                if ($hResHex -in @("0x80248007", "0x80070103", "0x800701E0", "0x800701E2")) {
+                                    break
+                                }
                             }
+                        } catch {}
+                        if (-not $drvInstalledOk -and $drvTry -lt 2) {
+                            Start-Sleep -Seconds 3
                         }
-                    } catch {}
-                    if (-not $drvInstalledOk -and $drvTry -lt 2) {
-                        Start-Sleep -Seconds 3
+                    }
+                    if ($drvInstalledOk) {
+                        $consecutivePnpTimeout = 0
+                        $consecutiveNotAllowed = 0
+                    } elseif ($lastDrvHResult -in @("0x800701E0", "0x800701E2")) {
+                        $consecutiveNotAllowed = 0
+                        $consecutivePnpTimeout++
+                        if ($consecutivePnpTimeout -ge 2) {
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "InstallStaged: Detektovano $consecutivePnpTimeout uzastopna PnP timeout koda ($lastDrvHResult). Kontrolisani restart ce osloboditi PnP stek — prekidam dalju WU petlju." -Level "WARN" -Component "WinUpdate"
+                            }
+                            break
+                        }
+                    } elseif ($lastDrvHResult -eq "0x80240016") {
+                        $consecutivePnpTimeout = 0
+                        $consecutiveNotAllowed++
+                        if ($consecutiveNotAllowed -ge 3) { break }
+                    } else {
+                        $consecutivePnpTimeout = 0
+                        $consecutiveNotAllowed = 0
                     }
                 }
-                if ($drvInstalledOk) {
-                    $consecutivePnpTimeout = 0
-                    $consecutiveNotAllowed = 0
-                } elseif ($lastDrvHResult -in @("0x800701E0", "0x800701E2")) {
-                    $consecutiveNotAllowed = 0
-                    $consecutivePnpTimeout++
-                    if ($consecutivePnpTimeout -ge 2) {
-                        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                            Write-ServisLog "InstallStaged: Detektovano $consecutivePnpTimeout uzastopna PnP timeout koda ($lastDrvHResult). Kontrolisani restart ce osloboditi PnP stek — prekidam dalju WU petlju." -Level "WARN" -Component "WinUpdate"
-                        }
-                        break
-                    }
-                } elseif ($lastDrvHResult -eq "0x80240016") {
-                    $consecutivePnpTimeout = 0
-                    $consecutiveNotAllowed++
-                    if ($consecutiveNotAllowed -ge 3) { break }
-                } else {
-                    $consecutivePnpTimeout = 0
-                    $consecutiveNotAllowed = 0
-                }
+            }
+        } catch {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Invoke-StagedDriverInstall: Upozorenje pri WUA instalaciji: $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
             }
         }
     } catch {
+        $stageErrMsg = $_.Exception.Message
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-            Write-ServisLog "Invoke-StagedDriverInstall: Upozorenje pri WUA instalaciji: $($_.Exception.Message)" -Level "WARN" -Component "WinUpdate"
+            Write-ServisLog "Invoke-StagedDriverInstall: Fatalna greska pri instalaciji drajvera: $stageErrMsg" -Level "ERROR" -Component "WinUpdate"
+        }
+    } finally {
+        try {
+            if (-not (Test-Path $LocalSetupDir)) {
+                New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-Content -Path (Join-Path $LocalSetupDir "driver-stage-installed.flag") -Value ([datetime]::UtcNow.ToString("o")) -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+        } catch {}
+
+        if (-not [string]::IsNullOrWhiteSpace($stageErrMsg)) {
+            Write-DriverStageStatus -State "FAILED" -WorkerPid 0 -HubStagedCount $hubInstalled -WuDownloadedCount $wuInstalled -TotalCount ($hubInstalled + $wuInstalled) -CurrentItem $stageErrMsg -LocalSetupDir $LocalSetupDir
+        } else {
+            Write-DriverStageStatus -State "DONE" -WorkerPid 0 -HubStagedCount $hubInstalled -WuDownloadedCount $wuInstalled -TotalCount ($hubInstalled + $wuInstalled) -CurrentItem "Staged drajveri instalirani" -LocalSetupDir $LocalSetupDir
         }
     }
-
-    try {
-        if (-not (Test-Path $LocalSetupDir)) {
-            New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
-        }
-        Set-Content -Path (Join-Path $LocalSetupDir "driver-stage-installed.flag") -Value ([datetime]::UtcNow.ToString("o")) -Encoding UTF8 -Force -ErrorAction SilentlyContinue
-    } catch {}
-
-    Write-DriverStageStatus -State "DONE" -HubStagedCount $hubInstalled -WuDownloadedCount $wuInstalled -TotalCount ($hubInstalled + $wuInstalled) -CurrentItem "Staged drajveri instalirani" -LocalSetupDir $LocalSetupDir
 }
 
 function Invoke-PostRebootDriverFinalize {
@@ -6272,6 +6292,16 @@ function Invoke-PostRebootDriverFinalize {
     param(
         [string]$LocalSetupDir = "C:\setup"
     )
+
+    try {
+        $statusFile = Join-Path $LocalSetupDir "driver-stage-status.json"
+        if (Test-Path -LiteralPath $statusFile) {
+            $rawStatus = Get-Content -LiteralPath $statusFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($rawStatus -and ($rawStatus -match '"state"\s*:\s*"(SEARCHING|DOWNLOADING|INSTALLING)"')) {
+                Write-DriverStageStatus -State "DONE" -WorkerPid 0 -CurrentItem "Ociscen zastareo pre-reboot status" -LocalSetupDir $LocalSetupDir
+            }
+        }
+    } catch {}
 
     $null = Confirm-WisQuarantinedInfs -LocalSetupDir $LocalSetupDir
 
@@ -6354,10 +6384,10 @@ function Invoke-DeltaDriverHarvest {
                 try { $sha = (Get-FileHash -Path $infPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch {}
             }
             $driverInventory += [ordered]@{
-                inf_name       = [string]$sd.InfName
-                driver_version = [string]$sd.DriverVersion
-                hwid           = [string]$sd.HardWareID
-                sha256         = $sha
+                inf_name   = [string]$sd.InfName
+                driver_ver = [string]$sd.DriverVersion
+                hwids      = @([string]$sd.HardWareID)
+                sha256     = $sha
             }
         }
 
@@ -6367,8 +6397,8 @@ function Invoke-DeltaDriverHarvest {
             $headers["X-ServisHub-Client-Token"] = $clientTok
         }
         $checkBody = ([ordered]@{
-            model   = $cleanModel
-            drivers = $driverInventory
+            model    = $cleanModel
+            packages = $driverInventory
         } | ConvertTo-Json -Depth 5 -Compress)
 
         $checkRes = Invoke-RestMethod -Uri $deltaCheckUrl -Method Post -Headers $headers -Body $checkBody -TimeoutSec 30 -ErrorAction Stop

@@ -786,6 +786,141 @@ namespace WIS.UI
             catch { }
         }
 
+        private static DateTime GetSystemBootTimeUtc()
+        {
+            try
+            {
+                ulong uptimeMs = GetTickCount64();
+                return DateTime.UtcNow.AddMilliseconds(-(double)uptimeMs);
+            }
+            catch
+            {
+                return DateTime.MinValue;
+            }
+        }
+
+        private static bool IsDriverPowerShellWorkerAlive(int pid)
+        {
+            if (pid <= 0) return false;
+            try
+            {
+                using (Process p = Process.GetProcessById(pid))
+                {
+                    if (p == null || p.HasExited) return false;
+                    string pname = p.ProcessName ?? string.Empty;
+                    return pname.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                           pname.IndexOf("pwsh", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryKillPowerShellWorker(int pid)
+        {
+            if (pid <= 0) return;
+            try
+            {
+                using (Process p = Process.GetProcessById(pid))
+                {
+                    if (p == null || p.HasExited) return;
+                    string pname = p.ProcessName ?? string.Empty;
+                    if (pname.IndexOf("powershell", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        pname.IndexOf("pwsh", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        p.Kill();
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static bool IsDriverStageStatusAlive(string normState, int workerPid, string updatedAtIso, DateTime fileWriteUtc)
+        {
+            if (normState != "SEARCHING" && normState != "DOWNLOADING" && normState != "INSTALLING")
+            {
+                return true;
+            }
+
+            DateTime updatedUtc = DateTime.MinValue;
+            DateTime parsed;
+            if (!string.IsNullOrWhiteSpace(updatedAtIso) &&
+                DateTime.TryParse(updatedAtIso.Trim(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out parsed))
+            {
+                updatedUtc = (parsed.Kind == DateTimeKind.Utc) ? parsed : parsed.ToUniversalTime();
+            }
+            if (updatedUtc == DateTime.MinValue)
+            {
+                updatedUtc = fileWriteUtc;
+            }
+
+            DateTime bootUtc = GetSystemBootTimeUtc();
+            if (bootUtc != DateTime.MinValue && updatedUtc != DateTime.MinValue && updatedUtc < bootUtc.AddSeconds(-5.0))
+            {
+                return false;
+            }
+
+            double ageSec = (updatedUtc != DateTime.MinValue) ? (DateTime.UtcNow - updatedUtc).TotalSeconds : 0.0;
+            if (workerPid > 0)
+            {
+                if (!IsDriverPowerShellWorkerAlive(workerPid) && ageSec >= 5.0)
+                {
+                    return false;
+                }
+                return true;
+            }
+
+            double maxStaleSec = (normState == "INSTALLING") ? 1800.0 : 1200.0;
+            if (updatedUtc == DateTime.MinValue || ageSec > maxStaleSec)
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private void ForceResetStuckDriverStageStatus(string reason)
+        {
+            try
+            {
+                string dir = @"C:\setup";
+                if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+                string statusPath = Path.Combine(dir, "driver-stage-status.json");
+                string tmpPath = Path.Combine(dir, "driver-stage-status.tmp");
+                var payload = new Dictionary<string, object>
+                {
+                    { "state", "FAILED" },
+                    { "worker_pid", 0 },
+                    { "hub_staged_count", 0 },
+                    { "wu_downloaded_count", 0 },
+                    { "total_count", 0 },
+                    { "current_item", reason ?? "Prekinuto / zastarelo" },
+                    { "updated_at_utc", DateTime.UtcNow.ToString("o") }
+                };
+                string json = JsonHelper.Serialize(payload);
+                File.WriteAllText(tmpPath, json, new UTF8Encoding(false));
+                if (File.Exists(statusPath)) File.Delete(statusPath);
+                File.Move(tmpPath, statusPath);
+                try { _lastDriverStageFileWriteUtc = File.GetLastWriteTimeUtc(statusPath); } catch { }
+            }
+            catch
+            {
+                try
+                {
+                    var fallbackPayload = new Dictionary<string, object>
+                    {
+                        { "state", "FAILED" },
+                        { "worker_pid", 0 },
+                        { "current_item", reason ?? "Prekinuto / zastarelo" },
+                        { "updated_at_utc", DateTime.UtcNow.ToString("o") }
+                    };
+                    File.WriteAllText(@"C:\setup\driver-stage-status.json", JsonHelper.Serialize(fallbackPayload), new UTF8Encoding(false));
+                }
+                catch { }
+            }
+        }
+
         private void PollDriverStageStatusFile()
         {
             try
@@ -806,10 +941,18 @@ namespace WIS.UI
 
                 string state = root.ContainsKey("state") ? root["state"].AsString("IDLE") : "IDLE";
                 string normState = (state ?? "IDLE").Trim().ToUpperInvariant();
+                int workerPid = root.ContainsKey("worker_pid") ? root["worker_pid"].AsInt(0) : 0;
+                string updatedAtIso = root.ContainsKey("updated_at_utc") ? root["updated_at_utc"].AsString("") : "";
                 int hubStaged = root.ContainsKey("hub_staged_count") ? root["hub_staged_count"].AsInt(0) : 0;
                 int wuDownloaded = root.ContainsKey("wu_downloaded_count") ? root["wu_downloaded_count"].AsInt(0) : 0;
                 int totalCount = root.ContainsKey("total_count") ? root["total_count"].AsInt(0) : 0;
                 string currentItem = root.ContainsKey("current_item") ? root["current_item"].AsString("") : "";
+
+                if (!IsDriverStageStatusAlive(normState, workerPid, updatedAtIso, lastWriteUtc))
+                {
+                    ForceResetStuckDriverStageStatus("Zastareo/prekinut pozadinski driver status");
+                    normState = "FAILED";
+                }
 
                 int doneCount = hubStaged + wuDownloaded;
                 int pct = -1;
@@ -5780,6 +5923,15 @@ namespace WIS.UI
                 _postRebootFinalizePending = false;
                 SaveDeployStatePhase(5, false);
 
+                Dispatcher.Invoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.CurrentPhase = 5;
+                        ViewModel.PhaseName = LocalizationService.Get("WinPhase5Name", "Faza 5: Hardverski test (Stres + Periferije)");
+                    }
+                }));
+
                 RunPhase2DriversStageAsync("DeltaHarvest");
                 NotifyHwTestDriverStateChanged(true);
             }
@@ -7497,22 +7649,30 @@ namespace WIS.UI
         {
             string statusPath = @"C:\setup\driver-stage-status.json";
             DateTime startUtc = DateTime.UtcNow;
+            string lastNormState = "";
+            int lastWorkerPid = 0;
             while ((DateTime.UtcNow - startUtc).TotalSeconds < maxWaitSeconds)
             {
                 if (!File.Exists(statusPath)) break;
                 string normState = "";
                 string currentItem = "";
+                string updatedAtIso = "";
+                DateTime fileWriteUtc = DateTime.MinValue;
+                int workerPid = 0;
                 int hubStaged = 0;
                 int wuDownloaded = 0;
                 int totalCount = 0;
                 try
                 {
+                    fileWriteUtc = File.GetLastWriteTimeUtc(statusPath);
                     string json = File.ReadAllText(statusPath, Encoding.UTF8);
                     var root = JsonHelper.Parse(json);
                     if (root != null && !root.IsNull)
                     {
                         normState = (root.ContainsKey("state") ? root["state"].AsString("") : "").Trim().ToUpperInvariant();
                         currentItem = root.ContainsKey("current_item") ? root["current_item"].AsString("") : "";
+                        updatedAtIso = root.ContainsKey("updated_at_utc") ? root["updated_at_utc"].AsString("") : "";
+                        workerPid = root.ContainsKey("worker_pid") ? root["worker_pid"].AsInt(0) : 0;
                         hubStaged = root.ContainsKey("hub_staged_count") ? root["hub_staged_count"].AsInt(0) : 0;
                         wuDownloaded = root.ContainsKey("wu_downloaded_count") ? root["wu_downloaded_count"].AsInt(0) : 0;
                         totalCount = root.ContainsKey("total_count") ? root["total_count"].AsInt(0) : 0;
@@ -7520,8 +7680,25 @@ namespace WIS.UI
                 }
                 catch { }
 
+                lastNormState = normState;
+                lastWorkerPid = workerPid;
+
                 if (normState != "SEARCHING" && normState != "DOWNLOADING")
                 {
+                    break;
+                }
+
+                if (!IsDriverStageStatusAlive(normState, workerPid, updatedAtIso, fileWriteUtc))
+                {
+                    Dispatcher.BeginInvoke((Action)(() =>
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("WARN", "TaskRunner", "V351-02: Pozadinski radnik za preuzimanje drajvera više nije aktivan — resetujem driver-stage-status.json i nastavljam.");
+                        }
+                    }));
+                    ForceResetStuckDriverStageStatus("Pozadinski radnik za preuzimanje drajvera vise nije aktivan");
+                    lastNormState = "FAILED";
                     break;
                 }
 
@@ -7539,10 +7716,48 @@ namespace WIS.UI
 
                 Thread.Sleep(2000);
             }
+
+            if (lastNormState == "SEARCHING" || lastNormState == "DOWNLOADING")
+            {
+                TryKillPowerShellWorker(lastWorkerPid);
+                ForceResetStuckDriverStageStatus("Timeout (15 min) pozadinskog preuzimanja drajvera");
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog("WARN", "TaskRunner", "V351-02: Isteklo čekanje na pozadinsko preuzimanje drajvera; nastavljam sa lokalno preuzetim drajverima.");
+                    }
+                }));
+            }
+        }
+
+        private void ResetStuckStageStatusIfActive(string stage, string reason)
+        {
+            if (!string.Equals(stage, "InstallStaged", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(stage, "PostRebootFinalize", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            try
+            {
+                string statusPath = @"C:\setup\driver-stage-status.json";
+                if (!File.Exists(statusPath)) return;
+                string json = File.ReadAllText(statusPath, Encoding.UTF8);
+                var root = JsonHelper.Parse(json);
+                if (root == null || root.IsNull) return;
+                string st = (root.ContainsKey("state") ? root["state"].AsString("") : "").Trim().ToUpperInvariant();
+                if (st == "SEARCHING" || st == "DOWNLOADING" || st == "INSTALLING")
+                {
+                    ForceResetStuckDriverStageStatus(reason);
+                }
+            }
+            catch { }
         }
 
         private void RunPhase2DriversStage(string stage, int timeoutMinutes)
         {
+            bool allowPhaseUpdate = string.Equals(stage, "FastNas", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(stage, "Full", StringComparison.OrdinalIgnoreCase);
             try
             {
                 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -7572,7 +7787,7 @@ namespace WIS.UI
                         string line = e.Data.Trim();
                         Dispatcher.BeginInvoke((Action)(() =>
                         {
-                            if (line.StartsWith("{") && line.EndsWith("}")) ProcessIncomingJson(line);
+                            if (line.StartsWith("{") && line.EndsWith("}")) ProcessIncomingJson(line, allowPhaseUpdate);
                             else ParseAndAddRawLogLine(line);
                         }));
                         if (_telemetryService != null) _telemetryService.PushLog(line);
@@ -7588,6 +7803,21 @@ namespace WIS.UI
                     if (!WaitForPhaseProcessExitWithActiveTime(proc, timeoutMinutes))
                     {
                         try { proc.Kill(); } catch { }
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("WARN", "TaskRunner", string.Format("V351-02: Timeout ({0} min) za driver stage '{1}' — prekidam proces i čistim status.", timeoutMinutes, stage));
+                            }
+                        }));
+                        ResetStuckStageStatusIfActive(stage, string.Format("Timeout ({0} min) za Stage={1}", timeoutMinutes, stage));
+                    }
+                    else
+                    {
+                        try { proc.WaitForExit(2000); } catch { }
+                        int exitCode = -1;
+                        try { exitCode = proc.ExitCode; } catch { }
+                        ResetStuckStageStatusIfActive(stage, string.Format("Stage={0} zavrsio bez finalnog statusa (ExitCode={1})", stage, exitCode));
                     }
                 }
             }
@@ -7938,7 +8168,7 @@ namespace WIS.UI
 
         #region JSON Parser & ViewModel Mapping
 
-        private void ProcessIncomingJson(string json)
+        private void ProcessIncomingJson(string json, bool allowPhaseUpdate = true)
         {
             try
             {
@@ -7978,14 +8208,23 @@ namespace WIS.UI
                         }
                     }
                 }
-                if (root.ContainsKey("phase"))
+                if (allowPhaseUpdate)
                 {
-                    int p = root["phase"].AsInt(1);
-                    ViewModel.CurrentPhase = p;
-                }
-                if (root.ContainsKey("phase_name"))
-                {
-                    ViewModel.PhaseName = root["phase_name"].AsString(ViewModel.PhaseName);
+                    if (root.ContainsKey("phase"))
+                    {
+                        int p = root["phase"].AsInt(1);
+                        if (!(ViewModel != null && ViewModel.CurrentPhase >= 4 && p < ViewModel.CurrentPhase))
+                        {
+                            ViewModel.CurrentPhase = p;
+                        }
+                    }
+                    if (root.ContainsKey("phase_name"))
+                    {
+                        if (!(root.ContainsKey("phase") && ViewModel != null && ViewModel.CurrentPhase >= 4 && root["phase"].AsInt(1) < ViewModel.CurrentPhase))
+                        {
+                            ViewModel.PhaseName = root["phase_name"].AsString(ViewModel.PhaseName);
+                        }
+                    }
                 }
                 if (root.ContainsKey("sub_phase"))
                 {
@@ -8000,17 +8239,20 @@ namespace WIS.UI
                     ViewModel.LiveStatus = root["status_message"].AsString(ViewModel.LiveStatus);
                 }
 
-                if (root.ContainsKey("progress_percent"))
+                if (allowPhaseUpdate)
                 {
-                    ViewModel.Progress = root["progress_percent"].AsInt(ViewModel.Progress);
-                }
-                else if (root.ContainsKey("worker_progress"))
-                {
-                    ViewModel.Progress = root["worker_progress"].AsInt(ViewModel.Progress);
-                }
-                else if (root.ContainsKey("progress"))
-                {
-                    ViewModel.Progress = root["progress"].AsInt(ViewModel.Progress);
+                    if (root.ContainsKey("progress_percent"))
+                    {
+                        ViewModel.Progress = root["progress_percent"].AsInt(ViewModel.Progress);
+                    }
+                    else if (root.ContainsKey("worker_progress"))
+                    {
+                        ViewModel.Progress = root["worker_progress"].AsInt(ViewModel.Progress);
+                    }
+                    else if (root.ContainsKey("progress"))
+                    {
+                        ViewModel.Progress = root["progress"].AsInt(ViewModel.Progress);
+                    }
                 }
 
                 // 3. Provera statusa USB fleš diska (usb_free, usbFree, UsbFree)

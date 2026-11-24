@@ -62,30 +62,49 @@ $updMod = @(
 if ($updMod) { Import-Module $updMod -Force }
 
 # 2. Verifikacija administratorskih privilegija
+$isPrimaryPhase2 = ($Stage -in @("FastNas", "Full"))
 try {
     Assert-ServisAdministrator
 } catch {
     $adminErrMsg = "KRITICNA GRESKA: Faza 2 zahteva administratorske privilegije (Run as Administrator)!"
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) { Write-ServisLog $adminErrMsg -Level "ERROR" -Component "Security" }
-    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) { Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[ERROR]" -Phase 2 }
+    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+        if ($isPrimaryPhase2) {
+            Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[ERROR]" -Phase 2
+        } else {
+            Send-IpcLog -Message $adminErrMsg -Level "ERROR" -Tag "[Drivers]"
+        }
+    }
     exit 1
 }
 
 # 3. Glavno orkestrirano izvrsenje Faze 2 (P2.Diag unutar Invoke-Phase2Drivers pokrece Resolve-MissingDriversFromHub nakon NAS/VMD/PnP)
 try {
-    if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
-        Start-WisPhaseBenchmark -Phase 2 -PhaseName "Drajveri" -LocalSetupDir $LocalSetupDir | Out-Null
+    if ($isPrimaryPhase2) {
+        if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
+            Start-WisPhaseBenchmark -Phase 2 -PhaseName "Drajveri" -LocalSetupDir $LocalSetupDir | Out-Null
+        }
+        Send-IpcProgress -Progress 5 -Phase 2 -PhaseName "Drajveri" -SubPhase "Inicijalizacija" -StatusMessage "Skeniranje hardverskih komponenti i drajvera (Stage: $Stage)..."
+    } else {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Pokrecem pomocni driver stage: $Stage (bez promene CurrentPhase)." -Level "INFO" -Component "Drivers"
+        }
     }
-    Send-IpcProgress -Progress 5 -Phase 2 -PhaseName "Drajveri" -SubPhase "Inicijalizacija" -StatusMessage "Skeniranje hardverskih komponenti i drajvera (Stage: $Stage)..."
     Invoke-Phase2Drivers -LocalSetupDir $LocalSetupDir -SkipWindowsUpdate:$SkipWindowsUpdate -Stage $Stage
-    if (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
+    if ($isPrimaryPhase2 -and (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue)) {
         Complete-WisPhaseBenchmark -Phase 2 -Status "COMPLETED" -LocalSetupDir $LocalSetupDir | Out-Null
     }
     exit 0
 } catch {
     $err = $_
-    $errMsg = "Neocekivana sistemska greska u Fazi 2 (Drajveri): $($err.Exception.Message)"
+    $errMsg = "Neocekivana sistemska greska u Fazi 2 (Drajveri, Stage: $Stage): $($err.Exception.Message)"
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) { Write-ServisLog $errMsg -Level "ERROR" -Component "Phase2" }
-    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) { Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[ERROR]" -Phase 2 }
+    if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+        if ($isPrimaryPhase2) {
+            Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[ERROR]" -Phase 2
+        } else {
+            Send-IpcLog -Message $errMsg -Level "ERROR" -Tag "[Drivers]"
+        }
+    }
     exit 1
 }

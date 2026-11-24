@@ -572,14 +572,14 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.5.0 / ServiceHub v3.7.0 u root version.json i komponentama
+        # 1. Verzije v3.5.1 / ServiceHub v3.7.0 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.5.0")
-        self.assertEqual(root_ver["release_package"]["version"], "3.5.0")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.0")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.0")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.0")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.0")
+        self.assertEqual(root_ver["version"], "3.5.1")
+        self.assertEqual(root_ver["release_package"]["version"], "3.5.1")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.1")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.1")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.1")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.1")
         self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.7.0")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
@@ -849,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.5.0";', result_src)
+        self.assertIn('AppVersion = "3.5.1";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1532,7 +1532,7 @@ class TestHwTestComponents(unittest.TestCase):
         boot_py = (ROOT / "ISO" / "Skripte" / "Patch-BootWim.py").read_text(encoding="utf-8")
 
         # V350-01 & IMP-61: Preliminarni Basic Display status ne truje checkpoint / izvestaj
-        self.assertIn('AppVersion = "3.5.0";', result_src)
+        self.assertIn('AppVersion = "3.5.1";', result_src)
         self.assertIn("public bool IsPassivePreliminary { get; set; }", result_src)
         self.assertIn("res.IsPassivePreliminary = true;", auto_src)
         self.assertIn("HasAnyRealCompletedTestsForCheckpoint", shell_src)
@@ -1607,6 +1607,32 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("def _filter_stale_session_errors(", reports_py)
         self.assertIn("def _handle_install_session_change_locked(", hub_tel_py)
         self.assertIn("def load_today_live_logs_tail(", hub_tel_py)
+
+    def test_wis_task_273_v351_hotfix_contracts(self):
+        """Proverava WIS-TASK-273 (v3.5.1): V351-01/IMP-70 Phase2->5 zastitu i V351-02 driver-stage-status oporavak."""
+        gate_src = (HWTEST_DIR / "Core" / "DriverReadinessGate.cs").read_text(encoding="utf-8")
+        main_cs = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        main_hwt_cs = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+
+        # V351-02 u DriverReadinessGate.cs: GetTickCount64 + provera zivota PowerShell radnika + TTL fallback
+        self.assertIn("GetTickCount64()", gate_src)
+        self.assertIn("IsPowerShellWorkerAlive", gate_src)
+        self.assertIn("worker_pid", gate_src)
+        self.assertIn("GetSystemBootTimeUtc()", gate_src)
+
+        # V351-01 & V351-02 u MainWindow.xaml.cs: allowPhaseUpdate, ne vraca CurrentPhase < 4, reset zaglavljenog statusa
+        self.assertIn("private void ProcessIncomingJson(string json, bool allowPhaseUpdate = true)", main_cs)
+        self.assertIn("if (allowPhaseUpdate)", main_cs)
+        self.assertIn("ViewModel.CurrentPhase >= 4 && p < ViewModel.CurrentPhase", main_cs)
+        self.assertIn("IsDriverStageStatusAlive", main_cs)
+        self.assertIn("ForceResetStuckDriverStageStatus", main_cs)
+        self.assertIn("ResetStuckStageStatusIfActive", main_cs)
+        self.assertIn("TryKillPowerShellWorker", main_cs)
+        self.assertIn("ViewModel.CurrentPhase = 5;", main_cs)
+
+        # V351-01 u MainWindow.HwTest.cs: CurrentPhase < 5 osigurac u ExecutePhase5IntegratedHwTest & deploy-state fallback
+        self.assertIn("if (ViewModel != null && ViewModel.CurrentPhase < 5)", main_hwt_cs)
+        self.assertIn('dsRoot["phase"].AsInt(1) >= 5', main_hwt_cs)
 
 
 if __name__ == "__main__":

@@ -38,8 +38,8 @@ def main():
         "[assembly: AssemblyCompany(\"IG-Systems\")]\n"
         "[assembly: AssemblyProduct(\"WIS Hardware Test Suite\")]\n"
         "[assembly: AssemblyCopyright(\"Copyright © IG-Systems 2026\")]\n"
-        "[assembly: AssemblyVersion(\"3.5.0.0\")]\n"
-        "[assembly: AssemblyFileVersion(\"3.5.0.0\")]\n",
+        "[assembly: AssemblyVersion(\"3.5.1.0\")]\n"
+        "[assembly: AssemblyFileVersion(\"3.5.1.0\")]\n",
         encoding="utf-8"
     )
 

@@ -195,6 +195,25 @@ namespace WIS.UI
             bool phase2Failed = (_failedPhase == 2);
             bool postRebootFinalizePending = _postRebootFinalizePending;
             bool phase2CompletedOrSkipped = isServiceFinished || (currentPhase >= 5 && !postRebootFinalizePending);
+            if (!phase2CompletedOrSkipped && !phase2Failed && !postRebootFinalizePending)
+            {
+                try
+                {
+                    string statePath = @"C:\setup\deploy-state.json";
+                    if (File.Exists(statePath))
+                    {
+                        string dsJson = File.ReadAllText(statePath, Encoding.UTF8);
+                        JsonNode dsRoot = JsonHelper.Parse(dsJson);
+                        if (dsRoot != null && dsRoot.IsObject &&
+                            dsRoot["phase"].AsInt(1) >= 5 &&
+                            !dsRoot["post_reboot_finalize"].AsBool(false))
+                        {
+                            phase2CompletedOrSkipped = true;
+                        }
+                    }
+                }
+                catch { }
+            }
             bool phase2NotDone = phase2Failed || !phase2CompletedOrSkipped;
 
             bool journalInterimRebootPending = false;
@@ -1561,6 +1580,10 @@ namespace WIS.UI
             Dispatcher.Invoke((Action)(() =>
             {
                 EnsureEmbeddedHwTestTab();
+                if (ViewModel != null && ViewModel.CurrentPhase < 5)
+                {
+                    ViewModel.CurrentPhase = 5;
+                }
                 if (_embeddedHwTestShell != null && _hwTestTabItem != null)
                 {
                     RefreshEmbeddedHwTestIdentity();

@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.5.0 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.5.0 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.5.0 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.1 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.1 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.1 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -1342,6 +1342,31 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
                     iso_file.read_bytes(),
                     f"ISO paritet narusen za {'/'.join(parts)}",
                 )
+
+    def test_37_v351_hotfix_phase2_stage_and_driver_status_contracts(self):
+        """WIS-TASK-273 (v3.5.1): Phase2 pomocni stage-ovi bez -Phase 2, worker_pid, finally za InstallStaged i DeltaHarvest packages."""
+        upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
+        p2_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase2-Drivers.ps1").read_text(encoding="utf-8")
+
+        # V351-01: Phase2-Drivers.ps1 emituje -Phase 2 samo za primarni FastNas / Full stage
+        self.assertIn('$isPrimaryPhase2 = ($Stage -in @("FastNas", "Full"))', p2_src)
+        self.assertIn("if ($isPrimaryPhase2)", p2_src)
+
+        # V351-02: Write-DriverStageStatus belezi worker_pid, InstallStaged ima try/finally, PostRebootFinalize cisti stari status
+        self.assertIn("[int]$WorkerPid = 0", upd_src)
+        self.assertIn("worker_pid", upd_src)
+        inst_blk = upd_src.split("function Invoke-StagedDriverInstall", 1)[1].split("function Invoke-PostRebootDriverFinalize", 1)[0]
+        self.assertIn("try {", inst_blk)
+        self.assertIn("} finally {", inst_blk)
+        self.assertIn('-State "DONE" -WorkerPid 0', inst_blk)
+        post_blk = upd_src.split("function Invoke-PostRebootDriverFinalize", 1)[1].split("function Invoke-DeltaDriverHarvest", 1)[0]
+        self.assertIn("Ociscen zastareo pre-reboot status", post_blk)
+
+        # Uskladjena delta-check schema sa ServiceHub handlers.py/pool.py
+        delta_blk = upd_src.split("function Invoke-DeltaDriverHarvest", 1)[1]
+        self.assertIn("driver_ver", delta_blk)
+        self.assertIn("hwids", delta_blk)
+        self.assertIn("packages", delta_blk)
 
 
 if __name__ == "__main__":
