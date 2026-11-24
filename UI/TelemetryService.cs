@@ -27,6 +27,9 @@ namespace WIS.UI
         private bool _isDisposed = false;
         private int _consecutiveFailures = 0;
         private bool _benchmarkFetched = false;
+        private string _cachedInstallSessionId = null;
+
+        private const string InstallSessionIdPath = @"C:\setup\install-session-id.txt";
 
         private readonly List<string> _logBuffer = new List<string>();
         private Timer _heartbeatTimer;
@@ -1026,7 +1029,46 @@ namespace WIS.UI
             hw["ram"] = _viewModel.RamInfo ?? "";
             hw["disk"] = _viewModel.DiskInfo ?? "";
             hw["battery"] = _viewModel.BatteryStatus ?? "";
+            string disp = (_viewModel.HardwareInfo != null) ? (_viewModel.HardwareInfo.OverviewResolution ?? "") : "";
+            hw["display"] = IsPlaceholderHwValue(disp) ? "" : disp.Trim();
             return hw;
+        }
+
+        private string GetOrCreateInstallSessionId()
+        {
+            lock (_stateLock)
+            {
+                if (!string.IsNullOrEmpty(_cachedInstallSessionId))
+                {
+                    return _cachedInstallSessionId;
+                }
+                try
+                {
+                    if (File.Exists(InstallSessionIdPath))
+                    {
+                        string existing = (File.ReadAllText(InstallSessionIdPath, Encoding.UTF8) ?? "").Trim();
+                        if (!string.IsNullOrEmpty(existing))
+                        {
+                            _cachedInstallSessionId = existing;
+                            return _cachedInstallSessionId;
+                        }
+                    }
+                    string dir = Path.GetDirectoryName(InstallSessionIdPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    string generated = Guid.NewGuid().ToString("D");
+                    File.WriteAllText(InstallSessionIdPath, generated, new UTF8Encoding(false));
+                    _cachedInstallSessionId = generated;
+                    return _cachedInstallSessionId;
+                }
+                catch
+                {
+                    _cachedInstallSessionId = Guid.NewGuid().ToString("D");
+                    return _cachedInstallSessionId;
+                }
+            }
         }
 
         private Dictionary<string, object> CollectHeartbeatData()
@@ -1034,6 +1076,11 @@ namespace WIS.UI
             var data = new Dictionary<string, object>();
             data["computer_name"] = Environment.MachineName;
             data["timestamp"] = DateTime.Now.ToString("o");
+            string sessionId = GetOrCreateInstallSessionId();
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                data["install_session_id"] = sessionId;
+            }
 
             if (_viewModel != null)
             {
@@ -1143,6 +1190,11 @@ namespace WIS.UI
                     if (!string.IsNullOrEmpty(resolvedSerial))
                     {
                         payload["serial_number"] = resolvedSerial;
+                    }
+                    string sessionId = GetOrCreateInstallSessionId();
+                    if (!string.IsNullOrEmpty(sessionId))
+                    {
+                        payload["install_session_id"] = sessionId;
                     }
 
                     string jsonBody = JsonHelper.Serialize(payload);
@@ -1378,6 +1430,11 @@ namespace WIS.UI
                     reportPayload["status"] = "COMPLETED";
                     reportPayload["handover_ready"] = true;
                     reportPayload["timestamp"] = DateTime.Now.ToString("o");
+                    string sessionId = GetOrCreateInstallSessionId();
+                    if (!string.IsNullOrEmpty(sessionId))
+                    {
+                        reportPayload["install_session_id"] = sessionId;
+                    }
                     EnrichLicenseTelemetryPayload(reportPayload);
 
                     string serialized = JsonHelper.Serialize(reportPayload);

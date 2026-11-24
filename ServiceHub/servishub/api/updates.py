@@ -622,9 +622,11 @@ def cache_kb_from_ms_catalog(
     scraper: Any = None,
     timeout: int = 120,
     os_build: Optional[str] = None,
+    min_free_gb: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Preuzima i trajno kešira standalone .msu ili .cab paket iz Microsoft Update Kataloga po KB broju.
+    Pauzira preuzimanje ako je slobodan prostor na disku manji od 20 GB (IMP-68).
     """
     norm_kb = _normalize_kb_input(kb)
     if not norm_kb:
@@ -642,6 +644,23 @@ def cache_kb_from_ms_catalog(
             "kb": norm_kb,
             "os_build": existing.os_build or norm_build,
             "package": existing.to_dict(),
+        }
+
+    from servishub.config import is_low_disk_for_ms_catalog
+    target_dir = resolve_updates_directory(directory)
+    low_disk, free_gb, eff_thresh = is_low_disk_for_ms_catalog(target_dir, min_free_gb=min_free_gb)
+    if low_disk:
+        return {
+            "status": "paused_low_disk",
+            "already_cached": False,
+            "kb": norm_kb,
+            "title": title,
+            "free_gb": round(free_gb, 2) if free_gb is not None else None,
+            "min_free_gb": eff_thresh,
+            "error": (
+                f"Preuzimanje iz ms_catalog pauzirano: slobodan prostor na disku "
+                f"({free_gb:.2f} GB) je manji od {eff_thresh:.1f} GB."
+            ),
         }
 
     if scraper is None:
@@ -755,25 +774,31 @@ def prune_updates_cache(
     removed_index_entries: List[str] = []
     freed_bytes = 0
 
-    try:
-        for entry in sorted(os.listdir(target_dir)):
-            lower_entry = entry.lower()
-            if not any(lower_entry.endswith(sfx) for sfx in temp_suffixes):
-                continue
-            full_path = os.path.join(target_dir, entry)
-            if not os.path.isfile(full_path):
-                continue
-            try:
-                st = os.stat(full_path)
-                if min_temp_age_seconds <= 0 or (now - st.st_mtime) >= min_temp_age_seconds:
-                    size_b = st.st_size
-                    os.remove(full_path)
-                    removed_temps.append(entry)
-                    freed_bytes += size_b
-            except OSError:
-                continue
-    except OSError:
-        pass
+    real_target_dir = os.path.realpath(target_dir)
+    if not os.path.islink(target_dir):
+        try:
+            for entry in sorted(os.listdir(target_dir)):
+                lower_entry = entry.lower()
+                if not any(lower_entry.endswith(sfx) for sfx in temp_suffixes):
+                    continue
+                if ".." in entry or "/" in entry or "\\" in entry:
+                    continue
+                full_path = os.path.join(target_dir, entry)
+                if os.path.islink(full_path) or not os.path.isfile(full_path):
+                    continue
+                if os.path.commonpath([real_target_dir, os.path.realpath(full_path)]) != real_target_dir:
+                    continue
+                try:
+                    st = os.lstat(full_path)
+                    if min_temp_age_seconds <= 0 or (now - st.st_mtime) >= min_temp_age_seconds:
+                        size_b = st.st_size
+                        os.remove(full_path)
+                        removed_temps.append(entry)
+                        freed_bytes += size_b
+                except OSError:
+                    continue
+        except OSError:
+            pass
 
     scan = scan_updates_directory(target_dir)
     existing_filenames = {p.filename for p in scan.packages}
@@ -824,6 +849,29 @@ def prune_updates_cache(
         "kept_packages": max(0, kept_count),
         "freed_bytes": freed_bytes,
     }
+
+
+def enforce_drivers_cache_quota(
+    drivers_cache_dir: Optional[str] = None,
+    max_gb: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Primenjuje LRU/size kvotu nad DRIVERS_CACHE_DIR (podrazumevano 25 GB) bez praćenja symlinkova.
+    """
+    from servishub.config import (
+        DEFAULT_MAX_DRIVERS_CACHE_GB,
+        DRIVERS_CACHE_DIR,
+        enforce_directory_lru_quota,
+    )
+    target = os.path.abspath(drivers_cache_dir) if drivers_cache_dir else os.path.abspath(DRIVERS_CACHE_DIR)
+    limit_gb = float(max_gb) if max_gb is not None else float(DEFAULT_MAX_DRIVERS_CACHE_GB)
+    if limit_gb <= 0:
+        return {"removed_files": 0, "freed_bytes": 0, "remaining_bytes": 0}
+    return enforce_directory_lru_quota(
+        target,
+        max_bytes=int(limit_gb * (1024 ** 3)),
+        recursive=True,
+    )
 
 
 _GENERIC_MODEL_PACK_RE = re.compile(
@@ -1218,6 +1266,17 @@ def save_uploaded_model_pack_stream(
         "has_catalog_signatures": tar_validation["has_catalog_signatures"],
     }
     _save_updates_index(target_dir, idx_data)
+
+    dcache_dir = getattr(active_config, "drivers_cache_dir", None) if active_config is not None else None
+    if dcache_dir:
+        try:
+            real_dc = os.path.realpath(str(dcache_dir))
+            real_td = os.path.realpath(target_dir)
+            if os.path.commonpath([real_dc, real_td]) == real_dc:
+                max_gb = getattr(active_config, "max_drivers_cache_gb", None)
+                enforce_drivers_cache_quota(str(dcache_dir), max_gb=max_gb)
+        except Exception:
+            pass
 
     return {
         "status": "ok",

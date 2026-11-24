@@ -11,6 +11,70 @@
 
 Import-Module (Join-Path $PSScriptRoot 'WIS.StatusContract.psm1')
 
+function Get-WisInstallSessionId {
+    <#
+    .SYNOPSIS
+        Cita ili kreira jedinstveni GUID tekuce instalacione sesije (C:\setup\install-session-id.txt)
+        i obezbedjuje marker u servis_deploy.log (IMP-66 / IMP-69).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$LocalSetupDir = "C:\setup",
+        [switch]$EnsureLogMarker
+    )
+    $sessionFile = Join-Path $LocalSetupDir "install-session-id.txt"
+    $sessionId = ""
+    try {
+        if (Test-Path -LiteralPath $sessionFile -PathType Leaf -ErrorAction SilentlyContinue) {
+            $raw = (Get-Content -LiteralPath $sessionFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+            if ($raw) { $sessionId = $raw.Trim() }
+        }
+    } catch {}
+
+    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+        $sessionId = [guid]::NewGuid().ToString("N")
+        try {
+            if (-not (Test-Path -LiteralPath $LocalSetupDir)) {
+                New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-Content -LiteralPath $sessionFile -Value $sessionId -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+        } catch {}
+    }
+
+    if ($EnsureLogMarker) {
+        $null = Ensure-WisSessionLogMarker -SessionId $sessionId -LocalSetupDir $LocalSetupDir
+    }
+    return $sessionId
+}
+
+function Ensure-WisSessionLogMarker {
+    param(
+        [string]$SessionId = "",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    if ([string]::IsNullOrWhiteSpace($SessionId)) {
+        $SessionId = Get-WisInstallSessionId -LocalSetupDir $LocalSetupDir
+    }
+    $marker = "=== WIS_SESSION_START:$SessionId ==="
+    foreach ($logCand in @((Join-Path $LocalSetupDir "servis_deploy.log"), "C:\Windows\Logs\WIS\servis_deploy.log")) {
+        try {
+            $parentDir = Split-Path -Path $logCand -Parent
+            if (-not (Test-Path -LiteralPath $parentDir)) { continue }
+            $alreadyPresent = $false
+            if (Test-Path -LiteralPath $logCand -PathType Leaf -ErrorAction SilentlyContinue) {
+                $tail = Get-Content -LiteralPath $logCand -Tail 200 -ErrorAction SilentlyContinue
+                if ($tail -and ($tail -contains $marker)) {
+                    $alreadyPresent = $true
+                }
+            }
+            if (-not $alreadyPresent) {
+                Add-Content -LiteralPath $logCand -Value $marker -Encoding UTF8 -ErrorAction SilentlyContinue
+            }
+        } catch {}
+    }
+    return $marker
+}
+
 # Isti statusni ugovor za heartbeat i zavrsni izvestaj; bez HTTP-a.
 function Get-WisTelemetryDiagnostics {
     [CmdletBinding()]
@@ -1078,12 +1142,40 @@ function Send-FleetFinalReport {
             }
         }
 
-        # 5. Prikupljanje gresaka
+        # 5. Prikupljanje gresaka (IMP-66: samo iz aktivne sesije, bez istorijskih linija kod cistog COMPLETED)
+        $sessionId = Get-WisInstallSessionId -LocalSetupDir $LocalSetupDir -EnsureLogMarker
+
+        $hwTestObj = $null
+        $hwTestCand = @((Join-Path $LocalSetupDir "hwtest-result.json"), "C:\setup\hwtest-result.json") | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        if ($hwTestCand) {
+            try {
+                $hwTestRaw = Get-Content -LiteralPath $hwTestCand -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($hwTestRaw) {
+                    $hwTestObj = ConvertFrom-Json -InputObject $hwTestRaw -ErrorAction SilentlyContinue
+                }
+            } catch {}
+        }
+
+        $hasAppFailure = $false
+        foreach ($ak in $appsData.Keys) {
+            if ($ak -in @("License", "BatteryBar")) { continue }
+            $av = [string]$appsData[$ak]
+            if ($av -match '^(Failed|ERROR|FAIL)$') {
+                $hasAppFailure = $true
+                break
+            }
+        }
+        $hasHwFailure = $false
+        if ($hwTestObj -and $hwTestObj.overall_status -and ("$($hwTestObj.overall_status)" -match 'FAIL|ERROR')) {
+            $hasHwFailure = $true
+        }
+
         $errorList = [System.Collections.Generic.List[string]]::new()
         if ($Errors) {
             foreach ($e in $Errors) { if ($e) { $errorList.Add($e) } }
         }
-        if ($errorList.Count -eq 0) {
+        $allowLogScrape = ($Status -ne "COMPLETED") -or $hasAppFailure -or $hasHwFailure
+        if ($errorList.Count -eq 0 -and $allowLogScrape) {
             $deployLogPath = if (Test-Path "C:\setup\servis_deploy.log") {
                 "C:\setup\servis_deploy.log"
             } elseif (Test-Path "C:\Windows\Logs\WIS\servis_deploy.log") {
@@ -1092,7 +1184,16 @@ function Send-FleetFinalReport {
 
             if ($deployLogPath) {
                 try {
-                    $errLines = Get-Content $deployLogPath -ErrorAction SilentlyContinue | Where-Object { $_ -match '\[ERROR\]' } | Select-Object -Last 10
+                    $allLines = @(Get-Content $deployLogPath -ErrorAction SilentlyContinue)
+                    $startIdx = 0
+                    for ($li = $allLines.Count - 1; $li -ge 0; $li--) {
+                        if ($allLines[$li] -match '=== WIS_SESSION_START:[^\s=]+ ===') {
+                            $startIdx = $li + 1
+                            break
+                        }
+                    }
+                    $sessionLines = if ($startIdx -lt $allLines.Count) { @($allLines[$startIdx..($allLines.Count - 1)]) } else { @() }
+                    $errLines = $sessionLines | Where-Object { $_ -match '\[ERROR\]' } | Select-Object -Last 10
                     if ($errLines) {
                         foreach ($el in $errLines) { $errorList.Add($el.Trim()) }
                     }
@@ -1135,6 +1236,7 @@ function Send-FleetFinalReport {
         # 7. Formiranje JSON payload-a
         $payload = [ordered]@{
             device_id          = $devId
+            install_session_id = $sessionId
             computer_name      = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { $devId }
             chassis            = $chassis
             serial_number      = $serialNum
@@ -1151,17 +1253,8 @@ function Send-FleetFinalReport {
             $payload["benchmark"] = $benchSummary
         }
 
-        $hwTestCand = @((Join-Path $LocalSetupDir "hwtest-result.json"), "C:\setup\hwtest-result.json") | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-        if ($hwTestCand) {
-            try {
-                $hwTestRaw = Get-Content -LiteralPath $hwTestCand -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
-                if ($hwTestRaw) {
-                    $hwTestObj = ConvertFrom-Json -InputObject $hwTestRaw -ErrorAction SilentlyContinue
-                    if ($hwTestObj) {
-                        $payload["hwtest"] = $hwTestObj
-                    }
-                }
-            } catch {}
+        if ($hwTestObj) {
+            $payload["hwtest"] = $hwTestObj
         }
 
         $jsonBody = New-WisTelemetryJson -Payload $payload -CustomData $CustomData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -Depth 6
@@ -1273,6 +1366,8 @@ Export-ModuleMember -Function `
     Send-ServisLifecycleEvent, `
     Get-FleetHardwareInfo, `
     Get-FleetDeviceId, `
+    Get-WisInstallSessionId, `
+    Ensure-WisSessionLogMarker, `
     Send-FleetFinalReport, `
     Get-WisTelemetryDiagnostics, `
     New-WisTelemetryJson

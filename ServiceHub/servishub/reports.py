@@ -146,6 +146,25 @@ def _format_hw_disk(hw: dict) -> str:
     return "N/A"
 
 
+def _format_hw_display(hw: dict) -> str:
+    """Formatira podatak o ekranu (`hw.display`) za servisni karton (V350-04)."""
+    if not isinstance(hw, dict):
+        return "N/A"
+    disp = hw.get("display")
+    if isinstance(disp, dict):
+        parts = [
+            str(disp.get("label") or disp.get("classification") or "").strip(),
+            str(disp.get("resolution") or "").strip(),
+            str(disp.get("panel") or "").strip(),
+        ]
+        txt = " ".join(p for p in parts if p and p != "N/A").strip()
+        return txt or "N/A"
+    disp_txt = str(disp or "").strip()
+    if disp_txt and disp_txt.upper() not in ("N/A", "NONE", "NULL", "UNKNOWN"):
+        return disp_txt
+    return "N/A"
+
+
 def _parse_semver_tuple(raw_ver) -> tuple[int, int, int] | None:
     """Parsira semantičku verziju ('3.4.3', 'v3.4.2') u (major, minor, patch) ili vraća None."""
     if raw_ver is None or isinstance(raw_ver, bool):
@@ -249,32 +268,137 @@ def _has_skipped_interactive_hwtests(hwtest, report_data: dict = None) -> bool:
     return False
 
 
-def _has_failed_apps_or_errors(rec: dict, nested: dict) -> bool:
-    """
-    Proverava da li `apps` sadrži aplikaciju sa ERROR/FAIL statusom ili `errors` nije prazan (IMP-43).
-    """
-    apps = rec.get("apps")
-    if apps is None and isinstance(nested, dict):
-        apps = nested.get("apps")
+_LOG_ISO_DATE_RE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
+_LOG_DOT_DATE_RE = re.compile(r"\b(\d{2}\.\d{2}\.20\d{2})\b")
+
+
+def _extract_report_date(rec: dict, nested: dict):
+    """Izdvaja datum izveštaja (`date`) iz timestamp/completed_at polja ili današnjeg datuma."""
+    for src in (rec, nested):
+        if not isinstance(src, dict):
+            continue
+        for k in ("timestamp", "completed_at", "started_at"):
+            raw = str(src.get(k) or "").strip()
+            if not raw:
+                continue
+            m = _LOG_ISO_DATE_RE.search(raw)
+            if m:
+                try:
+                    return datetime.strptime(m.group(1), "%Y-%m-%d").date()
+                except ValueError:
+                    pass
+    return datetime.now().date()
+
+
+def _extract_line_date(err_text: str):
+    """Izdvaja datum iz log linije ako postoji (YYYY-MM-DD ili DD.MM.YYYY)."""
+    m_iso = _LOG_ISO_DATE_RE.search(err_text)
+    if m_iso:
+        try:
+            return datetime.strptime(m_iso.group(1), "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    m_dot = _LOG_DOT_DATE_RE.search(err_text)
+    if m_dot:
+        try:
+            return datetime.strptime(m_dot.group(1), "%d.%m.%Y").date()
+        except ValueError:
+            pass
+    return None
+
+
+def _apps_have_real_failures(apps) -> bool:
+    """Proverava da li u `apps` (dict ili list) ima neuspelih aplikacija, izuzimajući 'License' (V350-07)."""
     if isinstance(apps, dict):
-        for app_st in apps.values():
+        for app_name, app_st in apps.items():
+            if str(app_name or "").strip().lower() == "license":
+                continue
             st_norm = str(app_st or "").strip().upper()
             if st_norm in ("ERROR", "FAIL", "FAILED", "CRITICAL", "ERR") or st_norm.startswith(("ERROR", "FAIL")):
                 return True
     elif isinstance(apps, list):
         for item in apps:
             if isinstance(item, dict):
+                item_id = str(item.get("id") or item.get("name") or "").strip().lower()
+                if item_id == "license":
+                    continue
                 st_norm = str(item.get("status") or "").strip().upper()
                 if st_norm in ("ERROR", "FAIL", "FAILED", "CRITICAL", "ERR") or st_norm.startswith(("ERROR", "FAIL")):
                     return True
+    return False
+
+
+def _filter_stale_session_errors(rec: dict, nested: dict, errors_list: list) -> list:
+    """
+    IMP-66: Za status == 'COMPLETED' gde su aplikacije čiste (ne računajući 'License')
+    i hwtest je bez FAIL/preskočenih interaktivnih testova, filtrira zastarele log greške
+    od prethodnih dana / starih sesija da ne izazivaju lažni NEEDS_SERVICE.
+    """
+    if not errors_list:
+        return []
+    nested_d = nested if isinstance(nested, dict) else {}
+    status_raw = str(rec.get("status") if rec.get("status") is not None else nested_d.get("status") or "").strip().upper()
+    if status_raw != "COMPLETED":
+        return list(errors_list)
+
+    apps = rec.get("apps")
+    if apps is None:
+        apps = nested_d.get("apps")
+    if _apps_have_real_failures(apps):
+        return list(errors_list)
+
+    hwtest = rec.get("hwtest")
+    if hwtest is None:
+        hwtest = nested_d.get("hwtest")
+    if isinstance(hwtest, dict):
+        summary = hwtest.get("summary")
+        overall = str(summary.get("overall") or "").strip().upper() if isinstance(summary, dict) else ""
+        if overall == "FAIL" or hwtest.get("passed") is False:
+            return list(errors_list)
+        if _has_skipped_interactive_hwtests(hwtest, report_data=rec):
+            return list(errors_list)
+
+    report_date = _extract_report_date(rec, nested_d)
+    cur_sid = str(rec.get("install_session_id") or nested_d.get("install_session_id") or "").strip()
+
+    filtered = []
+    for item in errors_list:
+        txt = str(item or "").strip()
+        if not txt:
+            continue
+        if cur_sid:
+            m_sid = re.search(r"\[SESSION:([^\]]+)\]", txt, re.IGNORECASE)
+            if m_sid and m_sid.group(1).strip() != cur_sid:
+                continue
+        line_date = _extract_line_date(txt)
+        if line_date is not None and report_date is not None and line_date < report_date:
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _has_failed_apps_or_errors(rec: dict, nested: dict) -> bool:
+    """
+    Proverava da li `apps` sadrži aplikaciju sa ERROR/FAIL statusom (izuzev 'License' — V350-07)
+    ili `errors` sadrži aktivne greške (uz IMP-66 filtriranje zastarelih log linija).
+    """
+    apps = rec.get("apps")
+    if apps is None and isinstance(nested, dict):
+        apps = nested.get("apps")
+    if _apps_have_real_failures(apps):
+        return True
 
     errors = rec.get("errors")
     if errors is None and isinstance(nested, dict):
         errors = nested.get("errors")
-    if isinstance(errors, list) and any(str(e or "").strip() for e in errors):
-        return True
-    if isinstance(errors, str) and bool(errors.strip()):
-        return True
+    if isinstance(errors, list):
+        active_errors = _filter_stale_session_errors(rec, nested, errors)
+        if any(str(e or "").strip() for e in active_errors):
+            return True
+    elif isinstance(errors, str) and bool(errors.strip()):
+        active_errors = _filter_stale_session_errors(rec, nested, [errors])
+        if any(str(e or "").strip() for e in active_errors):
+            return True
     if rec.get("has_errors") is True or (isinstance(nested, dict) and nested.get("has_errors") is True):
         return True
     return False
@@ -716,6 +840,7 @@ def generate_markdown_report(report_data: dict) -> str:
             f"- **Procesor (CPU):** {hw.get('cpu', 'N/A')}",
             f"- **RAM Memorija:** {_format_hw_ram(hw)}",
             f"- **Disk:** {_format_hw_disk(hw)}",
+            f"- **Ekran (Display):** {_format_hw_display(hw)}",
         ])
 
     # Fabrička Garancija (OEM)
@@ -870,7 +995,7 @@ def save_device_report(
     def _extract_sid(rec: dict) -> str:
         if not isinstance(rec, dict):
             return ""
-        return str(rec.get("session_id") or rec.get("run_id") or "").strip()
+        return str(rec.get("install_session_id") or rec.get("session_id") or rec.get("run_id") or "").strip()
 
     in_sn = _extract_sn(payload)
     in_sid = _extract_sid(payload)
@@ -930,6 +1055,22 @@ def save_device_report(
     md_filepath = os.path.join(reports_dir, md_filename)
 
     sanitized_payload = _sanitize_report_license_fields(payload)
+    if isinstance(sanitized_payload.get("hw"), dict):
+        if not sanitized_payload["hw"].get("display") and sanitized_payload.get("display"):
+            sanitized_payload["hw"]["display"] = sanitized_payload["display"]
+    elif sanitized_payload.get("display"):
+        sanitized_payload["hw"] = {"display": sanitized_payload["display"]}
+
+    if isinstance(sanitized_payload.get("errors"), list) and sanitized_payload["errors"]:
+        sanitized_payload["errors"] = _filter_stale_session_errors(
+            sanitized_payload, {}, sanitized_payload["errors"]
+        )
+    elif isinstance(sanitized_payload.get("errors"), str) and sanitized_payload["errors"].strip():
+        filtered_errs = _filter_stale_session_errors(
+            sanitized_payload, {}, [sanitized_payload["errors"]]
+        )
+        sanitized_payload["errors"] = filtered_errs[0] if filtered_errs else ""
+
     _atomic_write_json(json_filepath, sanitized_payload)
 
     md_content = generate_markdown_report(sanitized_payload)

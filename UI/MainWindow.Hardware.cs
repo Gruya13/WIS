@@ -385,82 +385,260 @@ namespace WIS.UI
             }
         }
 
+        private static int ResolveSystemDiskIndex()
+        {
+            string sysDrive = Environment.GetEnvironmentVariable("SystemDrive");
+            if (string.IsNullOrWhiteSpace(sysDrive)) sysDrive = "C:";
+            sysDrive = sysDrive.Trim().TrimEnd('\\');
+            if (sysDrive.Length == 1) sysDrive = sysDrive + ":";
+            char driveLetter = char.ToUpperInvariant(sysDrive[0]);
+
+            // 1. Pokušaj preko MSFT_Partition (root\Microsoft\Windows\Storage)
+            try
+            {
+                using (ManagementObjectSearcher partSearcher = new ManagementObjectSearcher(
+                    @"root\Microsoft\Windows\Storage",
+                    string.Format("SELECT DiskNumber, DriveLetter FROM MSFT_Partition WHERE DriveLetter = '{0}'", driveLetter)))
+                {
+                    foreach (ManagementObject obj in partSearcher.Get())
+                    {
+                        if (obj["DiskNumber"] != null)
+                        {
+                            int dn = -1;
+                            if (int.TryParse(obj["DiskNumber"].ToString(), out dn) && dn >= 0)
+                            {
+                                return dn;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Fallback preko Win32_LogicalDisk -> Win32_DiskPartition
+            try
+            {
+                string assocQuery = string.Format(
+                    "ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{0}'}} WHERE AssocClass = Win32_LogicalDiskToPartition",
+                    sysDrive);
+                using (ManagementObjectSearcher partSearcher = new ManagementObjectSearcher(assocQuery))
+                {
+                    foreach (ManagementObject part in partSearcher.Get())
+                    {
+                        if (part["DiskIndex"] != null)
+                        {
+                            int idx = -1;
+                            if (int.TryParse(part["DiskIndex"].ToString(), out idx) && idx >= 0)
+                            {
+                                return idx;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return -1;
+        }
+
+        private static bool IsExcludedPhysicalBusType(int busType)
+        {
+            // 7=USB, 9=iSCSI, 12=SD, 13=MMC, 14=Virtual, 15=File Backed Virtual, 16=Spaces
+            return busType == 7 || busType == 9 || busType == 12 || busType == 13 ||
+                   busType == 14 || busType == 15 || busType == 16;
+        }
+
+        private static bool IsExcludedWin32Disk(string iface, string mediaType, string pnpId)
+        {
+            string ifU = (iface ?? "").Trim().ToUpperInvariant();
+            if (ifU == "USB" || ifU == "1394") return true;
+
+            string mt = (mediaType ?? "").Trim();
+            if (mt.IndexOf("Removable", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                mt.IndexOf("External", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            string pnp = (pnpId ?? "").Trim();
+            if (pnp.StartsWith("USBSTOR\\", StringComparison.OrdinalIgnoreCase) ||
+                pnp.StartsWith("USB\\", StringComparison.OrdinalIgnoreCase) ||
+                pnp.StartsWith("SD\\", StringComparison.OrdinalIgnoreCase) ||
+                pnp.StartsWith("SWD\\", StringComparison.OrdinalIgnoreCase) ||
+                pnp.IndexOf("VEN_MSFT&PROD_VIRTUAL", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         public void DetectStorage()
         {
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT Model, Size, InterfaceType FROM Win32_DiskDrive"))
+                int systemDiskIndex = ResolveSystemDiskIndex();
+                string bestModel = null;
+                string bestType = "SATA SSD";
+                ulong bestSize = 0;
+                int bestPriority = -1;
+
+                // 1. Primarno: MSFT_PhysicalDisk (tačniji BusType/MediaType za NVMe/SSD/HDD)
+                try
                 {
-                    foreach (ManagementObject obj in searcher.Get())
+                    using (ManagementObjectSearcher msftSearcher = new ManagementObjectSearcher(
+                        @"root\Microsoft\Windows\Storage",
+                        "SELECT DeviceId, FriendlyName, Model, Size, BusType, MediaType FROM MSFT_PhysicalDisk"))
                     {
-                        string model = obj["Model"] != null ? obj["Model"].ToString().Trim() : "Nepoznat Disk";
-                        ulong sizeBytes = 0;
-                        if (obj["Size"] != null) ulong.TryParse(obj["Size"].ToString(), out sizeBytes);
-                        double sizeGb = Math.Round((double)sizeBytes / (1000.0 * 1000.0 * 1000.0));
-
-                        string iface = obj["InterfaceType"] != null ? obj["InterfaceType"].ToString() : "";
-                        string storageType = "SATA SSD";
-
-                        if (model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            iface.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                            (iface.IndexOf("SCSI", StringComparison.OrdinalIgnoreCase) >= 0 && model.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0))
+                        foreach (ManagementObject obj in msftSearcher.Get())
                         {
-                            storageType = "NVMe PCIe SSD";
-                        }
-                        else if (model.IndexOf("SATA", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                 iface.IndexOf("IDE", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                 iface.IndexOf("SATA", StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            storageType = "SATA SSD / HDD";
-                        }
+                            int busType = 0;
+                            if (obj["BusType"] != null) int.TryParse(obj["BusType"].ToString(), out busType);
+                            if (IsExcludedPhysicalBusType(busType)) continue;
 
-                        string finalModel = string.Format("{0} ({1} GB)", model, sizeGb);
-                        string finalType = storageType;
+                            int diskId = -1;
+                            if (obj["DeviceId"] != null) int.TryParse(obj["DeviceId"].ToString(), out diskId);
+                            bool isSysDisk = (systemDiskIndex >= 0 && diskId == systemDiskIndex);
 
-                        Dispatcher.BeginInvoke((Action)delegate
-                        {
-                            if (ViewModel.HardwareInfo != null)
+                            ulong sizeBytes = 0;
+                            if (obj["Size"] != null) ulong.TryParse(obj["Size"].ToString(), out sizeBytes);
+                            if (sizeBytes == 0) continue;
+
+                            string model = obj["FriendlyName"] != null ? obj["FriendlyName"].ToString().Trim() : "";
+                            if (string.IsNullOrWhiteSpace(model) && obj["Model"] != null) model = obj["Model"].ToString().Trim();
+                            if (string.IsNullOrWhiteSpace(model)) model = "Nepoznat Disk";
+
+                            int mediaType = 0;
+                            if (obj["MediaType"] != null) int.TryParse(obj["MediaType"].ToString(), out mediaType);
+
+                            string storageType = "SATA SSD";
+                            if (busType == 17)
                             {
-                                ViewModel.HardwareInfo.StorageModel = finalModel;
-                                ViewModel.HardwareInfo.StorageType = finalType;
-
-                                if (!string.IsNullOrEmpty(ViewModel.DiskWearText))
-                                {
-                                    ViewModel.HardwareInfo.StorageHealth = ViewModel.DiskWearText;
-                                }
-                                else
-                                {
-                                    ViewModel.HardwareInfo.StorageHealth = LocalizationService.Get("HwDiskHealth100", "100% Zdravlje");
-                                }
-
-                                if (ViewModel.SmartStatusBrush is SolidColorBrush)
-                                {
-                                    ViewModel.HardwareInfo.StorageHealthBrush = (SolidColorBrush)ViewModel.SmartStatusBrush;
-                                }
-
-                                if (ViewModel.DiskPowerOnHours >= 0)
-                                {
-                                    ViewModel.HardwareInfo.StorageHours = string.Format("{0:N0} h", ViewModel.DiskPowerOnHours);
-                                }
-                                else
-                                {
-                                    ViewModel.HardwareInfo.StorageHours = LocalizationService.Get("HwDiskHoursNaSmart", "N/A (Zahteva S.M.A.R.T.)");
-                                }
-
-                                if (_thermalEngine != null && _thermalEngine.SsdTemperature > 0f)
-                                {
-                                    ViewModel.HardwareInfo.StorageTemp = string.Format("{0:F1} °C", _thermalEngine.SsdTemperature);
-                                }
-                                else
-                                {
-                                    ViewModel.HardwareInfo.StorageTemp = LocalizationService.Get("HwDiskTempNaSensor", "N/A (Senzor nedostupan)");
-                                }
+                                storageType = "NVMe PCIe SSD";
+                            }
+                            else if (mediaType == 4)
+                            {
+                                storageType = model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ? "NVMe PCIe SSD" : "SSD";
+                            }
+                            else if (mediaType == 3)
+                            {
+                                storageType = "HDD";
+                            }
+                            else if (model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                storageType = "NVMe PCIe SSD";
                             }
 
-                            HardwareIdentityService.TryUpdate("DiskInfo", finalModel, HardwareUpdateSource.WmiFresh, ViewModel);
-                        });
-                        break;
+                            int priority = isSysDisk ? 1000 : (busType == 17 ? 100 : (busType == 11 || busType == 8 ? 50 : 10));
+                            if (priority > bestPriority || (priority == bestPriority && sizeBytes > bestSize))
+                            {
+                                bestPriority = priority;
+                                bestSize = sizeBytes;
+                                bestModel = model;
+                                bestType = storageType;
+                            }
+                        }
                     }
+                }
+                catch { }
+
+                // 2. Fallback: Win32_DiskDrive (sa strogim USB/Removable/External/PNP filtriranjem)
+                if (string.IsNullOrWhiteSpace(bestModel))
+                {
+                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                        "SELECT Index, DeviceID, Model, Size, InterfaceType, MediaType, PNPDeviceID FROM Win32_DiskDrive"))
+                    {
+                        foreach (ManagementObject obj in searcher.Get())
+                        {
+                            string iface = obj["InterfaceType"] != null ? obj["InterfaceType"].ToString() : "";
+                            string mediaType = obj["MediaType"] != null ? obj["MediaType"].ToString() : "";
+                            string pnpId = obj["PNPDeviceID"] != null ? obj["PNPDeviceID"].ToString() : "";
+                            if (IsExcludedWin32Disk(iface, mediaType, pnpId)) continue;
+
+                            int diskIdx = -1;
+                            if (obj["Index"] != null) int.TryParse(obj["Index"].ToString(), out diskIdx);
+                            bool isSysDisk = (systemDiskIndex >= 0 && diskIdx == systemDiskIndex);
+
+                            string model = obj["Model"] != null ? obj["Model"].ToString().Trim() : "Nepoznat Disk";
+                            ulong sizeBytes = 0;
+                            if (obj["Size"] != null) ulong.TryParse(obj["Size"].ToString(), out sizeBytes);
+                            if (sizeBytes == 0 && !isSysDisk) continue;
+
+                            string storageType = "SATA SSD";
+                            if (model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                iface.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                pnpId.IndexOf("NVME", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                (iface.IndexOf("SCSI", StringComparison.OrdinalIgnoreCase) >= 0 && model.IndexOf("SSD", StringComparison.OrdinalIgnoreCase) >= 0))
+                            {
+                                storageType = "NVMe PCIe SSD";
+                            }
+                            else if (model.IndexOf("SATA", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     iface.IndexOf("IDE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                     iface.IndexOf("SATA", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                storageType = "SATA SSD / HDD";
+                            }
+
+                            int priority = isSysDisk ? 1000 : (storageType == "NVMe PCIe SSD" ? 100 : 50);
+                            if (priority > bestPriority || (priority == bestPriority && sizeBytes > bestSize))
+                            {
+                                bestPriority = priority;
+                                bestSize = sizeBytes;
+                                bestModel = model;
+                                bestType = storageType;
+                            }
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(bestModel))
+                {
+                    double sizeGb = Math.Round((double)bestSize / (1000.0 * 1000.0 * 1000.0));
+                    string finalModel = string.Format("{0} ({1} GB)", bestModel, sizeGb);
+                    string finalType = bestType;
+
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        if (ViewModel.HardwareInfo != null)
+                        {
+                            ViewModel.HardwareInfo.StorageModel = finalModel;
+                            ViewModel.HardwareInfo.StorageType = finalType;
+
+                            if (!string.IsNullOrEmpty(ViewModel.DiskWearText))
+                            {
+                                ViewModel.HardwareInfo.StorageHealth = ViewModel.DiskWearText;
+                            }
+                            else
+                            {
+                                ViewModel.HardwareInfo.StorageHealth = LocalizationService.Get("HwDiskHealth100", "100% Zdravlje");
+                            }
+
+                            if (ViewModel.SmartStatusBrush is SolidColorBrush)
+                            {
+                                ViewModel.HardwareInfo.StorageHealthBrush = (SolidColorBrush)ViewModel.SmartStatusBrush;
+                            }
+
+                            if (ViewModel.DiskPowerOnHours >= 0)
+                            {
+                                ViewModel.HardwareInfo.StorageHours = string.Format("{0:N0} h", ViewModel.DiskPowerOnHours);
+                            }
+                            else
+                            {
+                                ViewModel.HardwareInfo.StorageHours = LocalizationService.Get("HwDiskHoursNaSmart", "N/A (Zahteva S.M.A.R.T.)");
+                            }
+
+                            if (_thermalEngine != null && _thermalEngine.SsdTemperature > 0f)
+                            {
+                                ViewModel.HardwareInfo.StorageTemp = string.Format("{0:F1} °C", _thermalEngine.SsdTemperature);
+                            }
+                            else
+                            {
+                                ViewModel.HardwareInfo.StorageTemp = LocalizationService.Get("HwDiskTempNaSensor", "N/A (Senzor nedostupan)");
+                            }
+                        }
+
+                        HardwareIdentityService.TryUpdate("DiskInfo", finalModel, HardwareUpdateSource.WmiFresh, ViewModel);
+                    });
                 }
             }
             catch

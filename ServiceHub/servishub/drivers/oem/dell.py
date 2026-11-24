@@ -174,12 +174,13 @@ class DellOEMProvider(BaseOEMProvider):
         },
     }
 
-    def __init__(self, cache_dir: Optional[str] = None, timeout: float = 5.0):
+    def __init__(self, cache_dir: Optional[str] = None, timeout: float = 5.0, max_cache_gb: Optional[float] = None):
         """
         Inicijalizuje Dell OEM provajdera.
 
         :param cache_dir: Koreni direktorijum za skladištenje OEM keša
         :param timeout: Mrežni timeout u sekundama (maksimalno 5s)
+        :param max_cache_gb: Maksimalna LRU kvota keša u GB (podrazumevano 25 GB)
         """
         if cache_dir:
             self.base_cache_dir = os.path.abspath(cache_dir)
@@ -192,6 +193,15 @@ class DellOEMProvider(BaseOEMProvider):
                     os.path.join(os.path.dirname(__file__), "..", "..", "..", "storage", "drivers_cache", "oem", "dell")
                 )
 
+        if max_cache_gb is not None:
+            self.max_drivers_cache_gb = float(max_cache_gb)
+        else:
+            try:
+                from servishub.config import DEFAULT_MAX_DRIVERS_CACHE_GB
+                self.max_drivers_cache_gb = float(DEFAULT_MAX_DRIVERS_CACHE_GB)
+            except Exception:
+                self.max_drivers_cache_gb = 25.0
+
         # Timeout je striktno ograničen na najviše 5 sekundi
         self.timeout = min(max(float(timeout), 0.5), 5.0)
         self.lock = threading.Lock()
@@ -202,6 +212,26 @@ class DellOEMProvider(BaseOEMProvider):
             os.makedirs(self.warranty_cache_dir, exist_ok=True)
             self.keyboard_cache_dir = os.path.join(self.base_cache_dir, "keyboard")
             os.makedirs(self.keyboard_cache_dir, exist_ok=True)
+
+    def _enforce_cache_quota_locked(self, max_gb: Optional[float] = None) -> Dict[str, Any]:
+        """Primenuje LRU/size kvotu nad OEM keš direktorijumom bez praćenja symlinkova."""
+        limit_gb = float(max_gb) if max_gb is not None else self.max_drivers_cache_gb
+        if limit_gb <= 0:
+            return {"removed_files": 0, "freed_bytes": 0, "remaining_bytes": 0}
+        try:
+            from servishub.config import enforce_directory_lru_quota
+            return enforce_directory_lru_quota(
+                self.base_cache_dir,
+                max_bytes=int(limit_gb * (1024 ** 3)),
+                recursive=True,
+            )
+        except Exception:
+            return {"removed_files": 0, "freed_bytes": 0, "remaining_bytes": 0}
+
+    def enforce_cache_quota(self, max_gb: Optional[float] = None) -> Dict[str, Any]:
+        """Thread-safe LRU/size čišćenje OEM keša."""
+        with self.lock:
+            return self._enforce_cache_quota_locked(max_gb=max_gb)
 
     # =========================================================================
     # Pomoćne metode za normalizaciju i parsiranje
@@ -662,6 +692,7 @@ class DellOEMProvider(BaseOEMProvider):
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(meta_record, f, indent=2, ensure_ascii=False)
             os.replace(tmp_path, meta_path)
+            self._enforce_cache_quota_locked()
 
         return {
             "status": "ok",

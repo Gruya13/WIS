@@ -305,14 +305,20 @@ if exist "Z:\win11\sources\install.esd" (
     echo [-] NAS server nije dostupan na lokalnoj mrezi - rad se nastavlja sa lokalnog/iVentoy medijuma
 )
 
-:: Detekcija iVentoy / virtuelnog CD-ROM ISO drajva (za cuvanje $OEM$ i autounattend.xml sa butovanog ISO-a)
+:: Detekcija TrueNAS Z:\win11 ili iVentoy / virtuelnog CD-ROM ISO drajva (Z pre Y da setup.exe ne zakljucava port 10445)
 :StartnetMediaSearch
 set "WIS_BOOT_OEM="
 set "WIS_BOOT_UNATTEND="
-for %%d in (Y C D E F G H I J K L M N O P Q R S T U V W) do (
-    if exist "%%d:\sources\$OEM$\$1\setup\WIS.Launcher.exe" (
-        if not defined WIS_BOOT_OEM set "WIS_BOOT_OEM=%%d:\sources\$OEM$"
-        if exist "%%d:\autounattend.xml" if not defined WIS_BOOT_UNATTEND set "WIS_BOOT_UNATTEND=%%d:\autounattend.xml"
+if exist "Z:\win11\sources\$OEM$\$1\setup\WIS.Launcher.exe" (
+    set "WIS_BOOT_OEM=Z:\win11\sources\$OEM$"
+    if exist "Z:\win11\autounattend.xml" set "WIS_BOOT_UNATTEND=Z:\win11\autounattend.xml"
+)
+if not defined WIS_BOOT_OEM (
+    for %%d in (Z C D E F G H I J K L M N O P Q R S T U V W Y) do (
+        if exist "%%d:\sources\$OEM$\$1\setup\WIS.Launcher.exe" (
+            if not defined WIS_BOOT_OEM set "WIS_BOOT_OEM=%%d:\sources\$OEM$"
+            if exist "%%d:\autounattend.xml" if not defined WIS_BOOT_UNATTEND set "WIS_BOOT_UNATTEND=%%d:\autounattend.xml"
+        )
     )
 )
 
@@ -571,19 +577,22 @@ if defined Z_READY (
     echo [+] TrueNAS SMB 3.1.1 montiran na Z:\ [Z:\win11\sources je spreman]!
     echo [%TIME%] TrueNAS uspesno montiran na Z:\. >> "%WIS_LOG%" 2>nul
 
-    :: Ako postoji iVentoy T:\iventoy.iso virtualni disk, sada ga bezbedno demontiramo
+    :: Ako postoji iVentoy T:\iventoy.iso virtualni disk, pokusaj detach (ako omane, svejedno oslobodi T:)
     if exist "T:\iventoy.iso" (
         echo select vdisk file="T:\iventoy.iso" > "X:\wis_detach.txt" 2>nul
         echo detach vdisk >> "X:\wis_detach.txt" 2>nul
         diskpart.exe /s "X:\wis_detach.txt" >nul 2>&1
         del /f /q "X:\wis_detach.txt" >nul 2>&1
-        net.exe use T: /delete /y >nul 2>&1
     )
+    net.exe use T: /delete /y >nul 2>&1
 
     :: Mapiraj Y: ka \\truenas.servis\WIS\win11 deljenju ako vec nije mapiran na taj SMB share
     set "Y_IS_NAS="
     net.exe use Y: 2>nul | find.exe /I "win11" >nul 2>&1 && set "Y_IS_NAS=1"
     if not defined Y_IS_NAS (
+        mountvol.exe Y: /D >nul 2>&1
+        mountvol.exe Y: /P >nul 2>&1
+        net.exe use Y: /delete /y >nul 2>&1
         echo [*] Povezujem TrueNAS SMB 3.1.1 [\\truenas.servis\WIS\win11] na disk Y:\...
         if exist "X:\Windows\System32\WIS-ConnectNAS.cmd" (
             call "X:\Windows\System32\WIS-ConnectNAS.cmd" Y:

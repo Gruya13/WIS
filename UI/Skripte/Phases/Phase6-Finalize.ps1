@@ -653,6 +653,31 @@ try {
     # Kritičan redosled (IMP-32): Prvo slanje mrežnog izveštaja ka Hub-u dok je Wi-Fi aktivan,
     # a Clear-ServisWifiSecrets + net use * /delete /y + fizička provera tajni UVEK u finally bloku!
     try {
+        # V350-06 / 2A: Sacekaj zavrsetak pozadinskog Delta Harvesta pre slanja finalnog reporta i brisanja Wi-Fi tajni (max 90s)
+        $deltaHarvestLock = Join-Path $LocalSetupDir "delta-harvest.lock"
+        if (-not (Test-Path -LiteralPath $deltaHarvestLock) -and (Test-Path -LiteralPath "C:\setup\delta-harvest.lock")) {
+            $deltaHarvestLock = "C:\setup\delta-harvest.lock"
+        }
+        if (Test-Path -LiteralPath $deltaHarvestLock -PathType Leaf -ErrorAction SilentlyContinue) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Detektovan aktivan delta-harvest.lock. Cekam dovrsetak pozadinskog Delta Harvest uploada (max 90s)..." -Level "INFO" -Component "Phase6"
+            }
+            $dhSw = [System.Diagnostics.Stopwatch]::StartNew()
+            while ((Test-Path -LiteralPath $deltaHarvestLock -PathType Leaf -ErrorAction SilentlyContinue) -and ($dhSw.Elapsed.TotalSeconds -lt 90)) {
+                Start-Sleep -Seconds 2
+            }
+            $dhSw.Stop()
+            if (Test-Path -LiteralPath $deltaHarvestLock -PathType Leaf -ErrorAction SilentlyContinue) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Delta Harvest lock jos prisutan nakon 90s timeouta; nastavljam sa slanjem izvestaja i ciscenjem." -Level "WARN" -Component "Phase6"
+                }
+            } else {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "Pozadinski Delta Harvest zavrsen za $([math]::Round($dhSw.Elapsed.TotalSeconds, 1))s." -Level "SUCCESS" -Component "Phase6"
+                }
+            }
+        }
+
         if ($blockHandover) {
             # ------------------------------------------------------------------------------
             # GRANA NEEDS_ATTENTION: ZABRANJEN STATUS DONE / READY / SUCCESS I AUTOMATSKO GAŠENJE!

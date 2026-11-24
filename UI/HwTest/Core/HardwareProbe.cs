@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Management;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Microsoft.Win32;
 using WIS.HwTest.Interop;
 
@@ -135,6 +136,45 @@ namespace WIS.HwTest.Core
 
     public static class HardwareProbe
     {
+        private static EnumerationOptions CreateWmiOptions(int timeoutMs)
+        {
+            return new EnumerationOptions
+            {
+                Timeout = TimeSpan.FromMilliseconds(timeoutMs),
+                ReturnImmediately = true,
+                Rewindable = false
+            };
+        }
+
+        private static ManagementObjectSearcher CreateSearcher(string query)
+        {
+            return new ManagementObjectSearcher(
+                new ManagementScope(@"root\CIMV2"),
+                new SelectQuery(query),
+                CreateWmiOptions(2500));
+        }
+
+        private static ManagementObjectSearcher CreateSearcher(string scopePath, string query)
+        {
+            return new ManagementObjectSearcher(
+                new ManagementScope(scopePath),
+                new SelectQuery(query),
+                CreateWmiOptions(2500));
+        }
+
+        private static bool RunWmiWithTimeout(Action action, int timeoutMs)
+        {
+            if (action == null) return false;
+            Thread worker = new Thread(new ThreadStart(delegate
+            {
+                try { action(); }
+                catch { }
+            }));
+            worker.IsBackground = true;
+            worker.Start();
+            return worker.Join(timeoutMs);
+        }
+
         public static HardwareProbeResult DetectHardware()
         {
             HardwareProbeResult res = new HardwareProbeResult();
@@ -158,7 +198,7 @@ namespace WIS.HwTest.Core
             // 2. Chassis / IsLaptop
             try
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT ChassisTypes FROM Win32_SystemEnclosure"))
+                using (ManagementObjectSearcher searcher = CreateSearcher("SELECT ChassisTypes FROM Win32_SystemEnclosure"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
                     {
@@ -183,7 +223,7 @@ namespace WIS.HwTest.Core
             // 2b. Identitet uređaja (Manufacturer, Model, SKU, MTM, Serial) + EDID dijagonala
             try
             {
-                using (ManagementObjectSearcher csSearcher = new ManagementObjectSearcher("SELECT Manufacturer, Model, SystemSKUNumber FROM Win32_ComputerSystem"))
+                using (ManagementObjectSearcher csSearcher = CreateSearcher("SELECT Manufacturer, Model, SystemSKUNumber FROM Win32_ComputerSystem"))
                 {
                     foreach (ManagementObject obj in csSearcher.Get())
                     {
@@ -198,7 +238,7 @@ namespace WIS.HwTest.Core
 
             try
             {
-                using (ManagementObjectSearcher cspSearcher = new ManagementObjectSearcher("SELECT Name, Version, IdentifyingNumber FROM Win32_ComputerSystemProduct"))
+                using (ManagementObjectSearcher cspSearcher = CreateSearcher("SELECT Name, Version, IdentifyingNumber FROM Win32_ComputerSystemProduct"))
                 {
                     foreach (ManagementObject obj in cspSearcher.Get())
                     {
@@ -262,7 +302,7 @@ namespace WIS.HwTest.Core
             // Dijagonala ugrađenog panela preko WmiMonitorBasicDisplayParams (cm -> inči)
             try
             {
-                using (ManagementObjectSearcher monSearcher = new ManagementObjectSearcher(@"root\WMI", "SELECT MaxHorizontalImageSize, MaxVerticalImageSize, Active FROM WmiMonitorBasicDisplayParams"))
+                using (ManagementObjectSearcher monSearcher = CreateSearcher(@"root\WMI", "SELECT MaxHorizontalImageSize, MaxVerticalImageSize, Active FROM WmiMonitorBasicDisplayParams"))
                 {
                     foreach (ManagementObject obj in monSearcher.Get())
                     {
@@ -300,7 +340,7 @@ namespace WIS.HwTest.Core
                 }
                 else
                 {
-                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT DeviceID, PNPDeviceID FROM Win32_PointingDevice"))
+                    using (ManagementObjectSearcher searcher = CreateSearcher("SELECT DeviceID, PNPDeviceID FROM Win32_PointingDevice"))
                     {
                         foreach (ManagementObject obj in searcher.Get())
                         {
@@ -317,9 +357,9 @@ namespace WIS.HwTest.Core
             catch { }
 
             // 4. Web Kamera & IR (razdvojena RGB vs IR klasifikacija bez lažnog podstringa "IR")
-            try
+            if (!RunWmiWithTimeout(delegate
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher searcher = CreateSearcher(
                     "SELECT Name, Description, DeviceID, PNPClass, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE PNPClass = 'Camera' OR PNPClass = 'Image'"))
                 {
                     foreach (ManagementObject obj in searcher.Get())
@@ -394,8 +434,10 @@ namespace WIS.HwTest.Core
                         }
                     }
                 }
+            }, 3500))
+            {
+                res.PnpAuditNotes.Add("PnP Camera query timeout (>3500ms)");
             }
-            catch { }
 
             // 5. Audio Endpoints (Speakers / Microphone)
             try
@@ -423,7 +465,7 @@ namespace WIS.HwTest.Core
             string wbioStartMode = "";
             try
             {
-                using (ManagementObjectSearcher svcSearcher = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher svcSearcher = CreateSearcher(
                     "SELECT Name, State, StartMode FROM Win32_Service WHERE Name = 'WbioSrvc'"))
                 {
                     foreach (ManagementObject sObj in svcSearcher.Get())
@@ -440,9 +482,9 @@ namespace WIS.HwTest.Core
             ProbeBiosFingerprintStatus(res);
 
             bool hasBiometricPnpCandidate = false;
-            try
+            if (!RunWmiWithTimeout(delegate
             {
-                using (ManagementObjectSearcher fpSearcher = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher fpSearcher = CreateSearcher(
                     "SELECT Name, Description, DeviceID, PNPClass, Service, ConfigManagerErrorCode FROM Win32_PnPEntity"))
                 {
                     foreach (ManagementObject obj in fpSearcher.Get())
@@ -591,8 +633,10 @@ namespace WIS.HwTest.Core
                         }
                     }
                 }
+            }, 3500))
+            {
+                res.PnpAuditNotes.Add("PnP Full Enum query timeout (>3500ms)");
             }
-            catch { }
 
             // Bezbedno buđenje WbioSrvc servisa pre WinBioEnumBiometricUnits ako je Stopped (a nije Disabled)
             if ((hasBiometricPnpCandidate || res.HasFingerprint) &&
@@ -719,7 +763,7 @@ namespace WIS.HwTest.Core
             {
                 int usbCount = 0;
                 HashSet<string> seenDesignators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                using (ManagementObjectSearcher s = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher s = CreateSearcher(
                     "SELECT ExternalReferenceDesignator, InternalReferenceDesignator, ConnectorType FROM Win32_PortConnector"))
                 {
                     foreach (ManagementObject obj in s.Get())
@@ -1077,7 +1121,7 @@ namespace WIS.HwTest.Core
                 {
                     try
                     {
-                        using (ManagementObjectSearcher biosSearcher = new ManagementObjectSearcher(
+                        using (ManagementObjectSearcher biosSearcher = CreateSearcher(
                             @"root\HP\InstrumentedBIOS", "SELECT * FROM " + clsName))
                         {
                             foreach (ManagementObject bObj in biosSearcher.Get())
@@ -1101,9 +1145,9 @@ namespace WIS.HwTest.Core
             // 2. Lenovo BIOS WMI (root\WMI -> Lenovo_BiosSetting)
             if (mfg.IndexOf("Lenovo", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                try
+                if (!RunWmiWithTimeout(delegate
                 {
-                    using (ManagementObjectSearcher lenSearcher = new ManagementObjectSearcher(
+                    using (ManagementObjectSearcher lenSearcher = CreateSearcher(
                         @"root\WMI", "SELECT CurrentSetting FROM Lenovo_BiosSetting"))
                     {
                         foreach (ManagementObject lObj in lenSearcher.Get())
@@ -1116,10 +1160,9 @@ namespace WIS.HwTest.Core
                             RecordBiosSetting(res, "Lenovo", sName, sVal);
                         }
                     }
-                }
-                catch (Exception ex)
+                }, 3500))
                 {
-                    res.BiosAuditNotes.Add("Lenovo_BiosSetting ERR: " + ex.Message);
+                    res.BiosAuditNotes.Add("Lenovo_BiosSetting timeout (>3500ms)");
                 }
             }
 
@@ -1136,7 +1179,7 @@ namespace WIS.HwTest.Core
                     string[] sp = pair.Split('|');
                     try
                     {
-                        using (ManagementObjectSearcher dellSearcher = new ManagementObjectSearcher(
+                        using (ManagementObjectSearcher dellSearcher = CreateSearcher(
                             sp[0], "SELECT * FROM " + sp[1]))
                         {
                             foreach (ManagementObject dObj in dellSearcher.Get())
@@ -1159,9 +1202,9 @@ namespace WIS.HwTest.Core
         {
             if (res == null) return;
 
-            try
+            if (!RunWmiWithTimeout(delegate
             {
-                using (ManagementObjectSearcher pnpSearcher = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher pnpSearcher = CreateSearcher(
                     "SELECT Name, DeviceID FROM Win32_PnPEntity"))
                 {
                     foreach (ManagementObject obj in pnpSearcher.Get())
@@ -1192,8 +1235,10 @@ namespace WIS.HwTest.Core
                         }
                     }
                 }
+            }, 3500))
+            {
+                res.BiosAuditNotes.Add("PnP KeyboardBacklight timeout (>3500ms)");
             }
-            catch { }
 
             string pmDetail;
             int pmLevel;
@@ -1565,7 +1610,7 @@ namespace WIS.HwTest.Core
         {
             try
             {
-                using (ManagementObjectSearcher svcSearcher = new ManagementObjectSearcher(
+                using (ManagementObjectSearcher svcSearcher = CreateSearcher(
                     "SELECT Name, State, StartMode FROM Win32_Service WHERE Name = 'WbioSrvc'"))
                 {
                     foreach (ManagementObject sObj in svcSearcher.Get())
@@ -1598,7 +1643,7 @@ namespace WIS.HwTest.Core
                 while (DateTime.UtcNow < deadline)
                 {
                     System.Threading.Thread.Sleep(250);
-                    using (ManagementObjectSearcher pollSearcher = new ManagementObjectSearcher(
+                    using (ManagementObjectSearcher pollSearcher = CreateSearcher(
                         "SELECT State, StartMode FROM Win32_Service WHERE Name = 'WbioSrvc'"))
                     {
                         foreach (ManagementObject pObj in pollSearcher.Get())

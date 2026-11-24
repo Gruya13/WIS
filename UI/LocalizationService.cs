@@ -289,7 +289,7 @@ namespace WIS.UI
             // ==========================================
             // SRPSKI JEZIK (SRB)
             // ==========================================
-            _srDict["AppTitle"] = "WIS v3.4.4 - Windows Installation Assistant";
+            _srDict["AppTitle"] = "WIS v3.5.0 - Windows Installation Assistant";
             _srDict["CompanyBrand"] = "WIS SERVICE";
             _srDict["WorkTimeTitle"] = "VREME RADA";
             _srDict["CpuLabel"] = "⚙ CPU:";
@@ -1364,11 +1364,20 @@ namespace WIS.UI
             _srDict["HwTGateRebootReqDetail"] = "Neki instalirani drajveri zahtevaju restart računara pre nego što periferije postanu spremne za interaktivno testiranje.";
             _srDict["WinPrePhase6MissingAppsConfirmTitle"] = "WIS Reality Check — Nedostaju ključni programi pre Faze 6";
             _srDict["WinPrePhase6MissingAppsConfirmBody"] = "UPOZORENJE PRE ZAVRŠETKA (FAZA 6):\n\nNa disku nedostaju sledeći ključni programi:\n• {0}\n\nFaza 6 trajno briše servisni Wi-Fi profil (Anti-Leak), nakon čega preuzimanje programa sa NAS-a više neće biti moguće!\n\n• Kliknite 'Ne' (preporučeno) da ostanete pre Faze 6 i instalirate programe (↻ Retry na kartici Programi).\n• Kliknite 'Da' samo ako svesno želite da završite servis bez ovih programa (uređaj će dobiti status NEEDS_ATTENTION / NEEDS_SERVICE).";
+            _srDict["HwTGateDriversPipelineTitle"] = "Instalacija drajvera i završni restart još nisu završeni";
+            _srDict["HwTGateDriversPipelineDetail"] = "Interaktivni testovi periferija su zaključani dok se drajveri ne instaliraju i sistem ne restartuje pred Fazu 5.";
+            _srDict["WinPostRebootFinalizeSub"] = "Završna aktivacija drajvera i kalibracija ekrana...";
+            _srDict["WinPostRebootFinalizeLive"] = "Primenjujem post-reboot podešavanja drajvera i osvežavam hardverski profil...";
+            _srDict["WinPhase4BSub"] = "Faza 4B: Lokalna instalacija preuzetih drajvera...";
+            _srDict["WinPhase4BLive"] = "Instaliram preuzete drajvere sa SSD-a pre restarta...";
+            _srDict["WinWaitDriverDownloadProgressFmt"] = "Čekam dovršetak preuzimanja drajvera ({0}/{1})... {2}";
+            _srDict["WinWaitDriverDownloadLive"] = "Čekam dovršetak preuzimanja drajvera u pozadini...";
+            _srDict["WinWaitDriverDownloadSub"] = "Preuzimanje drajvera u toku...";
 
             // ==========================================
             // ENGLESKI JEZIK (EN - English)
             // ==========================================
-            _enDict["AppTitle"] = "WIS v3.4.4 - Windows Installation Assistant";
+            _enDict["AppTitle"] = "WIS v3.5.0 - Windows Installation Assistant";
             _enDict["CompanyBrand"] = "WIS SERVICE CENTER";
             _enDict["WorkTimeTitle"] = "Elapsed Time";
             _enDict["CpuLabel"] = "⚙ CPU:";
@@ -1451,11 +1460,20 @@ namespace WIS.UI
             _enDict["Step_P4_Shortcuts"] = "Desktop shortcuts";
             _enDict["Step_P4_PdfDefault"] = "Default PDF viewer";
             _enDict["Step_P4_Activation"] = "Windows/Office activation";
+            _enDict["HwTGateDriversPipelineTitle"] = "Driver installation and pre-test reboot are not finished yet";
+            _enDict["HwTGateDriversPipelineDetail"] = "Interactive peripheral tests are locked until drivers are installed and the system reboots before Phase 5.";
+            _enDict["WinPostRebootFinalizeSub"] = "Final driver activation and display calibration...";
+            _enDict["WinPostRebootFinalizeLive"] = "Applying post-reboot driver settings and refreshing hardware profile...";
+            _enDict["WinPhase4BSub"] = "Phase 4B: Local installation of staged drivers...";
+            _enDict["WinPhase4BLive"] = "Installing downloaded drivers from SSD before reboot...";
+            _enDict["WinWaitDriverDownloadProgressFmt"] = "Waiting for driver download completion ({0}/{1})... {2}";
+            _enDict["WinWaitDriverDownloadLive"] = "Waiting for background driver download to finish...";
+            _enDict["WinWaitDriverDownloadSub"] = "Driver download in progress...";
 
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
             // ==========================================
-            _zhDict["AppTitle"] = "WIS v3.4.4 - 视窗系统自动化安装助手";
+            _zhDict["AppTitle"] = "WIS v3.5.0 - 视窗系统自动化安装助手";
             _zhDict["CompanyBrand"] = "WIS SERVICE 电脑维修中心";
             _zhDict["WorkTimeTitle"] = "运行时间";
             _zhDict["CpuLabel"] = "⚙ 处理器:";
@@ -2530,6 +2548,15 @@ namespace WIS.UI
             _zhDict["HwTGateRebootReqDetail"] = "部分已安装的驱动程序需要重启计算机后，外设才能准备好进行交互式测试。";
             _zhDict["WinPrePhase6MissingAppsConfirmTitle"] = "WIS 实际检查 — 第 6 阶段前缺少关键软件";
             _zhDict["WinPrePhase6MissingAppsConfirmBody"] = "完成前警告（第 6 阶段）：\n\n磁盘上缺少以下关键软件：\n• {0}\n\n第 6 阶段将永久删除维修 Wi-Fi 配置文件（防泄漏清理），之后将无法再从 NAS 下载软件！\n\n• 点击“否”（推荐）留在第 6 阶段之前并安装软件（在“常用软件”选项卡点击 ↻ 重试）。\n• 仅当您确定要在缺少这些软件的情况下结束维修时才点击“是”（设备将被标记为 NEEDS_ATTENTION / NEEDS_SERVICE）。";
+            _zhDict["HwTGateDriversPipelineTitle"] = "驱动程序安装与测试前重启尚未完成";
+            _zhDict["HwTGateDriversPipelineDetail"] = "在驱动程序安装完成并于第 5 阶段前重启系统之前，外设交互式测试处于锁定状态。";
+            _zhDict["WinPostRebootFinalizeSub"] = "正在完成驱动激活与屏幕校准...";
+            _zhDict["WinPostRebootFinalizeLive"] = "正在应用重启后驱动配置并刷新硬件信息...";
+            _zhDict["WinPhase4BSub"] = "阶段 4B：本地安装已下载的驱动程序...";
+            _zhDict["WinPhase4BLive"] = "正在从 SSD 安装已下载的驱动程序以准备重启...";
+            _zhDict["WinWaitDriverDownloadProgressFmt"] = "正在等待驱动下载完成 ({0}/{1})... {2}";
+            _zhDict["WinWaitDriverDownloadLive"] = "正在等待后台驱动程序下载完成...";
+            _zhDict["WinWaitDriverDownloadSub"] = "正在下载驱动程序...";
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

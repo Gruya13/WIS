@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.4.4 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.4.4 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.4.4 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.0 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.0 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.0 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -646,7 +646,7 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         sync_lic_block = core_src.split("function Sync-ServisLicensingFromNas", 1)[1].split("function Test-ProgramiDirComplete", 1)[0]
         self.assertIn(r'C:\setup\Cache\Licensing', sync_lic_block)
         self.assertIn('Invoke-WisCoreNetUse -Action "Connect"', sync_lic_block)
-        self.assertIn('Invoke-WisCoreNetUse -Action "DisconnectAll"', sync_lic_block)
+        self.assertIn("Clear-WisCoreHostSmbConflicts -TargetHost $nasHost", sync_lic_block)
         self.assertIn("Copy-WisSafeLicensingTree", sync_lic_block)
         self.assertNotIn("cmd.exe /c", sync_lic_block.lower())
         self.assertNotIn("cmd /c", sync_lic_block.lower())
@@ -876,8 +876,8 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("try {", pool_fn.split("Add-WisBenchmarkTransfer", 1)[0].splitlines()[-1] + "\n" + pool_fn.split("Add-WisBenchmarkTransfer", 1)[0])
         self.assertIn('-Level "WARN" -Component "NAS"', pool_fn)
 
-        # IMP-29: fail-fast /api/drivers/pool/bundle Timeout=15000 + ReadWriteTimeout=300000 & 4 MiB FileStream <Model>.tar kopiranje
-        self.assertIn("$req.Timeout = 15000", pool_fn)
+        # IMP-29 / v3.5.0: /api/drivers/pool/bundle Timeout=120000 + ReadWriteTimeout=300000 & 4 MiB FileStream <Model>.tar kopiranje
+        self.assertIn("$req.Timeout = 120000", pool_fn)
         self.assertIn("$req.ReadWriteTimeout = 300000", pool_fn)
         pre_fn = self.update_src.split("function Invoke-ModelDriversPreInstall", 1)[1].split("function Get-WisUpdateHubEndpoint", 1)[0]
         self.assertNotIn("Copy-Item -Path $tarArchive -Destination $localTar", pre_fn)
@@ -1259,6 +1259,89 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn('Send-FleetFinalReport -Status "COMPLETED"', before_finally)
         self.assertNotIn("Send-FleetFinalReport", after_finally, "Send-FleetFinalReport se nikada ne sme pozivati posle finally { Clear-ServisWifiSecrets } bloka")
         self.assertIn("exit 2", after_finally)
+
+    def test_36_v350_imp53_to_60_and_v350_05_06_07_contracts(self):
+        """WIS-TASK-271 & 272 (v3.5.0): Driver INF Quarantine, Staged P4B Pipeline, Delta Harvest, SMB/INI, Branding i 1:1 ISO paritet."""
+        upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
+        core_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Core.psm1").read_text(encoding="utf-8")
+        hw_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Hardware.psm1").read_text(encoding="utf-8")
+        brand_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        common_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Common.psm1").read_text(encoding="utf-8")
+        tel_ps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Telemetry.psm1").read_text(encoding="utf-8")
+        p2_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase2-Drivers.ps1").read_text(encoding="utf-8")
+        p4_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase4-Apps.ps1").read_text(encoding="utf-8")
+        p6_src = (ROOT / "UI" / "Skripte" / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+
+        # IMP-54: Bezbedni pnputil watchdog (180s) i karantin INF fajlova koji izazovu timeout ili crash
+        self.assertIn("function Invoke-SafePnpUtilAddDriver", upd_src)
+        self.assertIn("function Get-WisQuarantinedInfs", upd_src)
+        self.assertIn("function Add-WisQuarantinedInf", upd_src)
+        self.assertIn("function Confirm-WisQuarantinedInfs", upd_src)
+        self.assertIn("[INF_QUARANTINE]", upd_src)
+        self.assertIn("[int]$TimeoutSeconds = 180", upd_src)
+
+        # V350-05 & V350-06: Staged pipeline (FastNas/InstallStaged/PostRebootFinalize/DeltaHarvest), Download-Only i PnP circuit breaker
+        self.assertIn('[ValidateSet("FastNas", "InstallStaged", "PostRebootFinalize", "DeltaHarvest", "Full")]', p2_src)
+        self.assertIn("function Write-DriverStageStatus", upd_src)
+        self.assertIn("function Start-BackgroundDriverDownloadWorker", upd_src)
+        self.assertIn("function Invoke-StagedDriverInstall", upd_src)
+        self.assertIn("function Invoke-PostRebootDriverFinalize", upd_src)
+        self.assertIn("function Invoke-DeltaDriverHarvest", upd_src)
+        self.assertIn("/api/drivers/pool/delta-check", upd_src)
+        self.assertIn("$cleanModel.delta.tar.gz", upd_src)
+        self.assertIn("$consecutivePnpTimeout -ge 2", upd_src)
+        self.assertIn("phase4-sync-done.flag", p4_src)
+        self.assertIn("Start-BackgroundDriverDownloadWorker", p4_src)
+
+        # 2A: Phase6 ceka delta-harvest.lock najvise 90s STRICTLY pre Clear-ServisWifiSecrets (finally)
+        idx_finally = p6_src.find("} finally {")
+        self.assertGreater(idx_finally, 0)
+        before_finally = p6_src[:idx_finally]
+        after_finally = p6_src[idx_finally:]
+        self.assertIn("delta-harvest.lock", before_finally)
+        self.assertIn("($dhSw.Elapsed.TotalSeconds -lt 90)", before_finally)
+        self.assertNotIn("delta-harvest.lock", after_finally)
+
+        # IMP-60 & SMB Error 1219 oporavak + prioritet NAS Wifi-Servis.ini
+        self.assertIn("function Clear-WisCoreHostSmbConflicts", core_src)
+        self.assertIn("$rc1 -eq 1219", core_src)
+        self.assertIn("NAS Wifi-Servis.ini ima prioritet", upd_src)
+
+        # IMP-62 & IMP-64 & V350-04: Branding / OEM nalog guard, primarni sistemski disk i DPI delay na Basic Display Adapter
+        self.assertIn("function Resolve-WisOemBrand", brand_src)
+        self.assertIn("function Rename-WisLocalAccountToBrand", brand_src)
+        self.assertIn("max 20", brand_src)
+        self.assertIn("Microsoft Basic Display Adapter", brand_src)
+        self.assertIn("function Get-WisPrimarySystemDisk", hw_src)
+        self.assertIn("function Resolve-WisDisplayResolutionTag", hw_src)
+
+        # IMP-66 / IMP-69: WIS Install Session ID i marker u servis_deploy.log
+        self.assertIn("function Get-WisInstallSessionId", tel_ps_src)
+        self.assertIn("=== WIS_SESSION_START:", tel_ps_src)
+
+        # Opciona 1:1 parity provera sa ISO/$OEM$ (ako je ISO stablo prisutno na disku; preskace se na cistom CI checkoutu)
+        rel_ps_files = [
+            ("Skripte", "Modules", "WIS.Apps.psm1"),
+            ("Skripte", "Modules", "WIS.Branding.psm1"),
+            ("Skripte", "Modules", "WIS.Common.psm1"),
+            ("Skripte", "Modules", "WIS.Core.psm1"),
+            ("Skripte", "Modules", "WIS.Hardware.psm1"),
+            ("Skripte", "Modules", "WIS.Telemetry.psm1"),
+            ("Skripte", "Modules", "WIS.Update.psm1"),
+            ("Skripte", "Phases", "Phase2-Drivers.ps1"),
+            ("Skripte", "Phases", "Phase4-Apps.ps1"),
+            ("Skripte", "Phases", "Phase6-Finalize.ps1"),
+        ]
+        iso_setup = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup"
+        for parts in rel_ps_files:
+            ui_file = ROOT.joinpath("UI", *parts)
+            iso_file = iso_setup.joinpath(*parts)
+            if iso_file.is_file():
+                self.assertEqual(
+                    ui_file.read_bytes(),
+                    iso_file.read_bytes(),
+                    f"ISO paritet narusen za {'/'.join(parts)}",
+                )
 
 
 if __name__ == "__main__":

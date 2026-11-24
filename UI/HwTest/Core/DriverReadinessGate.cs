@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Management;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace WIS.HwTest.Core
 {
@@ -71,71 +74,163 @@ namespace WIS.HwTest.Core
                    nameOrDesc.IndexOf("Standard VGA", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private const string DriverStageStatusPath = @"C:\setup\driver-stage-status.json";
+        private const string DeployStatePath = @"C:\setup\deploy-state.json";
+
+        private static EnumerationOptions CreateWmiOptions(int timeoutMs)
+        {
+            return new EnumerationOptions
+            {
+                Timeout = TimeSpan.FromMilliseconds(timeoutMs),
+                ReturnImmediately = true,
+                Rewindable = false
+            };
+        }
+
+        private static void RunWithTimeout(Action action, int timeoutMs)
+        {
+            if (action == null) return;
+            Thread worker = new Thread(new ThreadStart(delegate
+            {
+                try { action(); }
+                catch { }
+            }));
+            worker.IsBackground = true;
+            worker.Start();
+            worker.Join(timeoutMs);
+        }
+
+        private static string ReadActiveDriverStageState()
+        {
+            try
+            {
+                if (!File.Exists(DriverStageStatusPath)) return string.Empty;
+                string json = File.ReadAllText(DriverStageStatusPath);
+                if (string.IsNullOrEmpty(json)) return string.Empty;
+                Match m = Regex.Match(json, "\"state\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase);
+                if (m.Success)
+                {
+                    return m.Groups[1].Value.Trim().ToUpperInvariant();
+                }
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        private static bool IsPostRebootFinalizePending()
+        {
+            try
+            {
+                if (!File.Exists(DeployStatePath)) return false;
+                string json = File.ReadAllText(DeployStatePath);
+                if (string.IsNullOrEmpty(json)) return false;
+                return Regex.IsMatch(json, "\"post_reboot_finalize\"\\s*:\\s*true\\b", RegexOptions.IgnoreCase);
+            }
+            catch { }
+            return false;
+        }
+
         public static DriverGateState EvaluateLocal()
         {
             DriverGateState state = new DriverGateState();
+            string stageState = ReadActiveDriverStageState();
+            if (stageState == "SEARCHING" || stageState == "DOWNLOADING" || stageState == "INSTALLING")
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.IsDriverInstallActive = true;
+                state.ReasonTitle = HwTestLocalization.PickFormat(
+                    "Preuzimanje/instalacija drajvera je u toku ({0})",
+                    "正在下载/安装驱动程序 ({0})",
+                    stageState);
+                state.ReasonDetail = HwTestLocalization.Pick(
+                    "Interaktivni testovi i konačne provere čekaju završetak instalacije drajvera i kontrolisani restart.",
+                    "交互式测试与最终检测正在等待驱动安装和受控重启完成。");
+                return state;
+            }
+
+            if (IsPostRebootFinalizePending())
+            {
+                state.IsUnlocked = false;
+                state.CanEmergencyUnlock = false;
+                state.IsDriverInstallActive = true;
+                state.HasCode14PendingReboot = true;
+                state.ReasonTitle = HwTestLocalization.Pick(
+                    "Čeka se kontrolisani restart i finalizacija drajvera",
+                    "正在等待受控重启与驱动收尾完成");
+                state.ReasonDetail = HwTestLocalization.Pick(
+                    "Drajveri čekaju kontrolisani restart pre Faze 5 kako bi se aktivirali svi uređaji.",
+                    "驱动程序正在等待阶段 5 前的受控重启以激活所有设备。");
+                return state;
+            }
+
             HashSet<string> seenEntries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            try
+            RunWithTimeout(delegate
             {
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
-                    @"root\CIMV2",
-                    "SELECT Name, Description, DeviceID, PNPClass, HardwareID, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE ConfigManagerErrorCode <> 0"))
+                try
                 {
-                    using (ManagementObjectCollection results = searcher.Get())
+                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                        new ManagementScope(@"root\CIMV2"),
+                        new SelectQuery("SELECT Name, Description, DeviceID, PNPClass, HardwareID, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE ConfigManagerErrorCode <> 0"),
+                        CreateWmiOptions(2500)))
                     {
-                        foreach (ManagementObject mo in results)
+                        using (ManagementObjectCollection results = searcher.Get())
                         {
-                            uint errCode = 0u;
-                            try
+                            foreach (ManagementObject mo in results)
                             {
-                                if (mo["ConfigManagerErrorCode"] != null)
+                                uint errCode = 0u;
+                                try
                                 {
-                                    errCode = Convert.ToUInt32(mo["ConfigManagerErrorCode"]);
+                                    if (mo["ConfigManagerErrorCode"] != null)
+                                    {
+                                        errCode = Convert.ToUInt32(mo["ConfigManagerErrorCode"]);
+                                    }
                                 }
-                            }
-                            catch { }
+                                catch { }
 
-                            if (IsAllowedErrorCode(errCode)) continue;
+                                if (IsAllowedErrorCode(errCode)) continue;
 
-                            string devId = mo["DeviceID"] != null ? mo["DeviceID"].ToString() : "";
-                            string pnpClass = mo["PNPClass"] != null ? mo["PNPClass"].ToString() : "";
-                            string[] hwIds = mo["HardwareID"] as string[];
-                            bool hasHwId = hwIds != null && hwIds.Length > 0;
+                                string devId = mo["DeviceID"] != null ? mo["DeviceID"].ToString() : "";
+                                string pnpClass = mo["PNPClass"] != null ? mo["PNPClass"].ToString() : "";
+                                string[] hwIds = mo["HardwareID"] as string[];
+                                bool hasHwId = hwIds != null && hwIds.Length > 0;
 
-                            if (IsIgnoredPnpDevice(devId, pnpClass, hasHwId)) continue;
+                                if (IsIgnoredPnpDevice(devId, pnpClass, hasHwId)) continue;
 
-                            if (errCode == 14u)
-                            {
-                                state.HasCode14PendingReboot = true;
-                            }
+                                if (errCode == 14u)
+                                {
+                                    state.HasCode14PendingReboot = true;
+                                }
 
-                            string devName = mo["Name"] != null ? mo["Name"].ToString().Trim() : "";
-                            if (string.IsNullOrEmpty(devName))
-                            {
-                                devName = mo["Description"] != null ? mo["Description"].ToString().Trim() : "";
-                            }
-                            if (string.IsNullOrEmpty(devName))
-                            {
-                                devName = !string.IsNullOrEmpty(devId) ? devId : "PnP Device";
-                            }
+                                string devName = mo["Name"] != null ? mo["Name"].ToString().Trim() : "";
+                                if (string.IsNullOrEmpty(devName))
+                                {
+                                    devName = mo["Description"] != null ? mo["Description"].ToString().Trim() : "";
+                                }
+                                if (string.IsNullOrEmpty(devName))
+                                {
+                                    devName = !string.IsNullOrEmpty(devId) ? devId : "PnP Device";
+                                }
 
-                            string entry = string.Format("{0} (Code {1})", devName, errCode);
-                            if (seenEntries.Add(devId + "|" + errCode))
-                            {
-                                state.ProblemDevices.Add(entry);
+                                string entry = string.Format("{0} (Code {1})", devName, errCode);
+                                if (seenEntries.Add(devId + "|" + errCode))
+                                {
+                                    state.ProblemDevices.Add(entry);
+                                }
                             }
                         }
                     }
                 }
-            }
-            catch { }
+                catch { }
+            }, 3500);
 
             try
             {
                 using (ManagementObjectSearcher gpuSearcher = new ManagementObjectSearcher(
-                    @"root\CIMV2",
-                    "SELECT Name, Description, PNPDeviceID FROM Win32_VideoController"))
+                    new ManagementScope(@"root\CIMV2"),
+                    new SelectQuery("SELECT Name, Description, PNPDeviceID FROM Win32_VideoController"),
+                    CreateWmiOptions(2500)))
                 {
                     using (ManagementObjectCollection gpuResults = gpuSearcher.Get())
                     {

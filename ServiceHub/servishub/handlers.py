@@ -285,7 +285,12 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             mgr = ServisHubHandler._driver_pool_instances.get(abs_pool)
             if mgr is None:
                 from servishub.drivers.pool import DriverPoolManager
-                mgr = DriverPoolManager(pool_dir=abs_pool)
+                mgr = DriverPoolManager(
+                    pool_dir=abs_pool,
+                    max_bundles_gb=getattr(self.config, "max_bundles_gb", None) if self.config else None,
+                    bundle_ttl_hours=getattr(self.config, "bundle_ttl_hours", None) if self.config else None,
+                    oem_catalog_stale_hours=getattr(self.config, "oem_catalog_stale_hours", None) if self.config else None,
+                )
                 ServisHubHandler._driver_pool_instances[abs_pool] = mgr
             return mgr
 
@@ -576,6 +581,26 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 continue
 
             cab_url = resolved.get("download_url")
+            from servishub.config import is_low_disk_for_ms_catalog
+            cache_probe_dir = getattr(self.driver_cache_mgr, "cache_dir", None) or (
+                getattr(self.config, "drivers_cache_dir", None) if self.config else None
+            )
+            min_free_gb = (
+                getattr(self.config, "ms_catalog_min_free_gb", None)
+                if (self.config and getattr(self.config, "_explicit_ms_catalog_min_free_gb", False))
+                else None
+            )
+            low_disk, free_gb, eff_thresh = is_low_disk_for_ms_catalog(cache_probe_dir, min_free_gb=min_free_gb)
+            if low_disk:
+                results.append({
+                    "hwid": hwid_str,
+                    "status": "paused_low_disk",
+                    "free_gb": round(free_gb, 2) if free_gb is not None else None,
+                    "min_free_gb": eff_thresh,
+                    "error": f"Preuzimanje iz ms_catalog pauzirano: slobodan prostor ({free_gb:.2f} GB) < {eff_thresh:.1f} GB.",
+                })
+                continue
+
             print(f"  [*] [DOWNLOAD] Preuzimam zvanični CAB drajver sa Microsoft CDN-a: {resolved.get('title')} ({str(cab_url)[:70]}...)...")
             job = self._start_or_join_driver_download_job(cache_scope, hwid_str, clean_hwids, resolved)
             job["event"].wait(timeout=wait_sec)
@@ -1886,6 +1911,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     "X-Model-SHA256": bundle.get("sha256") or "",
                     "X-Driver-Pool-Count": str(bundle.get("package_count") or 0),
                     "X-Driver-Pool-Sources": ",".join(bundle.get("sources") or []),
+                    "X-Driver-Pool-Cache-Hit": "true" if bundle.get("cache_hit") else "false",
                 }
                 self._stream_file(
                     bundle["bundle_path"],
@@ -2028,6 +2054,30 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             self._send_json(res, 200)
             return
 
+        if path == "/api/drivers/pool/delta-check":
+            if not self._require_client_upload_token():
+                return
+            if not isinstance(payload, dict):
+                self._send_json({"error": "Telo zahteva mora biti JSON objekat"}, 400)
+                return
+            model_val = str(payload.get("model") or "").strip()
+            os_build = str(payload.get("os_build") or "").strip()
+            packages_val = payload.get("packages")
+            if packages_val is not None and not isinstance(packages_val, list):
+                self._send_json({"error": "Polje 'packages' mora biti lista objekata."}, 400)
+                return
+            pool_mgr = self._get_driver_pool_mgr()
+            try:
+                res = pool_mgr.delta_check(
+                    model=model_val,
+                    packages=packages_val or [],
+                    os_build=os_build,
+                )
+                self._send_json(res, 200)
+            except Exception as ex:
+                self._send_json({"error": f"Greška pri delta-check proveri: {ex}"}, 500)
+            return
+
         if path == "/api/drivers/pool/notify-harvest":
             if not self._require_client_upload_token():
                 return
@@ -2043,11 +2093,27 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 clean_m = sanitize_model_pack_name(str(payload.get("model")))
                 if clean_m and clean_m != "Unknown_Model":
                     target_archive = f"{clean_m}.tar"
+                    if packs_dir and os.path.isdir(packs_dir):
+                        for cand_ext in (".tar.gz", ".tgz", ".tar"):
+                            cand_name = f"{clean_m}{cand_ext}"
+                            if os.path.isfile(os.path.join(packs_dir, cand_name)):
+                                target_archive = cand_name
+                                break
             sync_mode = bool(payload.get("sync", False))
+            delete_ingested = bool(
+                payload.get(
+                    "delete_ingested",
+                    getattr(self.config, "delete_ingested_archives", True) if self.config else True,
+                )
+            )
             pool_mgr = self._get_driver_pool_mgr()
             if sync_mode:
                 try:
-                    res = pool_mgr.scan_and_ingest_archives(packs_dir, target_archive=target_archive or None)
+                    res = pool_mgr.scan_and_ingest_archives(
+                        packs_dir,
+                        target_archive=target_archive or None,
+                        delete_ingested=delete_ingested,
+                    )
                     self._send_json(res, 200)
                 except Exception as ex:
                     self._send_json({"error": f"Greška pri skeniranju Harvest arhiva: {ex}"}, 500)
@@ -2057,6 +2123,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 pool_mgr.scan_and_ingest_archives,
                 packs_dir,
                 target_archive=target_archive or None,
+                delete_ingested=delete_ingested,
             )
             self._send_json({"status": "accepted", "job": job, "target_archive": target_archive or None}, 202)
             return
@@ -2514,6 +2581,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     })
                     if merged_hw:
                         self.fleet_store.fleet_devices[target_key]["hw"] = merged_hw
+                    if payload.get("install_session_id"):
+                        self.fleet_store.fleet_devices[target_key]["install_session_id"] = str(payload["install_session_id"]).strip()
                     self.fleet_store.fleet_devices[target_key].update(diagnostics_contract(payload))
                     if hasattr(self.fleet_store, "cleanup_duplicate_devices_locked"):
                         self.fleet_store.cleanup_duplicate_devices_locked(
@@ -2756,7 +2825,13 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             lines = payload.get("lines") or []
             if isinstance(lines, str):
                 lines = [lines]
-            appended = self.fleet_store.record_logs(comp_name, lines, serial_number=serial_num)
+            install_sid = str(payload.get("install_session_id") or "").strip() or None
+            appended = self.fleet_store.record_logs(
+                comp_name,
+                lines,
+                serial_number=serial_num,
+                install_session_id=install_sid,
+            )
             self._send_json({"status": "ok", "appended": appended})
             return
 

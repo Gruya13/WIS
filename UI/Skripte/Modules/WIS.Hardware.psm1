@@ -8,6 +8,176 @@
 #>
 Import-Module (Join-Path $PSScriptRoot 'WIS.StatusContract.psm1')
 
+function Get-WisPrimarySystemDisk {
+    <#
+    .SYNOPSIS
+        Vraca primarni interni fizicki disk sa prioritetom za sistemsku particiju (%SystemDrive% / C:).
+    #>
+    $sysDiskNum = $null
+    try {
+        $sysDriveLetter = if ($env:SystemDrive -and $env:SystemDrive.Length -ge 1) { $env:SystemDrive.Substring(0, 1) } else { "C" }
+        $sysPart = Get-Partition -DriveLetter $sysDriveLetter -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($sysPart -and $null -ne $sysPart.DiskNumber) {
+            $sysDiskNum = [int]$sysPart.DiskNumber
+        }
+    } catch {}
+
+    $excludedBusTypes = @('USB', 'iSCSI', 'SD', 'MMC', 'Virtual', 'File Backed Virtual', 'Spaces')
+    $pDisks = @()
+    try {
+        $allPhysical = @(Get-PhysicalDisk -ErrorAction SilentlyContinue)
+        $pDisks = @($allPhysical | Where-Object {
+            ($excludedBusTypes -notcontains "$($_.BusType)") -and ("$($_.MediaType)" -ne 'Removable')
+        })
+        if ($null -ne $sysDiskNum) {
+            $osPhys = @($allPhysical | Where-Object { "$($_.DeviceId)" -eq "$sysDiskNum" })
+            if ($osPhys.Count -gt 0 -and -not ($pDisks | Where-Object { "$($_.DeviceId)" -eq "$sysDiskNum" })) {
+                $pDisks = @($osPhys) + @($pDisks)
+            }
+        }
+    } catch {}
+
+    if ($pDisks -and $pDisks.Count -gt 0) {
+        $primary = $pDisks | Sort-Object -Property `
+            @{Expression={ if ($null -ne $sysDiskNum -and "$($_.DeviceId)" -eq "$sysDiskNum") { 0 } else { 1 } }}, `
+            @{Expression={ if ("$($_.BusType)" -eq 'NVMe') { 0 } else { 1 } }}, `
+            Size -Descending | Select-Object -First 1
+        if ($primary) {
+            return [PSCustomObject]@{
+                Source       = "PhysicalDisk"
+                PhysicalDisk = $primary
+                DiskDrive    = $null
+                IsSystemDisk = ($null -ne $sysDiskNum -and "$($primary.DeviceId)" -eq "$sysDiskNum")
+            }
+        }
+    }
+
+    try {
+        $allDrives = @(Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue)
+        $filteredDrives = @($allDrives | Where-Object {
+            $iface = "$($_.InterfaceType)"
+            $mType = "$($_.MediaType)"
+            $pnpId = "$($_.PNPDeviceID)"
+            ($iface -notmatch '^(USB|1394)$') -and
+            ($mType -notmatch 'Removable|External') -and
+            ($pnpId -notmatch '^(USBSTOR|USB|SD|SWD)\\|VEN_MSFT&PROD_VIRTUAL')
+        })
+        $dDrive = $null
+        if ($null -ne $sysDiskNum) {
+            $dDrive = $filteredDrives | Where-Object { [int]$_.Index -eq $sysDiskNum } | Select-Object -First 1
+            if (-not $dDrive) {
+                $dDrive = $allDrives | Where-Object { [int]$_.Index -eq $sysDiskNum } | Select-Object -First 1
+            }
+        }
+        if (-not $dDrive) {
+            $dDrive = $filteredDrives | Sort-Object -Property @{Expression={ if ("$($_.InterfaceType)" -eq 'NVMe' -or "$($_.Model)" -match 'NVMe') { 0 } else { 1 } }}, Size -Descending | Select-Object -First 1
+        }
+        if ($dDrive) {
+            return [PSCustomObject]@{
+                Source       = "Win32_DiskDrive"
+                PhysicalDisk = $null
+                DiskDrive    = $dDrive
+                IsSystemDisk = ($null -ne $sysDiskNum -and [int]$dDrive.Index -eq $sysDiskNum)
+            }
+        }
+    } catch {}
+
+    return $null
+}
+
+function Resolve-WisDisplayResolutionTag {
+    param(
+        [int]$Width,
+        [int]$Height
+    )
+    if ($Width -le 0 -or $Height -le 0) { return "Panel" }
+    $lw = [math]::Max($Width, $Height)
+    $lh = [math]::Min($Width, $Height)
+    $key = "${lw}x${lh}"
+    switch ($key) {
+        '1280x720'  { return 'HD' }
+        '1280x800'  { return 'HD' }
+        '1366x768'  { return 'HD' }
+        '1440x900'  { return 'HD+' }
+        '1536x1024' { return 'HD+' }
+        '1600x900'  { return 'HD+' }
+        '1680x1050' { return 'HD+' }
+        '1920x1080' { return 'FHD' }
+        '1800x1200' { return 'FHD+' }
+        '1920x1200' { return 'FHD+' }
+        '1920x1280' { return 'FHD+' }
+        '2160x1440' { return 'FHD+' }
+        '2240x1400' { return 'FHD+' }
+        '2256x1504' { return 'FHD+' }
+        '2304x1536' { return 'FHD+' }
+        '2400x1600' { return 'FHD+' }
+        '2496x1664' { return 'QHD' }
+        '2560x1440' { return 'QHD' }
+        '2560x1600' { return 'QHD+' }
+        '2736x1824' { return 'QHD+' }
+        '2880x1620' { return 'QHD+' }
+        '2880x1800' { return 'QHD+' }
+        '2880x1920' { return 'QHD+' }
+        '3000x2000' { return 'QHD+' }
+        '3072x1920' { return 'QHD+' }
+        '3200x1800' { return 'QHD+' }
+        '3200x2000' { return 'QHD+' }
+        '3240x2160' { return 'QHD+' }
+        '3456x2160' { return 'QHD+' }
+        '3840x2160' { return '4K UHD' }
+        '3840x2400' { return '4K UHD+' }
+    }
+    if ($lw -lt 1440) { return 'HD' }
+    if ($lw -lt 1800) { return 'HD+' }
+    if ($lw -lt 2496) { return 'FHD+' }
+    if ($lw -lt 3840) { return 'QHD+' }
+    if ($lw -eq 3840 -and $lh -le 2160) { return '4K UHD' }
+    return '4K UHD+'
+}
+
+function Resolve-WisOemBrandInternal {
+    param(
+        [string]$Manufacturer = "",
+        [string]$Model = "",
+        [string]$SystemFamily = "",
+        [string]$BoardName = ""
+    )
+    $m = if ($Manufacturer) { $Manufacturer.Trim().ToUpperInvariant() } else { "" }
+    $mdl = if ($Model) { $Model.Trim().ToUpperInvariant() } else { "" }
+    $fam = if ($SystemFamily) { $SystemFamily.Trim().ToUpperInvariant() } else { "" }
+    $brd = if ($BoardName) { $BoardName.Trim().ToUpperInvariant() } else { "" }
+
+    if (($m -match 'MICROSOFT' -and ($mdl -match 'SURFACE' -or $fam -match 'SURFACE')) -or ($mdl -match '^SURFACE\b')) {
+        return "Surface"
+    }
+    if ($m -match 'MICROSOFT' -and ($mdl -match 'VIRTUAL MACHINE' -or $fam -match 'VIRTUAL MACHINE')) {
+        return "OEM"
+    }
+
+    $probe = if ($m -and $m -notmatch 'TO BE FILLED|SYSTEM MANUFACTURER|INNOTEK|VMWARE|QEMU') { $m } else { $brd }
+    if (-not $probe) { return "OEM" }
+
+    if ($probe -match 'HP|HEWLETT')         { return "HP" }
+    if ($probe -match 'DELL')               { return "DELL" }
+    if ($probe -match 'LENOVO')             { return "LENOVO" }
+    if ($probe -match 'ASUS|ASUSTEK')       { return "ASUS" }
+    if ($probe -match 'ACER')               { return "ACER" }
+    if ($probe -match 'TOSHIBA|DYNABOOK')   { return "TOSHIBA" }
+    if ($probe -match 'FUJITSU')            { return "FUJITSU" }
+    if ($probe -match 'MSI|MICRO-STAR')     { return "MSI" }
+    if ($probe -match 'GIGABYTE')           { return "GIGABYTE" }
+    if ($probe -match 'SAMSUNG')            { return "SAMSUNG" }
+    if ($probe -match 'HUAWEI')             { return "HUAWEI" }
+    if ($probe -match 'RAZER')              { return "RAZER" }
+    if ($probe -match '(^|\b)LG(\b|$)|LG ELECTRONICS') { return "LG" }
+    if ($probe -match 'APPLE')              { return "APPLE" }
+    if ($probe -match 'SONY')               { return "SONY" }
+    if ($probe -match 'PANASONIC')          { return "PANASONIC" }
+    if ($probe -match 'FRAMEWORK')          { return "Framework" }
+
+    return "OEM"
+}
+
 
 function Get-HardwareDiagnosticsInfo {
     $info = @{}
@@ -395,15 +565,12 @@ function Get-HardwareDiagnosticsInfo {
     $ramSpeedStr = if ($ramSpeed -gt 0) { " $ramSpeed MHz" } else { "" }
     $ramStr = "$ramTotalGB GB $ramType$ramSpeedStr ($ramChannel)"
 
-    # 5. Disk / Skladiste (Primarni NVMe / SATA SSD)
+    # 5. Disk / Skladiste (Primarni NVMe / SATA SSD sa prioritetom OS diska C:)
     $diskStr = "Nije detektovan"
     try {
-        $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -ne 'USB' -and $_.MediaType -ne 'Removable' }
-        if (-not $pDisks) {
-            $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-        }
-        if ($pDisks) {
-            $primary = $pDisks | Sort-Object -Property @{Expression={ if ($_.BusType -eq 'NVMe') { 0 } else { 1 } }}, Size -Descending | Select-Object -First 1
+        $sysDisk = Get-WisPrimarySystemDisk
+        if ($sysDisk -and $sysDisk.Source -eq "PhysicalDisk" -and $sysDisk.PhysicalDisk) {
+            $primary = $sysDisk.PhysicalDisk
             $dModel = ($primary.FriendlyName -replace '\s+', ' ').Trim()
             $dBus = if ($primary.BusType -and $primary.BusType -ne 'Unknown') { "$($primary.BusType) " } else { "" }
             $dMedia = if ($primary.MediaType -match 'SSD|NVMe') { "SSD" } elseif ($primary.MediaType -match 'HDD') { "HDD" } else { "" }
@@ -416,12 +583,10 @@ function Get-HardwareDiagnosticsInfo {
                     else { "$dSizeGB GB" }
             $dHealth = if ($primary.HealthStatus) { " [$($primary.HealthStatus)]" } else { "" }
             $diskStr = "$dModel $dCap $dBus$dMedia$dHealth".Trim()
-        } else {
-            $dDrive = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceType -ne 'USB' } | Select-Object -First 1
-            if ($dDrive) {
-                $sz = [math]::Round(([double]$dDrive.Size / 1GB), 0)
-                $diskStr = "$($dDrive.Model) ${sz}GB ($($dDrive.InterfaceType))"
-            }
+        } elseif ($sysDisk -and $sysDisk.Source -eq "Win32_DiskDrive" -and $sysDisk.DiskDrive) {
+            $dDrive = $sysDisk.DiskDrive
+            $sz = [math]::Round(([double]$dDrive.Size / 1GB), 0)
+            $diskStr = "$($dDrive.Model) ${sz}GB ($($dDrive.InterfaceType))"
         }
     } catch {}
 
@@ -581,17 +746,9 @@ function Get-HardwareDiagnosticsInfo {
             elseif ($dInch -gt 0) { $diagStr = "$dInch`" " }
         }
 
-        $tag = switch ("$w`x$h") {
-            '1920x1080' { 'FHD' }
-            '1920x1200' { 'FHD+' }
-            '2560x1440' { 'QHD' }
-            '2560x1600' { 'QHD+' }
-            '3840x2160' { '4K UHD' }
-            '1366x768'  { 'HD' }
-            default     { if ($w -and $h) { "$w`x$h" } else { "Panel" } }
-        }
+        $tag = if ($w -and $h) { Resolve-WisDisplayResolutionTag -Width ([int]$w) -Height ([int]$h) } else { "Panel" }
         $hzStr = if ($hz -and $hz -gt 0) { " @ ${hz}Hz" } else { "" }
-        $resPart = if ($w -and $h) { " ($w`x$h$hzStr)" } else { "" }
+        $resPart = if ($w -and $h -and $tag -ne "$w`x$h") { " ($w`x$h$hzStr)" } elseif ($w -and $h -and $hzStr) { " ($($hzStr.Trim()))" } else { "" }
         $dispStr = "$dispModel • $diagStr$tag$resPart • $dispNits nits • $dispGamut • $panelType".Trim()
     } catch {}
 
@@ -975,29 +1132,12 @@ function Get-PnpMissingDriversDetail {
 
 function Get-HardwareBrand {
     param($HwInfo)
-    if (-not $HwInfo) { return "USER" }
-    $raw = $HwInfo.Manufacturer
-    if (-not $raw -or $raw -match 'To Be Filled|System manufacturer|innotek|VMware|QEMU') {
-        $raw = $HwInfo.BoardName
-    }
-    $brand = switch -Regex ($raw) {
-        'Dell'          { 'DELL' }
-        'HP|Hewlett'    { 'HP' }
-        'ASUS|ASUSTeK'  { 'ASUS' }
-        'Lenovo'        { 'LENOVO' }
-        'Acer'          { 'ACER' }
-        'MSI|Micro-Star'{ 'MSI' }
-        'Gigabyte'      { 'GIGABYTE' }
-        'Toshiba|Dynabook' { 'TOSHIBA' }
-        'Samsung'       { 'SAMSUNG' }
-        'Sony'          { 'SONY' }
-        'Apple'         { 'APPLE' }
-        default {
-            $c = ($raw -replace '[^a-zA-Z0-9]', ' ').Trim().Split(' ')[0].ToUpper()
-            if ($c.Length -ge 2) { $c } else { 'USER' }
-        }
-    }
-    return $brand
+    if (-not $HwInfo) { return "OEM" }
+    $mfg = if ($HwInfo.Manufacturer) { [string]$HwInfo.Manufacturer } else { "" }
+    $mdl = if ($HwInfo.Model) { [string]$HwInfo.Model } else { "" }
+    $fam = if ($HwInfo.SystemFamily) { [string]$HwInfo.SystemFamily } else { "" }
+    $brd = if ($HwInfo.BoardName) { [string]$HwInfo.BoardName } else { "" }
+    return (Resolve-WisOemBrandInternal -Manufacturer $mfg -Model $mdl -SystemFamily $fam -BoardName $brd)
 }
 
 function Get-HardwareHealthStatus {
@@ -1034,23 +1174,18 @@ function Get-HardwareHealthStatus {
     } catch {}
 
     try {
-        $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue | Where-Object { $_.BusType -ne 'USB' -and $_.MediaType -ne 'Removable' }
-        if (-not $pDisks) {
-            $pDisks = Get-PhysicalDisk -ErrorAction SilentlyContinue
-        }
-        if ($pDisks) {
-            $primary = $pDisks | Sort-Object -Property @{Expression={ if ($_.BusType -eq 'NVMe') { 0 } else { 1 } }}, Size -Descending | Select-Object -First 1
+        $sysDisk = Get-WisPrimarySystemDisk
+        if ($sysDisk -and $sysDisk.Source -eq "PhysicalDisk" -and $sysDisk.PhysicalDisk) {
+            $primary = $sysDisk.PhysicalDisk
             $diskModel = ($primary.FriendlyName -replace '\s+', ' ').Trim()
             if ($primary.HealthStatus) {
                 $diskHealthStatus = "$($primary.HealthStatus)"
             }
-        } else {
-            $dDrive = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceType -ne 'USB' } | Select-Object -First 1
-            if ($dDrive) {
-                $diskModel = ($dDrive.Model -replace '\s+', ' ').Trim()
-                if ($dDrive.Status -and $dDrive.Status -ne "OK") {
-                    $diskHealthStatus = "Warning"
-                }
+        } elseif ($sysDisk -and $sysDisk.Source -eq "Win32_DiskDrive" -and $sysDisk.DiskDrive) {
+            $dDrive = $sysDisk.DiskDrive
+            $diskModel = ($dDrive.Model -replace '\s+', ' ').Trim()
+            if ($dDrive.Status -and $dDrive.Status -ne "OK") {
+                $diskHealthStatus = "Warning"
             }
         }
     } catch {}

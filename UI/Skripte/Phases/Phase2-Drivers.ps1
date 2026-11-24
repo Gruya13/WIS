@@ -10,7 +10,9 @@
 [CmdletBinding()]
 param(
     [string]$LocalSetupDir = "C:\setup",
-    [switch]$SkipWindowsUpdate
+    [switch]$SkipWindowsUpdate,
+    [ValidateSet("FastNas", "InstallStaged", "PostRebootFinalize", "DeltaHarvest", "Full")]
+    [string]$Stage = "FastNas"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,8 +76,8 @@ try {
     if (Get-Command Start-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
         Start-WisPhaseBenchmark -Phase 2 -PhaseName "Drajveri" -LocalSetupDir $LocalSetupDir | Out-Null
     }
-    Send-IpcProgress -Progress 5 -Phase 2 -PhaseName "Drajveri" -SubPhase "Inicijalizacija" -StatusMessage "Skeniranje hardverskih komponenti i drajvera..."
-    Invoke-Phase2Drivers -LocalSetupDir $LocalSetupDir -SkipWindowsUpdate:$SkipWindowsUpdate
+    Send-IpcProgress -Progress 5 -Phase 2 -PhaseName "Drajveri" -SubPhase "Inicijalizacija" -StatusMessage "Skeniranje hardverskih komponenti i drajvera (Stage: $Stage)..."
+    Invoke-Phase2Drivers -LocalSetupDir $LocalSetupDir -SkipWindowsUpdate:$SkipWindowsUpdate -Stage $Stage
     if (Get-Command Complete-WisPhaseBenchmark -ErrorAction SilentlyContinue) {
         Complete-WisPhaseBenchmark -Phase 2 -Status "COMPLETED" -LocalSetupDir $LocalSetupDir | Out-Null
     }

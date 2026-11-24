@@ -3883,11 +3883,11 @@ function Wait-OfficeInstallationReady {
                  (Test-Path "HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\ProductReleaseIDs") -or `
                  (Test-Path "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\ClickToRun\ProductReleaseIDs")
         if ($regOk) {
-            Start-Sleep -Seconds 3
+            Start-Sleep -Seconds 1
             return $true
         }
-        Start-Sleep -Seconds 2
-        $elapsed += 2
+        Start-Sleep -Seconds 1
+        $elapsed += 1
     }
     return $false
 }
@@ -5212,7 +5212,7 @@ function Invoke-Phase4Apps {
             (Join-Path $LocalSetupDir "Skripte\Modules\WIS.StepGuard.psm1"),
             "C:\setup\Skripte\Modules\WIS.StepGuard.psm1"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($stepGuardMod) { Import-Module $stepGuardMod -Force -ErrorAction SilentlyContinue }
+        if ($stepGuardMod) { Import-Module $stepGuardMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
     }
 
     # Emitovanje liste svih koraka u stanju WAIT da bi UI odmah iscrtao listu koraka
@@ -5738,9 +5738,11 @@ function Invoke-Phase4Apps {
             $acroMsp = Join-Path $acroDir "AcrobatDCx64Upd2400120604.msp"
             $setupExe = Join-Path $acroDir "Setup.exe"
 
-            Get-ChildItem -Path $acroDir -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
-                Unblock-File -Path $_.FullName -ErrorAction SilentlyContinue
-                Remove-Item -Path "$($_.FullName):Zone.Identifier" -ErrorAction SilentlyContinue
+            foreach ($rootAcroFile in @($setupExe, $acroMsi, $acroMsp)) {
+                if ($rootAcroFile -and (Test-Path -LiteralPath $rootAcroFile -PathType Leaf -ErrorAction SilentlyContinue)) {
+                    Unblock-File -LiteralPath $rootAcroFile -ErrorAction SilentlyContinue
+                    Remove-Item -LiteralPath "$($rootAcroFile):Zone.Identifier" -ErrorAction SilentlyContinue
+                }
             }
 
             $null = Wait-MsiMutexAvailable -TimeoutSec 180
@@ -5759,7 +5761,7 @@ function Invoke-Phase4Apps {
 
                 $swWait = [System.Diagnostics.Stopwatch]::StartNew()
                 while ($swWait.Elapsed.TotalSeconds -lt 300) {
-                    Start-Sleep -Seconds 3
+                    Start-Sleep -Seconds 1
                     $hasAcroNow = (& $acroExeCheck)
                     $setupActive = [bool]($setupProc -and (-not $setupProc.HasExited))
                     $msiActive = [bool](Get-Process -Name "msiexec" -ErrorAction SilentlyContinue)
@@ -6080,15 +6082,15 @@ function Invoke-Phase4Apps {
                 }
 
                 if ($wordNow -and $regNow -and (-not $setupActive)) {
-                    Start-Sleep -Seconds 3
+                    Start-Sleep -Seconds 1
                     break
                 }
                 if ($wordNow -and (-not $setupActive) -and ($c2rWait -ge 10)) {
-                    Start-Sleep -Seconds 2
+                    Start-Sleep -Seconds 1
                     break
                 }
-                Start-Sleep -Seconds 2
-                $c2rWait += 2
+                Start-Sleep -Seconds 1
+                $c2rWait += 1
             }
         }
 
@@ -6467,8 +6469,17 @@ function Invoke-Phase4Apps {
         throw "REALITY CHECK GREŠKA: Instalacija aplikacija nije kompletna! Fizički nedostaju na disku: $missingStr"
     }
 
-    # 11. Zavrsni status i perzistencija stanja u deploy-state.json
+    # 11. Zavrsni status (sinhronizacija License statusa pre slanja zavrsnog statusa) i perzistencija stanja u deploy-state.json
     try {
+        if (-not $appsStatusMap.ContainsKey("License") -or [string]::IsNullOrWhiteSpace($appsStatusMap["License"]) -or $appsStatusMap["License"] -eq "RUNNING") {
+            $appsStatusMap["License"] = "WARN"
+            if (Test-Path -LiteralPath (Join-Path $LocalSetupDir "license-status.json") -ErrorAction SilentlyContinue) {
+                $appsStatusMap["License"] = "OK"
+            }
+            if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
+                Send-IpcAppUpdate -AppId "License" -Status $appsStatusMap["License"] -Detail "Završna sinhronizacija"
+            }
+        }
         if (-not $preservePhase -and (Get-Command Send-IpcStatus -ErrorAction SilentlyContinue)) {
             Send-IpcStatus -Phase 4 -Progress 98 -SubPhase "Završna verifikacija" -StatusMessage "Svi korisnički programi su obrađeni i verifikovani na disku." -Apps $appsStatusMap
         }

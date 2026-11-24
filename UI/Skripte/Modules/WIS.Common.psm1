@@ -1181,7 +1181,20 @@ function Start-WisPhaseBenchmark {
         if ($phases.Contains($key)) {
             $prev = $phases[$key]
             if ($null -ne $prev["runs"]) { $prevRuns = [int]$prev["runs"] }
-            if ($null -ne $prev["duration_sec"]) { $prevDur = [double]$prev["duration_sec"] }
+            if ($null -ne $prev["duration_sec"] -and [double]$prev["duration_sec"] -gt 0.0) {
+                $prevDur = [double]$prev["duration_sec"]
+            } elseif ($null -ne $prev["prev_duration_sec"] -and [double]$prev["prev_duration_sec"] -gt 0.0) {
+                $prevDur = [double]$prev["prev_duration_sec"]
+            }
+            if ($prevDur -le 0.0 -and "$($prev['status'])" -eq "RUNNING" -and $prev["last_started_at"]) {
+                try {
+                    $prevStartDt = [DateTime]::Parse("$($prev['last_started_at'])", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
+                    $elapsedPrev = ([DateTime]::UtcNow - $prevStartDt).TotalSeconds
+                    if ($elapsedPrev -ge 1.0 -and $elapsedPrev -le 7200.0) {
+                        $prevDur = [math]::Round($elapsedPrev, 2)
+                    }
+                } catch {}
+            }
             if ($prev["first_started_at"]) { $firstStarted = [string]$prev["first_started_at"] }
             if (-not $effName -and $prev["name"]) { $effName = [string]$prev["name"] }
         }
@@ -1194,7 +1207,7 @@ function Start-WisPhaseBenchmark {
             completed_at      = ""
             status            = "RUNNING"
             runs              = ($prevRuns + 1)
-            duration_sec      = 0.0
+            duration_sec      = $prevDur
             prev_duration_sec = $prevDur
         }
 
@@ -1397,6 +1410,9 @@ function Get-WisBenchmarkSummary {
             if ($null -ne $pEntry["duration_sec"]) {
                 $pSec = [double]$pEntry["duration_sec"]
             }
+            if ($null -ne $pEntry["prev_duration_sec"] -and [double]$pEntry["prev_duration_sec"] -gt $pSec) {
+                $pSec = [double]$pEntry["prev_duration_sec"]
+            }
             if ($pSec -le 0.0 -and "$($pEntry['status'])" -eq "RUNNING" -and $pEntry["last_started_at"]) {
                 try {
                     $dtStart = [DateTime]::Parse("$($pEntry['last_started_at'])", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind).ToUniversalTime()
@@ -1406,7 +1422,7 @@ function Get-WisBenchmarkSummary {
             }
         }
 
-        if ($pSec -le 0.0 -and $null -ne $journalSteps) {
+        if ($null -ne $journalSteps) {
             $prefix = "P$pNum."
             $sumStepMs = 0
             foreach ($sp in $journalSteps.PSObject.Properties) {
@@ -1415,7 +1431,10 @@ function Get-WisBenchmarkSummary {
                 }
             }
             if ($sumStepMs -gt 0) {
-                $pSec = [math]::Max(1.0, ($sumStepMs / 1000.0))
+                $journalSec = [math]::Max(1.0, ($sumStepMs / 1000.0))
+                if ($journalSec -gt $pSec) {
+                    $pSec = $journalSec
+                }
             }
         }
 

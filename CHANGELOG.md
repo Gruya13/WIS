@@ -4,6 +4,36 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.0] / ServiceHub [v3.7.0] — 2026-11-24
+
+### Orkestracija Faza 4→4B→5, Async Delta Harvest, Storage LRU Kvote, Progresivni Prikaz Ekrana \& UI Responsiveness (`WIS-TASK-271`, `WIS-TASK-272`, `V350-01`–`V350-08`, `IMP-53`–`IMP-69`, `[SECURITY GREEN]`)
+
+> [!NOTE]
+> Status: implementacija, unit/ugovorni testovi (`ServiceHub/tests/test_v350_regressions.py` — 10 testova, `10/10 OK` po bezbednosnom auditu) i bezbednosni audit `[SECURITY GREEN]` su završeni. QA, CI, release i TrueNAS `4A` deploy slede u narednim koracima i ovde se NE vode kao završeni.
+
+#### Ispravke (`V350-01`–`V350-08`)
+- **`V350-01` — Lažni `GPU` `FAIL` / `WARNING` iz pre-driver checkpointa i zastareo `FAIL` na Završnom kartonu:** `HandleInterimReboot()` snima checkpoint samo ako postoji stvarno završen test; `IsPassivePreliminary` oznaka u `ResultModel.cs`; `RebuildOverviewAlerts()` se zove iz setera `IsHwTestFinished`/`HwTestOverallStatus`/`HwTestSummaryText`, iz `OnEmbeddedHwTestReportSaved()` i pred `IsCompleted = true` (`SyncFinalReportBeforeCompletion()`).
+- **`V350-02` — Pogrešna detekcija tipa/modela skladišta:** `DetectStorage()` daje prioritet OS disku (`C:`), čita `MSFT_PhysicalDisk` (`BusType`/`MediaType`) i strogo isključuje USB/1394/Removable/External/virtuelne diskove.
+- **`V350-03`/`V350-05` — Stabilnost Faze 2 (WU/PnP) i NAS `[WindowsUpdate] Mode`:** NAS prioritet za `Mode` (`IMP-60`), SMB `1219` čišćenje isključivo za konkretan host (bez `cmd.exe /c`), `INF_QUARANTINE` logovi bez tajni.
+- **`V350-04` — Rezolucija ekrana:** `ClassifyResolution(w, h)` mapirano po Opciji A (`HD / HD+ / FHD / FHD+ / QHD / QHD+ / 4K UHD / 4K UHD+`; uklonjeni `2K`, `2.2K`, `3K`, `3.2K`, `3.5K`, `WXGA*`, `WSXGA+`); telemetrija šalje `hw.display` (sync sa ServiceHub JSON/Markdown izveštajem).
+- **`V350-06` — Novi tok faza (`3A`, 1 kontrolisani reboot):** `Faza 1 → 2A (FastNas) → 3 (bez restarta) → 4 → čekanje driver-stage-status.json (max 15 min / 900 s) → 4B (InstallStaged) → jedan HandleInterimReboot() → post-reboot finalize (<15 s) → Faza 5 → 6`; `PollDriverStageStatusFile()`; `LocalizationService` simetrično `sr/en/zh`.
+- **`V350-07` — Aktivacija Windows/Office van `UPOZORENJA`:** `License`, `P4.Activation`, `P4.License` izuzeti iz `RebuildOverviewAlerts()` i iz `NEEDS_SERVICE` okidača u `reports.py`.
+- **`V350-08` — Zamrzavanje WPF UI niti (`WIS.UI is not responding`):** termalni tajmer van UI niti (single-flight `Interlocked`), keširan `DriverReadinessGate` sa asinhronim osvežavanjem i `1500 ms` debounce za `RefreshHardwareProbeAfterDrivers()`, WMI timeouti `2500 ms` (+ worker timeout `3500 ms`) u `HardwareProbe`, `DriverReadinessGate`, `AutoHardwareDiagnostics`.
+
+#### Unapređenja (`IMP-53`–`IMP-69`)
+- **Driver Staged P4B pipeline:** drajveri se pronalaze/preuzimaju u Fazi 4 (`SEARCHING`/`DOWNLOADING`/`INSTALLING` u `C:\setup\driver-stage-status.json`), a instaliraju u Fazi `4B`; `DriverReadinessGate` ostaje zaključan do kraja instalacije i post-reboot finalizacije.
+- **`2A` Async Delta Harvest u Fazi 5:** pozadinski `DeltaHarvest` posle reboota (`delta-harvest.lock`, čekanje do `90 s` unutar `try` u `Phase6-Finalize.ps1`); ServiceHub endpoint `/api/drivers/pool/delta-check` (klijentski upload token, fail-closed `hmac.compare_digest`) sa notify/harvest `tgz` i bundle cache hit.
+- **`3A` Jedan kontrolisani reboot + `15 min` max wait** (vidi `V350-06`).
+- **`4A` Storage LRU kvote (`IMP-63`, `IMP-68`):** `bundles <= 12 GB / 24h`, `drivers_cache <= 25 GB` (LRU, ignoriše symlinkove i aktivne `.tmp`/`.part`/`.lock`); `Archives/` se briše tek posle uspešnog SHA-256 ingesta i `save_index`; `ms_catalog` pauza `paused_low_disk` ispod `20 GB` slobodnog prostora; OEM katalozi stariji od `72 h` se osvežavaju (`IMP-62`); plan TrueNAS remedijacije dataset-a `TK_NAS/WIS_Cache` (vidi wiki).
+- **`5A` Progresivni prikaz ekrana:** `DetectDisplay()` + `RefreshPeripheralsAfterDrivers()` posle drajvera i sync `hw.display` ka ServiceHub-u.
+- **`IMP-56` / `IMP-69`:** live log tail i izolacija instalacione sesije (`C:\setup\install-session-id.txt` → `install_session_id` u heartbeat, `/api/log`, `/report`).
+- **`IMP-66`:** stari log-error zapisi se filtriraju iz čistog `COMPLETED` izveštaja.
+- **`IMP-67`:** aktivno vreme faze (`WaitForPhaseProcessExitWithActiveTime`) bez pauza.
+- **Bezbednost:** `Rename-WisLocalAccountToBrand` validacija (dužina `<= 20`, zabranjeni znaci, provera `COMPUTERNAME`); `_extract_archive_safely` odbija symlink/hardlink/device, `..` i prekoračenje limita; admin token na prune/migrate/ingest/sync/burn rutama.
+- **Verzije:** `WIS 3.5.0`, `ServiceHub 3.7.0` (`version.json`, `AssemblyInfo.cs`, `version.py`).
+
+---
+
 ## [v3.4.4] / ServiceHub [v3.6.4] — 2026-11-23
 
 ### Drajver Kapija za Interaktivne Testove, Adaptivni CPU Stres, Perzistencija Testova, Tiho Pozadinsko Skeniranje & Live Audit Sanacija (`WIS-TASK-269`, `WIS-TASK-270`, `V344-01`–`V344-04`, `IMP-36`–`IMP-52`, `[SECURITY GREEN]`)

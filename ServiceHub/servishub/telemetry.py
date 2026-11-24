@@ -13,6 +13,7 @@ import json
 import uuid
 import shutil
 import threading
+from collections import deque
 from datetime import datetime
 from servishub.drivers.cache import sanitize_id
 from servishub.reports import (
@@ -277,6 +278,8 @@ class FleetStore:
 
         if self.reports_dir and os.path.isdir(self.reports_dir):
             self.load_historical_devices()
+        if self.live_logs_dir and os.path.isdir(self.live_logs_dir):
+            self.load_today_live_logs_tail(max_lines_per_device=50)
 
     def acquire_sse_slot(self, channel_key: str) -> bool:
         """Rezerviše SSE slot uz globalni i per-device limit."""
@@ -406,6 +409,50 @@ class FleetStore:
             return
         for field in self._TERMINAL_SESSION_FIELDS:
             rec.pop(field, None)
+
+    def _handle_install_session_change_locked(
+        self,
+        dev_id: str,
+        incoming_session_id: str,
+        comp_name: str = "",
+    ) -> bool:
+        """
+        IMP-69: Kada se za isti SN/uređaj promeni `install_session_id` (nova instalacija),
+        čisti in-memory logove i stare alias/foreign-host tragove prethodne sesije.
+        Vraća True ako je detektovana promena sesije i izvršeno čišćenje.
+        """
+        inc_sid = str(incoming_session_id or "").strip()
+        if not inc_sid or not dev_id:
+            return False
+
+        rec = self.fleet_devices.get(dev_id)
+        if not isinstance(rec, dict):
+            return False
+
+        prev_sid = str(rec.get("install_session_id") or "").strip()
+        if not prev_sid:
+            rec["install_session_id"] = inc_sid
+            return False
+        if prev_sid == inc_sid:
+            return False
+
+        # Nova instalacija za isti SN/uređaj: očisti stare in-memory logove i alias tragove
+        self.fleet_logs[dev_id] = []
+        raw_upper = sanitize_id(comp_name).upper() if comp_name else ""
+        stale_aliases = [
+            ak for ak, target in self._alias_index.items()
+            if target == dev_id and (not raw_upper or ak != raw_upper)
+        ]
+        for ak in stale_aliases:
+            self._alias_index.pop(ak, None)
+            self.fleet_logs.pop(ak, None)
+
+        self._reset_terminal_session_fields_locked(rec)
+        for stale_field in ("foreign_hosts", "errors", "notes"):
+            rec.pop(stale_field, None)
+        rec["install_session_id"] = inc_sid
+        rec["_session_logs_cleared"] = True
+        return True
 
     def _resolve_device_key_locked(self, comp_name: str, canonical_sn: str = "") -> str:
         """
@@ -762,6 +809,57 @@ class FleetStore:
         with self.fleet_lock:
             self._consolidate_historical_duplicates_locked()
 
+    def load_today_live_logs_tail(self, max_lines_per_device: int = 50, max_devices: int = 200) -> int:
+        """
+        IMP-56: Pri startu servisa učitava rep postojećih današnjih `logs/live/*.log`
+        fajlova (podrazumevano poslednjih 50 linija po uređaju), strogo bez praćenja symlinkova.
+        """
+        if not self.live_logs_dir or os.path.islink(self.live_logs_dir) or not os.path.isdir(self.live_logs_dir):
+            return 0
+        real_live_dir = os.path.realpath(self.live_logs_dir)
+        today_str = datetime.now().strftime("%Y%m%d")
+        prefix = "servis_deploy_"
+        suffix = f"_{today_str}.log"
+        loaded_devices = 0
+
+        try:
+            with os.scandir(real_live_dir) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            return 0
+
+        for entry in entries:
+            if max_devices > 0 and loaded_devices >= max_devices:
+                break
+            try:
+                fname = entry.name
+                if not (fname.startswith(prefix) and fname.endswith(suffix)):
+                    continue
+                if ".." in fname or "/" in fname or "\\" in fname:
+                    continue
+                if entry.is_symlink() or os.path.islink(entry.path) or not entry.is_file(follow_symlinks=False):
+                    continue
+                real_fpath = os.path.realpath(entry.path)
+                if os.path.commonpath([real_live_dir, real_fpath]) != real_live_dir:
+                    continue
+                raw_dev = fname[len(prefix):-len(suffix)]
+                if not raw_dev:
+                    continue
+                with open(real_fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    tail = deque((line.rstrip("\r\n") for line in f if line.strip()), maxlen=max(1, int(max_lines_per_device)))
+                tail_lines = list(tail)
+                if not tail_lines:
+                    continue
+                with self.fleet_lock:
+                    target_key = self._resolve_device_key_locked(raw_dev)
+                    if not self.fleet_logs.get(target_key):
+                        self.fleet_logs[target_key] = tail_lines
+                loaded_devices += 1
+            except (OSError, ValueError):
+                continue
+
+        return loaded_devices
+
     def _log_disk_error_rate_limited(self, prefix: str, err: Exception, interval_sec: float = 60.0) -> bool:
         """Ispisuje disk grešku uz rate-limit od 1x na 60s za ENOSPC (IMP-36)."""
         now = time.time()
@@ -1066,6 +1164,7 @@ class FleetStore:
 
         incoming_hw = extract_hw_from_payload(payload)
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        install_sid = str(payload.get("install_session_id") or "").strip()
         if "hw" in clean_update:
             del clean_update["hw"]
 
@@ -1078,6 +1177,8 @@ class FleetStore:
                 }
                 print(f"[*] [NOVI RAČUNAR] Detektovan u servisu: {comp_name} ({client_ip})")
             existing_rec = self.fleet_devices[dev_id]
+            if install_sid:
+                self._handle_install_session_change_locked(dev_id, install_sid, comp_name=comp_name)
 
             incoming_phase_raw = payload.get("phase")
             try:
@@ -1266,6 +1367,13 @@ class FleetStore:
         if (not enriched.get("benchmark")) and mem_benchmark:
             enriched["benchmark"] = mem_benchmark
 
+        if not str(enriched.get("install_session_id") or "").strip():
+            with self.fleet_lock:
+                for rec in self._collect_related_records_locked(dev_id, effective_comp):
+                    if isinstance(rec, dict) and str(rec.get("install_session_id") or "").strip():
+                        enriched["install_session_id"] = str(rec["install_session_id"]).strip()
+                        break
+
         return enriched
 
     def cleanup_duplicate_devices_locked(
@@ -1330,17 +1438,26 @@ class FleetStore:
         for k in to_remove:
             self._merge_device_records_into_locked(canonical_id, k)
 
-    def record_logs(self, comp_name: str, lines: list, serial_number: str = None) -> int:
+    def record_logs(
+        self,
+        comp_name: str,
+        lines: list,
+        serial_number: str = None,
+        install_session_id: str = None,
+    ) -> int:
         """Prihvata novu grupu linija loga, baferuje u memoriji, osvežava last_seen i obaveštava pretplatnike."""
         if not lines:
             return 0
         raw_id = sanitize_id(comp_name)
         canonical_sn = str(serial_number).strip().upper() if is_valid_canonical_serial(serial_number) else ""
+        install_sid = str(install_session_id or "").strip()
 
         with self.fleet_lock:
             dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
             if dev_id in self.fleet_devices:
                 rec = self.fleet_devices[dev_id]
+                if install_sid:
+                    self._handle_install_session_change_locked(dev_id, install_sid, comp_name=comp_name)
                 if isinstance(rec, dict) and not self._is_terminal_device_record(rec):
                     rec["last_seen"] = time.time()
                     if canonical_sn and is_placeholder_hw_value(rec.get("serial_number")):
@@ -1348,6 +1465,8 @@ class FleetStore:
             if dev_id not in self.fleet_logs:
                 self.fleet_logs[dev_id] = []
             self.fleet_logs[dev_id].extend(lines)
+            if dev_id in self.fleet_devices and isinstance(self.fleet_devices[dev_id], dict):
+                self.fleet_devices[dev_id].pop("_session_logs_cleared", None)
             if len(self.fleet_logs[dev_id]) > 5000:
                 self.fleet_logs[dev_id] = self.fleet_logs[dev_id][-5000:]
 
@@ -1374,12 +1493,15 @@ class FleetStore:
         now = time.time()
         incoming_hw = extract_hw_from_payload(payload)
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        install_sid = str(payload.get("install_session_id") or "").strip()
 
         with self.fleet_lock:
             dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {}
             rec = self.fleet_devices[dev_id]
+            if install_sid:
+                self._handle_install_session_change_locked(dev_id, install_sid, comp_name=comp_name)
             if self._is_terminal_device_record(rec):
                 self._reset_terminal_session_fields_locked(rec)
 
@@ -1521,6 +1643,9 @@ class FleetStore:
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {"computer_name": comp_name, "client_ip": client_ip}
             rec = self.fleet_devices[dev_id]
+            install_sid = str(enriched_payload.get("install_session_id") or "").strip()
+            if install_sid:
+                self._handle_install_session_change_locked(dev_id, install_sid, comp_name=comp_name)
 
             existing_rep = rec.get("latest_report")
             last_saved_ts = float(rec.get("_last_report_saved_ts") or 0.0)
@@ -1922,7 +2047,9 @@ class FleetStore:
         """Dohvata logove za dati uređaj iz memorije ili sa diska."""
         with self.fleet_lock:
             logs = self.fleet_logs.get(dev_id, [])
-            if not logs and self.live_logs_dir and os.path.isdir(self.live_logs_dir):
+            rec = self.fleet_devices.get(dev_id)
+            logs_cleared_for_new_session = isinstance(rec, dict) and bool(rec.get("_session_logs_cleared"))
+            if not logs and not logs_cleared_for_new_session and self.live_logs_dir and os.path.isdir(self.live_logs_dir):
                 for fn in os.listdir(self.live_logs_dir):
                     if fn.startswith(f"servis_deploy_{sanitize_id(dev_id)}_") and fn.endswith(".log"):
                         try:

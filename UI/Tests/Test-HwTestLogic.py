@@ -572,15 +572,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.4.4 / ServiceHub v3.6.4 u root version.json i komponentama
+        # 1. Verzije v3.5.0 / ServiceHub v3.7.0 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.4.4")
-        self.assertEqual(root_ver["release_package"]["version"], "3.4.4")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.4.4")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.4.4")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.4.4")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.4.4")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.6.4")
+        self.assertEqual(root_ver["version"], "3.5.0")
+        self.assertEqual(root_ver["release_package"]["version"], "3.5.0")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.0")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.0")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.0")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.0")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.7.0")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -849,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.4.4";', result_src)
+        self.assertIn('AppVersion = "3.5.0";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1507,6 +1507,106 @@ class TestHwTestComponents(unittest.TestCase):
         # IMP-46: IsLocationPolicyDisabled u NativeMethods
         self.assertIn("IsLocationPolicyDisabled", native_src)
         self.assertIn("lfsvc", native_src)
+
+    def test_wis_task_271_272_v350_contracts(self):
+        """Proverava WIS-TASK-271 (IMP-53..69) i WIS-TASK-272 (V350-01..08) ugovore za C#, ServiceHub i Patch-BootWim."""
+        import json
+
+        result_src = (HWTEST_DIR / "Core" / "ResultModel.cs").read_text(encoding="utf-8")
+        auto_src = (HWTEST_DIR / "Core" / "AutoHardwareDiagnostics.cs").read_text(encoding="utf-8")
+        probe_src = (HWTEST_DIR / "Core" / "HardwareProbe.cs").read_text(encoding="utf-8")
+        gate_src = (HWTEST_DIR / "Core" / "DriverReadinessGate.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+
+        main_cs = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        main_hw_cs = (ROOT / "UI" / "MainWindow.Hardware.cs").read_text(encoding="utf-8")
+        main_hwt_cs = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+        main_reboot_cs = (ROOT / "UI" / "MainWindow.Reboot.cs").read_text(encoding="utf-8")
+        models_cs = (ROOT / "UI" / "Models.cs").read_text(encoding="utf-8")
+        label_cs = (ROOT / "UI" / "LabelPrintService.cs").read_text(encoding="utf-8")
+        tel_cs = (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8")
+        loc_cs = (ROOT / "UI" / "LocalizationService.cs").read_text(encoding="utf-8")
+
+        reports_py = (ROOT / "ServiceHub" / "servishub" / "reports.py").read_text(encoding="utf-8")
+        hub_tel_py = (ROOT / "ServiceHub" / "servishub" / "telemetry.py").read_text(encoding="utf-8")
+        boot_py = (ROOT / "ISO" / "Skripte" / "Patch-BootWim.py").read_text(encoding="utf-8")
+
+        # V350-01 & IMP-61: Preliminarni Basic Display status ne truje checkpoint / izvestaj
+        self.assertIn('AppVersion = "3.5.0";', result_src)
+        self.assertIn("public bool IsPassivePreliminary { get; set; }", result_src)
+        self.assertIn("res.IsPassivePreliminary = true;", auto_src)
+        self.assertIn("HasAnyRealCompletedTestsForCheckpoint", shell_src)
+        self.assertIn("SyncFinalReportBeforeCompletion", shell_src)
+        self.assertIn("Ignorišem pre-drajverski Basic Display auto_gpu=FAIL iz persisted stanja.", shell_src)
+        self.assertIn("HasAnyRealCompletedTestsForCheckpoint", main_reboot_cs)
+
+        # V350-02 & V350-03: Asinhroni termalni tajmer i WMI timeouti (2500ms)
+        self.assertIn("private System.Timers.Timer _thermalTimer;", main_cs)
+        self.assertIn("private int _thermalUpdateInFlight = 0;", main_cs)
+        self.assertIn("RunThermalUpdateBackground", main_cs)
+        self.assertIn("ApplyThermalTelemetryToUi", main_cs)
+        self.assertIn("private int _probeRefreshInFlight = 0;", shell_src)
+        self.assertIn("RefreshHardwareProbeAfterDrivers", shell_src)
+        self.assertIn("_lastNotifyProbeRefreshUtc", main_hwt_cs)
+        self.assertIn("private static EnumerationOptions CreateWmiOptions(int timeoutMs)", probe_src)
+        self.assertIn("CreateWmiOptions(2500)", probe_src)
+        self.assertIn("RunWmiWithTimeout", probe_src)
+
+        # V350-04: Progresivni tagovi rezolucija (2256x1504 FHD+, 2496x1664 QHD, itd.) i hw.display sinhronizacija
+        self.assertIn('(lw == 2256 && lh == 1504)', label_cs)
+        self.assertIn('(lw == 2400 && lh == 1600)) return "FHD+";', label_cs)
+        self.assertIn('(lw == 2496 && lh == 1664) || (lw == 2560 && lh == 1440)) return "QHD";', label_cs)
+        self.assertIn('hw["display"] =', tel_cs)
+        self.assertIn("def _format_hw_display(hw: dict) -> str:", reports_py)
+
+        # V350-06: Kontrolisani Faza 4 -> 4B (InstallStaged) -> 1 reboot -> PostRebootFinalize -> Faza 5 pipeline
+        self.assertIn("post_reboot_finalize", main_cs)
+        self.assertIn("SaveDeployStatePhase", main_cs)
+        self.assertIn("WaitForBackgroundDriverDownloadIfActive", main_cs)
+        self.assertIn('RunPhase2DriversStage("PostRebootFinalize"', main_cs)
+        self.assertIn("InstallStaged", main_cs)
+        self.assertIn("private static bool IsPostRebootFinalizePending()", gate_src)
+        self.assertIn("HasCode14PendingReboot", gate_src)
+        self.assertIn("RunWithTimeout", gate_src)
+        for key in (
+            "HwTGateDriversPipelineTitle",
+            "HwTGateDriversPipelineDetail",
+            "WinPostRebootFinalizeSub",
+            "WinPostRebootFinalizeLive",
+            "WinPhase4BSub",
+            "WinPhase4BLive",
+            "WinWaitDriverDownloadProgressFmt",
+        ):
+            self.assertEqual(loc_cs.count(f'"{key}"'), 3, f"Kljuc {key} mora postojati u sr, en i zh recniku")
+
+        # V350-07: Izuzimanje License/P4.Activation iz kriticnih upozorenja Overview kartice i ServiceHub izvestaja
+        self.assertIn('string.Equals(appItem.Id, "License", StringComparison.OrdinalIgnoreCase)', models_cs)
+        self.assertIn('string.Equals(st.Id, "P4.Activation", StringComparison.OrdinalIgnoreCase)', models_cs)
+        self.assertIn("RebuildOverviewAlerts()", models_cs)
+        self.assertIn("def _apps_have_real_failures(apps) -> bool:", reports_py)
+
+        # V350-08: Tačna detekcija sistemskog diska uz isključenje USB/Removable/Virtual drajvova
+        self.assertIn("private static int ResolveSystemDiskIndex()", main_hw_cs)
+        self.assertIn("IsExcludedPhysicalBusType", main_hw_cs)
+        self.assertIn("IsExcludedWin32Disk", main_hw_cs)
+        self.assertIn("private static int? ResolveSystemDiskIndex()", auto_src)
+        self.assertIn("IsExcludedStorageBusType", auto_src)
+
+        # IMP-58: Boot.wim detekcija Z:\win11 pre Y:\ i oslobadjanje T:\ bez obzira na iventoy.iso
+        self.assertIn('Z:\\win11\\sources\\$OEM$\\$1\\setup\\WIS.Launcher.exe', boot_py)
+        self.assertIn("mountvol.exe Y: /D", boot_py)
+        idx_t_block = boot_py.find('if exist "T:\\iventoy.iso"')
+        idx_t_del = boot_py.find("net.exe use T: /delete /y", idx_t_block)
+        self.assertGreater(idx_t_block, 0)
+        self.assertGreater(idx_t_del, idx_t_block)
+
+        # IMP-65/66/67/69: Session ID, active time watchdog i log filtriranje
+        self.assertIn("GetOrCreateInstallSessionId", tel_cs)
+        self.assertIn('data["install_session_id"] = sessionId;', tel_cs)
+        self.assertIn("WaitForPhaseProcessExitWithActiveTime", main_cs)
+        self.assertIn("def _filter_stale_session_errors(", reports_py)
+        self.assertIn("def _handle_install_session_change_locked(", hub_tel_py)
+        self.assertIn("def load_today_live_logs_tail(", hub_tel_py)
 
 
 if __name__ == "__main__":

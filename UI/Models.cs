@@ -4281,9 +4281,9 @@ namespace WIS.UI
         private SolidColorBrush _hwTestBadgeBrush = CreateFrozenBrush(108, 117, 125);
         private Dictionary<string, object> _hwTestFullResult = null;
 
-        public bool IsHwTestFinished { get { return _isHwTestFinished; } set { SetProperty(ref _isHwTestFinished, value); } }
-        public string HwTestOverallStatus { get { return _hwTestOverallStatus; } set { SetProperty(ref _hwTestOverallStatus, value); } }
-        public string HwTestSummaryText { get { return _hwTestSummaryText; } set { SetProperty(ref _hwTestSummaryText, value); } }
+        public bool IsHwTestFinished { get { return _isHwTestFinished; } set { if (SetProperty(ref _isHwTestFinished, value)) RebuildOverviewAlerts(); } }
+        public string HwTestOverallStatus { get { return _hwTestOverallStatus; } set { if (SetProperty(ref _hwTestOverallStatus, value)) RebuildOverviewAlerts(); } }
+        public string HwTestSummaryText { get { return _hwTestSummaryText; } set { if (SetProperty(ref _hwTestSummaryText, value)) RebuildOverviewAlerts(); } }
         public SolidColorBrush HwTestBadgeBrush { get { return _hwTestBadgeBrush; } set { SetProperty(ref _hwTestBadgeBrush, value); } }
         public Dictionary<string, object> HwTestFullResult { get { return _hwTestFullResult; } set { SetProperty(ref _hwTestFullResult, value); } }
 
@@ -5603,6 +5603,7 @@ namespace WIS.UI
                 {
                     AppItem appItem = Apps[i];
                     if (appItem == null) continue;
+                    if (string.Equals(appItem.Id, "License", StringComparison.OrdinalIgnoreCase)) continue;
                     string appSt = (appItem.Status ?? "").Trim().ToUpperInvariant();
                     if (appSt == "ERROR" || appSt == "FAILED" || appSt == "WARN" || appSt == "WARNING")
                     {
@@ -5625,6 +5626,11 @@ namespace WIS.UI
                     {
                         StepItem st = ph.Steps[j];
                         if (st == null || (!st.IsError && !st.IsWarning)) continue;
+                        if (string.Equals(st.Id, "P4.Activation", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(st.Id, "P4.License", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
                         if (st.IsError) hasAppCritical = true;
                         string n = !string.IsNullOrWhiteSpace(st.Title) ? st.Title : st.Id;
                         if (!string.IsNullOrWhiteSpace(n) && !failedAppNames.Contains(n))
@@ -5713,6 +5719,11 @@ namespace WIS.UI
                     {
                         StepItem st = ph.Steps[j];
                         if (st == null || (!st.IsError && !st.IsWarning)) continue;
+                        if (string.Equals(st.Id, "P4.Activation", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(st.Id, "P4.License", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
                         if (ph.Number == 2 && (
                             string.Equals(st.Id, "P2.Pnp", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(st.Id, "P2.Diag", StringComparison.OrdinalIgnoreCase) ||

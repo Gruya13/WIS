@@ -115,34 +115,86 @@ namespace WIS.UI
             catch { }
         }
 
+        private DriverGateState _cachedLocalDriverGate = null;
+        private int _driverGateEvalInFlight = 0;
+        private DateTime _lastDriverGateEvalUtc = DateTime.MinValue;
+        private DateTime _lastNotifyProbeRefreshUtc = DateTime.MinValue;
+
+        private static DriverGateState CloneDriverGateState(DriverGateState src)
+        {
+            DriverGateState dst = new DriverGateState();
+            if (src == null) return dst;
+            dst.IsUnlocked = src.IsUnlocked;
+            dst.CanEmergencyUnlock = src.CanEmergencyUnlock;
+            dst.ReasonTitle = src.ReasonTitle ?? string.Empty;
+            dst.ReasonDetail = src.ReasonDetail ?? string.Empty;
+            dst.IsDriverInstallActive = src.IsDriverInstallActive;
+            dst.HasCode14PendingReboot = src.HasCode14PendingReboot;
+            dst.HasBackgroundWuDrivers = src.HasBackgroundWuDrivers;
+            dst.ProblemDevices = src.ProblemDevices != null
+                ? new List<string>(src.ProblemDevices)
+                : new List<string>();
+            return dst;
+        }
+
+        private void TriggerAsyncDriverGateRefresh(bool force)
+        {
+            if (!force && _cachedLocalDriverGate != null &&
+                (DateTime.UtcNow - _lastDriverGateEvalUtc).TotalMilliseconds < 1500.0)
+            {
+                return;
+            }
+            if (Interlocked.CompareExchange(ref _driverGateEvalInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    DriverGateState evaluated = DriverReadinessGate.EvaluateLocal();
+                    if (evaluated == null) evaluated = new DriverGateState();
+
+                    bool changed = (_cachedLocalDriverGate == null) ||
+                        (_cachedLocalDriverGate.IsUnlocked != evaluated.IsUnlocked) ||
+                        (_cachedLocalDriverGate.HasCode14PendingReboot != evaluated.HasCode14PendingReboot) ||
+                        ((_cachedLocalDriverGate.ProblemDevices != null ? _cachedLocalDriverGate.ProblemDevices.Count : 0) !=
+                         (evaluated.ProblemDevices != null ? evaluated.ProblemDevices.Count : 0));
+
+                    _cachedLocalDriverGate = evaluated;
+                    _lastDriverGateEvalUtc = DateTime.UtcNow;
+
+                    if (changed && _embeddedHwTestShell != null &&
+                        Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        Dispatcher.BeginInvoke((Action)delegate
+                        {
+                            if (_embeddedHwTestShell != null)
+                            {
+                                _embeddedHwTestShell.RefreshDriverGateUi();
+                            }
+                        });
+                    }
+                }
+                catch { }
+                finally
+                {
+                    Interlocked.Exchange(ref _driverGateEvalInFlight, 0);
+                }
+            });
+        }
+
         public DriverGateState EvaluateInteractiveTestsDriverGate()
         {
-            DriverGateState state = DriverReadinessGate.EvaluateLocal();
-            if (state == null)
-            {
-                state = new DriverGateState();
-            }
+            TriggerAsyncDriverGateRefresh(false);
+            DriverGateState state = CloneDriverGateState(_cachedLocalDriverGate);
 
             int currentPhase = (ViewModel != null) ? ViewModel.CurrentPhase : 1;
             bool isServiceFinished = (ViewModel != null) && (ViewModel.IsServiceFinished || ViewModel.IsCompleted);
             bool phase2Failed = (_failedPhase == 2);
-            bool phase2CompletedOrSkipped = isServiceFinished || (currentPhase >= 3);
-            if (!phase2CompletedOrSkipped && ViewModel != null && ViewModel.Phases != null)
-            {
-                for (int i = 0; i < ViewModel.Phases.Count; i++)
-                {
-                    PhaseItem ph = ViewModel.Phases[i];
-                    if (ph != null && ph.Number == 2)
-                    {
-                        string st = (ph.Status ?? "").Trim().ToUpperInvariant();
-                        if (st == "COMPLETED" || st == "OK" || st == "SKIPPED")
-                        {
-                            phase2CompletedOrSkipped = true;
-                        }
-                        break;
-                    }
-                }
-            }
+            bool postRebootFinalizePending = _postRebootFinalizePending;
+            bool phase2CompletedOrSkipped = isServiceFinished || (currentPhase >= 5 && !postRebootFinalizePending);
             bool phase2NotDone = phase2Failed || !phase2CompletedOrSkipped;
 
             bool journalInterimRebootPending = false;
@@ -213,8 +265,8 @@ namespace WIS.UI
             {
                 state.IsUnlocked = false;
                 state.CanEmergencyUnlock = false;
-                state.ReasonTitle = LocalizationService.Get("HwTGatePhase2RunningTitle", "Instalacija drajvera (Faza 2) još uvek nije završena");
-                state.ReasonDetail = LocalizationService.Get("HwTGatePhase2RunningDetail", "Sačekajte da se Faza 2 (Drajveri i zakrpe) završi pre pokretanja interaktivnih testova periferija.");
+                state.ReasonTitle = LocalizationService.Get("HwTGateDriversPipelineTitle", "Instalacija drajvera i završni restart još nisu završeni");
+                state.ReasonDetail = LocalizationService.Get("HwTGateDriversPipelineDetail", "Interaktivni testovi periferija su zaključani dok se drajveri ne instaliraju i sistem ne restartuje pred Fazu 5.");
                 return state;
             }
 
@@ -282,6 +334,7 @@ namespace WIS.UI
         public void NotifyHwTestDriverStateChanged(bool refreshHardwareProbe)
         {
             if (_embeddedHwTestShell == null) return;
+            TriggerAsyncDriverGateRefresh(true);
             Action act = delegate
             {
                 if (_embeddedHwTestShell == null) return;
@@ -289,10 +342,15 @@ namespace WIS.UI
                 {
                     if (refreshHardwareProbe)
                     {
-                        DriverGateState gate = EvaluateInteractiveTestsDriverGate();
-                        if (gate != null && gate.IsUnlocked)
+                        DateTime nowUtc = DateTime.UtcNow;
+                        if ((nowUtc - _lastNotifyProbeRefreshUtc).TotalMilliseconds >= 1500.0)
                         {
-                            _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
+                            DriverGateState gate = EvaluateInteractiveTestsDriverGate();
+                            if (gate != null && gate.IsUnlocked)
+                            {
+                                _lastNotifyProbeRefreshUtc = nowUtc;
+                                _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers();
+                            }
                         }
                     }
                     _embeddedHwTestShell.RefreshDriverGateUi();
@@ -1228,6 +1286,7 @@ namespace WIS.UI
                         "Hardver",
                         string.Format("Hardverski test završen: {0} ({1}/{2} PASS, {3} SKIP, {4} FAIL)", displayOverall, pass, totalApplicable, skip, fail)
                     );
+                    ViewModel.RebuildOverviewAlerts();
                 }
 
                 SendIpcMessage(new Dictionary<string, object>

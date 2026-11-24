@@ -1898,6 +1898,86 @@ namespace WIS.HwTest.Core
         #endregion
 
         #region 3. Disk / SSD / NVMe (Pasivno SMART + Aktivni Benchmark)
+        private static int? ResolveSystemDiskIndex()
+        {
+            string sysDrive = Environment.GetEnvironmentVariable("SystemDrive");
+            if (string.IsNullOrEmpty(sysDrive)) sysDrive = "C:";
+            sysDrive = sysDrive.Trim().TrimEnd('\\');
+            if (sysDrive.Length == 1) sysDrive = sysDrive + ":";
+            char driveLetter = sysDrive.Length > 0 ? char.ToUpperInvariant(sysDrive[0]) : 'C';
+
+            try
+            {
+                string partAssoc = string.Format(
+                    "ASSOCIATORS OF {{Win32_LogicalDisk.DeviceID='{0}'}} WHERE AssocClass = Win32_LogicalDiskToPartition",
+                    sysDrive);
+                using (ManagementObjectSearcher ps = new ManagementObjectSearcher(partAssoc))
+                using (ManagementObjectCollection pcol = ps.Get())
+                {
+                    foreach (ManagementObject pmo in pcol)
+                    {
+                        object idxObj = pmo["DiskIndex"];
+                        if (idxObj != null)
+                        {
+                            return Convert.ToInt32(idxObj);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                string q = string.Format("SELECT DiskNumber FROM MSFT_Partition WHERE DriveLetter = '{0}'", driveLetter);
+                using (ManagementObjectSearcher ms = new ManagementObjectSearcher("root\\Microsoft\\Windows\\Storage", q))
+                using (ManagementObjectCollection mcol = ms.Get())
+                {
+                    foreach (ManagementObject mmo in mcol)
+                    {
+                        if (mmo["DiskNumber"] != null)
+                        {
+                            return Convert.ToInt32(mmo["DiskNumber"]);
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return null;
+        }
+
+        private static bool IsExcludedStorageBusType(int busType)
+        {
+            // 7=USB, 9=iSCSI, 12=SD, 13=MMC, 14=Virtual, 15=File Backed Virtual, 16=Spaces
+            return busType == 7 || busType == 9 || busType == 12 || busType == 13 ||
+                   busType == 14 || busType == 15 || busType == 16;
+        }
+
+        private static bool IsExcludedWin32Disk(string iface, string mediaType, string pnpId)
+        {
+            string ifUp = (iface ?? "").Trim().ToUpperInvariant();
+            if (ifUp == "USB" || ifUp == "1394") return true;
+
+            string mtUp = (mediaType ?? "").Trim().ToUpperInvariant();
+            if (mtUp.IndexOf("REMOVABLE", StringComparison.Ordinal) >= 0 ||
+                mtUp.IndexOf("EXTERNAL", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            string pnpUp = (pnpId ?? "").Trim().ToUpperInvariant();
+            if (pnpUp.StartsWith("USBSTOR\\", StringComparison.Ordinal) ||
+                pnpUp.StartsWith("USB\\", StringComparison.Ordinal) ||
+                pnpUp.StartsWith("SD\\", StringComparison.Ordinal) ||
+                pnpUp.StartsWith("SWD\\", StringComparison.Ordinal) ||
+                pnpUp.IndexOf("VEN_MSFT&PROD_VIRTUAL", StringComparison.Ordinal) >= 0)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         public TestItemResult RunDiskPassiveCheck()
         {
             TestItemResult res = new TestItemResult("auto_disk", HwTestLocalization.Pick("Disk / SSD / NVMe", "磁盘 / SSD / NVMe"), HwTestLocalization.Pick("SMART zdravlje, preostali vek (wear %), temperatura i brzi Read/Write benchmark", "SMART 健康状态、剩余寿命 (损耗 %)、温度以及快速读/写基准测试"));
@@ -2126,6 +2206,9 @@ namespace WIS.HwTest.Core
             }
             catch { }
 
+            int? sysDiskIndex = ResolveSystemDiskIndex();
+            bool primaryIsSystemDisk = false;
+
             try
             {
                 using (ManagementObjectSearcher s = new ManagementObjectSearcher(
@@ -2136,21 +2219,22 @@ namespace WIS.HwTest.Core
                     foreach (ManagementObject mo in col)
                     {
                         string name = mo["FriendlyName"] != null ? mo["FriendlyName"].ToString().Trim() : "Disk";
-                        string did = mo["DeviceId"] != null ? mo["DeviceId"].ToString() : "";
+                        string did = mo["DeviceId"] != null ? mo["DeviceId"].ToString().Trim() : "";
                         int busType = mo["BusType"] != null ? Convert.ToInt32(mo["BusType"]) : 0;
                         int mediaType = mo["MediaType"] != null ? Convert.ToInt32(mo["MediaType"]) : 0;
                         int health = mo["HealthStatus"] != null ? Convert.ToInt32(mo["HealthStatus"]) : 0;
                         ulong sizeBytes = mo["Size"] != null ? Convert.ToUInt64(mo["Size"]) : 0;
                         double sizeGb = Math.Round(sizeBytes / (1024.0 * 1024.0 * 1024.0), 0);
 
-                        // Preskoči USB flash diskove ako postoje interni diskovi
-                        if (busType == 7) continue;
+                        bool isSysDisk = sysDiskIndex.HasValue && did == sysDiskIndex.Value.ToString();
+                        if (!isSysDisk && IsExcludedStorageBusType(busType)) continue;
 
                         string mKind = (busType == 17) ? "NVMe" : (mediaType == 3 ? "HDD" : "SSD");
-                        if (string.IsNullOrEmpty(primaryModel))
+                        if (isSysDisk || (!primaryIsSystemDisk && string.IsNullOrEmpty(primaryModel)))
                         {
                             primaryModel = name;
                             primaryMedia = mKind;
+                            if (isSysDisk) primaryIsSystemDisk = true;
                         }
 
                         string healthName = (health == 0) ? "Healthy" : (health == 1 ? "Warning" : "Unhealthy");
@@ -2180,20 +2264,27 @@ namespace WIS.HwTest.Core
             {
                 try
                 {
-                    using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Model, InterfaceType, Size, Status FROM Win32_DiskDrive"))
+                    using (ManagementObjectSearcher s = new ManagementObjectSearcher("SELECT Index, DeviceID, Model, Size, InterfaceType, MediaType, PNPDeviceID, Status FROM Win32_DiskDrive"))
                     using (ManagementObjectCollection col = s.Get())
                     {
                         foreach (ManagementObject mo in col)
                         {
+                            int diskIdx = mo["Index"] != null ? Convert.ToInt32(mo["Index"]) : -1;
                             string iface = mo["InterfaceType"] != null ? mo["InterfaceType"].ToString() : "";
-                            if (iface.Equals("USB", StringComparison.OrdinalIgnoreCase)) continue;
+                            string mediaType = mo["MediaType"] != null ? mo["MediaType"].ToString() : "";
+                            string pnpId = mo["PNPDeviceID"] != null ? mo["PNPDeviceID"].ToString() : "";
+                            bool isSysDisk = sysDiskIndex.HasValue && diskIdx == sysDiskIndex.Value;
+
+                            if (!isSysDisk && IsExcludedWin32Disk(iface, mediaType, pnpId)) continue;
+
                             string model = mo["Model"] != null ? mo["Model"].ToString().Trim() : "Disk";
                             ulong sizeBytes = mo["Size"] != null ? Convert.ToUInt64(mo["Size"]) : 0;
                             string st = mo["Status"] != null ? mo["Status"].ToString() : "OK";
-                            if (string.IsNullOrEmpty(primaryModel))
+                            if (isSysDisk || (!primaryIsSystemDisk && string.IsNullOrEmpty(primaryModel)))
                             {
                                 primaryModel = model;
                                 primaryMedia = model.IndexOf("NVMe", StringComparison.OrdinalIgnoreCase) >= 0 ? "NVMe" : "SSD/HDD";
+                                if (isSysDisk) primaryIsSystemDisk = true;
                             }
                             if (!st.Equals("OK", StringComparison.OrdinalIgnoreCase))
                             {
@@ -3031,18 +3122,37 @@ namespace WIS.HwTest.Core
 
             if (isBasicAdapter || errCode != 0 || hasAnyBasicDisplay || hasAnyErrorAdapter)
             {
-                res.Status = TestStatus.Fail;
-                if (isBasicAdapter)
+                DriverGateState gate = null;
+                try { gate = DriverReadinessGate.EvaluateLocal(); } catch { }
+                bool gateUnlocked = gate != null && gate.IsUnlocked;
+
+                if (!gateUnlocked)
                 {
-                    res.Reason = HwTestLocalization.Pick("Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)", "当前使用 Microsoft Basic Display Adapter (缺少显卡驱动!)");
-                }
-                else if (errCode != 0)
-                {
-                    res.Reason = HwTestLocalization.PickFormat("Greška GPU uređaja u Device Manager-u (Error Code {0})", "设备管理器中 GPU 设备报错 (Error Code {0})", errCode);
+                    res.Status = TestStatus.Pending;
+                    res.HasWarning = false;
+                    res.IsPassivePreliminary = true;
+                    res.MetricSummary = HwTestLocalization.Pick(
+                        "Čeka instalaciju drajvera i Fazu 5",
+                        "等待驱动程序安装及阶段 5");
+                    res.Reason = HwTestLocalization.Pick(
+                        "Preliminarni status pre instalacije grafičkih drajvera (biće ponovo provereno u Fazi 5).",
+                        "显卡驱动安装前的初步状态（将在阶段 5 重新检测）。");
                 }
                 else
                 {
-                    res.Reason = HwTestLocalization.PickFormat("Sekundarni GPU nema drajver ili ima grešku: {0}", "第二块 GPU 缺少驱动或报错: {0}", problemAdapters);
+                    res.Status = TestStatus.Fail;
+                    if (isBasicAdapter)
+                    {
+                        res.Reason = HwTestLocalization.Pick("Aktivan je Microsoft Basic Display Adapter (nedostaje grafički drajver!)", "当前使用 Microsoft Basic Display Adapter (缺少显卡驱动!)");
+                    }
+                    else if (errCode != 0)
+                    {
+                        res.Reason = HwTestLocalization.PickFormat("Greška GPU uređaja u Device Manager-u (Error Code {0})", "设备管理器中 GPU 设备报错 (Error Code {0})", errCode);
+                    }
+                    else
+                    {
+                        res.Reason = HwTestLocalization.PickFormat("Sekundarni GPU nema drajver ili ima grešku: {0}", "第二块 GPU 缺少驱动或报错: {0}", problemAdapters);
+                    }
                 }
             }
             return res;

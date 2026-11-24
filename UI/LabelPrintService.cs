@@ -431,29 +431,30 @@ namespace WIS.UI
         {
             int lw = Math.Max(w, h);
             int lh = Math.Min(w, h);
-            if (lw == 1280 && lh == 720) return "HD";
-            if (lw == 1366 && lh == 768) return "HD";
-            if (lw == 1280 && lh == 800) return "WXGA";
-            if (lw == 1600 && lh == 900) return "HD+";
-            if (lw == 1440 && lh == 900) return "WXGA+";
-            if (lw == 1680 && lh == 1050) return "WSXGA+";
+            if (lw <= 0 || lh <= 0) return "";
+
+            if ((lw == 1280 && lh == 720) || (lw == 1280 && lh == 800) || (lw == 1366 && lh == 768)) return "HD";
+            if ((lw == 1440 && lh == 900) || (lw == 1536 && lh == 1024) || (lw == 1600 && lh == 900) || (lw == 1680 && lh == 1050)) return "HD+";
             if (lw == 1920 && lh == 1080) return "FHD";
-            if (lw == 1920 && lh == 1200) return "FHD+";
-            if (lw == 1920 && lh == 1280) return "FHD+";
-            if (lw == 2160 && lh == 1440) return "2K";
-            if (lw == 2256 && lh == 1504) return "2.2K";
-            if (lw == 2240 && lh == 1400) return "2.2K";
-            if (lw == 2560 && lh == 1440) return "QHD";
-            if (lw == 2560 && lh == 1600) return "QHD+";
-            if (lw == 2880 && lh == 1800) return "3K";
-            if (lw == 2880 && lh == 1620) return "3K";
-            if (lw == 3000 && lh == 2000) return "3K";
-            if (lw == 3200 && lh == 1800) return "QHD+";
-            if (lw == 3200 && lh == 2000) return "3.2K";
-            if (lw == 3456 && lh == 2160) return "3.5K";
+            if ((lw == 1800 && lh == 1200) || (lw == 1920 && lh == 1200) || (lw == 1920 && lh == 1280) ||
+                (lw == 2160 && lh == 1440) || (lw == 2240 && lh == 1400) || (lw == 2256 && lh == 1504) ||
+                (lw == 2304 && lh == 1536) || (lw == 2400 && lh == 1600)) return "FHD+";
+            if ((lw == 2496 && lh == 1664) || (lw == 2560 && lh == 1440)) return "QHD";
+            if ((lw == 2560 && lh == 1600) || (lw == 2736 && lh == 1824) || (lw == 2880 && lh == 1620) ||
+                (lw == 2880 && lh == 1800) || (lw == 2880 && lh == 1920) || (lw == 3000 && lh == 2000) ||
+                (lw == 3072 && lh == 1920) || (lw == 3200 && lh == 1800) || (lw == 3200 && lh == 2000) ||
+                (lw == 3240 && lh == 2160) || (lw == 3456 && lh == 2160)) return "QHD+";
             if (lw == 3840 && lh == 2160) return "4K UHD";
-            if (lw == 3840 && lh == 2400) return "4K UHD+";
-            return string.Format("{0}x{1}", lw, lh);
+            if (lw >= 3840 && lh > 2160) return "4K UHD+";
+
+            if (lw < 1440) return "HD";
+            if (lw < 1920) return "HD+";
+            if (lw == 1920 && lh <= 1080) return "FHD";
+            if (lw < 2496) return "FHD+";
+            if (lw == 2496 || (lw == 2560 && lh <= 1440)) return "QHD";
+            if (lw < 3840) return "QHD+";
+            if (lh <= 2160) return "4K UHD";
+            return "4K UHD+";
         }
 
         #endregion

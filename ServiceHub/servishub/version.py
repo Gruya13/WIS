@@ -1,4 +1,4 @@
 """Generisano iz WIS root version.json; ne menjati ručno."""
-VERSION = '3.6.4'
-WIS_RELEASE_VERSION = '3.4.4'
+VERSION = '3.7.0'
+WIS_RELEASE_VERSION = '3.5.0'
 RELEASE_STATUS = 'production'

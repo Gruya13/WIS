@@ -96,6 +96,35 @@ try {
     } else {
         $ProgramiDir
     }
+    if (-not $isSingleAppRetry) {
+        try {
+            $syncDoneFlag = Join-Path $LocalSetupDir "phase4-sync-done.flag"
+            if (-not (Test-Path -LiteralPath $LocalSetupDir)) {
+                New-Item -Path $LocalSetupDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+            }
+            Set-Content -LiteralPath $syncDoneFlag -Value (Get-Date -Format "o") -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+            if (-not (Get-Command Start-BackgroundDriverDownloadWorker -ErrorAction SilentlyContinue)) {
+                $updMod = @(
+                    (Join-Path $PSScriptRoot "..\Modules\WIS.Update.psm1"),
+                    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Update.psm1"),
+                    "C:\setup\Skripte\Modules\WIS.Update.psm1"
+                ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+                if ($updMod) {
+                    Import-Module $updMod -Force -DisableNameChecking -ErrorAction SilentlyContinue
+                }
+            }
+            if (Get-Command Start-BackgroundDriverDownloadWorker -ErrorAction SilentlyContinue) {
+                $null = Start-BackgroundDriverDownloadWorker -LocalSetupDir $LocalSetupDir
+            } else {
+                $bgScript = "Import-Module 'C:\setup\Skripte\Modules\WIS.Update.psm1' -Force -DisableNameChecking -ErrorAction SilentlyContinue; if (Get-Command Start-BackgroundDriverDownloadWorker -ErrorAction SilentlyContinue) { Start-BackgroundDriverDownloadWorker -LocalSetupDir '$LocalSetupDir' -RunInline }"
+                Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", $bgScript) -WindowStyle Hidden -ErrorAction SilentlyContinue | Out-Null
+            }
+        } catch {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Upozorenje pri pokretanju pozadinskog driver download radnika: $($_.Exception.Message)" -Level "WARN" -Component "Phase4"
+            }
+        }
+    }
     if ($isSingleAppRetry) {
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Pokrećem pojedinačni Retry za program: $OnlyApp" -Level "STEP" -Component "Phase4"

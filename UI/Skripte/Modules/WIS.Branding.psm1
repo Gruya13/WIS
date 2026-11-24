@@ -190,6 +190,86 @@ function Test-WisLocationAccessEnabled {
     return $true
 }
 
+function Resolve-WisOemBrand {
+    <#
+    .SYNOPSIS
+        Deterministicko prepoznavanje OEM brenda (ukljucujuci Microsoft Surface uz zastitu za Hyper-V VM).
+    #>
+    param(
+        [string]$Manufacturer = "",
+        [string]$Model = "",
+        [string]$SystemFamily = "",
+        [string]$BoardName = ""
+    )
+    $m = if ($Manufacturer) { $Manufacturer.Trim().ToUpperInvariant() } else { "" }
+    $mdl = if ($Model) { $Model.Trim().ToUpperInvariant() } else { "" }
+    $fam = if ($SystemFamily) { $SystemFamily.Trim().ToUpperInvariant() } else { "" }
+    $brd = if ($BoardName) { $BoardName.Trim().ToUpperInvariant() } else { "" }
+
+    if (($m -match 'MICROSOFT' -and ($mdl -match 'SURFACE' -or $fam -match 'SURFACE')) -or ($mdl -match '^SURFACE\b')) {
+        return "Surface"
+    }
+    if ($m -match 'MICROSOFT' -and ($mdl -match 'VIRTUAL MACHINE' -or $fam -match 'VIRTUAL MACHINE')) {
+        return "OEM"
+    }
+
+    $probe = if ($m -and $m -notmatch 'TO BE FILLED|SYSTEM MANUFACTURER|INNOTEK|VMWARE|QEMU') { $m } else { $brd }
+    if (-not $probe) { return "OEM" }
+
+    if ($probe -match 'HP|HEWLETT')         { return "HP" }
+    if ($probe -match 'DELL')               { return "DELL" }
+    if ($probe -match 'LENOVO')             { return "LENOVO" }
+    if ($probe -match 'ASUS|ASUSTEK')       { return "ASUS" }
+    if ($probe -match 'ACER')               { return "ACER" }
+    if ($probe -match 'TOSHIBA|DYNABOOK')   { return "TOSHIBA" }
+    if ($probe -match 'FUJITSU')            { return "FUJITSU" }
+    if ($probe -match 'MSI|MICRO-STAR')     { return "MSI" }
+    if ($probe -match 'GIGABYTE')           { return "GIGABYTE" }
+    if ($probe -match 'SAMSUNG')            { return "SAMSUNG" }
+    if ($probe -match 'HUAWEI')             { return "HUAWEI" }
+    if ($probe -match 'RAZER')              { return "RAZER" }
+    if ($probe -match '(^|\b)LG(\b|$)|LG ELECTRONICS') { return "LG" }
+    if ($probe -match 'APPLE')              { return "APPLE" }
+    if ($probe -match 'SONY')               { return "SONY" }
+    if ($probe -match 'PANASONIC')          { return "PANASONIC" }
+    if ($probe -match 'FRAMEWORK')          { return "Framework" }
+
+    return "OEM"
+}
+
+function Rename-WisLocalAccountToBrand {
+    param(
+        [string]$SourceUser = "Korisnik",
+        [string]$Brand = ""
+    )
+    if (-not $Brand) { return $false }
+    $cleanBrand = $Brand.Trim()
+    if (-not $cleanBrand -or $cleanBrand.Length -gt 20 -or ($cleanBrand -match '["/\\\[\]:;|=,+*?<>]')) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Preskacem Rename-LocalUser: nevalidno ili predugacko ime naloga '$cleanBrand' (max 20)." -Level "WARN" -Component "Branding"
+        }
+        return $false
+    }
+    if ($env:COMPUTERNAME -and $cleanBrand.ToUpperInvariant() -eq $env:COMPUTERNAME.Trim().ToUpperInvariant()) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Preskacem Rename-LocalUser: ime brenda '$cleanBrand' je jednako COMPUTERNAME ($($env:COMPUTERNAME))." -Level "WARN" -Component "Branding"
+        }
+        return $false
+    }
+    try {
+        if (Get-LocalUser -Name $SourceUser -ErrorAction SilentlyContinue) {
+            Rename-LocalUser -Name $SourceUser -NewName $cleanBrand -ErrorAction SilentlyContinue
+            Set-LocalUser -Name $cleanBrand -FullName $cleanBrand -ErrorAction SilentlyContinue
+            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value $cleanBrand -ErrorAction SilentlyContinue
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Lokalni nalog preimenovan u: $cleanBrand" -Level "SUCCESS" -Component "Branding"
+            }
+            return $true
+        }
+    } catch {}
+    return $false
+}
+
 function Set-OptimalDisplayScaling {
     <#
     .SYNOPSIS
@@ -203,13 +283,42 @@ function Set-OptimalDisplayScaling {
         - Fallback (< 1024px)          -> Preskace se (nevazeca/privremena rezolucija)
         Kombinuje P/Invoke Win32 API (user32.dll) za instant primenu i Registry upis (HKCU).
     #>
-    param()
+    param(
+        [switch]$Force
+    )
 
     if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
         Show-ServisDashboard -LiveStatus "Proveravam rezoluciju ekrana za optimalno DPI skaliranje..."
     }
     if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
         Write-ServisLog "Zapocinjem proveru rezolucije ekrana za automatsko DPI skaliranje..." -Level "STEP" -Component "Branding"
+    }
+
+    $deferredFlagPath = "C:\setup\dpi-scaling-deferred.flag"
+    $allVideo = @()
+    try {
+        $allVideo = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue)
+        if (-not $allVideo -or $allVideo.Count -eq 0) {
+            $allVideo = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue)
+        }
+    } catch {}
+
+    $hasRealGpu = $false
+    if ($allVideo -and $allVideo.Count -gt 0) {
+        $hasRealGpu = @($allVideo | Where-Object { $_.Name -and $_.Name -notmatch 'Microsoft Basic Display Adapter' }).Count -gt 0
+    }
+    if (-not $Force -and $allVideo.Count -gt 0 -and -not $hasRealGpu) {
+        try {
+            if (-not (Test-Path "C:\setup")) { New-Item -Path "C:\setup" -ItemType Directory -Force | Out-Null }
+            Set-Content -Path $deferredFlagPath -Value (Get-Date -Format "o") -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+        } catch {}
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "Aktivan samo Microsoft Basic Display Adapter. Odlozeno DPI skaliranje za post-reboot ($deferredFlagPath)." -Level "INFO" -Component "Branding"
+        }
+        return
+    }
+    if (Test-Path $deferredFlagPath) {
+        Remove-Item -Path $deferredFlagPath -Force -ErrorAction SilentlyContinue
     }
 
     $screenWidth = 0
@@ -405,18 +514,8 @@ function Invoke-SystemOptimizationAndBranding {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "CortanaConsent" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
     } catch {}
 
-    # C. Preimenovanje korisnika u marku (DELL, HP, LENOVO...)
-    try {
-        $target = "Korisnik"
-        if (Get-LocalUser -Name $target -ErrorAction SilentlyContinue) {
-            Rename-LocalUser -Name $target -NewName $Brand -ErrorAction SilentlyContinue
-            Set-LocalUser -Name $Brand -FullName $Brand -ErrorAction SilentlyContinue
-            Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value $Brand -ErrorAction SilentlyContinue
-            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Lokalni nalog preimenovan u: $Brand" -Level "SUCCESS" -Component "Branding"
-            }
-        }
-    } catch {}
+    # C. Preimenovanje korisnika u marku (DELL, HP, LENOVO, Surface...)
+    $null = Rename-WisLocalAccountToBrand -SourceUser "Korisnik" -Brand $Brand
 
     # D. Iskljucivanje sleep-a, gasenja monitora i hibernacije kada je racunar na punjacu (AC napajanje)
     try {
@@ -619,17 +718,12 @@ function Invoke-Phase3Optimization {
     if (-not $Brand) {
         try {
             $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-            if ($cs -and $cs.Manufacturer) {
-                $m = $cs.Manufacturer.ToUpper()
-                if ($m -match "HP|HEWLETT") { $Brand = "HP" }
-                elseif ($m -match "DELL") { $Brand = "DELL" }
-                elseif ($m -match "LENOVO") { $Brand = "LENOVO" }
-                elseif ($m -match "ASUS") { $Brand = "ASUS" }
-                elseif ($m -match "ACER") { $Brand = "ACER" }
-                elseif ($m -match "TOSHIBA|DYNABOOK") { $Brand = "TOSHIBA" }
-                elseif ($m -match "FUJITSU") { $Brand = "FUJITSU" }
-                else { $Brand = "OEM" }
-            }
+            $bb = Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue
+            $mfg = if ($cs -and $cs.Manufacturer) { [string]$cs.Manufacturer } else { "" }
+            $mdl = if ($cs -and $cs.Model) { [string]$cs.Model } else { "" }
+            $fam = if ($cs -and $cs.SystemFamily) { [string]$cs.SystemFamily } else { "" }
+            $brd = if ($bb -and $bb.Product) { [string]$bb.Product } else { "" }
+            $Brand = Resolve-WisOemBrand -Manufacturer $mfg -Model $mdl -SystemFamily $fam -BoardName $brd
         } catch {}
         if (-not $Brand) { $Brand = "OEM" }
     }
@@ -821,12 +915,7 @@ function Invoke-Phase3Optimization {
                 Set-ItemProperty -Path $regIntl -Name "sShortTime" -Value "HH:mm" -Type String -Force -ErrorAction SilentlyContinue
                 Set-ItemProperty -Path $regIntl -Name "sLongTime"  -Value "HH:mm:ss" -Type String -Force -ErrorAction SilentlyContinue
 
-                $targetUser = "Korisnik"
-                if (Get-LocalUser -Name $targetUser -ErrorAction SilentlyContinue) {
-                    Rename-LocalUser -Name $targetUser -NewName $Brand -ErrorAction SilentlyContinue
-                    Set-LocalUser -Name $Brand -FullName $Brand -ErrorAction SilentlyContinue
-                    Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -Name "DefaultUserName" -Value $Brand -ErrorAction SilentlyContinue
-                }
+                $null = Rename-WisLocalAccountToBrand -SourceUser "Korisnik" -Brand $Brand
             } catch {}
         }
     }
@@ -836,7 +925,11 @@ function Invoke-Phase3Optimization {
     # =========================================================================
     $null = Invoke-WisStep -Phase 3 -StepId "P3.Scaling" -Title "Optimalno DPI skaliranje ekrana" -Test {
         $dpiFlagPath = "C:\setup\dpi-scaling-done.flag"
+        $dpiDeferredPath = "C:\setup\dpi-scaling-deferred.flag"
         $logPixels = (Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "LogPixels" -ErrorAction SilentlyContinue).LogPixels
+        if (Test-Path $dpiDeferredPath) {
+            return @{ Done = $true; Reason = "DPI skaliranje odlozeno za post-reboot ($dpiDeferredPath)" }
+        }
         if ((Test-Path $dpiFlagPath) -or ($null -ne $logPixels -and [int]$logPixels -ge 96)) {
             $reasonMsg = if ($null -ne $logPixels) { "DPI skaliranje je podešeno (LogPixels = $logPixels)" } else { "DPI skaliranje je potvrđeno flagom ($dpiFlagPath)" }
             return @{ Done = $true; Reason = $reasonMsg }
@@ -1056,6 +1149,7 @@ function Invoke-Phase3Optimization {
 }
 
 Export-ModuleMember -Function `
+    Resolve-WisOemBrand, `
     Invoke-SystemOptimizationAndBranding, `
     Set-OptimalDisplayScaling, `
     Invoke-ServisInterimReboot, `

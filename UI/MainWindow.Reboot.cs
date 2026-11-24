@@ -619,12 +619,12 @@ namespace WIS.UI
         {
             Dispatcher.BeginInvoke((Action)(() =>
             {
-                ViewModel.AddLog("WARN", "TaskRunner", "Faza 3 uspešno završena. Pripremam međurestart radi rasterećenja CBS/MSI podsistema...");
+                ViewModel.AddLog("WARN", "TaskRunner", "Faza 4 i instalacija drajvera završeni. Pripremam kontrolisani restart pred Fazu 5...");
                 ViewModel.LiveStatus = LocalizationService.Get("RbtControlledReboot5s", "Kontrolisani međurestart za 5 sekundi...");
             }));
 
-            // 1. Zapis stanja phase: 4 u C:\setup\deploy-state.json
-            SaveDeployStatePhase(4);
+            // 1. Zapis stanja phase: 5 i post_reboot_finalize: true u C:\setup\deploy-state.json (V350-06)
+            SaveDeployStatePhase(5, true);
 
             // 2. Obezbeđivanje RunOnce unosa za WIS.UI.exe --master
             EnsureRunOnceEntry();
@@ -681,12 +681,12 @@ namespace WIS.UI
                 _restartPending = false;
                 _restartDueAtUtc = DateTime.MinValue;
             }
-            SaveDeployStatePhase(4);
+            SaveDeployStatePhase(5, true);
 
-            // V344-03: Sačuvaj dosadašnji progres hardverskih testova pre međurestarta
+            // V350-01: Sačuvaj dosadašnji progres hardverskih testova pre restarta SAMO ako ima stvarno završenih testova
             try
             {
-                if (_embeddedHwTestShell != null)
+                if (_embeddedHwTestShell != null && _embeddedHwTestShell.HasAnyRealCompletedTestsForCheckpoint())
                 {
                     _embeddedHwTestShell.SaveCheckpoint("");
                 }

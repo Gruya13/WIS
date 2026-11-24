@@ -28,7 +28,10 @@ namespace WIS.UI
         private readonly object _stdoutLock = new object();
 
         private ThermalSensorEngine _thermalEngine;
-        private DispatcherTimer _thermalTimer;
+        private System.Timers.Timer _thermalTimer;
+        private int _thermalUpdateInFlight = 0;
+        private volatile bool _postRebootFinalizePending = false;
+        private DateTime _lastDriverStageFileWriteUtc = DateTime.MinValue;
         private CancellationTokenSource _stressCts;
 
         private const int GraphHistoryLength = 300;
@@ -228,10 +231,11 @@ namespace WIS.UI
             }
             catch { }
 
-            _thermalTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            _thermalTimer.Tick += (s, e) => UpdateThermalTelemetry();
+            _thermalTimer = new System.Timers.Timer(1000);
+            _thermalTimer.AutoReset = true;
+            _thermalTimer.Elapsed += (s, e) => RunThermalUpdateBackground();
             _thermalTimer.Start();
-            UpdateThermalTelemetry();
+            ThreadPool.QueueUserWorkItem(delegate { RunThermalUpdateBackground(); });
 
             // Reaktivno praćenje promene jezika (v2.14.0 - I18N-01)
             LocalizationService.LanguageChanged += OnLanguageChanged;
@@ -657,6 +661,7 @@ namespace WIS.UI
 
         private void PollBackgroundWuStatusFile()
         {
+            PollDriverStageStatusFile();
             try
             {
                 string wuStatusPath = @"C:\setup\wu-bg-status.json";
@@ -776,6 +781,103 @@ namespace WIS.UI
                 else
                 {
                     NotifyHwTestDriverStateChanged(false);
+                }
+            }
+            catch { }
+        }
+
+        private void PollDriverStageStatusFile()
+        {
+            try
+            {
+                string stagePath = @"C:\setup\driver-stage-status.json";
+                if (!File.Exists(stagePath)) return;
+
+                DateTime lastWriteUtc = File.GetLastWriteTimeUtc(stagePath);
+                if (lastWriteUtc <= _lastDriverStageFileWriteUtc) return;
+
+                string json = File.ReadAllText(stagePath, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(json)) return;
+
+                var root = JsonHelper.Parse(json);
+                if (root == null || root.IsNull) return;
+
+                _lastDriverStageFileWriteUtc = lastWriteUtc;
+
+                string state = root.ContainsKey("state") ? root["state"].AsString("IDLE") : "IDLE";
+                string normState = (state ?? "IDLE").Trim().ToUpperInvariant();
+                int hubStaged = root.ContainsKey("hub_staged_count") ? root["hub_staged_count"].AsInt(0) : 0;
+                int wuDownloaded = root.ContainsKey("wu_downloaded_count") ? root["wu_downloaded_count"].AsInt(0) : 0;
+                int totalCount = root.ContainsKey("total_count") ? root["total_count"].AsInt(0) : 0;
+                string currentItem = root.ContainsKey("current_item") ? root["current_item"].AsString("") : "";
+
+                int doneCount = hubStaged + wuDownloaded;
+                int pct = -1;
+                string textSr = "";
+                string textZh = "";
+
+                if (normState == "IDLE")
+                {
+                    return;
+                }
+                else if (normState == "SEARCHING")
+                {
+                    textSr = string.IsNullOrWhiteSpace(currentItem)
+                        ? "Pozadinski drajveri: Pretraga ServiceHub / Windows Update kataloga..."
+                        : string.Format("Pozadinski drajveri: Pretraga ({0})...", currentItem);
+                    textZh = string.IsNullOrWhiteSpace(currentItem)
+                        ? "后台驱动: 正在搜索 ServiceHub / Windows Update 目录..."
+                        : string.Format("后台驱动: 正在搜索 ({0})...", currentItem);
+                    pct = 10;
+                }
+                else if (normState == "DOWNLOADING")
+                {
+                    textSr = totalCount > 0
+                        ? string.Format("Pozadinski drajveri: Preuzimanje ({0}/{1}){2}...", doneCount, totalCount, string.IsNullOrWhiteSpace(currentItem) ? "" : " — " + currentItem)
+                        : string.Format("Pozadinski drajveri: Preuzimanje ({0}){1}...", doneCount, string.IsNullOrWhiteSpace(currentItem) ? "" : " — " + currentItem);
+                    textZh = totalCount > 0
+                        ? string.Format("后台驱动: 正在下载 ({0}/{1}){2}...", doneCount, totalCount, string.IsNullOrWhiteSpace(currentItem) ? "" : " — " + currentItem)
+                        : string.Format("后台驱动: 正在下载 ({0}){1}...", doneCount, string.IsNullOrWhiteSpace(currentItem) ? "" : " — " + currentItem);
+                    pct = (totalCount > 0) ? Math.Min(90, Math.Max(15, (doneCount * 90) / totalCount)) : 35;
+                }
+                else if (normState == "READY_TO_INSTALL")
+                {
+                    textSr = string.Format("Pozadinski drajveri: Spremno za instalaciju ({0} paketa)", doneCount);
+                    textZh = string.Format("后台驱动: 准备安装 ({0} 个驱动包)", doneCount);
+                    pct = 95;
+                }
+                else if (normState == "NONE_NEEDED")
+                {
+                    textSr = "Pozadinski drajveri: Nisu potrebni dodatni drajveri";
+                    textZh = "后台驱动: 无需额外驱动";
+                    pct = 100;
+                }
+                else if (normState == "INSTALLING")
+                {
+                    textSr = string.IsNullOrWhiteSpace(currentItem)
+                        ? "Instalacija preuzetih drajvera (Faza 4B)..."
+                        : string.Format("Instalacija drajvera (4B): {0}...", currentItem);
+                    textZh = string.IsNullOrWhiteSpace(currentItem)
+                        ? "正在安装已下载的驱动 (阶段 4B)..."
+                        : string.Format("正在安装驱动 (4B): {0}...", currentItem);
+                    pct = 80;
+                }
+                else if (normState == "DONE")
+                {
+                    textSr = string.Format("Drajveri spremni (preuzeto/instalirano: {0})", doneCount);
+                    textZh = string.Format("驱动已就绪 (已下载/安装: {0})", doneCount);
+                    pct = 100;
+                }
+                else if (normState == "FAILED")
+                {
+                    textSr = "Pozadinski drajveri: Preuzimanje završeno uz upozorenje";
+                    textZh = "后台驱动: 下载完成但有警告";
+                    pct = 100;
+                }
+
+                if (ViewModel != null && !string.IsNullOrEmpty(textSr))
+                {
+                    ViewModel.UpdateBackgroundWuStatus(normState, textSr, textZh, pct);
                 }
             }
             catch { }
@@ -5655,6 +5757,33 @@ namespace WIS.UI
                 scriptPath = FindPhaseScriptPath(baseDir, "Phase5-Finalize.ps1");
             }
 
+            // V350-06: Post-Reboot Finalize u Fazi 5 pre otključavanja DriverReadinessGate i starta HwTest-a
+            if (phaseNumber == 5 && (_postRebootFinalizePending || GetSavedPostRebootFinalizeFlag()) &&
+                string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+            {
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    ViewModel.SubPhase = LocalizationService.Get("WinPostRebootFinalizeSub", "Završna aktivacija drajvera i kalibracija ekrana...");
+                    ViewModel.LiveStatus = LocalizationService.Get("WinPostRebootFinalizeLive", "Primenjujem post-reboot podešavanja drajvera i osvežavam hardverski profil...");
+                    ViewModel.AddLog("INFO", "TaskRunner", "V350-06: Pokrećem PostRebootFinalize pre Faze 5...");
+                }));
+
+                RunPhase2DriversStage("PostRebootFinalize", 3);
+
+                try { DetectDisplay(); } catch { }
+                try { RefreshPeripheralsAfterDrivers(); } catch { }
+                if (_embeddedHwTestShell != null)
+                {
+                    try { _embeddedHwTestShell.RefreshHardwareProbeAfterDrivers(true); } catch { }
+                }
+
+                _postRebootFinalizePending = false;
+                SaveDeployStatePhase(5, false);
+
+                RunPhase2DriversStageAsync("DeltaHarvest");
+                NotifyHwTestDriverStateChanged(true);
+            }
+
             // Za Fazu 5: u produkcionom toku pokrećemo ugrađeni hardverski test (stres + periferije);
             // ukoliko je postavljen WIS_STRESS_TEST_INPUT_JSON (CI / ugovorni test), nastavljamo sa Phase5-Stress.ps1.
             if (phaseNumber == 5 && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
@@ -5712,10 +5841,14 @@ namespace WIS.UI
             // 4. Pokretanje PowerShell radnika za traženu fazu
             try
             {
+                string psArgs = (phaseNumber == 2)
+                    ? string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -Stage FastNas", scriptPath)
+                    : string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\"", scriptPath);
+
                 var psi = new ProcessStartInfo
                 {
                     FileName = "powershell.exe",
-                    Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\"", scriptPath),
+                    Arguments = psArgs,
                     WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
@@ -5769,7 +5902,7 @@ namespace WIS.UI
                 proc.BeginErrorReadLine();
 
                 int timeoutMinutes = GetPhaseTimeoutMinutes(phaseNumber);
-                bool exited = proc.WaitForExit(timeoutMinutes * 60 * 1000);
+                bool exited = WaitForPhaseProcessExitWithActiveTime(proc, timeoutMinutes);
 
                 if (!exited)
                 {
@@ -5887,18 +6020,11 @@ namespace WIS.UI
                     {
                         PerformPhase2RealityCheck();
                         RefreshPeripheralsAfterDrivers();
-                        NotifyHwTestDriverStateChanged(true);
+                        NotifyHwTestDriverStateChanged(false);
                         Dispatcher.BeginInvoke((Action)(() =>
                         {
                             PollBackgroundWuStatusFile();
-                            if (!ViewModel.IsBackgroundWuVisible)
-                            {
-                                ViewModel.UpdateBackgroundWuStatus(
-                                    "SEARCHING",
-                                    "Pozadinski WU: Pretraga kataloga zakrpa i drajvera u pozadini...",
-                                    "后台更新: 正在后台搜索系统补丁和驱动目录...");
-                            }
-                            ViewModel.AddLog("INFO", "TaskRunner", "Pozadinski Windows Update radnik pokrenut — radi paralelno u pozadini tokom Faza 3, 4 i 5.");
+                            ViewModel.AddLog("INFO", "TaskRunner", "Faza 2A (Brzi NAS/PnP drajveri) završena. Prelazim na Fazu 3, a WAN preuzimanje drajvera ide paralelno tokom Faze 4.");
                         }));
                     }
                     else if (phaseNumber == 4)
@@ -5908,6 +6034,19 @@ namespace WIS.UI
                         {
                             return; // Faza 4 označena kao FAILED, TaskRunner ne prelazi dalje
                         }
+
+                        WaitForBackgroundDriverDownloadIfActive(900);
+
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            ViewModel.SubPhase = LocalizationService.Get("WinPhase4BSub", "Faza 4B: Lokalna instalacija preuzetih drajvera...");
+                            ViewModel.LiveStatus = LocalizationService.Get("WinPhase4BLive", "Instaliram preuzete drajvere sa SSD-a pre restarta...");
+                            ViewModel.AddLog("INFO", "TaskRunner", "V350-06: Pokrećem Fazu 4B (Phase2-Drivers.ps1 -Stage InstallStaged)...");
+                        }));
+
+                        RunPhase2DriversStage("InstallStaged", 25);
+                        HandleInterimReboot();
+                        return;
                     }
 
                     Dispatcher.BeginInvoke((Action)(() =>
@@ -5915,67 +6054,12 @@ namespace WIS.UI
                         ViewModel.AddLog("SUCCESS", "TaskRunner", string.Format("Faza {0} uspešno završena (ExitCode 0).", phaseNumber));
                     }));
 
-                    // WIS-TASK-180 / WIS-TASK-181: Hibridna provera međurestarta između Faze 3 i Faze 4
+                    // V350-06: Uklonjen automatski međurestart odmah posle Faze 3 — direktan prelaz na Fazu 4
                     if (phaseNumber == 3)
                     {
                         _phase3AutoRetryCount = 0;
-                        bool needReboot = true;
-                        try
-                        {
-                            string journalPath = @"C:\setup\step-journal.json";
-                            if (File.Exists(journalPath))
-                            {
-                                string journalJson = File.ReadAllText(journalPath, Encoding.UTF8);
-                                JsonNode journalRoot = JsonHelper.Parse(journalJson);
-                                if (journalRoot != null && journalRoot.IsObject)
-                                {
-                                    bool pendingReboot = journalRoot["interim_reboot_required"].AsBool(false);
-                                    bool executedAny = false;
-
-                                    var stepsNode = journalRoot["steps"];
-                                    if (stepsNode != null && stepsNode.IsObject)
-                                    {
-                                        foreach (KeyValuePair<string, JsonNode> kvp in stepsNode.Properties)
-                                        {
-                                            string stepKey = kvp.Key ?? "";
-                                            if (stepKey.StartsWith("P2.", StringComparison.OrdinalIgnoreCase) || stepKey.StartsWith("P3.", StringComparison.OrdinalIgnoreCase))
-                                            {
-                                                JsonNode sNode = kvp.Value;
-                                                if (sNode != null && sNode.IsObject)
-                                                {
-                                                    bool exec = sNode["executed"].AsBool(false);
-                                                    string state = sNode["state"].AsString("").ToUpperInvariant();
-                                                    if (exec || state == "OK" || state == "RUNNING" || state == "WARN" || state == "ERROR")
-                                                    {
-                                                        executedAny = true;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    if (!pendingReboot && !executedAny)
-                                    {
-                                        needReboot = false;
-                                    }
-                                }
-                            }
-                        }
-                        catch { }
-
-                        if (!needReboot)
-                        {
-                            Dispatcher.BeginInvoke((Action)(() =>
-                            {
-                                ViewModel.AddLog("INFO", "TaskRunner", "Faze 2 i 3 su preskočene i nema nerešenog restarta. Međurestart se preskače, nastavljam na Fazu 4.");
-                            }));
-                            SaveDeployStatePhase(4);
-                            ExecutePhase(4);
-                            return;
-                        }
-
-                        HandleInterimReboot();
+                        SaveDeployStatePhase(4);
+                        ExecutePhase(4);
                         return;
                     }
 
@@ -6967,6 +7051,11 @@ namespace WIS.UI
 
             Dispatcher.BeginInvoke((Action)(() =>
             {
+                if (_embeddedHwTestShell != null)
+                {
+                    try { _embeddedHwTestShell.SyncFinalReportBeforeCompletion(); } catch { }
+                }
+                ViewModel.RebuildOverviewAlerts();
                 ViewModel.CurrentPhase = 6;
                 ViewModel.Progress = 100;
                 ViewModel.DeploymentStatus = hasMissingAppsAtCompletion ? "NEEDS_ATTENTION" : "READY";
@@ -7065,6 +7154,10 @@ namespace WIS.UI
                             }
                         }
 
+                        if (root.ContainsKey("post_reboot_finalize"))
+                        {
+                            _postRebootFinalizePending = root["post_reboot_finalize"].AsBool(false);
+                        }
                         if (root.ContainsKey("phase")) return root["phase"].AsInt(1);
                         if (root.ContainsKey("Phase")) return root["Phase"].AsInt(1);
                     }
@@ -7345,7 +7438,188 @@ namespace WIS.UI
             ViewModel.UpdateAppsSummary();
         }
 
-        private void SaveDeployStatePhase(int phase)
+        private bool GetSavedPostRebootFinalizeFlag()
+        {
+            string statePath = @"C:\setup\deploy-state.json";
+            if (!File.Exists(statePath)) return false;
+            try
+            {
+                string json = File.ReadAllText(statePath, Encoding.UTF8);
+                var root = JsonHelper.Parse(json);
+                if (root != null && !root.IsNull && root.ContainsKey("post_reboot_finalize"))
+                {
+                    return root["post_reboot_finalize"].AsBool(false);
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private bool WaitForPhaseProcessExitWithActiveTime(Process proc, int timeoutMinutes)
+        {
+            if (proc == null) return true;
+            long maxActiveMs = Math.Max(60000L, (long)timeoutMinutes * 60L * 1000L);
+            long activeElapsedMs = 0L;
+            DateTime lastTickUtc = DateTime.UtcNow;
+
+            while (true)
+            {
+                if (proc.WaitForExit(1000))
+                {
+                    return true;
+                }
+
+                DateTime nowUtc = DateTime.UtcNow;
+                long deltaMs = (long)(nowUtc - lastTickUtc).TotalMilliseconds;
+                lastTickUtc = nowUtc;
+
+                if (deltaMs < 0L) deltaMs = 1000L;
+                // IMP-67: Ako je sistem bio u sleep/hibernaciji (skok > 15s), ne uračunavaj sleep pauzu u timeout faze
+                if (deltaMs > 15000L)
+                {
+                    deltaMs = 1000L;
+                }
+
+                bool isPaused = (ViewModel != null && ViewModel.IsPaused);
+                if (!isPaused)
+                {
+                    activeElapsedMs += deltaMs;
+                }
+
+                if (activeElapsedMs >= maxActiveMs)
+                {
+                    return false;
+                }
+            }
+        }
+
+        private void WaitForBackgroundDriverDownloadIfActive(int maxWaitSeconds)
+        {
+            string statusPath = @"C:\setup\driver-stage-status.json";
+            DateTime startUtc = DateTime.UtcNow;
+            while ((DateTime.UtcNow - startUtc).TotalSeconds < maxWaitSeconds)
+            {
+                if (!File.Exists(statusPath)) break;
+                string normState = "";
+                string currentItem = "";
+                int hubStaged = 0;
+                int wuDownloaded = 0;
+                int totalCount = 0;
+                try
+                {
+                    string json = File.ReadAllText(statusPath, Encoding.UTF8);
+                    var root = JsonHelper.Parse(json);
+                    if (root != null && !root.IsNull)
+                    {
+                        normState = (root.ContainsKey("state") ? root["state"].AsString("") : "").Trim().ToUpperInvariant();
+                        currentItem = root.ContainsKey("current_item") ? root["current_item"].AsString("") : "";
+                        hubStaged = root.ContainsKey("hub_staged_count") ? root["hub_staged_count"].AsInt(0) : 0;
+                        wuDownloaded = root.ContainsKey("wu_downloaded_count") ? root["wu_downloaded_count"].AsInt(0) : 0;
+                        totalCount = root.ContainsKey("total_count") ? root["total_count"].AsInt(0) : 0;
+                    }
+                }
+                catch { }
+
+                if (normState != "SEARCHING" && normState != "DOWNLOADING")
+                {
+                    break;
+                }
+
+                PollDriverStageStatusFile();
+                int doneCount = hubStaged + wuDownloaded;
+                string waitMsg = totalCount > 0
+                    ? string.Format(LocalizationService.Get("WinWaitDriverDownloadProgressFmt", "Čekam dovršetak preuzimanja drajvera ({0}/{1})... {2}"), doneCount, totalCount, currentItem)
+                    : LocalizationService.Get("WinWaitDriverDownloadLive", "Čekam dovršetak preuzimanja drajvera u pozadini...");
+
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    ViewModel.SubPhase = LocalizationService.Get("WinWaitDriverDownloadSub", "Preuzimanje drajvera u toku...");
+                    ViewModel.LiveStatus = waitMsg;
+                }));
+
+                Thread.Sleep(2000);
+            }
+        }
+
+        private void RunPhase2DriversStage(string stage, int timeoutMinutes)
+        {
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string scriptPath = FindPhaseScriptPath(baseDir, "Phase2-Drivers.ps1");
+                if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath)) return;
+
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -Stage {1}", scriptPath, stage),
+                    WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                using (var proc = Process.Start(psi))
+                {
+                    if (proc == null) return;
+                    proc.OutputDataReceived += (s, e) =>
+                    {
+                        if (string.IsNullOrEmpty(e.Data)) return;
+                        string line = e.Data.Trim();
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (line.StartsWith("{") && line.EndsWith("}")) ProcessIncomingJson(line);
+                            else ParseAndAddRawLogLine(line);
+                        }));
+                        if (_telemetryService != null) _telemetryService.PushLog(line);
+                    };
+                    proc.ErrorDataReceived += (s, e) =>
+                    {
+                        if (string.IsNullOrEmpty(e.Data)) return;
+                        string errLine = e.Data.Trim();
+                        if (_telemetryService != null) _telemetryService.PushLog(errLine);
+                    };
+                    proc.BeginOutputReadLine();
+                    proc.BeginErrorReadLine();
+                    if (!WaitForPhaseProcessExitWithActiveTime(proc, timeoutMinutes))
+                    {
+                        try { proc.Kill(); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void RunPhase2DriversStageAsync(string stage)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string scriptPath = FindPhaseScriptPath(baseDir, "Phase2-Drivers.ps1");
+                    if (string.IsNullOrEmpty(scriptPath) || !File.Exists(scriptPath)) return;
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "powershell.exe",
+                        Arguments = string.Format("-NoProfile -ExecutionPolicy Bypass -File \"{0}\" -Stage {1}", scriptPath, stage),
+                        WorkingDirectory = Directory.Exists(@"C:\setup") ? @"C:\setup" : (Path.GetDirectoryName(scriptPath) ?? @"C:\"),
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+                    Process.Start(psi);
+                }
+                catch { }
+            });
+        }
+
+        private void SaveDeployStatePhase(int phase, bool postRebootFinalize = false)
         {
             try
             {
@@ -7406,6 +7680,7 @@ namespace WIS.UI
                     {
                         { "phase", phase },
                         { "Phase", phase },
+                        { "post_reboot_finalize", postRebootFinalize },
                         { "initial_start_time", _initialStartTimeIso },
                         { "timestamp", DateTime.Now.ToString("o") },
                         { "computer_name", Environment.MachineName },
@@ -12167,6 +12442,8 @@ namespace WIS.UI
                 try
                 {
                     _thermalTimer.Stop();
+                    _thermalTimer.Dispose();
+                    _thermalTimer = null;
                 }
                 catch { }
             }
@@ -12343,14 +12620,39 @@ namespace WIS.UI
             }
         }
 
+        private void RunThermalUpdateBackground()
+        {
+            if (_thermalEngine == null) return;
+            if (Interlocked.CompareExchange(ref _thermalUpdateInFlight, 1, 0) != 0) return;
+
+            try
+            {
+                ThermalSensorEngine eng = _thermalEngine;
+                if (eng == null) return;
+                eng.Update();
+
+                if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        ApplyThermalTelemetryToUi();
+                    });
+                }
+            }
+            catch { }
+            finally
+            {
+                Interlocked.Exchange(ref _thermalUpdateInFlight, 0);
+            }
+        }
+
         private void UpdateThermalTelemetry()
         {
-            if (!Dispatcher.CheckAccess())
-            {
-                Dispatcher.BeginInvoke(new Action(UpdateThermalTelemetry));
-                return;
-            }
+            ThreadPool.QueueUserWorkItem(delegate { RunThermalUpdateBackground(); });
+        }
 
+        private void ApplyThermalTelemetryToUi()
+        {
             if (ViewModel == null || _thermalEngine == null)
             {
                 return;
@@ -12358,8 +12660,6 @@ namespace WIS.UI
 
             try
             {
-                _thermalEngine.Update();
-
                 // 1. CPU Temperatura
                 float cpu = _thermalEngine.CpuTemperature;
                 ViewModel.CpuTemp = cpu;

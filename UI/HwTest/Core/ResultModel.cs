@@ -23,6 +23,7 @@ namespace WIS.HwTest.Core
         public TestStatus Status { get; set; }
         public bool HasWarning { get; set; }
         public bool IsAutomated { get; set; }
+        public bool IsPassivePreliminary { get; set; }
         public string MetricSummary { get; set; }
         public int Attempts { get; set; }
         public int DurationSeconds { get; set; }
@@ -37,6 +38,7 @@ namespace WIS.HwTest.Core
             Status = TestStatus.Pending;
             HasWarning = false;
             IsAutomated = false;
+            IsPassivePreliminary = false;
             MetricSummary = string.Empty;
             Attempts = 0;
             DurationSeconds = 0;
@@ -59,7 +61,7 @@ namespace WIS.HwTest.Core
         public HwTestRunResult()
         {
             Schema = "wis.hwtest.v1";
-            AppVersion = "3.4.4";
+            AppVersion = "3.5.0";
             Summary = new Dictionary<string, object>();
             Tests = new List<Dictionary<string, object>>();
         }

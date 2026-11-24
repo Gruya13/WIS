@@ -66,6 +66,10 @@ except Exception:
 FORBIDDEN_DRIVER_EXTENSIONS = tuple(_FORBIDDEN_MODEL_PACK_EXTENSIONS)
 _IGNORED_INBOX_INFS = frozenset({"prnms009.inf", "autorun.inf"})
 
+MAX_ARCHIVE_FILE_BYTES = int(os.environ.get("SERVIS_POOL_MAX_ARCHIVE_BYTES", str(16 * 1024 ** 3)))
+MAX_ARCHIVE_UNPACKED_BYTES = int(os.environ.get("SERVIS_POOL_MAX_UNPACKED_BYTES", str(24 * 1024 ** 3)))
+MAX_ARCHIVE_MEMBERS = int(os.environ.get("SERVIS_POOL_MAX_ARCHIVE_MEMBERS", "50000"))
+
 _SOURCE_PRIORITY = {
     "oem_pack": 3,
     "ms_catalog": 2,
@@ -263,65 +267,107 @@ def _assert_extracted_tree_safe(root_dir: str) -> None:
                 raise ValueError(f"Detektovan path traversal posle ekstrakcije: {fn}")
 
 
-def _extract_archive_safely(archive_path: str, dest_dir: str) -> None:
+def _extract_archive_safely(
+    archive_path: str,
+    dest_dir: str,
+    max_archive_bytes: int = MAX_ARCHIVE_FILE_BYTES,
+    max_unpacked_bytes: int = MAX_ARCHIVE_UNPACKED_BYTES,
+    max_members: int = MAX_ARCHIVE_MEMBERS,
+) -> None:
     """
-    Bezbedno raspakuje .tar/.tar.gz/.zip/.cab/.7z/.exe(SFX) arhive u `dest_dir`
-    sa strogim path-traversal i symlink proverama.
+    Bezbedno raspakuje .tar/.tar.gz/.tgz/.zip/.cab/.7z/.exe(SFX) arhive u `dest_dir`
+    sa strogim path-traversal, symlink/hardlink i size-limit proverama.
     """
+    if os.path.islink(archive_path):
+        raise ValueError(f"Odbijeno raspakivanje simboličkog linka: {archive_path}")
     ap = os.path.abspath(archive_path)
+    if max_archive_bytes > 0 and os.path.getsize(ap) > max_archive_bytes:
+        raise ValueError(f"Arhiva '{os.path.basename(ap)}' premašuje maksimalnu dozvoljenu veličinu ({max_archive_bytes} B).")
     lower = ap.lower()
     os.makedirs(dest_dir, exist_ok=True)
+    real_dest = os.path.realpath(dest_dir)
 
     # 1. TAR / TAR.GZ / TGZ
     if lower.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz")):
+        total_unpacked = 0
         with tarfile.open(ap, "r:*") as tf:
             members = tf.getmembers()
+            if max_members > 0 and len(members) > max_members:
+                raise ValueError(f"Arhiva sadrži previše članova ({len(members)} > {max_members}).")
             for member in members:
                 if not _is_safe_archive_relpath(member.name):
                     raise ValueError(f"Nedozvoljena putanja unutar .tar arhive: '{member.name}'.")
                 if member.issym() or member.islnk() or member.ischr() or member.isblk() or member.isfifo():
                     raise ValueError(f"Nedozvoljen link/device član unutar .tar arhive: '{member.name}'.")
+                if member.isreg():
+                    if member.size < 0 or (max_unpacked_bytes > 0 and (total_unpacked + member.size) > max_unpacked_bytes):
+                        raise ValueError(f"Arhiva premašuje maksimalnu raspakovanu veličinu ({max_unpacked_bytes} B).")
+                    total_unpacked += int(member.size)
+            actual_written = 0
             for member in members:
                 if member.isdir():
-                    target = os.path.realpath(os.path.join(dest_dir, member.name))
-                    if os.path.commonpath([os.path.realpath(dest_dir), target]) != os.path.realpath(dest_dir):
+                    target = os.path.realpath(os.path.join(real_dest, member.name))
+                    if os.path.commonpath([real_dest, target]) != real_dest:
                         raise ValueError(f"Path traversal direktorijuma u .tar: '{member.name}'.")
                     os.makedirs(target, exist_ok=True)
                 elif member.isreg():
                     rel = member.name.replace("\\", "/").lstrip("/")
-                    target = os.path.realpath(os.path.join(dest_dir, rel))
-                    if os.path.commonpath([os.path.realpath(dest_dir), target]) != os.path.realpath(dest_dir):
+                    target = os.path.realpath(os.path.join(real_dest, rel))
+                    if os.path.commonpath([real_dest, target]) != real_dest:
                         raise ValueError(f"Path traversal fajla u .tar: '{member.name}'.")
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     src_f = tf.extractfile(member)
                     if src_f is not None:
                         with src_f, open(target, "wb") as out_f:
-                            shutil.copyfileobj(src_f, out_f)
-        _assert_extracted_tree_safe(dest_dir)
+                            while True:
+                                chunk = src_f.read(65536)
+                                if not chunk:
+                                    break
+                                actual_written += len(chunk)
+                                if max_unpacked_bytes > 0 and actual_written > max_unpacked_bytes:
+                                    raise ValueError(f"Arhiva premašuje maksimalnu raspakovanu veličinu ({max_unpacked_bytes} B).")
+                                out_f.write(chunk)
+        _assert_extracted_tree_safe(real_dest)
         return
 
     # 2. ZIP
     if lower.endswith(".zip"):
         with zipfile.ZipFile(ap, "r") as zf:
-            for info in zf.infolist():
+            infos = zf.infolist()
+            if max_members > 0 and len(infos) > max_members:
+                raise ValueError(f".zip arhiva sadrži previše članova ({len(infos)} > {max_members}).")
+            total_unpacked = 0
+            for info in infos:
                 if not _is_safe_archive_relpath(info.filename):
                     raise ValueError(f"Nedozvoljena putanja unutar .zip arhive: '{info.filename}'.")
                 # Unix symlink bit u external_attr
                 if (info.external_attr >> 16) & 0o170000 == 0o120000:
                     raise ValueError(f"Nedozvoljen symlink unutar .zip arhive: '{info.filename}'.")
-            for info in zf.infolist():
+                if not info.is_dir():
+                    total_unpacked += int(info.file_size or 0)
+                    if max_unpacked_bytes > 0 and total_unpacked > max_unpacked_bytes:
+                        raise ValueError(f".zip arhiva premašuje maksimalnu raspakovanu veličinu ({max_unpacked_bytes} B).")
+            actual_written = 0
+            for info in infos:
                 if info.is_dir():
-                    target = os.path.realpath(os.path.join(dest_dir, info.filename))
-                    if os.path.commonpath([os.path.realpath(dest_dir), target]) == os.path.realpath(dest_dir):
+                    target = os.path.realpath(os.path.join(real_dest, info.filename))
+                    if os.path.commonpath([real_dest, target]) == real_dest:
                         os.makedirs(target, exist_ok=True)
                     continue
-                target = os.path.realpath(os.path.join(dest_dir, info.filename))
-                if os.path.commonpath([os.path.realpath(dest_dir), target]) != os.path.realpath(dest_dir):
+                target = os.path.realpath(os.path.join(real_dest, info.filename))
+                if os.path.commonpath([real_dest, target]) != real_dest:
                     raise ValueError(f"Path traversal u .zip: '{info.filename}'.")
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 with zf.open(info, "r") as src_f, open(target, "wb") as out_f:
-                    shutil.copyfileobj(src_f, out_f)
-        _assert_extracted_tree_safe(dest_dir)
+                    while True:
+                        chunk = src_f.read(65536)
+                        if not chunk:
+                            break
+                        actual_written += len(chunk)
+                        if max_unpacked_bytes > 0 and actual_written > max_unpacked_bytes:
+                            raise ValueError(f".zip arhiva premašuje maksimalnu raspakovanu veličinu ({max_unpacked_bytes} B).")
+                        out_f.write(chunk)
+        _assert_extracted_tree_safe(real_dest)
         return
 
     # 3. CAB (bsdtar / cabextract)
@@ -377,6 +423,31 @@ def _extract_archive_safely(archive_path: str, dest_dir: str) -> None:
     raise RuntimeError(f"Neuspešno raspakivanje arhive '{os.path.basename(ap)}': {last_err or 'nedostaje 7z/bsdtar/innoextract'}")
 
 
+class _HashingFileWrapper:
+    """Omotač oko binarnog fajla koji u jednom prolazu računa SHA-256 tokom pisanja na disk."""
+
+    def __init__(self, raw_file):
+        self._f = raw_file
+        self._hasher = hashlib.sha256()
+
+    def write(self, data):
+        if data:
+            self._hasher.update(data)
+        return self._f.write(data)
+
+    def flush(self):
+        return self._f.flush()
+
+    def tell(self):
+        return self._f.tell()
+
+    def seekable(self):
+        return False
+
+    def hexdigest(self) -> str:
+        return self._hasher.hexdigest()
+
+
 class DriverPoolManager:
     """
     Centralni Content-Addressable Driver Pool sa deduplikacijom na nivou .inf paketa,
@@ -387,6 +458,10 @@ class DriverPoolManager:
         self,
         pool_dir: str,
         catalog_mgr: Optional[OemCatalogManager] = None,
+        max_bundles_gb: Optional[float] = None,
+        bundle_ttl_hours: Optional[float] = None,
+        delete_ingested_archives: Optional[bool] = None,
+        oem_catalog_stale_hours: Optional[float] = None,
     ):
         self.pool_dir = os.path.abspath(pool_dir)
         self.packages_dir = os.path.join(self.pool_dir, "packages")
@@ -394,6 +469,26 @@ class DriverPoolManager:
         self.bundles_dir = os.path.join(self.pool_dir, "bundles")
         self.catalogs_dir = os.path.join(self.pool_dir, "oem_catalogs")
         self.index_path = os.path.join(self.pool_dir, "pool_index.json")
+
+        try:
+            from servishub.config import (
+                DEFAULT_BUNDLE_TTL_HOURS,
+                DEFAULT_MAX_BUNDLES_GB,
+                DEFAULT_OEM_CATALOG_STALE_HOURS,
+            )
+        except Exception:
+            DEFAULT_MAX_BUNDLES_GB = 12.0
+            DEFAULT_BUNDLE_TTL_HOURS = 24.0
+            DEFAULT_OEM_CATALOG_STALE_HOURS = 72.0
+
+        self.max_bundles_gb = float(max_bundles_gb) if max_bundles_gb is not None else float(DEFAULT_MAX_BUNDLES_GB)
+        self.bundle_ttl_hours = float(bundle_ttl_hours) if bundle_ttl_hours is not None else float(DEFAULT_BUNDLE_TTL_HOURS)
+        self.delete_ingested_archives = bool(delete_ingested_archives) if delete_ingested_archives is not None else False
+        self.oem_catalog_stale_hours = (
+            float(oem_catalog_stale_hours)
+            if oem_catalog_stale_hours is not None
+            else float(DEFAULT_OEM_CATALOG_STALE_HOURS)
+        )
 
         self.lock = threading.RLock()
         self._stats_cache_lock = threading.Lock()
@@ -1017,6 +1112,30 @@ class DriverPoolManager:
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
+    def refresh_stale_oem_catalogs(self, max_age_hours: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Proverava status OEM kataloga i osvežava one koji su ne-sinhronizovani ili stariji od
+        `max_age_hours` (podrazumevano 72h). Greške pojedinačnih vendora ne prekidaju ostale.
+        """
+        thresh_h = float(max_age_hours) if max_age_hours is not None else self.oem_catalog_stale_hours
+        status_map = self.catalog_mgr.get_catalog_status() or {}
+        refreshed: Dict[str, Any] = {}
+        for vendor in ("dell", "hp", "lenovo"):
+            info = status_map.get(vendor) or {}
+            synced = bool(info.get("synced"))
+            age_h = info.get("age_hours")
+            is_stale = (not synced) or bool(info.get("stale")) or (age_h is not None and float(age_h) >= thresh_h)
+            if not is_stale:
+                refreshed[vendor] = {"status": "fresh", "age_hours": age_h}
+                continue
+            try:
+                res = self.catalog_mgr.sync_catalog(vendor, force=True)
+                refreshed[vendor] = {"status": "refreshed", "result": res}
+            except Exception as ex:
+                refreshed[vendor] = {"status": "error", "error": str(ex)}
+        self._invalidate_stats_cache()
+        return {"status": "ok", "threshold_hours": thresh_h, "vendors": refreshed}
+
     def ingest_oem_pack(
         self,
         manufacturer: str,
@@ -1033,9 +1152,16 @@ class DriverPoolManager:
         if not vendor:
             return {"status": "unsupported_vendor", "manufacturer": manufacturer, "model": model}
 
-        if force_sync or self.catalog_mgr.get_catalog_status().get(vendor, {}).get("stale", True):
+        cat_info = self.catalog_mgr.get_catalog_status().get(vendor, {})
+        age_h = cat_info.get("age_hours")
+        need_sync = (
+            force_sync
+            or cat_info.get("stale", True)
+            or (age_h is not None and float(age_h) >= self.oem_catalog_stale_hours)
+        )
+        if need_sync:
             try:
-                self.catalog_mgr.sync_catalog(vendor, force=force_sync)
+                self.catalog_mgr.sync_catalog(vendor, force=force_sync or (age_h is not None and float(age_h) >= self.oem_catalog_stale_hours))
             except Exception as sync_ex:
                 # Nastavi ako postoji bar lokalni keš
                 if not self.catalog_mgr.get_catalog_status().get(vendor, {}).get("synced"):
@@ -1205,42 +1331,62 @@ class DriverPoolManager:
         meta_path = os.path.join(self.bundles_dir, f"{bundle_hash}.json")
 
         bundle_sha = None
-        if os.path.isfile(bundle_path) and os.path.isfile(meta_path):
+        cache_hit = False
+        if (
+            os.path.isfile(bundle_path)
+            and not os.path.islink(bundle_path)
+            and os.path.isfile(meta_path)
+            and not os.path.islink(meta_path)
+        ):
             try:
                 with open(meta_path, "r", encoding="utf-8") as mf:
                     bmeta = json.load(mf)
                 if bmeta.get("sha256") and os.path.getsize(bundle_path) > 0:
                     bundle_sha = bmeta["sha256"]
+                    cache_hit = True
+                    try:
+                        os.utime(bundle_path, None)
+                        os.utime(meta_path, None)
+                    except OSError:
+                        pass
             except Exception:
                 bundle_sha = None
+                cache_hit = False
 
         if not bundle_sha:
+            self.enforce_bundles_quota()
             os.makedirs(self.bundles_dir, exist_ok=True)
             tmp_tar = f"{bundle_path}.{uuid.uuid4().hex[:6]}.tmp"
             tmp_meta = f"{meta_path}.{uuid.uuid4().hex[:6]}.tmp"
             try:
-                with tarfile.open(tmp_tar, "w") as tf:
-                    for pid in sorted_pids:
-                        pmeta, pdir = pkg_snapshots.get(pid, ({}, os.path.join(self.packages_dir, pid)))
-                        if not os.path.isdir(pdir):
-                            continue
-                        stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(pmeta.get("inf_stem") or "drv")).strip("_") or "drv"
-                        folder_prefix = f"{stem}_{pid[:8]}"
-                        for rdir, _, files in os.walk(pdir, followlinks=False):
-                            for fn in sorted(files):
-                                if fn.lower().endswith(FORBIDDEN_DRIVER_EXTENSIONS):
-                                    continue
-                                full_f = os.path.join(rdir, fn)
-                                rel = os.path.relpath(full_f, pdir).replace("\\", "/")
-                                tf.add(full_f, arcname=f"{folder_prefix}/{rel}", recursive=False)
-                bundle_sha = _file_sha256(tmp_tar)
+                with open(tmp_tar, "wb") as raw_out:
+                    hash_writer = _HashingFileWrapper(raw_out)
+                    with tarfile.open(fileobj=hash_writer, mode="w") as tf:
+                        for pid in sorted_pids:
+                            pmeta, pdir = pkg_snapshots.get(pid, ({}, os.path.join(self.packages_dir, pid)))
+                            if not os.path.isdir(pdir) or os.path.islink(pdir):
+                                continue
+                            stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(pmeta.get("inf_stem") or "drv")).strip("_") or "drv"
+                            folder_prefix = f"{stem}_{pid[:8]}"
+                            for rdir, _, files in os.walk(pdir, followlinks=False):
+                                for fn in sorted(files):
+                                    if fn.lower().endswith(FORBIDDEN_DRIVER_EXTENSIONS):
+                                        continue
+                                    full_f = os.path.join(rdir, fn)
+                                    if os.path.islink(full_f):
+                                        continue
+                                    rel = os.path.relpath(full_f, pdir).replace("\\", "/")
+                                    tf.add(full_f, arcname=f"{folder_prefix}/{rel}", recursive=False)
+                    hash_writer.flush()
+                    bundle_sha = hash_writer.hexdigest()
                 os.replace(tmp_tar, bundle_path)
                 with open(tmp_meta, "w", encoding="utf-8") as mf:
                     json.dump({"sha256": bundle_sha, "packages": sorted_pids, "created_at": datetime.now().isoformat()}, mf)
                 os.replace(tmp_meta, meta_path)
+                self.enforce_bundles_quota()
             except Exception:
                 for leftover in (tmp_tar, tmp_meta):
-                    if os.path.exists(leftover):
+                    if os.path.exists(leftover) and not os.path.islink(leftover):
                         try:
                             os.remove(leftover)
                         except OSError:
@@ -1266,6 +1412,7 @@ class DriverPoolManager:
 
         return {
             "available": True,
+            "cache_hit": cache_hit,
             "model": manifest_model or safe_model_lbl,
             "package_count": len(sorted_pids),
             "matched_hwids": matched_hwids,
@@ -1339,6 +1486,135 @@ class DriverPoolManager:
             "errors": errors[:25],
         }
 
+    def enforce_bundles_quota(
+        self,
+        max_bundles_gb: Optional[float] = None,
+        bundle_ttl_hours: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Primenjuje LRU + TTL evikciju nad `bundles_dir` (IMP-63):
+        - Nikada ne prati symlinkove niti izlazi van `bundles_dir` (`commonpath`).
+        - Nikada ne briše aktivne `.tmp` fajlove.
+        """
+        max_gb = float(max_bundles_gb) if max_bundles_gb is not None else self.max_bundles_gb
+        ttl_h = float(bundle_ttl_hours) if bundle_ttl_hours is not None else self.bundle_ttl_hours
+        max_bytes = int(max_gb * (1024 ** 3)) if max_gb > 0 else None
+        ttl_sec = float(ttl_h * 3600.0) if ttl_h > 0 else None
+        try:
+            from servishub.config import enforce_directory_lru_quota
+            return enforce_directory_lru_quota(
+                self.bundles_dir,
+                max_bytes=max_bytes,
+                ttl_seconds=ttl_sec,
+                paired_extensions={".tar": (".json",)},
+                recursive=False,
+            )
+        except Exception:
+            return {"removed_files": 0, "freed_bytes": 0, "remaining_bytes": 0}
+
+    def delta_check(
+        self,
+        model: str,
+        packages: Optional[List[Dict[str, Any]]],
+        os_build: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Brza provera koji su klijentski INF paketi već prisutni u Driver Pool-u (sa jednakom
+        ili novijom verzijom), a koji nedostaju i zahtevaju delta harvest upload (2A).
+        """
+        pkg_list = packages if isinstance(packages, list) else []
+        clean_model = ""
+        if model and str(model).strip():
+            try:
+                clean_model = sanitize_model_pack_name(model)
+            except ValueError:
+                clean_model = str(model).strip()
+
+        already_in_pool = 0
+        missing_infs: List[str] = []
+
+        with self.lock:
+            idx = self._ensure_index_loaded()
+            pkgs_map = idx.get("packages", {})
+            hwid_winners = idx.get("hwid_winners", {})
+            manifest = self._find_manifest_for_model(model)
+            manifest_model = (manifest or {}).get("model")
+            manifest_hmap = (manifest or {}).get("hwid_map") or {}
+
+            for item in pkg_list:
+                if not isinstance(item, dict):
+                    continue
+                inf_name = str(item.get("inf_name") or item.get("inf") or "").strip()
+                if not inf_name:
+                    continue
+                cand_ver = str(item.get("driver_ver") or item.get("version") or "").strip()
+                cand_date = str(item.get("driver_date") or "").strip()
+                cand_sha = str(item.get("sha256") or "").strip().lower()
+                raw_hwids = item.get("hwids") or []
+                if isinstance(raw_hwids, str):
+                    raw_hwids = [raw_hwids]
+
+                in_pool = False
+                # 1. Direktno poklapanje po SHA-256 (pkg_id ili inf_sha256)
+                if cand_sha:
+                    if cand_sha in pkgs_map and os.path.isdir(os.path.join(self.packages_dir, cand_sha)):
+                        in_pool = True
+                    else:
+                        for pid, pmeta in pkgs_map.items():
+                            if str(pmeta.get("inf_sha256") or "").lower() == cand_sha and os.path.isdir(os.path.join(self.packages_dir, pid)):
+                                in_pool = True
+                                break
+
+                # 2. Provera po HWID + verziji u manifestu modela i globalnim hwid_winners
+                if not in_pool and raw_hwids:
+                    cand_meta = {
+                        "driver_ver": cand_ver,
+                        "driver_date": cand_date,
+                        "source": "harvest",
+                    }
+                    all_hwids_covered = True
+                    any_matched = False
+                    for raw_h in raw_hwids:
+                        h_str = str(raw_h or "").strip()
+                        if not h_str:
+                            continue
+                        matched_pid = None
+                        for cand_h in generate_hwid_candidates(h_str):
+                            cl = cand_h.lower()
+                            m_pid = manifest_hmap.get(cl)
+                            g_pid = hwid_winners.get(cl)
+                            if g_pid and g_pid in pkgs_map and os.path.isdir(os.path.join(self.packages_dir, g_pid)):
+                                matched_pid = g_pid
+                                break
+                            if m_pid and m_pid in pkgs_map and os.path.isdir(os.path.join(self.packages_dir, m_pid)):
+                                matched_pid = m_pid
+                                break
+                        if not matched_pid:
+                            all_hwids_covered = False
+                            break
+                        any_matched = True
+                        existing_meta = pkgs_map.get(matched_pid, {})
+                        if self._is_package_better(cand_meta, existing_meta):
+                            all_hwids_covered = False
+                            break
+                    if any_matched and all_hwids_covered:
+                        in_pool = True
+
+                if in_pool:
+                    already_in_pool += 1
+                else:
+                    missing_infs.append(inf_name)
+
+        return {
+            "status": "ok",
+            "model": manifest_model or clean_model or model,
+            "os_build": str(os_build or "").strip(),
+            "total_checked": len(pkg_list),
+            "already_in_pool": already_in_pool,
+            "missing_infs": missing_infs,
+            "harvest_needed": len(missing_infs) > 0,
+        }
+
     def prune_unused_packages(self, max_bundle_age_sec: int = 86400) -> Dict[str, Any]:
         """
         Briše nekorišćene (stare/orphan) pakete koje nijedan manifest modela niti trenutni
@@ -1366,26 +1642,37 @@ class DriverPoolManager:
                     removed_packages += 1
 
             # Očisti i eventualne siročiće u packages/ folderu kojih nema u indeksu
-            if os.path.isdir(self.packages_dir):
+            if os.path.isdir(self.packages_dir) and not os.path.islink(self.packages_dir):
+                real_pkgs = os.path.realpath(self.packages_dir)
                 for entry in os.listdir(self.packages_dir):
                     ep = os.path.join(self.packages_dir, entry)
+                    if os.path.islink(ep):
+                        continue
+                    if os.path.commonpath([real_pkgs, os.path.realpath(ep)]) != real_pkgs:
+                        continue
                     if os.path.isdir(ep) and entry not in idx["packages"]:
                         shutil.rmtree(ep, ignore_errors=True)
 
-            # Očisti zastarele bundle-ove
-            if os.path.isdir(self.bundles_dir):
-                for entry in os.listdir(self.bundles_dir):
-                    ep = os.path.join(self.bundles_dir, entry)
-                    if not os.path.isfile(ep):
-                        continue
-                    try:
-                        age = now - os.path.getmtime(ep)
-                        if max_bundle_age_sec <= 0 or age >= max_bundle_age_sec:
-                            freed_bytes += os.path.getsize(ep)
-                            os.remove(ep)
-                            removed_bundles += 1
-                    except OSError:
-                        pass
+            # Očisti zastarele bundle-ove (strogo bez symlinkova, bez .tmp fajlova i bez izlaska van bundles_dir)
+            if os.path.isdir(self.bundles_dir) and not os.path.islink(self.bundles_dir):
+                ttl_s = float(max_bundle_age_sec) if max_bundle_age_sec is not None else (self.bundle_ttl_hours * 3600.0)
+                if max_bundle_age_sec == 0:
+                    ttl_s = 0.0001
+                try:
+                    from servishub.config import enforce_directory_lru_quota
+                    max_b = int(self.max_bundles_gb * (1024 ** 3)) if self.max_bundles_gb > 0 else None
+                    q_res = enforce_directory_lru_quota(
+                        self.bundles_dir,
+                        max_bytes=max_b,
+                        ttl_seconds=ttl_s,
+                        paired_extensions={".tar": (".json",)},
+                        recursive=False,
+                        now=now,
+                    )
+                    removed_bundles += int(q_res.get("removed_files") or 0)
+                    freed_bytes += int(q_res.get("freed_bytes") or 0)
+                except Exception:
+                    pass
 
             self._save_index_locked(idx)
 
@@ -1519,30 +1806,52 @@ class DriverPoolManager:
         self,
         archives_dir: Optional[str],
         target_archive: Optional[str] = None,
+        delete_ingested: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Skenira direktorijum sa Harvest arhivama (.tar/.tar.gz/.tgz/.zip) i automatski
         ingestuje nove ili izmenjene modele u CAS Driver Pool.
+        Ako je `delete_ingested=True` (ili `self.delete_ingested_archives=True`),
+        nakon SHA-256 verifikovanog ingesta u Pool/packages/ i uspešnog save_index(),
+        automatski bezbedno briše sirovi .tar/.tar.gz/.tgz fajl iz Archives/.
         """
-        if not archives_dir or not os.path.isdir(archives_dir):
+        if not archives_dir or os.path.islink(archives_dir) or not os.path.isdir(archives_dir):
             return {
                 "status": "ok",
                 "archives_dir": archives_dir,
                 "scanned": 0,
                 "ingested": 0,
                 "skipped": 0,
+                "deleted_archives": 0,
                 "errors": [],
                 "details": [],
             }
 
+        eff_delete = self.delete_ingested_archives if delete_ingested is None else bool(delete_ingested)
+        real_archives = os.path.realpath(archives_dir)
         target_name = os.path.basename(str(target_archive or "").strip()) if target_archive else None
         supported_exts = (".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz", ".zip")
+        deletable_archive_exts = (".tar", ".tar.gz", ".tgz")
 
         scanned = 0
         ingested = 0
         skipped = 0
+        deleted_archives = 0
         errors: List[Dict[str, Any]] = []
         details: List[Dict[str, Any]] = []
+
+        def _safe_delete_archive(fp: str, lower_name: str) -> bool:
+            if not eff_delete or not lower_name.endswith(deletable_archive_exts):
+                return False
+            try:
+                if os.path.islink(fp) or not os.path.isfile(fp):
+                    return False
+                if os.path.commonpath([real_archives, os.path.realpath(fp)]) != real_archives:
+                    return False
+                os.remove(fp)
+                return True
+            except (OSError, ValueError):
+                return False
 
         try:
             entries = sorted(os.listdir(archives_dir))
@@ -1553,12 +1862,13 @@ class DriverPoolManager:
                 "scanned": 0,
                 "ingested": 0,
                 "skipped": 0,
+                "deleted_archives": 0,
                 "errors": [{"file": archives_dir, "error": str(ex)}],
                 "details": [],
             }
 
         for fn in entries:
-            if not fn or fn.startswith("."):
+            if not fn or fn.startswith(".") or ".." in fn or "/" in fn or "\\" in fn:
                 continue
             if target_name and fn.lower() != target_name.lower():
                 continue
@@ -1569,12 +1879,17 @@ class DriverPoolManager:
                 continue
 
             full_path = os.path.join(archives_dir, fn)
-            if not os.path.isfile(full_path):
+            if os.path.islink(full_path) or not os.path.isfile(full_path):
+                continue
+            try:
+                if os.path.commonpath([real_archives, os.path.realpath(full_path)]) != real_archives:
+                    continue
+            except ValueError:
                 continue
 
             scanned += 1
             try:
-                st = os.stat(full_path)
+                st = os.lstat(full_path)
                 file_size = int(st.st_size)
                 file_mtime_ns = int(st.st_mtime_ns)
             except OSError:
@@ -1605,6 +1920,8 @@ class DriverPoolManager:
                         fast_skip = True
 
             if fast_skip:
+                if _safe_delete_archive(full_path, lower_fn):
+                    deleted_archives += 1
                 skipped += 1
                 continue
 
@@ -1627,6 +1944,8 @@ class DriverPoolManager:
                             self._save_index_locked(idx)
 
             if already_done:
+                if _safe_delete_archive(full_path, lower_fn):
+                    deleted_archives += 1
                 skipped += 1
                 continue
 
@@ -1646,12 +1965,16 @@ class DriverPoolManager:
                         "ingested_at": datetime.now().isoformat(),
                     }
                     self._save_index_locked(idx)
+                was_deleted = _safe_delete_archive(full_path, lower_fn)
+                if was_deleted:
+                    deleted_archives += 1
                 ingested += 1
                 details.append({
                     "file": fn,
                     "model": None if is_generic else clean_model,
                     "ingested_count": res.get("packages_added", 0),
                     "total_units": res.get("units_discovered", 0),
+                    "archive_deleted": was_deleted,
                 })
             except Exception as ex:
                 errors.append({"file": fn, "error": str(ex)})
@@ -1665,6 +1988,7 @@ class DriverPoolManager:
             "scanned": scanned,
             "ingested": ingested,
             "skipped": skipped,
+            "deleted_archives": deleted_archives,
             "errors": errors,
             "details": details,
         }

@@ -822,22 +822,42 @@ function Sync-ProgramiFromNas {
             $prevEap = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
-                if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                $needConnect = $true
+                if (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue) {
+                    $probeItems = @(Get-ChildItem -LiteralPath $candUnc -ErrorAction SilentlyContinue | Select-Object -First 1)
+                    if ($probeItems.Count -gt 0 -or [string]::IsNullOrWhiteSpace($uPass)) {
+                        $needConnect = $false
+                    } else {
+                        # Postoji postojeca guest/nobody sesija bez prava citanja: ocisti samo konflikt ka ovom hostu
+                        Clear-WisCoreHostSmbConflicts -TargetHost $programiHost
+                    }
+                }
+
+                if ($needConnect) {
                     $userArg = if ($uName -match "\\") { $uName } else { "$programiHost\$uName" }
                     if (-not [string]::IsNullOrWhiteSpace($uPass)) {
-                        $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
-                        if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
-                            $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$uName`" /persistent:no >nul 2>&1"
+                        $rc1 = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $userArg
+                        if ($rc1 -eq 1219) {
+                            Write-ServisLog "SMB Error 1219 detektovan za $candUnc; cistim konfliktne sesije ka $programiHost..." -Level "WARN" -Component "NasProgrami"
+                            Clear-WisCoreHostSmbConflicts -TargetHost $programiHost
+                            $rc1 = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $userArg
                         }
-                        if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
-                            $null = & cmd.exe /c "net.exe use * /delete /y >nul 2>&1"
-                            $null = & cmd.exe /c "net.exe use `"$candUnc`" `"$uPass`" /user:`"$userArg`" /persistent:no >nul 2>&1"
+                        if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                            $rc2 = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $uName
+                            if ($rc2 -eq 1219) {
+                                Clear-WisCoreHostSmbConflicts -TargetHost $programiHost
+                                $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $uName
+                            }
                         }
                     }
-                    if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
-                        $null = & cmd.exe /c "net.exe use `"$candUnc`" `"`" /user:guest /persistent:no >nul 2>&1"
+                    if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
+                        $rcG = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
+                        if ($rcG -eq 1219) {
+                            Clear-WisCoreHostSmbConflicts -TargetHost $programiHost
+                            $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
+                        }
                     }
-                    if (-not (Test-Path $candUnc -ErrorAction SilentlyContinue)) {
+                    if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
                         Write-ServisLog "SMB pristup odbijen ili nedostupan za $candUnc (korisnik: $uName)." -Level "WARN" -Component "NasProgrami"
                         if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
                             Send-IpcLog -Message "SMB pristup odbijen ili nedostupan za $candUnc (korisnik: $uName)." -Level "WARN" -Tag "[NasProgrami]"
@@ -1172,6 +1192,39 @@ function Format-WisCoreProcessArg {
     return ('"' + $escaped + '"')
 }
 
+function Clear-WisCoreHostSmbConflicts {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetHost
+    )
+    if ([string]::IsNullOrWhiteSpace($TargetHost)) { return }
+    $cleanHost = ($TargetHost -replace '[\x00-\x1F]', '').Trim()
+    if (-not $cleanHost) { return }
+
+    try {
+        if (Get-Command Get-SmbMapping -ErrorAction SilentlyContinue) {
+            $maps = @(Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object {
+                $_.RemotePath -and ($_.RemotePath -imatch ("^\\\\" + [regex]::Escape($cleanHost) + "\\"))
+            })
+            foreach ($m in $maps) {
+                try { Remove-SmbMapping -RemotePath $m.RemotePath -Force -UpdateProfile:$false -ErrorAction SilentlyContinue } catch {}
+            }
+        }
+    } catch {}
+
+    try {
+        $netExe = if ($env:SystemRoot) { Join-Path $env:SystemRoot "System32\net.exe" } else { "net.exe" }
+        $netOut = & $netExe use 2>$null
+        $escapedHost = [regex]::Escape($cleanHost)
+        foreach ($line in $netOut) {
+            if ($line -match ("(\\\\$escapedHost\\[^\s]+)")) {
+                $uncToDrop = $matches[1].Trim()
+                $null = & $netExe use $uncToDrop /delete /y 2>$null
+            }
+        }
+        $null = & $netExe use ("\\" + $cleanHost + "\IPC$") /delete /y 2>$null
+    } catch {}
+}
+
 function Invoke-WisCoreNetUse {
     param(
         [ValidateSet("Connect", "DisconnectAll")]
@@ -1425,8 +1478,8 @@ function Sync-ServisLicensingFromNas {
                             $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $uName
                         }
                         if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
-                            # Oslobadjanje konfliktnih SMB sesija ka istom serveru (Error 1219 zastita) bez cmd.exe
-                            $null = Invoke-WisCoreNetUse -Action "DisconnectAll"
+                            # Oslobadjanje konfliktnih SMB sesija samo ka ovom serveru (Error 1219 zastita) bez rusenja tudjih sesija
+                            Clear-WisCoreHostSmbConflicts -TargetHost $nasHost
                             $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password $uPass -User $userArg
                         }
                     }
@@ -1434,7 +1487,7 @@ function Sync-ServisLicensingFromNas {
                         $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
                     }
                     if (-not (Test-Path -LiteralPath $candUnc -ErrorAction SilentlyContinue)) {
-                        $null = Invoke-WisCoreNetUse -Action "DisconnectAll"
+                        Clear-WisCoreHostSmbConflicts -TargetHost $nasHost
                         $null = Invoke-WisCoreNetUse -Action "Connect" -ShareUnc $candUnc -Password "" -User "guest"
                     }
                 }
