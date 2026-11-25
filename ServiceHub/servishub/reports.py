@@ -490,7 +490,10 @@ def compute_handover_status(rec: dict) -> str:
 
     notes = _pick("notes")
     thermal_note = str(_pick("thermal_note") or "").strip()
-    has_notes = bool(thermal_note) or (isinstance(notes, list) and any(str(x).strip() for x in notes)) or (isinstance(notes, str) and bool(notes.strip()))
+    manual_driver_bypass = _parse_optional_bool(_pick("manual_driver_bypass")) is True
+    if not manual_driver_bypass and isinstance(hwtest, dict):
+        manual_driver_bypass = _parse_optional_bool(hwtest.get("manual_driver_bypass")) is True
+    has_notes = bool(thermal_note) or manual_driver_bypass or (isinstance(notes, list) and any(str(x).strip() for x in notes)) or (isinstance(notes, str) and bool(notes.strip()))
 
     if (
         diag_st in ("WARN", "SENSOR_UNAVAILABLE", "ERROR", "CANCELLED")
@@ -691,6 +694,253 @@ def _sanitize_report_license_fields(payload: dict) -> dict:
     return sanitized
 
 
+def is_partial_hwtest_payload(payload: dict) -> bool:
+    """
+    Vraća True ako je payload parcijalni HwTest izveštaj iz Faze 5 (`is_partial_hwtest=True`
+    ili `report_stage='phase5_hwtest'`), koji ne sme kreirati ili pregaziti završni karton (IMP-94b).
+    """
+    if not isinstance(payload, dict):
+        return False
+    raw_flag = payload.get("is_partial_hwtest")
+    if raw_flag is True:
+        return True
+    if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("true", "1", "yes"):
+        return True
+    stage = str(payload.get("report_stage") or "").strip().lower()
+    return stage in ("phase5_hwtest", "phase5", "partial_hwtest")
+
+
+def _app_status_rank(val) -> int:
+    """Rangira jačinu statusa aplikacije: 3=potvrđeni OK, 2=WARN/ERROR/SKIP, 1=False/WAIT/prazno."""
+    if val is True:
+        return 3
+    if val is False or val is None:
+        return 1
+    s_up = str(val).strip().upper()
+    if s_up in ("OK", "COMPLETED", "SUCCESS", "TRUE", "INSTALLED"):
+        return 3
+    if s_up in ("", "FALSE", "WAIT", "WAITING", "PENDING", "N/A", "NONE", "NULL", "UNKNOWN"):
+        return 1
+    return 2
+
+
+def merge_app_statuses(existing_apps, incoming_apps):
+    """
+    IMP-94 / IMP-94b: Spaja mape/liste statusa aplikacija tako da prazan ili all-False/WAIT
+    sekundarni payload NIKADA ne pregazi već potvrđene 'OK' (ni druge validne) statuse aplikacija,
+    uz case-insensitive deduplikaciju ključeva (npr. 'Chrome' vs 'chrome').
+    """
+    if isinstance(existing_apps, dict) and existing_apps:
+        ex_dict = dict(existing_apps)
+    elif isinstance(existing_apps, list) and existing_apps:
+        ex_dict = {}
+        for item in existing_apps:
+            if isinstance(item, dict):
+                nm = str(item.get("name") or item.get("id") or "").strip()
+                if nm:
+                    ex_dict[nm] = item.get("status")
+            elif item is not None:
+                ex_dict[str(item)] = "OK"
+    else:
+        ex_dict = {}
+
+    if isinstance(incoming_apps, dict):
+        inc_items = list(incoming_apps.items())
+    elif isinstance(incoming_apps, list):
+        inc_items = []
+        for item in incoming_apps:
+            if isinstance(item, dict):
+                nm = str(item.get("name") or item.get("id") or "").strip()
+                if nm:
+                    inc_items.append((nm, item.get("status")))
+            elif item is not None:
+                inc_items.append((str(item), "OK"))
+    else:
+        inc_items = []
+
+    if not ex_dict:
+        if isinstance(incoming_apps, list):
+            return list(incoming_apps)
+        return dict(incoming_apps) if isinstance(incoming_apps, dict) else {}
+
+    if not inc_items:
+        return ex_dict if isinstance(existing_apps, dict) else list(existing_apps)
+
+    # Ako dolazni payload ima samo False/WAIT/prazne vrednosti a postojeći ima potvrđene statuse, zadrži postojeći
+    ex_has_real = any(_app_status_rank(v) >= 2 for v in ex_dict.values())
+    inc_has_real = any(_app_status_rank(v) >= 2 for _, v in inc_items)
+    if ex_has_real and not inc_has_real:
+        return ex_dict if isinstance(existing_apps, dict) else list(existing_apps)
+
+    merged = dict(ex_dict)
+    low_to_key = {str(k).strip().lower(): k for k in merged.keys()}
+    for raw_k, inc_v in inc_items:
+        k_str = str(raw_k).strip()
+        if not k_str:
+            continue
+        k_low = k_str.lower()
+        inc_rank = _app_status_rank(inc_v)
+        if k_low in low_to_key:
+            canon_k = low_to_key[k_low]
+            ex_rank = _app_status_rank(merged.get(canon_k))
+            # Potvrđeni OK (rank 3) nikada se ne gazi nižim rangom (False/WAIT/itd.)
+            if ex_rank == 3 and inc_rank < 3:
+                continue
+            if ex_rank >= 2 and inc_rank <= 1:
+                continue
+            if inc_rank > ex_rank:
+                merged[canon_k] = inc_v
+        else:
+            if ex_has_real and inc_rank <= 1:
+                continue
+            merged[k_str] = inc_v
+            low_to_key[k_low] = k_str
+
+    return merged
+
+
+def _format_app_status_cell(app_st) -> str:
+    """Formatira status aplikacije za Markdown tabelu uz eksplicitnu podršku za boolean vrednosti (IMP-94)."""
+    if app_st is True:
+        return "✅ OK"
+    if app_st is False:
+        return "❌ Nedostaje"
+    if app_st is None:
+        return "⏳ N/A"
+    s_norm = str(app_st).strip()
+    s_up = s_norm.upper()
+    if s_up == "TRUE":
+        return "✅ OK"
+    if s_up == "FALSE":
+        return "❌ Nedostaje"
+    if s_up in ("COMPLETED", "OK", "SUCCESS"):
+        return f"✅ {s_norm}"
+    if s_up in ("FAILED", "ERROR", "FAIL", "ERR", "MISSING", "NEDOSTAJE"):
+        return f"❌ {s_norm}"
+    return f"⏳ {s_norm}"
+
+
+def _is_empty_or_placeholder_report_hw_val(val) -> bool:
+    if val is None or isinstance(val, bool):
+        return True
+    if isinstance(val, (int, float)):
+        return val <= 0
+    s = str(val).strip().lower()
+    return s in (
+        "", "n/a", "na", "unknown", "none", "null", "0",
+        "to be filled by o.e.m.", "default string", "system product name",
+        "system serial number", "genericpc", "nepoznato",
+    )
+
+
+def merge_hw_report_dicts(existing_hw: dict, incoming_hw: dict) -> dict:
+    """Spaja hardverske rečnike tako da cpu=None/prazni/UNKNOWN podaci nikada ne pregaze popunjene."""
+    merged = {}
+    if isinstance(existing_hw, dict):
+        for k, v in existing_hw.items():
+            if not _is_empty_or_placeholder_report_hw_val(v):
+                merged[k] = v
+    if isinstance(incoming_hw, dict):
+        for k, v in incoming_hw.items():
+            if _is_empty_or_placeholder_report_hw_val(v):
+                continue
+            if k not in merged or _is_empty_or_placeholder_report_hw_val(merged.get(k)):
+                merged[k] = v
+    return merged
+
+
+def merge_report_payloads(existing_rep: dict, incoming_rep: dict) -> dict:
+    """
+    Spaja postojeći i dolazni servisni izveštaj uz strogu zaštitu (IMP-94 / IMP-94b):
+    - nikada ne gazi potvrđene 'OK' statuse aplikacija praznim/all-False payload-om,
+    - nikada ne gazi popunjene hardware podatke sa cpu=None/praznim vrednostima,
+    - čuva duže trajanje i validni diagnostics_status.
+    """
+    merged = dict(existing_rep) if isinstance(existing_rep, dict) else {}
+    inc = incoming_rep if isinstance(incoming_rep, dict) else {}
+
+    def _pick_dur(rep: dict) -> int:
+        d = rep.get("duration_seconds", 0)
+        try:
+            d_int = int(float(d or 0))
+        except (ValueError, TypeError):
+            d_int = 0
+        if d_int > 0:
+            return d_int
+        return 0
+
+    old_dur = _pick_dur(merged)
+    new_dur = _pick_dur(inc)
+
+    for k, v in inc.items():
+        if k in ("duration_seconds", "duration_formatted", "duration", "apps", "hw", "hardware", "is_partial_hwtest", "report_stage"):
+            continue
+        if isinstance(v, dict):
+            old_v = merged.get(k)
+            if isinstance(old_v, dict) and old_v:
+                if v:
+                    sub = dict(old_v)
+                    for sk, sv in v.items():
+                        if sv not in (None, "", []):
+                            sub[sk] = sv
+                    merged[k] = sub
+            elif v:
+                merged[k] = dict(v)
+        elif k in ("errors", "notes"):
+            old_list = merged.get(k)
+            if isinstance(v, list) and v:
+                if isinstance(old_list, list) and old_list:
+                    comb = list(old_list)
+                    for item in v:
+                        if item not in comb:
+                            comb.append(item)
+                    merged[k] = comb
+                else:
+                    merged[k] = list(v)
+        elif v not in (None, ""):
+            if k == "diagnostics_status" and merged.get(k) == "THERMAL_CRITICAL":
+                continue
+            if k == "diagnostics_status" and str(v).upper() == "NOT_VERIFIED" and str(merged.get(k) or "").upper() not in ("", "NOT_VERIFIED"):
+                continue
+            if k == "cooling_verified" and merged.get(k) is True and v is False and str(merged.get("diagnostics_status") or "").upper() == "OK":
+                continue
+            if k in ("serial_number", "chassis", "computer_name", "device_id") and _is_empty_or_placeholder_report_hw_val(v) and not _is_empty_or_placeholder_report_hw_val(merged.get(k)):
+                continue
+            if k == "device_id" and str(merged.get(k) or "").upper().startswith("TK-") and not str(v).upper().startswith("TK-"):
+                continue
+            merged[k] = v
+
+    # Apps zaštita
+    merged["apps"] = merge_app_statuses(merged.get("apps"), inc.get("apps"))
+
+    # Hardware zaštita (spoji i hw i hardware blokove)
+    old_hw = merge_hw_report_dicts(
+        merged.get("hw") if isinstance(merged.get("hw"), dict) else {},
+        merged.get("hardware") if isinstance(merged.get("hardware"), dict) else {},
+    )
+    inc_hw = merge_hw_report_dicts(
+        inc.get("hw") if isinstance(inc.get("hw"), dict) else {},
+        inc.get("hardware") if isinstance(inc.get("hardware"), dict) else {},
+    )
+    final_hw = merge_hw_report_dicts(old_hw, inc_hw)
+    if final_hw:
+        merged["hw"] = final_hw
+
+    if new_dur > old_dur:
+        merged["duration_seconds"] = new_dur
+        if inc.get("duration_formatted") and inc.get("duration_formatted") != "N/A":
+            merged["duration_formatted"] = inc["duration_formatted"]
+        else:
+            merged["duration_formatted"] = f"{new_dur // 60}m {new_dur % 60:02d}s"
+    elif old_dur > 0:
+        merged["duration_seconds"] = old_dur
+        if not merged.get("duration_formatted") or merged.get("duration_formatted") == "N/A":
+            merged["duration_formatted"] = f"{old_dur // 60}m {old_dur % 60:02d}s"
+
+    merged.update(diagnostics_contract(merged))
+    return merged
+
+
 def generate_markdown_report(report_data: dict) -> str:
     """Generiše čitak i profesionalan Markdown servisni karton iz JSON izveštaja."""
     dev_id = report_data.get("device_id", "N/A")
@@ -746,15 +996,13 @@ def generate_markdown_report(report_data: dict) -> str:
     apps = report_data.get("apps", {})
     if isinstance(apps, dict) and apps:
         for app, app_st in apps.items():
-            icon = "✅" if app_st in ("Completed", "OK", "Success") else ("❌" if app_st in ("Failed", "Error") else "⏳")
-            lines.append(f"| {app} | {icon} {app_st} |")
+            lines.append(f"| {app} | {_format_app_status_cell(app_st)} |")
     elif isinstance(apps, list) and apps:
         for app in apps:
             if isinstance(app, dict):
                 app_name = app.get("name", "Unknown")
                 app_st = app.get("status", "N/A")
-                icon = "✅" if app_st in ("Completed", "OK", "Success") else ("❌" if app_st in ("Failed", "Error") else "⏳")
-                lines.append(f"| {app_name} | {icon} {app_st} |")
+                lines.append(f"| {app_name} | {_format_app_status_cell(app_st)} |")
             else:
                 lines.append(f"| {app} | ✅ Instalirano |")
     else:
@@ -818,6 +1066,20 @@ def generate_markdown_report(report_data: dict) -> str:
         note_items.append(raw_notes.strip())
     if diagnostics.get("diagnostics_status") == "THERMAL_CRITICAL" and not note_items:
         note_items.append(diagnostics.get("diagnostics_summary", ""))
+    hw_block = report_data.get("hwtest") if isinstance(report_data.get("hwtest"), dict) else {}
+    if _parse_optional_bool(report_data.get("manual_driver_bypass")) is True or _parse_optional_bool(hw_block.get("manual_driver_bypass")) is True:
+        bypass_reason = str(
+            report_data.get("driver_gate_emergency_override_reason")
+            or hw_block.get("driver_gate_emergency_override_reason")
+            or ""
+        ).strip()
+        bypass_note = (
+            f"Vanredno otključani testovi (PreAutoDriverGate bypass): {bypass_reason}"
+            if bypass_reason
+            else "Vanredno otključani testovi (PreAutoDriverGate bypass)"
+        )
+        if bypass_note not in note_items:
+            note_items.append(bypass_note)
     if note_items:
         lines.extend([
             "",
@@ -971,8 +1233,11 @@ def save_device_report(
     """
     Arhivira JSON i Markdown servisni karton na disk.
     Ako unutar `dedup_window_sec` (podrazumevano 30 min) već postoji izveštaj
-    za isti `clean_id` (uz kompatibilan `serial_number` i `session_id`/`run_id`),
-    ažurira taj postojeći izveštaj umesto pravljenja duplih fajlova.
+    za isti `clean_id` ili isti `serial_number` / `previous_hostname`
+    (uz kompatibilan `session_id`/`run_id`), spaja i ažurira postojeći izveštaj
+    umesto pravljenja duplih fajlova, čuvajući potvrđene app/hw podatke (IMP-72, IMP-94).
+    Parcijalni HwTest payload iz Faze 5 (is_partial_hwtest=True / report_stage='phase5_hwtest')
+    nikada ne kreira novi niti gazi postojeći karton na disku (IMP-94b).
     Vraća (json_filepath, md_filepath, json_filename, md_filename).
     """
     import json as _rep_json
@@ -987,7 +1252,7 @@ def save_device_report(
         if not isinstance(rec, dict):
             return ""
         hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else (rec.get("hardware") if isinstance(rec.get("hardware"), dict) else {})
-        raw_sn = str(rec.get("serial_number") or rec.get("serial") or hw.get("serial") or "").strip()
+        raw_sn = str(rec.get("serial_number") or rec.get("serial") or hw.get("serial") or hw.get("serial_number") or "").strip()
         if raw_sn.lower() in ("", "unknown", "none", "n/a", "to be filled by o.e.m.", "default string"):
             return ""
         return raw_sn.lower()
@@ -999,48 +1264,107 @@ def save_device_report(
 
     in_sn = _extract_sn(payload)
     in_sid = _extract_sid(payload)
+    in_prev_host = str(payload.get("previous_hostname") or "").strip() if isinstance(payload, dict) else ""
+    in_prev_clean = sanitize_id(in_prev_host).lower() if in_prev_host and in_prev_host.lower() not in ("unknown", "none", "n/a") else ""
+    in_comp_name = str(payload.get("computer_name") or "").strip() if isinstance(payload, dict) else ""
+    in_comp_clean = sanitize_id(in_comp_name).lower() if in_comp_name and in_comp_name.lower() not in ("unknown", "none", "n/a") else ""
 
     reuse_json_filename = None
     reuse_md_filename = None
+    matched_old_data = None
+    real_reports_dir = os.path.realpath(reports_dir)
+
     if dedup_window_sec and dedup_window_sec > 0:
         suffix = f"_{clean_id}.json"
         candidates = []
         try:
             for fn in os.listdir(reports_dir):
-                if not fn.endswith(suffix) or fn.endswith(".tmp"):
+                if not fn.lower().endswith(".json") or fn.lower().endswith(".tmp"):
                     continue
                 fp = os.path.join(reports_dir, fn)
-                if not os.path.isfile(fp):
+                if os.path.islink(fp) or not os.path.isfile(fp):
                     continue
                 try:
+                    if os.path.commonpath([real_reports_dir, os.path.realpath(fp)]) != real_reports_dir:
+                        continue
                     mtime = os.path.getmtime(fp)
-                except OSError:
+                except (OSError, ValueError):
                     continue
                 if (now_ts - mtime) <= dedup_window_sec:
-                    candidates.append((mtime, fn, fp))
+                    exact_prio = 1 if fn.endswith(suffix) else 0
+                    candidates.append((exact_prio, mtime, fn, fp))
         except OSError:
             candidates = []
 
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        for _, cand_fn, cand_fp in candidates:
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        for _, _, cand_fn, cand_fp in candidates:
             try:
                 with open(cand_fp, "r", encoding="utf-8") as f:
                     old_data = _rep_json.load(f)
             except Exception:
-                old_data = {}
+                continue
+            if not isinstance(old_data, dict):
+                continue
             old_sn = _extract_sn(old_data)
             old_sid = _extract_sid(old_data)
             if in_sn and old_sn and in_sn != old_sn:
                 continue
             if in_sid and old_sid and in_sid != old_sid:
                 continue
-            reuse_json_filename = cand_fn
-            reuse_md_filename = cand_fn[:-5] + ".md"
-            break
 
+            old_dev_clean = sanitize_id(str(old_data.get("device_id") or "")).lower()
+            old_comp_clean = sanitize_id(str(old_data.get("computer_name") or "")).lower()
+            old_prev_clean = sanitize_id(str(old_data.get("previous_hostname") or "")).lower()
+            fn_lower = cand_fn.lower()
+
+            id_match = cand_fn.endswith(suffix) or (clean_id.lower() in (old_dev_clean, old_comp_clean))
+            sn_match = bool(in_sn and old_sn and in_sn == old_sn)
+            prev_match = bool(
+                in_prev_clean and (
+                    in_prev_clean in (old_dev_clean, old_comp_clean, old_prev_clean)
+                    or fn_lower.endswith(f"_{in_prev_clean}.json")
+                )
+            )
+            rev_prev_match = bool(
+                old_prev_clean and in_comp_clean and old_prev_clean == in_comp_clean
+            )
+
+            if id_match or sn_match or prev_match or rev_prev_match:
+                reuse_json_filename = cand_fn
+                reuse_md_filename = cand_fn[:-5] + ".md"
+                matched_old_data = old_data
+                break
+
+    if is_partial_hwtest_payload(payload):
+        if reuse_json_filename and reuse_md_filename:
+            return (
+                os.path.join(reports_dir, reuse_json_filename),
+                os.path.join(reports_dir, reuse_md_filename),
+                reuse_json_filename,
+                reuse_md_filename,
+            )
+        return None, None, None, None
+
+    promoted_from_old = None
     if reuse_json_filename and reuse_md_filename:
-        json_filename = reuse_json_filename
-        md_filename = reuse_md_filename
+        old_was_tk = "_TK-" in reuse_json_filename.upper()
+        new_is_tk = clean_id.upper().startswith("TK-")
+        if new_is_tk and not old_was_tk:
+            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            json_filename = f"{date_str}_{clean_id}.json"
+            md_filename = f"{date_str}_{clean_id}.md"
+            seq = 1
+            while os.path.exists(os.path.join(reports_dir, json_filename)):
+                json_filename = f"{date_str}_{seq}_{clean_id}.json"
+                md_filename = f"{date_str}_{seq}_{clean_id}.md"
+                seq += 1
+            promoted_from_old = (
+                os.path.join(reports_dir, reuse_json_filename),
+                os.path.join(reports_dir, reuse_md_filename),
+            )
+        else:
+            json_filename = reuse_json_filename
+            md_filename = reuse_md_filename
     else:
         date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         json_filename = f"{date_str}_{clean_id}.json"
@@ -1061,6 +1385,9 @@ def save_device_report(
     elif sanitized_payload.get("display"):
         sanitized_payload["hw"] = {"display": sanitized_payload["display"]}
 
+    if isinstance(matched_old_data, dict) and matched_old_data:
+        sanitized_payload = merge_report_payloads(matched_old_data, sanitized_payload)
+
     if isinstance(sanitized_payload.get("errors"), list) and sanitized_payload["errors"]:
         sanitized_payload["errors"] = _filter_stale_session_errors(
             sanitized_payload, {}, sanitized_payload["errors"]
@@ -1075,6 +1402,20 @@ def save_device_report(
 
     md_content = generate_markdown_report(sanitized_payload)
     _atomic_write_text(md_filepath, md_content)
+
+    if promoted_from_old:
+        for old_fp in promoted_from_old:
+            try:
+                if (
+                    old_fp
+                    and old_fp not in (json_filepath, md_filepath)
+                    and not os.path.islink(old_fp)
+                    and os.path.isfile(old_fp)
+                    and os.path.commonpath([real_reports_dir, os.path.realpath(old_fp)]) == real_reports_dir
+                ):
+                    os.remove(old_fp)
+            except (OSError, ValueError):
+                pass
 
     return json_filepath, md_filepath, json_filename, md_filename
 

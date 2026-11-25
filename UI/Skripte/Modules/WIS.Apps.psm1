@@ -1950,7 +1950,7 @@ function Get-ServisProgramiRoot {
 
     # 2. Definisanje liste mrežnih kandidata
     $nasHosts = @("192.168.170.254", "truenas.servis")
-    $nasShares = @("Programi", "WIS", "Servis")
+    $nasShares = @("Servis", "Programi", "WIS")
     $nasIni = $null
 
     # Dodavanje parametara iz Wifi-Servis.ini ako postoje

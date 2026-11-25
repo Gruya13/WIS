@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from servishub.drivers.hwid import generate_hwid_candidates
-from servishub.drivers.oem.catalogs import OemCatalogManager, detect_oem_vendor
+from servishub.drivers.oem.catalogs import OemCatalogManager, TIER1_OEM_VENDORS, detect_oem_vendor
+from servishub.drivers.oem.microsoft_surface import extract_msi_drivers
 from servishub.drivers.version import is_catalog_driver_newer, parse_driver_date
 
 try:
@@ -75,6 +76,9 @@ _SOURCE_PRIORITY = {
     "ms_catalog": 2,
     "harvest": 1,
 }
+
+# Strogi 4-delni SUBSYS match (VEN + DEV + 8-hex SUBSYS) za IMP-89
+_STRICT_SUBSYS_RE = re.compile(r"VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}&SUBSYS_[0-9A-F]{8}", re.IGNORECASE)
 
 # Prepoznavanje HWID stringova unutar .inf datoteka (PCI, USB, Audio, ACPI, HID, NVMe, SCSI, SD, I2C/SPI)
 _POOL_INF_HWID_RE = re.compile(
@@ -386,6 +390,12 @@ def _extract_archive_safely(
                 return
         raise RuntimeError(f"Raspakivanje .cab arhive '{os.path.basename(ap)}' nije uspelo (proverite bsdtar/cabextract).")
 
+    # 3b. MSI (Microsoft Surface Drivers & Firmware preko msiextract)
+    if lower.endswith(".msi"):
+        extract_msi_drivers(ap, real_dest)
+        _assert_extracted_tree_safe(real_dest)
+        return
+
     # 4. 7Z / SFX EXE (HP SoftPaq, Lenovo SCCM)
     extract_cmds: List[List[str]] = []
     for seven_bin in ("7z", "7zz", "7za"):
@@ -462,27 +472,45 @@ class DriverPoolManager:
         bundle_ttl_hours: Optional[float] = None,
         delete_ingested_archives: Optional[bool] = None,
         oem_catalog_stale_hours: Optional[float] = None,
+        bundle_cache_min_hits: Optional[int] = None,
+        bundle_cache_max_gb: Optional[float] = None,
+        bundles_dir: Optional[str] = None,
     ):
         self.pool_dir = os.path.abspath(pool_dir)
         self.packages_dir = os.path.join(self.pool_dir, "packages")
         self.manifests_dir = os.path.join(self.pool_dir, "manifests")
-        self.bundles_dir = os.path.join(self.pool_dir, "bundles")
+        env_bundles_dir = os.environ.get("SERVIS_POOL_BUNDLES_DIR", "").strip()
+        if bundles_dir:
+            self.bundles_dir = os.path.abspath(bundles_dir)
+        elif env_bundles_dir:
+            self.bundles_dir = os.path.abspath(env_bundles_dir)
+        else:
+            self.bundles_dir = os.path.join(self.pool_dir, "bundles")
         self.catalogs_dir = os.path.join(self.pool_dir, "oem_catalogs")
         self.index_path = os.path.join(self.pool_dir, "pool_index.json")
 
         try:
             from servishub.config import (
+                DEFAULT_BUNDLE_CACHE_MAX_GB,
+                DEFAULT_BUNDLE_CACHE_MIN_HITS,
                 DEFAULT_BUNDLE_TTL_HOURS,
                 DEFAULT_MAX_BUNDLES_GB,
                 DEFAULT_OEM_CATALOG_STALE_HOURS,
             )
         except Exception:
-            DEFAULT_MAX_BUNDLES_GB = 12.0
+            DEFAULT_MAX_BUNDLES_GB = 16.0
             DEFAULT_BUNDLE_TTL_HOURS = 24.0
             DEFAULT_OEM_CATALOG_STALE_HOURS = 72.0
+            DEFAULT_BUNDLE_CACHE_MIN_HITS = 2
+            DEFAULT_BUNDLE_CACHE_MAX_GB = 4.0
 
         self.max_bundles_gb = float(max_bundles_gb) if max_bundles_gb is not None else float(DEFAULT_MAX_BUNDLES_GB)
         self.bundle_ttl_hours = float(bundle_ttl_hours) if bundle_ttl_hours is not None else float(DEFAULT_BUNDLE_TTL_HOURS)
+        self.bundle_cache_min_hits = max(
+            1, int(bundle_cache_min_hits) if bundle_cache_min_hits is not None else int(DEFAULT_BUNDLE_CACHE_MIN_HITS)
+        )
+        max_single_gb = float(bundle_cache_max_gb) if bundle_cache_max_gb is not None else float(DEFAULT_BUNDLE_CACHE_MAX_GB)
+        self.bundle_cache_max_bytes = int(max(0.0, max_single_gb) * (1024 ** 3))
         self.delete_ingested_archives = bool(delete_ingested_archives) if delete_ingested_archives is not None else False
         self.oem_catalog_stale_hours = (
             float(oem_catalog_stale_hours)
@@ -498,6 +526,7 @@ class DriverPoolManager:
         self._index_cache_sig: Optional[Tuple[int, int]] = None
         self.catalog_mgr = catalog_mgr or OemCatalogManager(catalogs_dir=self.catalogs_dir)
         self.jobs: Dict[str, Dict[str, Any]] = {}
+        self._active_dedup_jobs: Dict[str, Dict[str, Any]] = {}
 
         os.makedirs(self.packages_dir, exist_ok=True)
         os.makedirs(self.manifests_dir, exist_ok=True)
@@ -552,6 +581,7 @@ class DriverPoolManager:
             "hwid_winners": {},
             "rejected_packages": [],
             "ingested_archives": {},
+            "model_hits": {},
             "stats": {
                 "dedup_hits": 0,
                 "dedup_saved_bytes": 0,
@@ -574,6 +604,7 @@ class DriverPoolManager:
                         data.setdefault("hwid_winners", {})
                         data.setdefault("rejected_packages", [])
                         data.setdefault("ingested_archives", {})
+                        data.setdefault("model_hits", {})
                         st_map = data.setdefault("stats", {})
                         st_map.setdefault("dedup_hits", 0)
                         st_map.setdefault("dedup_saved_bytes", 0)
@@ -639,14 +670,22 @@ class DriverPoolManager:
         """
         Određuje da li je `cand` paket strogo bolji od `existing` paketa za isti HWID:
         1. Potpisan paket (has_cat=True) uvek pobeđuje nepotpisani (has_cat=False).
-        2. Strogo novija DriverDate/DriverVer verzija pobeđuje (is_catalog_driver_newer).
-        3. Ako existing NIJE noviji od cand i verzije/datumi su identični:
-           viši prioritet izvora (oem_pack > ms_catalog > harvest) pobeđuje.
+        2. Potpisan (`has_cat=True`) `oem_pack` UVEK pobeđuje `ms_catalog` i `harvest` bez obzira na DriverDate;
+           novija verzija/datum pobeđuje `oem_pack` samo ako je i kandidat takođe `oem_pack`.
+        3. Strogo novija DriverDate/DriverVer verzija pobeđuje (is_catalog_driver_newer).
+        4. Ako su verzije/datumi identični: viši prioritet izvora (oem_pack > ms_catalog > harvest) pobeđuje.
         """
         c_cat = bool(cand.get("has_cat"))
         e_cat = bool(existing.get("has_cat"))
         if c_cat != e_cat:
             return c_cat
+
+        c_sources = set(cand.get("sources") or ([cand.get("source")] if cand.get("source") else []))
+        e_sources = set(existing.get("sources") or ([existing.get("source")] if existing.get("source") else []))
+        c_is_oem = "oem_pack" in c_sources
+        e_is_oem = "oem_pack" in e_sources
+        if c_cat and e_cat and (c_is_oem != e_is_oem):
+            return c_is_oem
 
         c_ver = str(cand.get("driver_ver") or "")
         c_date = str(cand.get("driver_date") or "")
@@ -659,8 +698,8 @@ class DriverPoolManager:
             return False
 
         # Identična verzija i datum: proveri prioritet izvora
-        c_prio = max((_SOURCE_PRIORITY.get(s, 0) for s in (cand.get("sources") or [cand.get("source")])), default=0)
-        e_prio = max((_SOURCE_PRIORITY.get(s, 0) for s in (existing.get("sources") or [existing.get("source")])), default=0)
+        c_prio = max((_SOURCE_PRIORITY.get(s, 0) for s in c_sources), default=0)
+        e_prio = max((_SOURCE_PRIORITY.get(s, 0) for s in e_sources), default=0)
         return c_prio > e_prio
 
     def _discover_package_units(self, extracted_dir: str) -> List[Dict[str, Any]]:
@@ -1114,13 +1153,15 @@ class DriverPoolManager:
 
     def refresh_stale_oem_catalogs(self, max_age_hours: Optional[float] = None) -> Dict[str, Any]:
         """
-        Proverava status OEM kataloga i osvežava one koji su ne-sinhronizovani ili stariji od
+        Proverava status OEM kataloga (TIER1_OEM_VENDORS) i osvežava one koji su ne-sinhronizovani ili stariji od
         `max_age_hours` (podrazumevano 72h). Greške pojedinačnih vendora ne prekidaju ostale.
         """
         thresh_h = float(max_age_hours) if max_age_hours is not None else self.oem_catalog_stale_hours
         status_map = self.catalog_mgr.get_catalog_status() or {}
         refreshed: Dict[str, Any] = {}
-        for vendor in ("dell", "hp", "lenovo"):
+        for vendor in TIER1_OEM_VENDORS:
+            if status_map and vendor not in status_map:
+                continue
             info = status_map.get(vendor) or {}
             synced = bool(info.get("synced"))
             age_h = info.get("age_hours")
@@ -1142,17 +1183,18 @@ class DriverPoolManager:
         model: str,
         os_ver: str = "win11",
         system_id: str = "",
+        system_sku: str = "",
         force_sync: bool = False,
     ) -> Dict[str, Any]:
         """
-        Preuzima zvanični OEM Driver Pack sa HP/Dell/Lenovo kataloga, verifikuje hash,
+        Preuzima zvanični OEM Driver Pack sa kataloga (Tier 1 + Tier 2 drop-in), verifikuje hash,
         raspakuje i ingestuje u Driver Pool uz deduplikaciju i ažuriranje manifesta modela.
         """
         vendor = detect_oem_vendor(manufacturer, model)
         if not vendor:
             return {"status": "unsupported_vendor", "manufacturer": manufacturer, "model": model}
 
-        cat_info = self.catalog_mgr.get_catalog_status().get(vendor, {})
+        cat_info = (self.catalog_mgr.get_catalog_status() or {}).get(vendor, {})
         age_h = cat_info.get("age_hours")
         need_sync = (
             force_sync
@@ -1164,7 +1206,7 @@ class DriverPoolManager:
                 self.catalog_mgr.sync_catalog(vendor, force=force_sync or (age_h is not None and float(age_h) >= self.oem_catalog_stale_hours))
             except Exception as sync_ex:
                 # Nastavi ako postoji bar lokalni keš
-                if not self.catalog_mgr.get_catalog_status().get(vendor, {}).get("synced"):
+                if not (self.catalog_mgr.get_catalog_status() or {}).get(vendor, {}).get("synced"):
                     return {"status": "catalog_error", "vendor": vendor, "error": str(sync_ex)}
 
         entry = self.catalog_mgr.find_driver_pack(
@@ -1172,6 +1214,7 @@ class DriverPoolManager:
             model=model,
             os_ver=os_ver,
             system_id=system_id,
+            system_sku=system_sku,
         )
         if not entry:
             return {"status": "not_found", "vendor": vendor, "model": model}
@@ -1227,15 +1270,95 @@ class DriverPoolManager:
         m = self._find_manifest_for_model(model)
         return bool(m and (m.get("packages") or []))
 
+    def has_oem_pack_in_manifest(self, model: Optional[str]) -> bool:
+        with self.lock:
+            m = self._find_manifest_for_model(model)
+            if not m:
+                return False
+            if m.get("oem_pack") or ("oem_pack" in (m.get("sources") or [])):
+                return True
+            idx = self._ensure_index_loaded()
+            for pid in (m.get("packages") or []):
+                pmeta = idx.get("packages", {}).get(pid, {})
+                if "oem_pack" in (pmeta.get("sources") or []):
+                    return True
+            return False
+
+    def get_package_snapshot(self, pkg_id: str) -> Optional[Tuple[Dict[str, Any], str]]:
+        clean_pid = os.path.basename(str(pkg_id or "").strip())
+        if not clean_pid or clean_pid in (".", ".."):
+            return None
+        with self.lock:
+            idx = self._ensure_index_loaded()
+            pmeta = idx.get("packages", {}).get(clean_pid)
+            if not pmeta:
+                return None
+            pdir = os.path.join(self.packages_dir, clean_pid)
+            if not os.path.isdir(pdir) or os.path.islink(pdir):
+                return None
+            return (dict(pmeta), pdir)
+
+    def resolve_device_hwids(self, hwids: Sequence[str], model: str = "") -> Dict[str, Any]:
+        """Vraća lokalno pokrivene HWID-ove iz Pool-a (oem_pack / manifest winner / global hwid_winners)."""
+        clean_hwids = [str(h).strip() for h in (hwids or []) if str(h).strip()]
+        matches: List[Dict[str, Any]] = []
+        unmatched: List[str] = []
+        with self.lock:
+            idx = self._ensure_index_loaded()
+            manifest = self._find_manifest_for_model(model) if model else None
+            manifest_hmap = (manifest or {}).get("hwid_map") or {}
+            for raw_h in clean_hwids:
+                cands = generate_hwid_candidates(raw_h)
+                chosen = None
+                matched_cand = None
+                for cand in cands:
+                    cand_l = cand.lower()
+                    m_pid = manifest_hmap.get(cand_l)
+                    g_pid = idx["hwid_winners"].get(cand_l)
+                    cand_pid = None
+                    if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
+                        cand_pid = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
+                    elif g_pid and g_pid in idx["packages"]:
+                        cand_pid = g_pid
+                    elif m_pid and m_pid in idx["packages"]:
+                        cand_pid = m_pid
+                    if cand_pid and os.path.isdir(os.path.join(self.packages_dir, cand_pid)):
+                        chosen = cand_pid
+                        matched_cand = cand
+                        break
+                if chosen:
+                    pmeta = idx["packages"].get(chosen, {})
+                    matches.append({
+                        "hwid": raw_h,
+                        "matched_hwid": matched_cand or raw_h,
+                        "pkg_id": chosen,
+                        "inf_name": pmeta.get("inf_name"),
+                        "driver_ver": pmeta.get("driver_ver"),
+                        "driver_date": pmeta.get("driver_date"),
+                        "sources": list(pmeta.get("sources") or []),
+                        "has_cat": bool(pmeta.get("has_cat", True)),
+                        "size_bytes": int(pmeta.get("size_bytes") or 0),
+                    })
+                else:
+                    unmatched.append(raw_h)
+        return {
+            "matches": matches,
+            "unmatched": unmatched,
+            "has_oem_pack": bool(self.has_oem_pack_in_manifest(model)) if model else False,
+        }
+
     def build_bundle_tar(
         self,
         model: str = "",
         missing_hwids: Optional[Sequence[str]] = None,
         all_hwids: Optional[Sequence[str]] = None,
+        allow_stream_plan: bool = False,
     ) -> Dict[str, Any]:
         """
         Dinamički sastavlja (ili vraća iz bundles/ keša) minimalni, 100% deduplikovani `.tar` paket
         za traženi model i/ili konkretne HWID-ove uređaja.
+        Kada je allow_stream_plan=True, retki (hits < min_hits) ili preveliki (> max_gb) modeli
+        vraćaju plan za on-the-fly streaming bez upisa u bundles/.
         """
         clean_missing = [str(h).strip() for h in (missing_hwids or []) if str(h).strip()]
         clean_all = [str(h).strip() for h in (all_hwids or []) if str(h).strip()]
@@ -1246,19 +1369,22 @@ class DriverPoolManager:
         unmatched_hwids: List[str] = []
         pkg_snapshots: Dict[str, Tuple[Dict[str, Any], str]] = {}
         manifest_model: Optional[str] = None
+        model_hits = 1
 
         with self.lock:
             idx = self._ensure_index_loaded()
             manifest = self._find_manifest_for_model(model)
             manifest_model = (manifest or {}).get("model")
             manifest_hmap = (manifest or {}).get("hwid_map") or {}
+            manifest_has_packages = bool(manifest and (manifest.get("packages") or []))
 
-            def _pick_for_hwid(raw_h: str) -> Optional[str]:
+            def _pick_for_hwid(raw_h: str, allow_global_generic: bool = True) -> Optional[str]:
                 cands = generate_hwid_candidates(raw_h)
                 for cand in cands:
                     cand_l = cand.lower()
                     m_pid = manifest_hmap.get(cand_l)
-                    g_pid = idx["hwid_winners"].get(cand_l)
+                    allow_g = allow_global_generic or bool(_STRICT_SUBSYS_RE.search(cand))
+                    g_pid = idx["hwid_winners"].get(cand_l) if allow_g else None
                     chosen = None
                     if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
                         chosen = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
@@ -1273,7 +1399,7 @@ class DriverPoolManager:
             if clean_missing:
                 # Ciljani mod: samo paketi koji rešavaju prijavljene problematične HWID-ove
                 for raw_h in clean_missing:
-                    pid = _pick_for_hwid(raw_h)
+                    pid = _pick_for_hwid(raw_h, allow_global_generic=True)
                     if pid:
                         matched_hwids.append(raw_h)
                         if pid not in seen_pids:
@@ -1282,14 +1408,16 @@ class DriverPoolManager:
                     else:
                         unmatched_hwids.append(raw_h)
             else:
-                # Puni mod modela: ceo manifest modela + dopuna iz Pool-a za poznate all_hwids uređaja
+                # Puni mod modela: ceo manifest modela + dopuna iz Pool-a za poznate all_hwids uređaja.
+                # IMP-89: kad već postoji manifest sa paketima za model, zabrani generički globalni fallback
+                # bez SUBSYS-a u clean_all da se ne bi ubacivao tuđi driver bloat.
                 if manifest:
                     for pid in (manifest.get("packages") or []):
                         if pid in idx["packages"] and pid not in seen_pids and os.path.isdir(os.path.join(self.packages_dir, pid)):
                             seen_pids.add(pid)
                             selected_pids.append(pid)
                 for raw_h in clean_all:
-                    pid = _pick_for_hwid(raw_h)
+                    pid = _pick_for_hwid(raw_h, allow_global_generic=not manifest_has_packages)
                     if pid:
                         matched_hwids.append(raw_h)
                         if pid not in seen_pids:
@@ -1301,6 +1429,20 @@ class DriverPoolManager:
             for pid in selected_pids:
                 pmeta = dict(idx["packages"].get(pid, {}))
                 pkg_snapshots[pid] = (pmeta, os.path.join(self.packages_dir, pid))
+
+            if selected_pids and allow_stream_plan:
+                raw_hit_key = manifest_model or model
+                if raw_hit_key and str(raw_hit_key).strip():
+                    try:
+                        hit_key = sanitize_model_pack_name(str(raw_hit_key)).lower()
+                    except ValueError:
+                        hit_key = f"__hash_{hashlib.sha256('|'.join(sorted(selected_pids)).encode('utf-8')).hexdigest()[:12]}"
+                else:
+                    hit_key = f"__hash_{hashlib.sha256('|'.join(sorted(selected_pids)).encode('utf-8')).hexdigest()[:12]}"
+                hits_map = idx.setdefault("model_hits", {})
+                model_hits = int(hits_map.get(hit_key, 0)) + 1
+                hits_map[hit_key] = model_hits
+                self._save_index_locked(idx)
 
         if not selected_pids:
             return {
@@ -1352,6 +1494,48 @@ class DriverPoolManager:
             except Exception:
                 bundle_sha = None
                 cache_hit = False
+
+        estimated_bytes = sum(int(pkg_snapshots.get(pid, ({}, ""))[0].get("size_bytes") or 0) for pid in sorted_pids)
+        max_cache_bytes = int(self.bundle_cache_max_bytes)
+        should_cache = (model_hits >= self.bundle_cache_min_hits) and (estimated_bytes <= max_cache_bytes)
+
+        if not bundle_sha and allow_stream_plan and not should_cache:
+            pkg_details = []
+            pkg_entries = []
+            sources_set = set()
+            for pid in sorted_pids:
+                pm, pdir = pkg_snapshots.get(pid, ({}, os.path.join(self.packages_dir, pid)))
+                for s in (pm.get("sources") or []):
+                    sources_set.add(s)
+                pkg_details.append({
+                    "pkg_id": pid,
+                    "inf_name": pm.get("inf_name"),
+                    "driver_ver": pm.get("driver_ver"),
+                    "driver_date": pm.get("driver_date"),
+                    "driver_class": pm.get("driver_class"),
+                    "sources": pm.get("sources", []),
+                    "size_bytes": pm.get("size_bytes", 0),
+                })
+                pkg_entries.append((pid, pm, pdir))
+            return {
+                "available": True,
+                "cache_hit": False,
+                "stream_only": True,
+                "model_hits": model_hits,
+                "estimated_bytes": estimated_bytes,
+                "model": manifest_model or safe_model_lbl,
+                "package_count": len(sorted_pids),
+                "matched_hwids": matched_hwids,
+                "missing_unmatched_hwids": unmatched_hwids,
+                "bundle_path": None,
+                "bundle_filename": bundle_filename,
+                "size_bytes": estimated_bytes,
+                "size_mb": round(estimated_bytes / (1024 * 1024), 2),
+                "sha256": None,
+                "sources": sorted(sources_set),
+                "packages": pkg_details,
+                "package_entries": pkg_entries,
+            }
 
         if not bundle_sha:
             self.enforce_bundles_quota()
@@ -1757,6 +1941,77 @@ class DriverPoolManager:
         threading.Thread(target=_runner, daemon=True).start()
         return dict(job_rec)
 
+    def start_dedup_background_job(self, kind: str, dedup_key: str, target_fn, *args, **kwargs) -> Dict[str, Any]:
+        """Pokreće pozadinski posao uz deduplikaciju po ključu (npr. 'oem:dell:latitude_5420')."""
+        norm_key = str(dedup_key or "").strip().lower()
+        with self.lock:
+            existing_id = self._active_dedup_jobs.get(norm_key)
+            if existing_id and existing_id in self.jobs:
+                existing = self.jobs[existing_id]
+                if existing.get("status") == "running":
+                    out = dict(existing)
+                    out["deduplicated"] = True
+                    return out
+
+            job_id = f"dp_{uuid.uuid4().hex[:10]}"
+            job_rec = {
+                "job_id": job_id,
+                "kind": kind,
+                "dedup_key": norm_key,
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "finished_at": None,
+                "result": None,
+                "error": None,
+            }
+            self.jobs[job_id] = job_rec
+            if norm_key:
+                self._active_dedup_jobs[norm_key] = job_id
+            if len(self.jobs) > 30:
+                oldest = list(self.jobs.keys())[:-30]
+                for k in oldest:
+                    self.jobs.pop(k, None)
+        self._invalidate_stats_cache()
+
+        def _runner():
+            try:
+                res = target_fn(*args, **kwargs)
+                with self.lock:
+                    job_rec["status"] = "completed"
+                    job_rec["result"] = res
+                    job_rec["finished_at"] = datetime.now().isoformat()
+                    if norm_key and self._active_dedup_jobs.get(norm_key) == job_id:
+                        self._active_dedup_jobs.pop(norm_key, None)
+            except Exception as ex:
+                with self.lock:
+                    job_rec["status"] = "error"
+                    job_rec["error"] = str(ex)
+                    job_rec["finished_at"] = datetime.now().isoformat()
+                    if norm_key and self._active_dedup_jobs.get(norm_key) == job_id:
+                        self._active_dedup_jobs.pop(norm_key, None)
+            finally:
+                self._invalidate_stats_cache()
+
+        threading.Thread(target=_runner, daemon=True).start()
+        out = dict(job_rec)
+        out["deduplicated"] = False
+        return out
+
+    def get_active_oem_job(self, manufacturer: str = "", model: str = "") -> Optional[Dict[str, Any]]:
+        vendor = detect_oem_vendor(manufacturer, model)
+        if not vendor or not model:
+            return None
+        try:
+            clean_m = sanitize_model_pack_name(model).lower()
+        except ValueError:
+            clean_m = str(model).strip().lower()
+        dedup_key = f"oem:{vendor}:{clean_m}"
+        with self.lock:
+            jid = self._active_dedup_jobs.get(dedup_key)
+            if jid and jid in self.jobs and self.jobs[jid].get("status") == "running":
+                return dict(self.jobs[jid])
+        return None
+
     def get_stats(self) -> Dict[str, Any]:
         with self._stats_cache_lock:
             if self._stats_cache is not None:
@@ -1840,13 +2095,54 @@ class DriverPoolManager:
         errors: List[Dict[str, Any]] = []
         details: List[Dict[str, Any]] = []
 
-        def _safe_delete_archive(fp: str, lower_name: str) -> bool:
+        def _has_paired_harvest_lock(fp: str, base_lbl: str) -> bool:
+            """Proverava da li u Archives/ postoji parni .harvest.lock fajl za ovu arhivu (bez lsof)."""
+            parent = os.path.dirname(fp)
+            fn_name = os.path.basename(fp)
+            candidates = [
+                os.path.join(parent, f"{fn_name}.harvest.lock"),
+                os.path.join(parent, f"{base_lbl}.harvest.lock"),
+            ]
+            try:
+                clean_lbl = sanitize_model_pack_name(base_lbl)
+                candidates.append(os.path.join(parent, f"{clean_lbl}.harvest.lock"))
+            except ValueError:
+                pass
+            return any(os.path.exists(c) for c in candidates)
+
+        def _is_archive_stable(fp: str, expected_size: Optional[int] = None, expected_mtime_ns: Optional[int] = None) -> bool:
+            """Proverava da li veličina i mtime_ns fajla miruju (bez oslanjanja na lsof u kontejneru)."""
+            try:
+                st1 = os.lstat(fp)
+                if expected_size is not None and int(st1.st_size) != int(expected_size):
+                    return False
+                if expected_mtime_ns is not None and int(st1.st_mtime_ns) != int(expected_mtime_ns):
+                    return False
+                if int(st1.st_size) <= 0:
+                    return False
+                time.sleep(0.05)
+                st2 = os.lstat(fp)
+                return int(st1.st_size) == int(st2.st_size) and int(st1.st_mtime_ns) == int(st2.st_mtime_ns)
+            except OSError:
+                return False
+
+        def _safe_delete_archive(
+            fp: str,
+            lower_name: str,
+            base_lbl: str = "",
+            expected_size: Optional[int] = None,
+            expected_mtime_ns: Optional[int] = None,
+        ) -> bool:
             if not eff_delete or not lower_name.endswith(deletable_archive_exts):
                 return False
             try:
                 if os.path.islink(fp) or not os.path.isfile(fp):
                     return False
                 if os.path.commonpath([real_archives, os.path.realpath(fp)]) != real_archives:
+                    return False
+                if _has_paired_harvest_lock(fp, base_lbl):
+                    return False
+                if not _is_archive_stable(fp, expected_size=expected_size, expected_mtime_ns=expected_mtime_ns):
                     return False
                 os.remove(fp)
                 return True
@@ -1920,7 +2216,13 @@ class DriverPoolManager:
                         fast_skip = True
 
             if fast_skip:
-                if _safe_delete_archive(full_path, lower_fn):
+                if _safe_delete_archive(
+                    full_path,
+                    lower_fn,
+                    base_lbl=base_name,
+                    expected_size=file_size,
+                    expected_mtime_ns=file_mtime_ns,
+                ):
                     deleted_archives += 1
                 skipped += 1
                 continue
@@ -1944,7 +2246,13 @@ class DriverPoolManager:
                             self._save_index_locked(idx)
 
             if already_done:
-                if _safe_delete_archive(full_path, lower_fn):
+                if _safe_delete_archive(
+                    full_path,
+                    lower_fn,
+                    base_lbl=base_name,
+                    expected_size=file_size,
+                    expected_mtime_ns=file_mtime_ns,
+                ):
                     deleted_archives += 1
                 skipped += 1
                 continue
@@ -1965,7 +2273,13 @@ class DriverPoolManager:
                         "ingested_at": datetime.now().isoformat(),
                     }
                     self._save_index_locked(idx)
-                was_deleted = _safe_delete_archive(full_path, lower_fn)
+                was_deleted = _safe_delete_archive(
+                    full_path,
+                    lower_fn,
+                    base_lbl=base_name,
+                    expected_size=file_size,
+                    expected_mtime_ns=file_mtime_ns,
+                )
                 if was_deleted:
                     deleted_archives += 1
                 ingested += 1

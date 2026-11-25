@@ -4,6 +4,28 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.4] / ServiceHub [v3.7.1] — 2026-11-25
+
+### PreAutoDriverGate, OEM Drajveri (Surface `.msi` / Fujitsu / Drop-In), Storage Lifecycle GC & Integritet Kartona (`WIS-TASK-278`, Celine A–E)
+
+- **Celina A (`P0`) — `PreAutoDriverGate`, `V353-01` izolacija & `Code 14` oporavak (`UI/MainWindow.xaml.cs`, `UI/MainWindow.Reboot.cs`, `UI/HwTest/HwTestShell.cs`, `UI/HwTest/Core/DriverReadinessGate.cs`, `UI/Skripte/Modules/WIS.Update.psm1` + `1:1` ISO):**
+  - Uveden `PreAutoDriverGate` na samom početku `HwTestShell.StartPhase5FullWorkflow()` pre pokretanja ijednog `auto_*` ili interaktivnog testa (`0` izmena u `UI/MainWindow.xaml`), sa automatskim 5s re-checkom, slanjem blokirajućih uređaja na ServiceHub i očuvanim vanrednim otključavanjem (`manual_driver_bypass`).
+  - Izdvojen brzi `ApplyDeferredRename` stage pre `HandleInterimReboot()` (van 25-min `InstallStaged` timeout opsega) i uklonjeno live-session preimenovanje naloga u Fazi 5 (`SL7` zaštita).
+  - Dodat `Suspend-BitLocker -MountPoint "C:" -RebootCount 1` pre automatskog `Code 14` restarta (`max 2×`, praćeno preko `driver_gate_reboots`), batch `/api/drivers/resolve` sa `async_download` pollingom, prošireni `PostRebootFinalize` mrežni oporavak (`8 min`) i `IMP-96` heartbeat/progres u `WaitForBackgroundDriverDownloadIfActive` i `InstallStaged`.
+- **Celina B (`P0/P1`) — OEM prioritet & Asinhroni tok (`ServiceHub/servishub/drivers/pool.py`, `handlers.py`, `server.py`, `WIS.Update.psm1`):**
+  - Redizajniran `_is_package_better` / `_pick_for_hwid` u `pool.py` tako da potpisani `oem_pack` za dati model/`SUBSYS` uvek ima strogu prednost nad generičkim `ms_catalog`/`harvest` paketima bez obzira na datum.
+  - Dodat `12h` OEM catalog scheduler (`refresh_stale_oem_catalogs`), rani `P2` OEM prefetch + deduplikovani async job polling, gašenje suvišnog `get_warranty_info` u `/api/drivers/resolve`, i preskakanje WUA na klijentu kada `DriverStage\Hub` već pokriva problematične HWID-ove i PCI Basic Display GPU.
+- **Celina C (`P1/P2`) — Dvoslojni OEM adapteri (`ServiceHub/Dockerfile`, `drivers/oem/microsoft_surface.py`, `fujitsu.py`, `dropin.py`, `catalogs.py`):**
+  - **Tier 1:** `MicrosoftOEMProvider` (Surface `.msi` ekstrakcija preko `msitools`/`msiextract` bez izvršavanja koda, `SystemSKU` mapiranje, `6 GiB` limit) i `FujitsuOEMProvider` (DeskUpdate XML sa XXE zaštitom).
+  - **Tier 2:** `DropInOEMProvider` (`Drivers/OEM/<vendor>/<model>/`, bez path traversala i symlinkova) + WHQL MS Catalog za `ASUS`, `Acer`, `MSI` i `Dynabook`.
+- **Celina D (`P1`) — Bundle Bloat Fix (`IMP-89`) & Storage Lifecycle GC (`pool.py`, `releases.py`, `wis_nas_space_guard.py`):**
+  - Otklonjen uzrok `7.0–8.66 GB` bundle bloata u `build_bundle_tar` kada model već ima manifest; uveden LRU + on-the-fly `.tar` streaming, post-ingest brisanje `.tar` (uz `.harvest.lock` guard u kontejneru i host `lsof` u `wis_nas_space_guard.py` u `NORMAL` modu — `IMP-86`/`IMP-90`), noćni `prune_unused_packages()` i `releases/` rotacija (`keep_last=3` uz zaštitu aktivnog `current.json` izdanja).
+- **Celina E (`P0/P1`) — Zatvaranje nalaza iz `WIS-TASK-277` (`reports.py`, `telemetry.py`, `WIS.Cleanup.psm1`, `WIS.Apps.psm1`, `WIS.Update.psm1`, `WIS.Hardware.psm1`, `HwTestShell.cs`):**
+  - `IMP-94/94b` (zaštita tabele aplikacija od gaženja sa `⏳ False`), `IMP-72` (kanonski identitet po serijskom broju `W-AAD-* -> TK-LAPTOP-<SN>`), `IMP-75` (`\Servis` prvi u `$nasShares`), `IMP-87` (`\Servis\Drivers\Harvested\Archives`), `IMP-95` (`notify-harvest` token fallback iz `Wifi-Servis.ini`), `IMP-92` (svi Location ključevi za Wi-Fi sken u Fazi 5), `IMP-88` (detalji `Title`/`HResult` u `WU SecondPass`) i `IMP-93` (`HwTest` live status & pre-probe visibility guard).
+- **Verzije:** `WIS 3.5.4` (`UI`, `Launcher`, `ISO`), `ServiceHub 3.7.1`.
+
+---
+
 ## [v3.5.3] / ServiceHub [v3.7.0] — 2026-11-24
 
 ### Hitni Hotfix: Odloženo Preimenovanje Lokalnog Naloga (`V353-01`), Zaštita Faze 4 MSI & Duplog WU Radnika (`V353-02`), Hub `/api/drivers/resolve` Parsiranje (`V353-03`) (`WIS-TASK-276`)

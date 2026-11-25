@@ -61,6 +61,55 @@ function Export-ServisSummaryReport {
             Get-HardwareDiagnosticsInfo
         } else { $Global:HwInfo }
 
+        if ($null -eq $VerificationResults) {
+            if (-not (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue)) {
+                $appsModCand = @(
+                    (Join-Path $PSScriptRoot "WIS.Apps.psm1"),
+                    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Apps.psm1"),
+                    "C:\setup\Skripte\Modules\WIS.Apps.psm1"
+                ) | Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+                if ($appsModCand) {
+                    Import-Module $appsModCand -Force -DisableNameChecking -ErrorAction SilentlyContinue
+                }
+            }
+            if (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue) {
+                try { $VerificationResults = Test-AllServisProgramsInstalled } catch {}
+            }
+        }
+        if ($null -eq $VerificationResults) {
+            $fbChrome = (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") -or (Test-Path "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
+            $fbWinrar = (Test-Path "C:\Program Files\WinRAR\WinRAR.exe") -or (Test-Path "C:\Program Files (x86)\WinRAR\WinRAR.exe")
+            $fbAcrobat = (Test-Path "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or (Test-Path "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe") -or (Test-Path "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe")
+            $fbOffice = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE")
+            $fbDotNet = (Test-Path "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App") -or [bool]((Get-ItemProperty "HKLM:\SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost" -ErrorAction SilentlyContinue).Version)
+            $fbBatt = (Test-Path "C:\Program Files\BatteryBar\BatteryBar.exe") -or (Test-Path "C:\Program Files (x86)\BatteryBar\BatteryBar.exe")
+            $fbMiss = [System.Collections.Generic.List[string]]::new()
+            if (-not $fbChrome)  { $fbMiss.Add("Google Chrome") }
+            if (-not $fbWinrar)  { $fbMiss.Add("WinRAR x64") }
+            if (-not $fbAcrobat) { $fbMiss.Add("Adobe Acrobat Pro") }
+            if (-not $fbOffice)  { $fbMiss.Add("Microsoft Office") }
+            if (-not $fbDotNet)  { $fbMiss.Add("Microsoft .NET Runtime") }
+            $VerificationResults = @{
+                Chrome               = @{ Installed = $fbChrome; Message = if ($fbChrome) { "Instaliran" } else { "Nedostaje" } }
+                WinRAR               = @{ Installed = $fbWinrar; Message = if ($fbWinrar) { "Instaliran" } else { "Nedostaje" } }
+                Acrobat              = @{ Installed = $fbAcrobat; Message = if ($fbAcrobat) { "Instaliran" } else { "Nedostaje" } }
+                Office               = @{ Installed = $fbOffice; Message = if ($fbOffice) { "Instaliran" } else { "Nedostaje" } }
+                DotNet               = @{ Installed = $fbDotNet; Message = if ($fbDotNet) { "Instaliran" } else { "Nedostaje" } }
+                BatteryBar           = @{ Installed = $fbBatt; IsLaptop = $false; Message = if ($fbBatt) { "Instaliran" } else { "Nedostaje" } }
+                AllRequiredInstalled = ($fbMiss.Count -eq 0)
+                MissingList          = $fbMiss
+            }
+        }
+
+        $hwCpuVal = if ($hw -and $hw.CpuName) { "$($hw.CpuName)" } elseif ($hw -and $hw.CpuStr) { "$($hw.CpuStr)" } else { "" }
+        $hwRamGbVal = 0
+        if ($hw -and $null -ne $hw.RamGB -and [double]$hw.RamGB -gt 0) {
+            $hwRamGbVal = $hw.RamGB
+        } elseif ($hw -and $hw.RamStr -and ("$($hw.RamStr)" -match '(\d+(?:[.,]\d+)?)\s*GB')) {
+            try { $hwRamGbVal = [double]($matches[1] -replace ',', '.') } catch { $hwRamGbVal = 0 }
+        }
+        $hwDiskVal = if ($hw -and $hw.DiskModel) { "$($hw.DiskModel)" } elseif ($hw -and $hw.DiskStr) { "$($hw.DiskStr)" } else { "" }
+
         $sb = [System.Text.StringBuilder]::new()
         $sb.AppendLine("================================================================================") | Out-Null
         $sb.AppendLine("              WIS SERVICE AUTO-DEPLOY TOOLKIT | ZAVRSNI IZVESTAJ                ") | Out-Null
@@ -305,19 +354,41 @@ function Export-ServisSummaryReport {
         $mdKartonContent = $mdSb.ToString()
 
         # Generisanje JSON Servisnog Kartona (servisni_karton.json)
+        $kartonDevId = if ($Global:FleetDeviceId) {
+            $Global:FleetDeviceId
+        } elseif (Get-Command Get-FleetDeviceId -ErrorAction SilentlyContinue) {
+            try { Get-FleetDeviceId } catch { "TK-DESKTOP-$compName" }
+        } else {
+            "TK-DESKTOP-$compName"
+        }
+        $kartonSerial = if ($Global:FleetSerialNumber) {
+            $Global:FleetSerialNumber
+        } elseif ($hw -and $hw.SerialNumber) {
+            "$($hw.SerialNumber)"
+        } else {
+            "UNKNOWN"
+        }
+        $kartonPrevHost = if (Get-Command Get-WisPreviousHostname -ErrorAction SilentlyContinue) {
+            Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+        } else {
+            $compName
+        }
+
         $kartonMap = [ordered]@{
-            device_id     = if ($Global:FleetDeviceId) { $Global:FleetDeviceId } else { "TK-$compName" }
-            hostname      = $compName
-            timestamp     = (Get-Date).ToString("o")
-            user          = $user
-            status        = if (($VerificationResults -and (-not $VerificationResults.AllRequiredInstalled)) -or $thermalNoteText) { "WARN" } else { "COMPLETED" }
-            hardware      = [ordered]@{
+            device_id         = $kartonDevId
+            serial_number     = $kartonSerial
+            previous_hostname = $kartonPrevHost
+            hostname          = $compName
+            timestamp         = (Get-Date).ToString("o")
+            user              = $user
+            status            = if (($VerificationResults -and (-not $VerificationResults.AllRequiredInstalled)) -or $thermalNoteText) { "WARN" } else { "COMPLETED" }
+            hardware          = [ordered]@{
                 manufacturer     = if ($hw) { $hw.Manufacturer } else { "UNKNOWN" }
                 model            = if ($hw) { $hw.Model } else { "UNKNOWN" }
-                serial           = if ($hw) { $hw.SerialNumber } else { "UNKNOWN" }
-                cpu              = if ($hw) { $hw.CpuName } else { "" }
-                ram_gb           = if ($hw) { $hw.RamGB } else { 0 }
-                disk             = if ($hw) { $hw.DiskModel } else { "" }
+                serial           = $kartonSerial
+                cpu              = $hwCpuVal
+                ram_gb           = $hwRamGbVal
+                disk             = $hwDiskVal
                 display_model    = if ($hw -and $hw.DisplayModel) { $hw.DisplayModel } else { "" }
                 display_nits     = if ($hw -and $hw.DisplayNits) { $hw.DisplayNits } else { 0 }
                 display_gamut    = if ($hw -and $hw.DisplayGamut) { $hw.DisplayGamut } else { "" }
@@ -328,13 +399,13 @@ function Export-ServisSummaryReport {
                 backlit_keyboard = if ($hw -and $hw.BacklitKbStatus) { $hw.BacklitKbStatus } else { "" }
                 battery          = if ($isLaptop) { "Laptop" } else { "Desktop" }
             }
-            apps          = [ordered]@{
-                chrome     = if ($VerificationResults -and $VerificationResults.Chrome) { $VerificationResults.Chrome.Installed } else { $false }
-                winrar     = if ($VerificationResults -and $VerificationResults.WinRAR) { $VerificationResults.WinRAR.Installed } else { $false }
-                acrobat    = if ($VerificationResults -and $VerificationResults.Acrobat) { $VerificationResults.Acrobat.Installed } else { $false }
-                office     = if ($VerificationResults -and $VerificationResults.Office) { $VerificationResults.Office.Installed } else { $false }
-                dotnet     = if ($VerificationResults -and $VerificationResults.DotNet) { $VerificationResults.DotNet.Installed } else { $false }
-                batterybar = if ($VerificationResults -and $VerificationResults.BatteryBar) { $VerificationResults.BatteryBar.Installed } else { $false }
+            apps              = [ordered]@{
+                chrome     = if ($VerificationResults -and $VerificationResults.Chrome -and $VerificationResults.Chrome.Installed) { "OK" } else { "MISSING" }
+                winrar     = if ($VerificationResults -and $VerificationResults.WinRAR -and $VerificationResults.WinRAR.Installed) { "OK" } else { "MISSING" }
+                acrobat    = if ($VerificationResults -and $VerificationResults.Acrobat -and $VerificationResults.Acrobat.Installed) { "OK" } else { "MISSING" }
+                office     = if ($VerificationResults -and $VerificationResults.Office -and $VerificationResults.Office.Installed) { "OK" } else { "MISSING" }
+                dotnet     = if ($VerificationResults -and $VerificationResults.DotNet -and $VerificationResults.DotNet.Installed) { "OK" } else { "MISSING" }
+                batterybar = if ($VerificationResults -and $VerificationResults.BatteryBar -and $VerificationResults.BatteryBar.Installed) { "OK" } else { "MISSING" }
             }
             licenses      = [ordered]@{
                 windows                = [bool]$winActVal
@@ -1506,6 +1577,14 @@ function Invoke-Phase6Finalize {
         }
 
         if (Get-Command Export-ServisSummaryReport -ErrorAction SilentlyContinue) {
+            if (-not (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue)) {
+                $appsModP6 = @(
+                    (Join-Path $PSScriptRoot "WIS.Apps.psm1"),
+                    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Apps.psm1"),
+                    "C:\setup\Skripte\Modules\WIS.Apps.psm1"
+                ) | Where-Object { Test-Path -LiteralPath $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
+                if ($appsModP6) { Import-Module $appsModP6 -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+            }
             $verResults = if (Get-Command Test-AllServisProgramsInstalled -ErrorAction SilentlyContinue) { Test-AllServisProgramsInstalled } else { $null }
             Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
         }
@@ -1624,13 +1703,15 @@ function Invoke-Phase6Finalize {
                     }
                 }
 
+                $prevHostClean = if (Get-Command Get-WisPreviousHostname -ErrorAction SilentlyContinue) { Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir } else { $env:COMPUTERNAME }
                 $retryDelaysClean = @(0, 1, 2)
                 $repPayload = [ordered]@{
-                    device_id     = $deviceId
-                    serial_number = $serial
-                    status        = "COMPLETED"
-                    timestamp     = (Get-Date).ToString("o")
-                    hostname      = $env:COMPUTERNAME
+                    device_id         = $deviceId
+                    serial_number     = $serial
+                    previous_hostname = $prevHostClean
+                    status            = "COMPLETED"
+                    timestamp         = (Get-Date).ToString("o")
+                    hostname          = $env:COMPUTERNAME
                 }
                 foreach ($dk in $diagCustom.Keys) {
                     $repPayload[$dk] = $diagCustom[$dk]
@@ -1677,10 +1758,12 @@ function Invoke-Phase6Finalize {
                 }
 
                 $lcPayload = [ordered]@{
-                    event         = "COMPLETED"
-                    device_id     = $deviceId
-                    computer_name = $env:COMPUTERNAME
-                    timestamp     = (Get-Date).ToString("o")
+                    event             = "COMPLETED"
+                    device_id         = $deviceId
+                    serial_number     = $serial
+                    previous_hostname = $prevHostClean
+                    computer_name     = $env:COMPUTERNAME
+                    timestamp         = (Get-Date).ToString("o")
                 }
                 foreach ($dk in $diagCustom.Keys) {
                     $lcPayload[$dk] = $diagCustom[$dk]

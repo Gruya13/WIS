@@ -115,17 +115,23 @@ function Disable-LocationPrivacyPrompts {
         }
     }
 
-    # Uklanjanje eventualne zaostale polise DisableLocation=1
+    # IMP-92: Otkljucavanje svih Location policy kljuceva koje proverava NativeMethods.IsLocationPolicyDisabled()
     try {
         $locPolicyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors"
-        if (Test-Path $locPolicyPath) {
-            $dlProp = Get-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -ErrorAction SilentlyContinue
-            if ($null -ne $dlProp -and $null -ne $dlProp.DisableLocation -and [int]$dlProp.DisableLocation -eq 1) {
-                Remove-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -Force -ErrorAction SilentlyContinue
-                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "Uklonjena zaostala LocationAndSensors\DisableLocation=1 polisa." -Level "INFO" -Component "Branding"
-                }
-            }
+        if (-not (Test-Path $locPolicyPath)) {
+            New-Item -Path $locPolicyPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $locPolicyPath -Name "DisableWindowsLocationProvider" -Type DWord -Value 0 -Force -ErrorAction SilentlyContinue
+
+        $appPrivacyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy"
+        if (-not (Test-Path $appPrivacyPath)) {
+            New-Item -Path $appPrivacyPath -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-ItemProperty -Path $appPrivacyPath -Name "LetAppsAccessLocation" -Type DWord -Value 1 -Force -ErrorAction SilentlyContinue
+
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "IMP-92: Location policy kljucevi otkljucani (DisableLocation=0, DisableWindowsLocationProvider=0, LetAppsAccessLocation=1)." -Level "INFO" -Component "Branding"
         }
     } catch {}
 
@@ -175,6 +181,18 @@ function Test-WisLocationAccessEnabled {
     if (Test-Path $locPolicyPath) {
         $dlProp = Get-ItemProperty -Path $locPolicyPath -Name "DisableLocation" -ErrorAction SilentlyContinue
         if ($null -ne $dlProp -and $null -ne $dlProp.DisableLocation -and [int]$dlProp.DisableLocation -eq 1) {
+            return $false
+        }
+        $dlpProp = Get-ItemProperty -Path $locPolicyPath -Name "DisableWindowsLocationProvider" -ErrorAction SilentlyContinue
+        if ($null -ne $dlpProp -and $null -ne $dlpProp.DisableWindowsLocationProvider -and [int]$dlpProp.DisableWindowsLocationProvider -eq 1) {
+            return $false
+        }
+    }
+
+    $appPrivacyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy"
+    if (Test-Path $appPrivacyPath) {
+        $laProp = Get-ItemProperty -Path $appPrivacyPath -Name "LetAppsAccessLocation" -ErrorAction SilentlyContinue
+        if ($null -ne $laProp -and $null -ne $laProp.LetAppsAccessLocation -and [int]$laProp.LetAppsAccessLocation -eq 2) {
             return $false
         }
     }

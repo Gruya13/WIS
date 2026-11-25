@@ -1,9 +1,10 @@
 """
 servishub.drivers.oem.catalogs
 ==============================
-Sinhronizacija, lokalno keširanje i pretraga zvaničnih OEM Enterprise XML kataloga
-(Dell Command | Deploy, HP Client Driver Pack Catalog i Lenovo CDRT Catalog v2)
-sa strogom HTTPS host validacijom, XXE zaštitom i verifikacijom kontrolnih suma.
+Sinhronizacija, lokalno keširanje i pretraga zvaničnih OEM Enterprise kataloga
+(Dell, HP, Lenovo, Microsoft Surface, Fujitsu DeskUpdate) i Tier 2 Hybrid Drop-in
+paketa (ASUS, Acer, MSI, Dynabook) sa strogom HTTPS host validacijom, XXE zaštitom
+i verifikacijom kontrolnih suma.
 """
 
 from __future__ import annotations
@@ -25,10 +26,15 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
+TIER1_OEM_VENDORS: Tuple[str, ...] = ("dell", "hp", "lenovo", "microsoft", "fujitsu")
+TIER2_DROPIN_VENDORS: Tuple[str, ...] = ("asus", "acer", "msi", "dynabook")
+
 CATALOG_URLS: Dict[str, str] = {
     "dell": "https://downloads.dell.com/catalog/DriverPackCatalog.cab",
     "hp": "https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HPClientDriverPackCatalog.cab",
     "lenovo": "https://download.lenovo.com/cdrt/td/catalogv2.xml",
+    "microsoft": "https://download.microsoft.com/download/surface/catalog.json",
+    "fujitsu": "https://support.ts.fujitsu.com/DeskUpdate/Catalog/DeskUpdateCatalog.xml",
 }
 
 ALLOWED_OEM_HOST_SUFFIXES: Tuple[str, ...] = (
@@ -39,6 +45,9 @@ ALLOWED_OEM_HOST_SUFFIXES: Tuple[str, ...] = (
     "support.hp.com",
     "download.lenovo.com",
     "download.lenovo.com.edgesuite.net",
+    "download.microsoft.com",
+    ".microsoft.com",
+    "support.ts.fujitsu.com",
     ".dell.com",
     ".hp.com",
     ".hpcloud.hp.com",
@@ -47,7 +56,7 @@ ALLOWED_OEM_HOST_SUFFIXES: Tuple[str, ...] = (
 
 DEFAULT_CATALOG_TTL_SEC = 86400  # 24 sata
 MAX_CATALOG_BYTES = 128 * 1024 * 1024  # 128 MiB limit za XML/CAB katalog
-MAX_OEM_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024  # 4 GiB limit za jedan OEM paket
+MAX_OEM_PACKAGE_BYTES = 6 * 1024 * 1024 * 1024  # 6 GiB limit za jedan OEM paket
 
 _FEATURE_ORDER = {
     "26H2": 262,
@@ -61,9 +70,28 @@ _FEATURE_ORDER = {
     "": 50,
 }
 
+_WIN11_BUILD_RANKS = {
+    "26200": ("win11", 252),
+    "26100": ("win11", 242),
+    "22631": ("win11", 232),
+    "22621": ("win11", 222),
+    "22000": ("win11", 212),
+}
+
+_WIN10_BUILD_RANKS = {
+    "19045": ("win10", 222),
+    "19044": ("win10", 212),
+    "19043": ("win10", 211),
+    "19042": ("win10", 202),
+    "19041": ("win10", 201),
+}
+
 
 def detect_oem_vendor(manufacturer: str = "", model: str = "") -> str:
-    """Normalizuje naziv OEM proizvođača u 'dell', 'hp', 'lenovo' ili ''."""
+    """
+    Normalizuje naziv OEM proizvođača u Tier 1 ('dell', 'hp', 'lenovo', 'microsoft', 'fujitsu'),
+    Tier 2 ('asus', 'acer', 'msi', 'dynabook') ili ''.
+    """
     combined = f"{manufacturer or ''} {model or ''}".strip().upper()
     if not combined:
         return ""
@@ -73,6 +101,20 @@ def detect_oem_vendor(manufacturer: str = "", model: str = "") -> str:
         return "dell"
     if any(k in combined for k in ("HEWLETT", "HP ", " HP", "HP\t", "ELITEBOOK", "PROBOOK", "ZBOOK", "ELITEDESK", "PRODESK")) or combined == "HP":
         return "hp"
+    # MSI mora biti proveren pre/odvojeno od MICROSOFT ('MICRO-STAR' != 'MICROSOFT', word-boundary MSI)
+    if "MICRO-STAR" in combined or "MICRO STAR" in combined or re.search(r"(?<![A-Z0-9])MSI(?![A-Z0-9])", combined):
+        return "msi"
+    # Microsoft Surface zahteva SURFACE (kako Hyper-V Virtual Machine sa Microsoft Corporation ne bi bio Surface)
+    if re.search(r"(?<![A-Z0-9])SURFACE(?![A-Z0-9])", combined):
+        return "microsoft"
+    if re.search(r"(?<![A-Z0-9])(FUJITSU|LIFEBOOK|ESPRIMO|CELSIUS)(?![A-Z0-9])", combined):
+        return "fujitsu"
+    if re.search(r"(?<![A-Z0-9])(ASUS|ASUSTEK|ZENBOOK|EXPERTBOOK|TUF|ROG)(?![A-Z0-9])", combined):
+        return "asus"
+    if re.search(r"(?<![A-Z0-9])(ACER|TRAVELMATE|ASPIRE|NITRO)(?![A-Z0-9])", combined):
+        return "acer"
+    if re.search(r"(?<![A-Z0-9])(DYNABOOK|TOSHIBA|TECRA|PORTEGE|PORTÉGÉ)(?![A-Z0-9])", combined):
+        return "dynabook"
     return ""
 
 
@@ -82,7 +124,7 @@ def validate_oem_download_url(
 ) -> str:
     """
     Validira URL za preuzimanje OEM kataloga ili driver paketa.
-    U podrazumevanom režimu zahteva HTTPS i zvanični HP/Dell/Lenovo domen.
+    U podrazumevanom režimu zahteva HTTPS i zvanični HP/Dell/Lenovo/Microsoft/Fujitsu domen.
     Opcioni `allowed_hosts` omogućava eksplicitnu listu hostova za testove.
     """
     raw = str(url or "").strip()
@@ -110,7 +152,7 @@ def validate_oem_download_url(
                 return raw
         elif host == allowed:
             return raw
-    raise ValueError(f"OEM hostname '{host}' nije na zvaničnoj HP/Dell/Lenovo allowlist-i.")
+    raise ValueError(f"OEM hostname '{host}' nije na zvaničnoj OEM allowlist-i.")
 
 
 def _check_xml_safe(xml_bytes: bytes) -> bytes:
@@ -144,6 +186,13 @@ def _norm_model_tokens(text: str) -> List[str]:
         "dell inc.",
         "dell inc",
         "lenovo group",
+        "microsoft corporation",
+        "fujitsu client computing limited",
+        "fujitsu client computing",
+        "asustek computer inc.",
+        "asustek computer",
+        "micro-star international",
+        "dynabook inc.",
         "notebook pc",
         "desktop mini pc",
         "desktop mini",
@@ -173,8 +222,23 @@ def _extract_os_family_and_feature(os_text: str) -> Tuple[str, int]:
     m = re.search(r"\b(2[0-9]H[12])\b", up)
     if m:
         feat_rank = _FEATURE_ORDER.get(m.group(1), 150)
-    elif "*" in up:
-        feat_rank = _FEATURE_ORDER["*"]
+    else:
+        for bld, (bfam, brank) in _WIN11_BUILD_RANKS.items():
+            if bld in up:
+                if os_fam == "other":
+                    os_fam = bfam
+                feat_rank = brank
+                break
+        if os_fam == "other" or feat_rank == _FEATURE_ORDER.get("", 50):
+            for bld, (bfam, brank) in _WIN10_BUILD_RANKS.items():
+                if bld in up:
+                    if os_fam == "other":
+                        os_fam = bfam
+                    if feat_rank == _FEATURE_ORDER.get("", 50):
+                        feat_rank = brank
+                    break
+        if feat_rank == _FEATURE_ORDER.get("", 50) and "*" in up:
+            feat_rank = _FEATURE_ORDER["*"]
     return os_fam, feat_rank
 
 
@@ -519,8 +583,9 @@ def parse_lenovo_catalog_xml(xml_bytes: bytes) -> List[Dict[str, Any]]:
 
 class OemCatalogManager:
     """
-    Upravlja lokalnim kešom zvaničnih OEM Enterprise XML kataloga (Dell/HP/Lenovo),
-    pretragom paketa po modelu/MTM/SystemId i verifikovanim preuzimanjem paketa.
+    Upravlja lokalnim kešom zvaničnih OEM Enterprise kataloga (Dell/HP/Lenovo/Microsoft/Fujitsu),
+    Tier 2 Hybrid Drop-in paketima (ASUS/Acer/MSI/Dynabook), pretragom paketa po
+    modelu/MTM/SystemId/SystemSKU i verifikovanim preuzimanjem ili lokalnim kopiranjem.
     """
 
     def __init__(
@@ -529,11 +594,21 @@ class OemCatalogManager:
         ttl_seconds: int = DEFAULT_CATALOG_TTL_SEC,
         catalog_urls: Optional[Dict[str, str]] = None,
         allowed_hosts: Optional[Sequence[str]] = None,
+        dropin_dir: Optional[str] = None,
     ):
         self.catalogs_dir = os.path.abspath(catalogs_dir)
         self.ttl_seconds = max(60, int(ttl_seconds))
-        self.catalog_urls = dict(catalog_urls or CATALOG_URLS)
+        self._custom_catalog_urls = set(catalog_urls.keys()) if catalog_urls else set()
+        self.catalog_urls = dict(CATALOG_URLS)
+        if catalog_urls:
+            self.catalog_urls.update(catalog_urls)
         self.allowed_hosts = list(allowed_hosts) if allowed_hosts is not None else None
+        raw_dropin = (
+            dropin_dir
+            if (dropin_dir is not None and str(dropin_dir).strip())
+            else os.environ.get("SERVIS_OEM_DROPIN_DIR", "/app/oem_dropin")
+        )
+        self.dropin_dir = os.path.abspath(str(raw_dropin).strip())
         self.lock = threading.RLock()
         self._memory_cache: Dict[str, Dict[str, Any]] = {}
         os.makedirs(self.catalogs_dir, exist_ok=True)
@@ -600,9 +675,12 @@ class OemCatalogManager:
         return bytes(buf)
 
     def sync_catalog(self, vendor: str, force: bool = False, timeout: float = 90.0) -> Dict[str, Any]:
-        """Preuzima i parsira zvanični XML/CAB katalog za zadatog OEM proizvođača ('dell'|'hp'|'lenovo')."""
+        """
+        Preuzima i parsira zvanični katalog za Tier 1 ('dell'|'hp'|'lenovo'|'microsoft'|'fujitsu')
+        ili skenira lokalni Drop-in direktorijum za Tier 2 ('asus'|'acer'|'msi'|'dynabook').
+        """
         v = str(vendor or "").strip().lower()
-        if v not in ("dell", "hp", "lenovo"):
+        if v not in TIER1_OEM_VENDORS and v not in TIER2_DROPIN_VENDORS:
             raise ValueError(f"Nepodržan OEM katalog proizvođač: '{vendor}'")
 
         existing = self._load_vendor_catalog(v)
@@ -615,6 +693,60 @@ class OemCatalogManager:
                     "entries_count": len(existing["entries"]),
                     "synced_at": existing.get("synced_at"),
                 }
+
+        if v in TIER2_DROPIN_VENDORS:
+            from servishub.drivers.oem.dropin import DropInOEMProvider
+            dropin_entries = DropInOEMProvider(vendor=v, dropin_dir=self.dropin_dir).scan_packages(vendor=v)
+            source_url = f"dropin://{v}"
+            saved = self._save_vendor_catalog(v, dropin_entries, source_url=source_url)
+            return {
+                "vendor": v,
+                "status": "synced",
+                "entries_count": saved["entries_count"],
+                "synced_at": saved["synced_at"],
+                "source_url": source_url,
+            }
+
+        if v == "microsoft":
+            from servishub.drivers.oem.microsoft_surface import MicrosoftOEMProvider, parse_microsoft_catalog
+            custom_env_url = os.environ.get("SERVIS_SURFACE_CATALOG_URL", "").strip()
+            if v in self._custom_catalog_urls or custom_env_url:
+                url = custom_env_url or self.catalog_urls[v]
+                raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
+                entries = parse_microsoft_catalog(raw_bytes, allowed_hosts=self.allowed_hosts)
+            else:
+                url = "builtin://microsoft-surface-index"
+                entries = MicrosoftOEMProvider.get_builtin_catalog_entries()
+            saved = self._save_vendor_catalog(v, entries, source_url=url)
+            return {
+                "vendor": v,
+                "status": "synced",
+                "entries_count": saved["entries_count"],
+                "synced_at": saved["synced_at"],
+                "source_url": url,
+            }
+
+        if v == "fujitsu":
+            from servishub.drivers.oem.fujitsu import FujitsuOEMProvider, parse_fujitsu_catalog_xml
+            url = self.catalog_urls.get(v) or CATALOG_URLS[v]
+            if v in self._custom_catalog_urls:
+                raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
+                entries = parse_fujitsu_catalog_xml(raw_bytes, allowed_hosts=self.allowed_hosts)
+            else:
+                try:
+                    raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
+                    entries = parse_fujitsu_catalog_xml(raw_bytes, allowed_hosts=self.allowed_hosts)
+                except (urllib.error.URLError, OSError, TimeoutError):
+                    url = "builtin://fujitsu-deskupdate-index"
+                    entries = FujitsuOEMProvider.get_builtin_catalog_entries()
+            saved = self._save_vendor_catalog(v, entries, source_url=url)
+            return {
+                "vendor": v,
+                "status": "synced",
+                "entries_count": saved["entries_count"],
+                "synced_at": saved["synced_at"],
+                "source_url": url,
+            }
 
         url = self.catalog_urls.get(v) or CATALOG_URLS[v]
         raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
@@ -639,10 +771,16 @@ class OemCatalogManager:
             "source_url": url,
         }
 
-    def sync_all_catalogs(self, force: bool = False, timeout: float = 90.0) -> Dict[str, Any]:
+    def sync_all_catalogs(
+        self,
+        force: bool = False,
+        timeout: float = 90.0,
+        include_tier2: bool = False,
+    ) -> Dict[str, Any]:
         results: Dict[str, Any] = {}
         ok_count = 0
-        for v in ("dell", "hp", "lenovo"):
+        vendors = TIER1_OEM_VENDORS + (TIER2_DROPIN_VENDORS if include_tier2 else ())
+        for v in vendors:
             try:
                 results[v] = self.sync_catalog(v, force=force, timeout=timeout)
                 ok_count += 1
@@ -657,7 +795,7 @@ class OemCatalogManager:
     def get_catalog_status(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         now = time.time()
-        for v in ("dell", "hp", "lenovo"):
+        for v in TIER1_OEM_VENDORS + TIER2_DROPIN_VENDORS:
             data = self._load_vendor_catalog(v)
             if not data:
                 out[v] = {
@@ -731,23 +869,55 @@ class OemCatalogManager:
         os_ver: str = "win11",
         system_id: str = "",
         mtm: str = "",
+        system_sku: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
-        Pronalazi najnoviji zvanični OEM Driver Pack iz lokalno keširanog kataloga.
+        Pronalazi najnoviji zvanični OEM Driver Pack iz lokalno keširanog kataloga
+        (Dell/HP/Lenovo/Microsoft Surface/Fujitsu) ili preko DropInOEMProvider-a
+        (Tier 2 ASUS/Acer/MSI/Dynabook i lokalni fallback za Tier 1).
         """
         vendor = detect_oem_vendor(manufacturer, model)
+        if not vendor and system_sku:
+            vendor = detect_oem_vendor(manufacturer, f"{model} {system_sku}")
         if not vendor:
             return None
-        cat = self._load_vendor_catalog(vendor)
-        if not cat or not cat.get("entries"):
+
+        if vendor in TIER2_DROPIN_VENDORS:
+            from servishub.drivers.oem.dropin import DropInOEMProvider
+            dropin_hits = DropInOEMProvider(vendor=vendor, dropin_dir=self.dropin_dir).scan_packages(
+                vendor=vendor,
+                model=model,
+                os_ver=os_ver,
+            )
+            if dropin_hits:
+                return dropin_hits[0]
+            cat_t2 = self._load_vendor_catalog(vendor)
+            if cat_t2 and cat_t2.get("entries"):
+                for entry in cat_t2["entries"]:
+                    lp = str(entry.get("local_path") or "").strip()
+                    if lp and os.path.isfile(lp) and not os.path.islink(lp):
+                        q_tokens_t2 = _norm_model_tokens(model)
+                        for cand_m in (entry.get("models") or []):
+                            sc = self._score_model_match(model, q_tokens_t2, cand_m)
+                            if sc > 0:
+                                res_e = dict(entry)
+                                res_e["match_score"] = sc
+                                return res_e
             return None
 
-        req_os, _ = _extract_os_family_and_feature(os_ver or "win11")
+        cat = self._load_vendor_catalog(vendor)
+        entries_list = list(cat.get("entries") or []) if cat else []
+        if not entries_list and vendor == "microsoft":
+            from servishub.drivers.oem.microsoft_surface import MicrosoftOEMProvider
+            entries_list = MicrosoftOEMProvider.get_builtin_catalog_entries()
+
+        req_os, req_feat = _extract_os_family_and_feature(os_ver or "win11")
         if req_os == "other":
             req_os = "win11"
 
         q_tokens = _norm_model_tokens(model)
         q_sid = str(system_id or "").strip().lower()
+        q_sku = str(system_sku or "").strip().lower()
         mtm_candidates = set()
         if mtm:
             mtm_candidates.add(mtm.strip().upper()[:4])
@@ -755,11 +925,15 @@ class OemCatalogManager:
             mtm_candidates.add(t)
 
         best_entry = None
-        best_rank: Tuple[int, int, int, str] = (-1, -1, -1, "")
+        best_rank: Tuple[int, int, int, int, str] = (-1, -1, -1, -1, "")
 
-        for entry in cat["entries"]:
+        for entry in entries_list:
             match_score = 0
-            if q_sid and q_sid in [s.lower() for s in (entry.get("system_ids") or [])]:
+            entry_skus = [s.lower() for s in (entry.get("system_skus") or [])]
+            entry_sids = [s.lower() for s in (entry.get("system_ids") or [])]
+            if q_sku and (q_sku in entry_skus or q_sku in entry_sids):
+                match_score = max(match_score, 100)
+            if q_sid and (q_sid in entry_sids or q_sid in entry_skus):
                 match_score = max(match_score, 98)
             if mtm_candidates:
                 entry_mtms = {m.upper()[:4] for m in (entry.get("mtms") or [])}
@@ -780,14 +954,27 @@ class OemCatalogManager:
                 os_match_score = 2 if entry_os == req_os else 1
 
             feat_rank = int(entry.get("os_feature_rank") or 0)
+            exact_feat_bonus = 1 if (req_feat > 100 and feat_rank == req_feat) else 0
             rel_date = str(entry.get("release_date") or "")
-            rank = (match_score, os_match_score, feat_rank, rel_date)
+            rank = (match_score, os_match_score, exact_feat_bonus, feat_rank, rel_date)
             if rank > best_rank:
                 best_rank = rank
                 best_entry = dict(entry)
                 best_entry["match_score"] = match_score
 
-        return best_entry
+        if best_entry is not None:
+            return best_entry
+
+        # Tier 1 fallback na Drop-in ako zvanični katalog nije imao pogodak
+        from servishub.drivers.oem.dropin import DropInOEMProvider
+        dropin_fallback = DropInOEMProvider(vendor=vendor, dropin_dir=self.dropin_dir).scan_packages(
+            vendor=vendor,
+            model=model,
+            os_ver=os_ver,
+        )
+        if dropin_fallback:
+            return dropin_fallback[0]
+        return None
 
     def download_driver_pack(
         self,
@@ -797,9 +984,65 @@ class OemCatalogManager:
         max_bytes: int = MAX_OEM_PACKAGE_BYTES,
     ) -> str:
         """
-        Strimovano preuzima OEM driver pack u `dest_dir` sa validacijom URL-a,
+        Preuzima OEM driver pack u `dest_dir` sa validacijom URL-a,
         atomičnim `.tmp` upisom i obaveznom verifikacijom SHA-256 (ili MD5) heša.
+        Ako `entry` sadrži postojeći `local_path` (Drop-in), bezbedno kopira lokalni fajl
+        bez HTTP preuzimanja.
         """
+        expected_sha256 = str(entry.get("sha256") or "").strip().lower()
+        expected_md5 = str(entry.get("md5") or "").strip().lower()
+        local_src = str(entry.get("local_path") or "").strip()
+
+        if local_src:
+            if os.path.islink(local_src):
+                raise ValueError(f"Odbijeno kopiranje simboličkog linka: {local_src}")
+            if not os.path.isfile(local_src):
+                raise FileNotFoundError(f"Lokalni OEM drop-in fajl ne postoji: {local_src}")
+            real_src = os.path.realpath(local_src)
+            if str(entry.get("source") or "").lower() == "dropin":
+                real_dropin = os.path.realpath(self.dropin_dir)
+                if os.path.commonpath([real_dropin, real_src]) != real_dropin:
+                    raise ValueError(f"Detektovan path traversal za drop-in paket: {local_src}")
+
+            raw_name = os.path.basename((entry.get("package_name") or "").strip()) or os.path.basename(real_src) or "oem_pack.bin"
+            safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
+            if not safe_name or safe_name.startswith("."):
+                safe_name = "oem_driver_pack.bin"
+
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_path = os.path.join(os.path.abspath(dest_dir), safe_name)
+            tmp_path = f"{dest_path}.tmp"
+            sha_h = hashlib.sha256()
+            md5_h = hashlib.md5()
+            total_bytes = 0
+            try:
+                with open(real_src, "rb") as src_f, open(tmp_path, "wb") as out_f:
+                    while True:
+                        chunk = src_f.read(65536)
+                        if not chunk:
+                            break
+                        total_bytes += len(chunk)
+                        if total_bytes > max_bytes:
+                            raise ValueError(f"OEM paket '{safe_name}' prelazi maksimalni limit ({max_bytes} B).")
+                        out_f.write(chunk)
+                        sha_h.update(chunk)
+                        md5_h.update(chunk)
+                if total_bytes <= 0:
+                    raise ValueError(f"Lokalni OEM paket '{safe_name}' je prazan (0 B).")
+                if expected_sha256 and sha_h.hexdigest().lower() != expected_sha256:
+                    raise ValueError(f"SHA-256 neusaglašenost za '{safe_name}'.")
+                if expected_md5 and md5_h.hexdigest().lower() != expected_md5:
+                    raise ValueError(f"MD5 neusaglašenost za '{safe_name}'.")
+                os.replace(tmp_path, dest_path)
+                return dest_path
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
+
         url = validate_oem_download_url(entry.get("download_url") or "", allowed_hosts=self.allowed_hosts)
         raw_name = os.path.basename((entry.get("package_name") or "").strip()) or os.path.basename(urllib.parse.urlparse(url).path) or "oem_pack.bin"
         safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
@@ -810,8 +1053,6 @@ class OemCatalogManager:
         dest_path = os.path.join(os.path.abspath(dest_dir), safe_name)
         tmp_path = f"{dest_path}.tmp"
 
-        expected_sha256 = str(entry.get("sha256") or "").strip().lower()
-        expected_md5 = str(entry.get("md5") or "").strip().lower()
         sha_h = hashlib.sha256()
         md5_h = hashlib.md5()
         total_bytes = 0

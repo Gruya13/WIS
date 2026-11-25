@@ -2,12 +2,14 @@
 servishub.drivers.oem.base
 ==========================
 Definicija apstraktne bazne klase za OEM provajdere (BaseOEMProvider).
-Svaki podržani proizvođač (Lenovo, Dell, HP itd.) implementira ovaj interfejs
-za proveru statusa fabričke garancije, rezoluciju SCCM/enterprise drajver paketa
-i proveru dostupnosti novijih BIOS ažuriranja.
+Svaki podržani proizvođač (Lenovo, Dell, HP, Microsoft Surface, Fujitsu, kao i
+Drop-in Tier 2 adapteri) implementira ovaj interfejs za proveru statusa fabričke
+garancije, rezoluciju SCCM/enterprise drajver paketa i proveru BIOS/UEFI ažuriranja.
 """
 
 from abc import ABC, abstractmethod
+import json
+import os
 from typing import Any, Dict, List, Optional
 
 
@@ -170,3 +172,30 @@ class BaseOEMProvider(ABC):
             confidence="low",
             raw_data={"serial": serial, "model": model, "product_number": product_number},
         )
+
+    @staticmethod
+    def _clamp_timeout(timeout: float, min_sec: float = 0.5, max_sec: float = 5.0) -> float:
+        """Ograničava mrežni timeout na bezbedan opseg [min_sec, max_sec]."""
+        return min(max(float(timeout), min_sec), max_sec)
+
+    @staticmethod
+    def _read_json_file(path: str) -> Optional[Dict[str, Any]]:
+        """Bezbedno čita JSON rečnik sa diska ili vraća None ako fajl ne postoji ili je neispravan."""
+        if not path or os.path.islink(path) or not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
+        """Atomično upisuje JSON rečnik na disk preko privremenog `.tmp` fajla."""
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)

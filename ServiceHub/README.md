@@ -1,6 +1,6 @@
 # ServisHub u WIS monorepo-u (`IG-Systems`)
 
-Komponentna razvojna verzija: **3.7.0**, u WIS paketu **3.5.0**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
+Komponentna razvojna verzija: **3.7.1**, u WIS paketu **3.5.4**. Sistem je u vlasništvu **IG-Systems**. Kanonski izvor je root `version.json`; `python3 ISO/Skripte/Sync-Versions.py --check` iz root-a proverava generisane verzije.
 
 Aktivni razvoj servera nalazi se u `ServiceHub/` ovog repozitorijuma. Prethodni samostalni direktorijum je arhiva; produkcioni NAS nije menjan. Opis API-ja ispod čuva prethodne funkcionalnosti, dok je sledeći ugovor merodavan za release pipeline razvoja 2.17.
 
@@ -15,24 +15,24 @@ Razvojni raspored: ovaj direktorijum je jedna od četiri celine (`ISO`, `Launche
 
 ---
 
-## Novo u WIS v3.5.0 / ServiceHub v3.7.0
+## Novo u WIS v3.5.4 / ServiceHub v3.7.1
 
-- **Driver Staged P4B pipeline:** drajveri se traže i preuzimaju u Fazi 4 (status u `C:\setup\driver-stage-status.json`, max `15 min` čekanja), instaliraju u Fazi `4B`, uz **jedan kontrolisani reboot** i post-reboot finalizaciju pre Faze 5.
-- **Async Delta Harvest:** pozadinsko prikupljanje novih drajvera u Fazi 5 preko `/api/drivers/pool/delta-check` (klijentski upload token, fail-closed).
-- **Storage higijena:** `Archives/` se briše tek posle uspešnog SHA-256 ingesta; `ms_catalog` ima disk gard (pauza ispod `20 GB` slobodno); LRU kvote `bundles <= 12 GB / 24h` i `drivers_cache <= 25 GB`.
-- **UI:** progresivni prikaz ekrana (`hw.display` sync), UI nit bez blokada, aktivacija Windows/Office van panela `UPOZORENJA`.
+- **OEM Prioritet & Asinhroni Ingest (`Celina B`):** `_is_package_better` / `_pick_for_hwid` u `pool.py` daju strogu prednost potpisanom `oem_pack` paketu nad generičkim `ms_catalog`/`harvest` paketima bez obzira na datum; uveden `12h` OEM catalog scheduler (`refresh_stale_oem_catalogs`), rani `P2` OEM prefetch + deduplikovani async job polling, i uklonjen auto-warranty poziv iz `/api/drivers/resolve`.
+- **Dvoslojni OEM Adapteri (`Celina C`):** Tier 1 `MicrosoftOEMProvider` (Surface `.msi` preko `msitools`/`msiextract` u Dockeru, `SystemSKU` mapiranje, `6 GiB` limit) + `FujitsuOEMProvider` (DeskUpdate XML sa XXE zaštitom); Tier 2 `DropInOEMProvider` (`Drivers/OEM/<vendor>/<model>/`) + WHQL MS Catalog za ASUS/Acer/MSI/Dynabook.
+- **Bundle Bloat Fix & Storage Lifecycle GC (`Celina D`):** ukinuto globalno povlačenje u `build_bundle_tar` (`IMP-89`), dodat on-the-fly `.tar` streaming, post-ingest `.tar` cleanup sa `.harvest.lock` zaštitom, noćni `prune_unused_packages()` i `releases/` rotacija (`keep_last=3` uz zaštitu `current.json`).
+- **Integritet Kartona (`Celina E`):** `reports.py` i `telemetry.py` sprečavaju gaženje aplikacija sa `⏳ False` (`IMP-94/94b`) i spajaju identitet uređaja po serijskom broju (`IMP-72`).
 - Detalji: [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
 
 # ⚡ IG-Systems Centralni Servisni Hub (ServisHub)
-### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), jedinstveni Driver Pool (CAS) & OEM XML kataloge, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.7.0)
+### Samostalni kontrolni server za telemetriju, WIS Benchmark, Predictive Cache (`Model DNA`), jedinstveni Driver Pool (CAS) & OEM XML kataloge, dvosmerni WU i driver keš, OEM podsistem, profile hardverskog testiranja (`WIS.HwTest`), WIS alate i nadzor flote (v3.7.1)
 
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-Standard%20Library%20Only-brightgreen.svg)]()
 [![Docker Ready](https://img.shields.io/badge/Docker-TrueNAS%20SCALE-blueviolet.svg)]()
 
-[![Version](https://img.shields.io/badge/Release-v3.7.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/Release-v3.7.1-orange.svg)]()
 
 ---
 

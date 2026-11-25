@@ -312,3 +312,104 @@ def publish_release(bundle_dir, cache_dir, version, source_commit, private_key, 
         finally:
             pointer.unlink(missing_ok=True)
         return meta
+
+
+def prune_old_releases(cache_dir, keep_last: int = 3) -> dict:
+    """
+    Briše zastarela izdanja iz `cache_dir/releases/` uz očuvanje najmanje `keep_last`
+    najnovijih release foldera i apsolutnu zaštitu aktivnog `release_id` iz `current.json`.
+    Strogo odbija symlinkove i path traversal van `releases/` direktorijuma.
+    """
+    keep_n = max(0, int(keep_last))
+    result = {
+        "status": "ok",
+        "active_release_id": None,
+        "kept": [],
+        "removed": [],
+        "freed_bytes": 0,
+    }
+    if not cache_dir:
+        return result
+
+    cache = Path(cache_dir)
+    if cache.is_symlink() or not cache.is_dir():
+        return result
+
+    active_id = None
+    current_file = cache / "current.json"
+    if current_file.is_symlink():
+        return result
+    if current_file.is_file():
+        try:
+            cur_data = json.loads(current_file.read_text(encoding="utf-8"))
+            if isinstance(cur_data, dict):
+                raw_id = str(cur_data.get("release_id") or "").strip()
+                if raw_id:
+                    active_id = raw_id
+        except Exception:
+            # Ne briši ništa ako je current.json nečitljiv / oštećen
+            return result
+    result["active_release_id"] = active_id
+
+    releases_dir = cache / "releases"
+    if releases_dir.is_symlink() or not releases_dir.is_dir():
+        return result
+
+    real_releases = os.path.realpath(releases_dir)
+    candidates = []
+    try:
+        with os.scandir(real_releases) as it:
+            entries = list(it)
+    except OSError:
+        return result
+
+    for entry in entries:
+        name = entry.name
+        if not name or name.startswith(".") or ".." in name or "/" in name or "\\" in name:
+            continue
+        if entry.is_symlink() or os.path.islink(entry.path):
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            real_target = os.path.realpath(entry.path)
+            if os.path.commonpath([real_releases, real_target]) != real_releases:
+                continue
+            st = entry.stat(follow_symlinks=False)
+            sort_ts = float(st.st_mtime)
+            meta_file = os.path.join(entry.path, "payload_meta.json")
+            if os.path.isfile(meta_file) and not os.path.islink(meta_file):
+                try:
+                    sort_ts = max(sort_ts, float(os.path.getmtime(meta_file)))
+                except OSError:
+                    pass
+            candidates.append((sort_ts, name, entry.path))
+        except (OSError, ValueError):
+            continue
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    protected = {name for _, name, _ in candidates[:keep_n]}
+    if active_id:
+        protected.add(active_id)
+
+    for _, name, ep in candidates:
+        if name in protected:
+            result["kept"].append(name)
+            continue
+        dir_bytes = 0
+        try:
+            for rdir, _, files in os.walk(ep, followlinks=False):
+                for fn in files:
+                    fp = os.path.join(rdir, fn)
+                    if not os.path.islink(fp):
+                        try:
+                            dir_bytes += os.path.getsize(fp)
+                        except OSError:
+                            pass
+            shutil.rmtree(ep)
+            result["removed"].append(name)
+            result["freed_bytes"] += dir_bytes
+        except OSError:
+            result["kept"].append(name)
+
+    return result

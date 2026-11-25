@@ -349,9 +349,10 @@ class TestV350Regressions(unittest.TestCase):
             self.assertEqual(d_json["missing_infs"], ["missing_gpu.inf"])
             self.assertTrue(d_json["harvest_needed"])
 
-            # 4. bundle prvi put (cache_hit=false) i drugi put (cache_hit=true)
+            # 4. bundle: 1. poziv hits=1 (<2) -> on-the-fly stream (cache_hit=false),
+            #    2. poziv hits=2 (>=2) -> upis u bundles/ (cache_hit=false), 3. poziv hits=3 -> keš (cache_hit=true)
             b_body = json.dumps({"model": "HP_ProBook_450_G9"}).encode("utf-8")
-            for expected_hit in ("false", "true"):
+            for expected_hit in ("false", "false", "true"):
                 b_req = urllib.request.Request(
                     f"http://127.0.0.1:{port}/api/drivers/pool/bundle",
                     data=b_body,

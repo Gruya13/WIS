@@ -615,6 +615,29 @@ namespace WIS.UI
             };
         }
 
+        private void SuspendBitLockerBeforeReboot()
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"try { Suspend-BitLocker -MountPoint 'C:' -RebootCount 1 -ErrorAction SilentlyContinue | Out-Null } catch {}\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+                using (Process proc = Process.Start(psi))
+                {
+                    if (proc != null)
+                    {
+                        proc.WaitForExit(10000);
+                    }
+                }
+            }
+            catch { }
+        }
+
         private void HandleInterimReboot()
         {
             Dispatcher.BeginInvoke((Action)(() =>

@@ -515,6 +515,51 @@ function Invoke-ServisRemoteCommand {
 # HEARTBEAT & STATUS REPORTING
 # ------------------------------------------------------------------------------
 
+function Get-WisPreviousHostname {
+    [CmdletBinding()]
+    param(
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    $curHost = if ($env:COMPUTERNAME) { $env:COMPUTERNAME.Trim() } else { "KLIJENT" }
+    $candDirs = @($LocalSetupDir, "C:\setup") | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    foreach ($dir in $candDirs) {
+        $statePath = Join-Path $dir "deploy-state.json"
+        if (Test-Path -LiteralPath $statePath -PathType Leaf -ErrorAction SilentlyContinue) {
+            try {
+                $raw = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if ($raw) {
+                    $obj = ConvertFrom-Json -InputObject $raw -ErrorAction SilentlyContinue
+                    if ($obj) {
+                        if ($obj.PSObject.Properties['previous_hostname'] -and -not [string]::IsNullOrWhiteSpace([string]$obj.previous_hostname)) {
+                            return ([string]$obj.previous_hostname).Trim()
+                        }
+                        if ($obj.PSObject.Properties['initial_hostname'] -and -not [string]::IsNullOrWhiteSpace([string]$obj.initial_hostname)) {
+                            return ([string]$obj.initial_hostname).Trim()
+                        }
+                    }
+                }
+            } catch {}
+        }
+        $hostFile = Join-Path $dir "initial-hostname.txt"
+        if (Test-Path -LiteralPath $hostFile -PathType Leaf -ErrorAction SilentlyContinue) {
+            try {
+                $hfVal = (Get-Content -LiteralPath $hostFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
+                if (-not [string]::IsNullOrWhiteSpace($hfVal)) {
+                    return $hfVal.Trim()
+                }
+            } catch {}
+        }
+    }
+    try {
+        $targetDir = if (Test-Path -LiteralPath $LocalSetupDir) { $LocalSetupDir } else { "C:\setup" }
+        if (-not (Test-Path -LiteralPath $targetDir)) {
+            New-Item -Path $targetDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        Set-Content -LiteralPath (Join-Path $targetDir "initial-hostname.txt") -Value $curHost -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+    } catch {}
+    return $curHost
+}
+
 function Send-ServisHeartbeat {
     param(
         [string]$LiveStatus = "",
@@ -604,9 +649,22 @@ function Send-ServisHeartbeat {
         $ramTotal   = if ($hwMetrics -and $hwMetrics.ram_total -ne $null) { $hwMetrics.ram_total } else { $null }
         $ramPercent = if ($hwMetrics -and $hwMetrics.ram_percent -ne $null) { $hwMetrics.ram_percent } else { $null }
 
+        $devId = $Global:FleetDeviceId
+        if ([string]::IsNullOrWhiteSpace($devId) -and (Get-Command Get-FleetDeviceId -ErrorAction SilentlyContinue)) {
+            try { $devId = Get-FleetDeviceId } catch {}
+        }
+        if ([string]::IsNullOrWhiteSpace($devId)) {
+            $devId = "TK-DESKTOP-$(if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'KLIJENT' })"
+        }
+        $serialNum = if ($Global:FleetSerialNumber) { $Global:FleetSerialNumber } elseif ($hw -and $hw.SerialNumber) { $hw.SerialNumber } elseif ($fHw -and $fHw.SerialNumber) { $fHw.SerialNumber } else { "" }
+        $prevHost = Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+
         $payload = [ordered]@{
-            computer_name   = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
-            phase           = $curPhase
+            device_id         = $devId
+            serial_number     = $serialNum
+            previous_hostname = $prevHost
+            computer_name     = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
+            phase             = $curPhase
             phase_name      = $phaseName
             update_cycle    = $upCycle
             max_cycles      = $maxCycles
@@ -719,9 +777,15 @@ function Flush-ServisLogBuffer {
         if (-not $linesToSend -or $linesToSend.Length -eq 0) { return }
 
         try {
+            $logDevId = if ($Global:FleetDeviceId) { $Global:FleetDeviceId } else { "" }
+            $logSerial = if ($Global:FleetSerialNumber) { $Global:FleetSerialNumber } else { "" }
+            $logPrevHost = Get-WisPreviousHostname
             $payload = [ordered]@{
-                computer_name = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
-                lines         = $linesToSend
+                device_id         = $logDevId
+                serial_number     = $logSerial
+                previous_hostname = $logPrevHost
+                computer_name     = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
+                lines             = $linesToSend
             }
             $jsonBody = ConvertTo-Json $payload -Compress -Depth 4
             $url = "$($Global:ServisHubUrl)/api/log"
@@ -810,9 +874,36 @@ function Send-ServisLifecycleEvent {
 
     try {
         $compName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
+        $lcDevId = if ($Data -and $Data.ContainsKey("device_id") -and $Data["device_id"]) {
+            $Data["device_id"]
+        } elseif ($Global:FleetDeviceId) {
+            $Global:FleetDeviceId
+        } elseif (Get-Command Get-FleetDeviceId -ErrorAction SilentlyContinue) {
+            try { Get-FleetDeviceId } catch { "TK-DESKTOP-$compName" }
+        } else {
+            "TK-DESKTOP-$compName"
+        }
+        $lcSerial = if ($Data -and $Data.ContainsKey("serial_number") -and $Data["serial_number"]) {
+            $Data["serial_number"]
+        } elseif ($Data -and $Data.ContainsKey("serial") -and $Data["serial"]) {
+            $Data["serial"]
+        } elseif ($Global:FleetSerialNumber) {
+            $Global:FleetSerialNumber
+        } else {
+            try { (Get-FleetHardwareInfo).SerialNumber } catch { "" }
+        }
+        $lcPrevHost = if ($Data -and $Data.ContainsKey("previous_hostname") -and $Data["previous_hostname"]) {
+            $Data["previous_hostname"]
+        } else {
+            Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+        }
+
         $payload = [ordered]@{
-            event         = $EventType
-            computer_name = $compName
+            event             = $EventType
+            device_id         = $lcDevId
+            serial_number     = $lcSerial
+            previous_hostname = $lcPrevHost
+            computer_name     = $compName
         }
 
         if ($Data) {
@@ -1233,11 +1324,14 @@ function Send-FleetFinalReport {
         $chassis = if ($Global:FleetChassis) { $Global:FleetChassis } else { "Desktop" }
         $serialNum = if ($Global:FleetSerialNumber) { $Global:FleetSerialNumber } else { if ($hw) { $hw.SerialNumber } else { $fHw.SerialNumber } }
 
+        $prevHost = Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+
         # 7. Formiranje JSON payload-a
         $payload = [ordered]@{
             device_id          = $devId
             install_session_id = $sessionId
             computer_name      = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { $devId }
+            previous_hostname  = $prevHost
             chassis            = $chassis
             serial_number      = $serialNum
             status             = $Status
@@ -1366,6 +1460,7 @@ Export-ModuleMember -Function `
     Send-ServisLifecycleEvent, `
     Get-FleetHardwareInfo, `
     Get-FleetDeviceId, `
+    Get-WisPreviousHostname, `
     Get-WisInstallSessionId, `
     Ensure-WisSessionLogMarker, `
     Send-FleetFinalReport, `

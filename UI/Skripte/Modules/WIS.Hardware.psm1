@@ -3491,8 +3491,9 @@ function Test-WisDeviceManagerClean {
         }
     }
 
-    # 2. VideoController provera (da li je ostao Basic Display ili Render Driver)
+    # 2. VideoController + PCI PnP provera (da li je ostao Basic Display ili Render Driver)
     try {
+        $seenGenericIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         $gpus = $null
         try {
             $gpus = Get-CimInstance -ClassName Win32_VideoController -OperationTimeoutSec 10 -ErrorAction Stop
@@ -3503,12 +3504,34 @@ function Test-WisDeviceManagerClean {
         if ($gpus) {
             foreach ($gpu in $gpus) {
                 $gpuName = if ($gpu.Name) { $gpu.Name.Trim() } else { "" }
-                if ($gpuName -like "*Microsoft Basic Display Adapter*" -or $gpuName -like "*Microsoft Basic Render Driver*") {
+                $gpuId = if ($gpu.PNPDeviceID) { $gpu.PNPDeviceID.Trim() } else { "" }
+                if ($gpuName -like "*Microsoft Basic Display Adapter*" -or $gpuName -like "*Microsoft Basic Render Driver*" -or $gpuName -like "*Standard VGA*") {
+                    if ($gpuId) { [void]$seenGenericIds.Add($gpuId) }
                     $problems += [PSCustomObject]@{
                         Name      = $gpuName
-                        DeviceID  = if ($gpu.PNPDeviceID) { $gpu.PNPDeviceID.Trim() } else { "" }
+                        DeviceID  = $gpuId
                         ErrorCode = -1
                         Type      = "GenericDisplayDriver"
+                    }
+                }
+            }
+        }
+
+        if ($pnpEntities) {
+            foreach ($pnpGpu in $pnpEntities) {
+                $pnpId = if ($pnpGpu.DeviceID) { $pnpGpu.DeviceID.Trim() } else { "" }
+                if (-not ($pnpId -match '^PCI\\VEN_')) { continue }
+                $pnpName = if ($pnpGpu.Name) { $pnpGpu.Name.Trim() } else { "" }
+                $pnpDesc = if ($pnpGpu.Description) { $pnpGpu.Description.Trim() } else { "" }
+                if ($pnpName -match '(?i)Microsoft Basic Display Adapter|Standard VGA' -or $pnpDesc -match '(?i)Microsoft Basic Display Adapter|Standard VGA') {
+                    if (-not $seenGenericIds.Contains($pnpId)) {
+                        [void]$seenGenericIds.Add($pnpId)
+                        $problems += [PSCustomObject]@{
+                            Name      = if ($pnpName) { $pnpName } else { $pnpDesc }
+                            DeviceID  = $pnpId
+                            ErrorCode = -1
+                            Type      = "GenericDisplayDriver"
+                        }
                     }
                 }
             }

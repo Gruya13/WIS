@@ -204,6 +204,7 @@ class TestWisAndOemApi(unittest.TestCase):
             "manufacturer": "LENOVO",
             "model": "20UD",
             "serial_number": "PF123456",
+            "include_warranty": True,
             "hwids": ["PCI\\VEN_1022&DEV_1638"],
         }
         status, data, headers = self._request("POST", "/api/drivers/resolve", req_data)
@@ -227,6 +228,7 @@ class TestWisAndOemApi(unittest.TestCase):
             "manufacturer": "Lenovo",
             "model": "21AH",
             "serial_number": "PF999999",
+            "include_warranty": True,
         }
         status, data, headers = self._request("POST", "/api/drivers/resolve", req_data)
         self.assertEqual(status, 200)

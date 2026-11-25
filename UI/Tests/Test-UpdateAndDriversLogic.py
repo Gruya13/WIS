@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.5.3 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.5.3 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.5.3 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.4 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.4 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.4 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):
@@ -1280,8 +1280,8 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("[INF_QUARANTINE]", upd_src)
         self.assertIn("[int]$TimeoutSeconds = 180", upd_src)
 
-        # V350-05 & V350-06: Staged pipeline (FastNas/InstallStaged/PostRebootFinalize/DeltaHarvest), Download-Only i PnP circuit breaker
-        self.assertIn('[ValidateSet("FastNas", "InstallStaged", "PostRebootFinalize", "DeltaHarvest", "Full")]', p2_src)
+        # V350-05 & V350-06: Staged pipeline (FastNas/InstallStaged/ApplyDeferredRename/PostRebootFinalize/DeltaHarvest), Download-Only i PnP circuit breaker
+        self.assertIn('[ValidateSet("FastNas", "InstallStaged", "ApplyDeferredRename", "PostRebootFinalize", "DeltaHarvest", "Full")]', p2_src)
         self.assertIn("function Write-DriverStageStatus", upd_src)
         self.assertIn("function Start-BackgroundDriverDownloadWorker", upd_src)
         self.assertIn("function Invoke-StagedDriverInstall", upd_src)
@@ -1413,10 +1413,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
             self.assertIn(fn, export_blk)
 
         self.assertIn("function Invoke-PendingBrandAccountRenameFromStage", upd_src)
-        inst_blk = upd_src.split("function Invoke-StagedDriverInstall", 1)[1].split("function Invoke-PostRebootDriverFinalize", 1)[0]
-        self.assertIn("Invoke-PendingBrandAccountRenameFromStage", inst_blk.split("} finally {", 1)[1])
-        post_blk = upd_src.split("function Invoke-PostRebootDriverFinalize", 1)[1].split("function Invoke-DeltaDriverHarvest", 1)[0]
-        self.assertIn("Invoke-PendingBrandAccountRenameFromStage", post_blk)
+        p2_inv_blk = upd_src.split("function Invoke-Phase2Drivers", 1)[1].split("function Write-BackgroundWuStatus", 1)[0]
+        self.assertIn("ApplyDeferredRename", p2_inv_blk)
+        self.assertIn("Invoke-PendingBrandAccountRenameFromStage", p2_inv_blk)
 
         # V353-02: Guard protiv legacy Start-BackgroundWindowsUpdateWorker + Send-IpcLog u Invoke-SafeMsi
         p4_blk = apps_src.split("function Invoke-Phase4Apps", 1)[1]
@@ -1427,11 +1426,11 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("Send-IpcLog", safe_msi_blk)
         self.assertIn("[SafeMsi]", safe_msi_blk)
 
-        # V353-03: Hub /api/drivers/resolve results[] + status=='ready' parsanje u Invoke-BackgroundDriverDownloadWorker
-        bg_dl_blk = upd_src.split("function Invoke-BackgroundDriverDownloadWorker", 1)[1].split("function Start-BackgroundDriverDownloadWorker", 1)[0]
-        self.assertIn("PSObject.Properties['results']", bg_dl_blk)
-        self.assertIn("PSObject.Properties['download_url']", bg_dl_blk)
-        self.assertIn("-eq 'ready'", bg_dl_blk)
+        # V353-03: Hub /api/drivers/resolve results[] + status=='ready' parsanje u batch resolve helperu
+        batch_dl_blk = upd_src.split("function Invoke-HubBatchDriverResolveAndStage", 1)[1].split("function Invoke-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertIn("PSObject.Properties['results']", batch_dl_blk)
+        self.assertIn("PSObject.Properties['download_url']", batch_dl_blk)
+        self.assertIn("-eq 'ready'", batch_dl_blk)
 
         # 1:1 ISO paritet za sva tri modula
         iso_mods = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "Skripte" / "Modules"
@@ -1442,6 +1441,118 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
                     (iso_mods / mod_name).read_bytes(),
                     f"ISO paritet narusen za {mod_name}",
                 )
+
+    def test_40_v354_drivers_and_celina_e_contracts(self):
+        """WIS-TASK-278 (v3.5.4): V353-01 izolacija, Batch resolve + polling, PostReboot oporavak, WUA limit, IMP-96/95/94/92/88/87/75/72 i 1:1 paritet."""
+        skripte_dir = ROOT / "UI" / "Skripte"
+        upd_src = (skripte_dir / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
+        apps_src = (skripte_dir / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
+        brand_src = (skripte_dir / "Modules" / "WIS.Branding.psm1").read_text(encoding="utf-8")
+        clean_src = (skripte_dir / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8")
+        tel_src = (skripte_dir / "Modules" / "WIS.Telemetry.psm1").read_text(encoding="utf-8")
+        hw_src = (skripte_dir / "Modules" / "WIS.Hardware.psm1").read_text(encoding="utf-8")
+        p2_src = (skripte_dir / "Phases" / "Phase2-Drivers.ps1").read_text(encoding="utf-8")
+        p6_src = (skripte_dir / "Phases" / "Phase6-Finalize.ps1").read_text(encoding="utf-8")
+
+        # 1. V353-01 izolacija: ApplyDeferredRename u Phase2-Drivers i Invoke-Phase2Drivers, bez tihog preimenovanja u PostRebootFinalize
+        self.assertIn("ApplyDeferredRename", p2_src)
+        inst_blk = upd_src.split("function Invoke-StagedDriverInstall", 1)[1].split("function Invoke-PostRebootDriverFinalize", 1)[0]
+        self.assertNotIn("Invoke-PendingBrandAccountRenameFromStage", inst_blk)
+        post_blk = upd_src.split("function Invoke-PostRebootDriverFinalize", 1)[1].split("function Invoke-DeltaDriverHarvest", 1)[0]
+        self.assertNotIn("Invoke-PendingBrandAccountRenameFromStage", post_blk)
+        self.assertIn("pending-account-rename.json", post_blk)
+        self.assertIn("pending-controlled-reboot.flag", post_blk)
+        self.assertIn("Suspend-BitLocker", post_blk)
+
+        # 2. Batch /api/drivers/resolve + async polling (10s, TimeoutSec 120, WARN catch)
+        batch_blk = upd_src.split("function Invoke-HubBatchDriverResolveAndStage", 1)[1].split("function Invoke-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertIn("system_sku", batch_blk)
+        self.assertIn("async_download", batch_blk)
+        self.assertIn("-TimeoutSec 120", batch_blk)
+        self.assertIn("-eq 'downloading'", batch_blk)
+        self.assertIn("Start-Sleep -Seconds $PollIntervalSeconds", batch_blk)
+        self.assertIn('-Level "WARN"', batch_blk)
+
+        # 3. Aktivni mrezni oporavak u Invoke-PostRebootDriverFinalize + Test-WisDeviceManagerClean PCI Basic Display provera
+        dm_blk = hw_src.split("function Test-WisDeviceManagerClean", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("PCI\\\\VEN_", dm_blk)
+        self.assertIn("Microsoft Basic Display Adapter|Standard VGA", dm_blk)
+        self.assertIn("Invoke-DriverPoolBundleInstall", post_blk)
+        self.assertIn("Invoke-HubBatchDriverResolveAndStage", post_blk)
+        self.assertIn("Microsoft.Update.Session", post_blk)
+
+        # 4. Opservabilnost Invoke-StagedDriverInstall (IMP-96)
+        pnp_blk = upd_src.split("function Invoke-SafePnpUtilAddDriver", 1)[1].split("function Test-IsDriverUpdate", 1)[0]
+        self.assertIn("[switch]$EmitPerInfProgress", pnp_blk)
+        self.assertIn("[$infIdx/$infTotal]", pnp_blk)
+        self.assertIn("-EmitPerInfProgress", inst_blk)
+        self.assertIn("[$wuaIdx/$wuaTotal]", inst_blk)
+
+        # 5. WUA ogranicenje protiv DriverStage\Hub (Celina B)
+        self.assertIn("function Get-WisStagedHubInfCoverage", upd_src)
+        self.assertIn("function Test-WisDeviceCoveredByStagedHub", upd_src)
+        bg_blk = upd_src.split("function Invoke-BackgroundDriverDownloadWorker", 1)[1].split("function Start-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertIn("Get-WisStagedHubInfCoverage", bg_blk)
+        self.assertIn("$skipWuaCompletely", bg_blk)
+        self.assertIn("NoAutoUpdate", bg_blk)
+
+        # 6. On-the-fly streaming progres (100 MB / 15s) & Delta Harvest (Celina D) + IMP-87
+        pool_blk = upd_src.split("function Invoke-DriverPoolBundleInstall", 1)[1].split("function Invoke-ModelDriversPreInstall", 1)[0]
+        self.assertIn("104857600", pool_blk)
+        self.assertIn("-ge 15", pool_blk)
+        delta_blk = upd_src.split("function Invoke-DeltaDriverHarvest", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("Send-ModelDriverPackToServisHub", delta_blk)
+        self.assertIn(r"\Servis", delta_blk)
+        self.assertIn(r"Drivers\Harvested\Archives", delta_blk)
+        self.assertIn("Invoke-DeltaDriverHarvest", p6_src)
+
+        # 7. Celina E: IMP-75, IMP-95, IMP-92, IMP-88, IMP-94b, IMP-72
+        self.assertIn('$nasShares = @("Servis", "Programi", "WIS")', apps_src)
+        bin_up_blk = upd_src.split("function Invoke-ServisHubBinaryUpload", 1)[1].split("function Send-UpdatePackageToServisHub", 1)[0]
+        self.assertIn("Wifi-Servis.ini", bin_up_blk)
+        self.assertIn("ClientToken", bin_up_blk)
+        notify_blk = upd_src.split("function Send-ServisHubHarvestNotify", 1)[1].split("function Copy-FileWithHeartbeat", 1)[0]
+        self.assertIn("Wifi-Servis.ini", notify_blk)
+        self.assertIn("ClientToken", notify_blk)
+
+        loc_blk = brand_src.split("function Disable-LocationPrivacyPrompts", 1)[1].split("function Test-WisLocationAccessEnabled", 1)[0]
+        self.assertIn("DisableLocation", loc_blk)
+        self.assertIn("DisableWindowsLocationProvider", loc_blk)
+        self.assertIn("LetAppsAccessLocation", loc_blk)
+
+        sp_blk = upd_src.split("function Invoke-WindowsUpdateSecondPass", 1)[1].split("function Wait-WindowsUpdateCompletionBarrier", 1)[0]
+        self.assertIn("0x{0:X8}", sp_blk)
+        self.assertIn("$resCode -ge 4", sp_blk)
+        self.assertIn("$jobResCode -ge 4", sp_blk)
+
+        self.assertIn("WIS.Apps.psm1", p6_src)
+        exp_blk = clean_src.split("function Export-ServisSummaryReport", 1)[1].split("function Clear-ServisWifiSecrets", 1)[0]
+        self.assertIn('"OK"', exp_blk)
+        self.assertIn('"MISSING"', exp_blk)
+        self.assertIn("CpuStr", exp_blk)
+        self.assertIn("previous_hostname", exp_blk)
+
+        self.assertIn("function Get-WisPreviousHostname", tel_src)
+        self.assertIn("previous_hostname", tel_src)
+        self.assertIn("serial_number", tel_src)
+
+        # 8. 1:1 OEM paritet & UTF-8 BOM za sve izmenjene fajlove
+        iso_setup = ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup"
+        for rel in (
+            "Skripte/Modules/WIS.Update.psm1",
+            "Skripte/Modules/WIS.Apps.psm1",
+            "Skripte/Modules/WIS.Branding.psm1",
+            "Skripte/Modules/WIS.Cleanup.psm1",
+            "Skripte/Modules/WIS.Telemetry.psm1",
+            "Skripte/Modules/WIS.Hardware.psm1",
+            "Skripte/Phases/Phase2-Drivers.ps1",
+            "Skripte/Phases/Phase6-Finalize.ps1",
+        ):
+            ui_bytes = (ROOT / "UI" / rel).read_bytes()
+            self.assertTrue(ui_bytes.startswith(b"\xef\xbb\xbf"), f"Nedostaje UTF-8 BOM na UI/{rel}")
+            iso_path = iso_setup / rel
+            if iso_path.is_file():
+                self.assertEqual(ui_bytes, iso_path.read_bytes(), f"1:1 OEM paritet narusen za {rel}")
 
 
 if __name__ == "__main__":

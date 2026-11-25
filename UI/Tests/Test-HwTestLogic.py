@@ -572,15 +572,15 @@ class TestHwTestComponents(unittest.TestCase):
 
         ui_dir = ROOT / "UI"
 
-        # 1. Verzije v3.5.3 / ServiceHub v3.7.0 u root version.json i komponentama
+        # 1. Verzije v3.5.4 / ServiceHub v3.7.1 u root version.json i komponentama
         root_ver = json.loads((ROOT / "version.json").read_text(encoding="utf-8"))
-        self.assertEqual(root_ver["version"], "3.5.3")
-        self.assertEqual(root_ver["release_package"]["version"], "3.5.3")
-        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.3")
-        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.3")
-        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.3")
-        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.3")
-        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.7.0")
+        self.assertEqual(root_ver["version"], "3.5.4")
+        self.assertEqual(root_ver["release_package"]["version"], "3.5.4")
+        self.assertEqual(root_ver["components"]["ui"]["version"], "3.5.4")
+        self.assertEqual(root_ver["components"]["launcher"]["version"], "3.5.4")
+        self.assertEqual(root_ver["components"]["iso"]["version"], "3.5.4")
+        self.assertEqual(root_ver["components"]["iso"]["embedded_launcher_version"], "3.5.4")
+        self.assertEqual(root_ver["components"]["servicehub"]["version"], "3.7.1")
         self.assertEqual(root_ver["compatibility"]["min_launcher_version"], "3.1.0")
 
         # 2. AudioTestWindow.cs sadrzi ManualResetEventSlim / STA Dispatcher zastitu (BUG-01)
@@ -849,7 +849,7 @@ class TestHwTestComponents(unittest.TestCase):
         self.assertIn("operator_wait_sec", shell_src)
         self.assertIn("active_hwtest_sec", shell_src)
         self.assertIn("Console.Beep(880, 140)", shell_src)
-        self.assertIn('AppVersion = "3.5.3";', result_src)
+        self.assertIn('AppVersion = "3.5.4";', result_src)
 
         upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
         apps_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Apps.psm1").read_text(encoding="utf-8")
@@ -1532,7 +1532,7 @@ class TestHwTestComponents(unittest.TestCase):
         boot_py = (ROOT / "ISO" / "Skripte" / "Patch-BootWim.py").read_text(encoding="utf-8")
 
         # V350-01 & IMP-61: Preliminarni Basic Display status ne truje checkpoint / izvestaj
-        self.assertIn('AppVersion = "3.5.3";', result_src)
+        self.assertIn('AppVersion = "3.5.4";', result_src)
         self.assertIn("public bool IsPassivePreliminary { get; set; }", result_src)
         self.assertIn("res.IsPassivePreliminary = true;", auto_src)
         self.assertIn("HasAnyRealCompletedTestsForCheckpoint", shell_src)
@@ -1666,6 +1666,82 @@ class TestHwTestComponents(unittest.TestCase):
             self.assertIn(f'"{token}"', probe_src)
         self.assertIn("TouchscreenPnP:", probe_src)
         self.assertIn("bool tsPnpAllowed = _hwInfo.TouchscreenPnpPresent && _hwInfo.FactoryTouchscreen != false;", shell_src)
+
+    def test_wis_task_278_v354_contracts(self):
+        """Proverava WIS-TASK-278 (v3.5.4): Celina A + C# delovi Celine E (PreAutoDriverGate, V353-01 izolacija, Code 14 BitLocker, IMP-72/93/94b/96)."""
+        main_cs = (ROOT / "UI" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
+        reboot_cs = (ROOT / "UI" / "MainWindow.Reboot.cs").read_text(encoding="utf-8")
+        hwt_cs = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        tel_cs = (ROOT / "UI" / "TelemetryService.cs").read_text(encoding="utf-8")
+
+        # 1. Izolacija V353-01 (SL7): ApplyDeferredRename u finally odmah posle InstallStaged, pre HandleInterimReboot
+        p4_blk = main_cs.split("else if (phaseNumber == 4)", 1)[1].split("HandleInterimReboot();", 1)[0]
+        self.assertIn('RunPhase2DriversStage("InstallStaged", 25)', p4_blk)
+        self.assertIn("finally", p4_blk)
+        self.assertIn('RunPhase2DriversStage("ApplyDeferredRename", 1)', p4_blk)
+
+        # 2. PostRebootFinalize timeout 8 min
+        self.assertIn('RunPhase2DriversStage("PostRebootFinalize", 8)', main_cs)
+
+        # 3. Code 14 restart (max 2) + pending-controlled-reboot.flag + BitLocker suspend + ocuvanje deploy-state
+        self.assertIn("pending-controlled-reboot.flag", main_cs)
+        self.assertIn("HasCode14PendingReboot", main_cs)
+        self.assertIn('"driver_gate_reboots"', main_cs)
+        self.assertIn("if (gateReboots < 2)", main_cs)
+        self.assertIn("SuspendBitLockerBeforeReboot();", main_cs)
+        self.assertIn("Suspend-BitLocker -MountPoint 'C:' -RebootCount 1 -ErrorAction SilentlyContinue", reboot_cs)
+        self.assertIn("ReadExistingDeployStateMapLocked()", main_cs)
+
+        # 4. PreAutoDriverGate u HwTestShell.cs i MainWindow.HwTest.cs
+        self.assertIn("EvaluatePreAutoDriverGateFresh", hwt_cs)
+        self.assertIn("OnHwTestDriverGateStatusUpdate", hwt_cs)
+        self.assertIn("OnHwTestPhase5LiveStatusChanged", hwt_cs)
+        self.assertIn("IsWaitingForDriverGate", hwt_cs)
+        self.assertIn("SetSuppressPassiveAutoChecks(true)", hwt_cs)
+
+        wf_blk = shell_src.split("public void StartPhase5FullWorkflow(", 1)[1].split("EmitPhase5Step(\"P5.AutoDiag\"", 1)[0]
+        idx_probe_wait = wf_blk.find("_initialProbeDoneEvent.WaitOne(8000)")
+        idx_gate_eval = wf_blk.find("EvaluatePreAutoDriverGateState()")
+        self.assertGreater(idx_probe_wait, 0)
+        self.assertGreater(idx_gate_eval, idx_probe_wait)
+        self.assertIn("_waitingInPreAutoDriverGate = true;", wf_blk)
+        self.assertIn("_driverGateWakeEvent.WaitOne(5000);", wf_blk)
+        self.assertIn("PersistManualDriverBypassToDeployState(", shell_src)
+        self.assertIn('"manual_driver_bypass"', shell_src)
+        self.assertIn("FormatDriverGateProblemDevicesDetail(", shell_src)
+
+        # 5. Opservabilnost (IMP-96 & IMP-93)
+        wait_blk = main_cs.split("private void WaitForBackgroundDriverDownloadIfActive(", 1)[1].split("private void ResetStuckStageStatusIfActive(", 1)[0]
+        self.assertIn("TotalSeconds >= 30.0", wait_blk)
+        self.assertIn("_telemetryService.PushLog", wait_blk)
+        self.assertIn("CurrentItem:", wait_blk)
+
+        stage_blk = main_cs.split("private void RunPhase2DriversStage(", 1)[1].split("private void RunPhase2DriversStageAsync(", 1)[0]
+        self.assertIn("taskkill.exe", stage_blk)
+        self.assertIn("_telemetryService.PushLog", stage_blk)
+
+        init_blk = shell_src.split("private void InitTestList()", 1)[1].split("private void LogTestVisibilityDecision()", 1)[0]
+        self.assertIn("if (_initialHardwareProbeCompleted)", init_blk)
+        self.assertNotIn('HwTestLogger.Info("TEST_VISIBILITY"', init_blk)
+        self.assertIn("LogTestVisibilityDecision();", shell_src)
+        self.assertIn("Faza 5: Čeka operatera za interaktivne testove ({0}/{1})", shell_src)
+        self.assertIn("Faza 5: Čeka operatera za interaktivne testove ({0}/{1})", hwt_cs)
+
+        # 6. C# deo IMP-72 i IMP-94b
+        for tok in (
+            "GetCanonicalDeviceId(",
+            "GetPreviousHostname()",
+            "ApplyManualDriverBypassMetadata(",
+            '"previous_hostname"',
+            '"is_partial_hwtest"',
+            '"report_stage"',
+            '"phase5_hwtest"',
+            '"phase6_final"',
+            "SendPartialHwTestReportAsync()",
+        ):
+            self.assertIn(tok, tel_cs)
+        self.assertIn("SendPartialHwTestReportAsync();", hwt_cs)
 
 
 if __name__ == "__main__":

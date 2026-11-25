@@ -22,7 +22,10 @@ from servishub.reports import (
     _atomic_write_json,
     cleanup_stale_tmp_files,
     is_enospc_error,
+    is_partial_hwtest_payload,
     log_enospc_rate_limited,
+    merge_app_statuses,
+    merge_report_payloads,
 )
 
 
@@ -454,11 +457,11 @@ class FleetStore:
         rec["_session_logs_cleared"] = True
         return True
 
-    def _resolve_device_key_locked(self, comp_name: str, canonical_sn: str = "") -> str:
+    def _resolve_device_key_locked(self, comp_name: str, canonical_sn: str = "", previous_hostname: str = "") -> str:
         """
         Određuje jedinstveni kanonski ključ u fleet_devices tako da promena hostname-a
-        (npr. DESKTOP-* -> TK-LAPTOP-<SN>) nikada ne stvara duplikate za isti serijski broj,
-        a placeholder vrednosti nikada ne zagađuju _serial_index / _alias_index (IMP-45).
+        (npr. DESKTOP-* / W-AAD-* -> TK-LAPTOP-<SN>) nikada ne stvara duplikate za isti serijski broj
+        ili previous_hostname, a placeholder vrednosti nikada ne zagađuju _serial_index / _alias_index (IMP-45, IMP-72).
         Pozvati pod fleet_lock.
         """
         raw_key = sanitize_id(comp_name)
@@ -470,6 +473,15 @@ class FleetStore:
             canonical_sn = ""
         elif canonical_sn:
             canonical_sn = str(canonical_sn).strip().upper()
+
+        prev_clean = ""
+        prev_upper = ""
+        if previous_hostname and not is_placeholder_hw_value(previous_hostname):
+            prev_clean = sanitize_id(previous_hostname)
+            if prev_clean and prev_clean.upper() not in ("", "UNKNOWN", "UNKNOWN-PC"):
+                prev_upper = prev_clean.upper()
+            else:
+                prev_clean = ""
 
         existing_key = None
         if canonical_sn:
@@ -485,21 +497,50 @@ class FleetStore:
                         existing_key = k
                         break
 
+        if not existing_key and prev_upper:
+            prev_candidates = []
+            aliased = self._alias_index.get(prev_upper)
+            if aliased and aliased in self.fleet_devices:
+                prev_candidates.append(aliased)
+            if prev_clean in self.fleet_devices:
+                prev_candidates.append(prev_clean)
+            for k, rec in self.fleet_devices.items():
+                if isinstance(rec, dict) and sanitize_id(str(rec.get("computer_name") or "")).upper() == prev_upper:
+                    prev_candidates.append(k)
+            for cand_k in prev_candidates:
+                cand_rec = self.fleet_devices.get(cand_k)
+                if not isinstance(cand_rec, dict):
+                    continue
+                cand_sn = self._extract_canonical_serial(cand_rec, cand_rec.get("hw"))
+                if cand_sn and canonical_sn and cand_sn != canonical_sn:
+                    continue
+                existing_key = cand_k
+                break
+
         if existing_key:
             if existing_key != raw_key:
                 if is_tk_incoming and not str(existing_key).upper().startswith("TK-"):
                     self._merge_device_records_into_locked(raw_key, existing_key)
-                    self._serial_index[canonical_sn] = raw_key
+                    if canonical_sn:
+                        self._serial_index[canonical_sn] = raw_key
                     if not is_comp_placeholder:
                         self._alias_index[raw_upper] = raw_key
+                    if prev_upper:
+                        self._alias_index[prev_upper] = raw_key
                     return raw_key
                 if not is_comp_placeholder:
                     self._alias_index[raw_upper] = existing_key
-                self._serial_index[canonical_sn] = existing_key
+                if prev_upper:
+                    self._alias_index[prev_upper] = existing_key
+                if canonical_sn:
+                    self._serial_index[canonical_sn] = existing_key
                 return existing_key
-            self._serial_index[canonical_sn] = existing_key
+            if canonical_sn:
+                self._serial_index[canonical_sn] = existing_key
             if not is_comp_placeholder:
                 self._alias_index[raw_upper] = existing_key
+            if prev_upper:
+                self._alias_index[prev_upper] = existing_key
             return existing_key
 
         alias_key = self._alias_index.get(raw_upper) if not is_comp_placeholder else None
@@ -518,15 +559,21 @@ class FleetStore:
                 ):
                     self._serial_index[canonical_sn] = raw_key
                     self._alias_index[raw_upper] = raw_key
+                    if prev_upper:
+                        self._alias_index[prev_upper] = raw_key
                     return raw_key
                 self._serial_index[canonical_sn] = alias_key
                 self._alias_index[raw_upper] = alias_key
+                if prev_upper:
+                    self._alias_index[prev_upper] = alias_key
             return alias_key
 
         if canonical_sn:
             self._serial_index[canonical_sn] = raw_key
             if not is_comp_placeholder:
                 self._alias_index[raw_upper] = raw_key
+            if prev_upper:
+                self._alias_index[prev_upper] = raw_key
         elif not is_comp_placeholder and raw_upper not in self._alias_index:
             self._alias_index[raw_upper] = raw_key
         return raw_key
@@ -1164,12 +1211,13 @@ class FleetStore:
 
         incoming_hw = extract_hw_from_payload(payload)
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        prev_host = str(payload.get("previous_hostname") or "").strip()
         install_sid = str(payload.get("install_session_id") or "").strip()
         if "hw" in clean_update:
             del clean_update["hw"]
 
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {
                     "computer_name": comp_name,
@@ -1217,24 +1265,22 @@ class FleetStore:
                 except (ValueError, TypeError):
                     eff_phase = None
             if (
-                eff_phase is not None
-                and eff_phase >= 5
-                and isinstance(clean_update.get("apps"), dict)
+                isinstance(clean_update.get("apps"), dict)
                 and isinstance(existing_rec.get("apps"), dict)
                 and existing_rec["apps"]
             ):
-                _wait_skip_tokens = ("", "WAIT", "WAITING", "PENDING", "SKIP", "SKIPPED")
-                existing_has_real_status = any(
-                    str(v or "").strip().upper() not in _wait_skip_tokens
-                    for v in existing_rec["apps"].values()
-                )
-                incoming_only_wait_or_skip = all(
-                    str(v or "").strip().upper() in _wait_skip_tokens
-                    for v in clean_update["apps"].values()
-                )
-                if existing_has_real_status and incoming_only_wait_or_skip:
-                    del clean_update["apps"]
-                    if "apps_summary" in clean_update and existing_rec.get("apps_summary"):
+                clean_update["apps"] = merge_app_statuses(existing_rec["apps"], clean_update["apps"])
+                if eff_phase is not None and eff_phase >= 5:
+                    _wait_skip_tokens = ("", "WAIT", "WAITING", "PENDING", "SKIP", "SKIPPED", "FALSE")
+                    existing_has_real_status = any(
+                        str(v or "").strip().upper() not in _wait_skip_tokens
+                        for v in existing_rec["apps"].values()
+                    )
+                    incoming_only_wait_or_skip = all(
+                        str(v or "").strip().upper() in _wait_skip_tokens
+                        for v in (payload.get("apps") or {}).values()
+                    ) if isinstance(payload.get("apps"), dict) else False
+                    if existing_has_real_status and incoming_only_wait_or_skip and "apps_summary" in clean_update and existing_rec.get("apps_summary"):
                         del clean_update["apps_summary"]
 
             if not str(dev_id).upper().startswith("TK-") and str(existing_rec.get("computer_name", "")).upper().startswith("TK-"):
@@ -1262,14 +1308,21 @@ class FleetStore:
                     comp_name=comp_name,
                     serial_num=eff_sn,
                     client_ip=client_ip,
+                    previous_hostname=prev_host,
                 )
 
         return dev_id
 
-    def _collect_related_records_locked(self, dev_id: str, comp_name: str = "") -> list:
+    def _collect_related_records_locked(
+        self,
+        dev_id: str,
+        comp_name: str = "",
+        serial_num: str = "",
+        previous_hostname: str = "",
+    ) -> list:
         """
-        Vraća povezane zapise iz fleet_devices (po dev_id, sanitize_id(comp_name)
-        ili podudarnom computer_name) za spajanje memorisane telemetrije.
+        Vraća povezane zapise iz fleet_devices (po dev_id, sanitize_id(comp_name),
+        serial_number, previous_hostname ili podudarnom computer_name) za spajanje memorisane telemetrije.
         Poziva se pod self.fleet_lock.
         """
         related = []
@@ -1277,16 +1330,33 @@ class FleetStore:
         candidates = [dev_id]
         if comp_name:
             candidates.append(sanitize_id(comp_name))
+        if previous_hostname and not is_placeholder_hw_value(previous_hostname):
+            prev_s = sanitize_id(previous_hostname)
+            candidates.append(prev_s)
+            if prev_s.upper() in self._alias_index:
+                candidates.append(self._alias_index[prev_s.upper()])
+        if serial_num and is_valid_canonical_serial(serial_num):
+            sn_u = str(serial_num).strip().upper()
+            if sn_u in self._serial_index:
+                candidates.append(self._serial_index[sn_u])
         for cid in candidates:
             if cid and cid not in seen_keys and cid in self.fleet_devices:
                 seen_keys.add(cid)
                 related.append(self.fleet_devices[cid])
-        if comp_name:
-            target_cn = str(comp_name).strip().upper()
+        target_cn = str(comp_name).strip().upper() if comp_name else ""
+        target_prev = str(previous_hostname).strip().upper() if previous_hostname and not is_placeholder_hw_value(previous_hostname) else ""
+        target_sn = str(serial_num).strip().upper() if serial_num and is_valid_canonical_serial(serial_num) else ""
+        if target_cn or target_prev or target_sn:
             for k, rec in self.fleet_devices.items():
                 if k in seen_keys or not isinstance(rec, dict):
                     continue
-                if str(rec.get("computer_name") or "").strip().upper() == target_cn:
+                rcn = str(rec.get("computer_name") or "").strip().upper()
+                rsn = self._extract_canonical_serial(rec, rec.get("hw"))
+                if (
+                    (target_cn and rcn == target_cn)
+                    or (target_prev and (rcn == target_prev or sanitize_id(k).upper() == sanitize_id(target_prev).upper()))
+                    or (target_sn and rsn and rsn == target_sn)
+                ):
                     seen_keys.add(k)
                     related.append(rec)
         return related
@@ -1302,9 +1372,16 @@ class FleetStore:
             enriched["apps_summary"] = _normalize_apps_summary(enriched.get("apps_summary"))
         effective_comp = comp_name or enriched.get("computer_name") or ""
         incoming_hw = extract_hw_from_payload(enriched)
+        canonical_sn = self._extract_canonical_serial(enriched, incoming_hw)
+        prev_host = str(enriched.get("previous_hostname") or "").strip()
 
         with self.fleet_lock:
-            related = self._collect_related_records_locked(dev_id, effective_comp)
+            related = self._collect_related_records_locked(
+                dev_id,
+                effective_comp,
+                serial_num=canonical_sn,
+                previous_hostname=prev_host,
+            )
             merged_hw = {}
             mem_serial = ""
             mem_chassis = ""
@@ -1355,8 +1432,8 @@ class FleetStore:
         if is_placeholder_hw_value(enriched.get("chassis")) and not is_placeholder_hw_value(mem_chassis):
             enriched["chassis"] = mem_chassis
 
-        if (not enriched.get("apps")) and mem_apps:
-            enriched["apps"] = mem_apps
+        if mem_apps:
+            enriched["apps"] = merge_app_statuses(mem_apps, enriched.get("apps"))
 
         if (not enriched.get("autopilot")) and mem_autopilot:
             enriched["autopilot"] = mem_autopilot
@@ -1369,7 +1446,12 @@ class FleetStore:
 
         if not str(enriched.get("install_session_id") or "").strip():
             with self.fleet_lock:
-                for rec in self._collect_related_records_locked(dev_id, effective_comp):
+                for rec in self._collect_related_records_locked(
+                    dev_id,
+                    effective_comp,
+                    serial_num=canonical_sn,
+                    previous_hostname=prev_host,
+                ):
                     if isinstance(rec, dict) and str(rec.get("install_session_id") or "").strip():
                         enriched["install_session_id"] = str(rec["install_session_id"]).strip()
                         break
@@ -1382,10 +1464,11 @@ class FleetStore:
         comp_name: str = "",
         serial_num: str = "",
         client_ip: str = "",
+        previous_hostname: str = "",
     ) -> None:
         """
-        Uklanja privremeni pred-OEM / siroče zapis (npr. DESKTOP-* ili ne-TK-* u Fazi 1/2)
-        kada stigne zapis za isti računar / serijski broj / client_ip (pozvati pod fleet_lock).
+        Uklanja privremeni pred-OEM / siroče zapis (npr. DESKTOP-* / W-AAD-* u Fazi 1/2+)
+        kada stigne zapis za isti računar / serijski broj / previous_hostname / client_ip (pozvati pod fleet_lock).
         """
         if not canonical_id:
             return
@@ -1393,6 +1476,10 @@ class FleetStore:
         if not isinstance(canon_rec, dict):
             return
         target_cn = str(comp_name or canon_rec.get("computer_name") or "").strip().upper()
+        target_prev = str(previous_hostname or canon_rec.get("previous_hostname") or "").strip().upper()
+        if is_placeholder_hw_value(target_prev):
+            target_prev = ""
+        target_prev_san = sanitize_id(target_prev).upper() if target_prev else ""
         target_sn = str(
             serial_num
             or canon_rec.get("serial_number")
@@ -1409,6 +1496,7 @@ class FleetStore:
             if k == canonical_id or str(k).upper().startswith("TK-") or not isinstance(rec, dict):
                 continue
             rcn = str(rec.get("computer_name") or "").strip().upper()
+            rprev = str(rec.get("previous_hostname") or "").strip().upper()
             rsn = self._extract_canonical_serial(rec, rec.get("hw"))
             rip = str(rec.get("client_ip") or "").strip()
             rec_phase = rec.get("phase")
@@ -1416,6 +1504,15 @@ class FleetStore:
 
             sn_match = bool(target_sn and rsn and rsn == target_sn)
             cn_match = bool(is_canon_tk and target_cn and rcn == target_cn)
+            prev_host_match = bool(
+                target_prev
+                and not (target_sn and rsn and rsn != target_sn)
+                and (
+                    rcn == target_prev
+                    or sanitize_id(k).upper() == target_prev_san
+                    or (rprev and rprev == target_prev)
+                )
+            )
             ip_match = False
             if (
                 target_ip
@@ -1428,11 +1525,11 @@ class FleetStore:
                 if (
                     target_ip not in ("127.0.0.1", "::1", "localhost")
                     or is_canon_tk
-                    or str(k).upper().startswith(("DESKTOP-", "WIN-", "APCL-", "UNKNOWN"))
+                    or str(k).upper().startswith(("DESKTOP-", "WIN-", "APCL-", "W-AAD-", "UNKNOWN"))
                 ):
                     ip_match = True
 
-            if sn_match or cn_match or ip_match:
+            if sn_match or cn_match or prev_host_match or ip_match:
                 to_remove.append(k)
 
         for k in to_remove:
@@ -1444,16 +1541,18 @@ class FleetStore:
         lines: list,
         serial_number: str = None,
         install_session_id: str = None,
+        previous_hostname: str = None,
     ) -> int:
         """Prihvata novu grupu linija loga, baferuje u memoriji, osvežava last_seen i obaveštava pretplatnike."""
         if not lines:
             return 0
         raw_id = sanitize_id(comp_name)
         canonical_sn = str(serial_number).strip().upper() if is_valid_canonical_serial(serial_number) else ""
+        prev_host = str(previous_hostname or "").strip()
         install_sid = str(install_session_id or "").strip()
 
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
             if dev_id in self.fleet_devices:
                 rec = self.fleet_devices[dev_id]
                 if install_sid:
@@ -1493,10 +1592,11 @@ class FleetStore:
         now = time.time()
         incoming_hw = extract_hw_from_payload(payload)
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        prev_host = str(payload.get("previous_hostname") or "").strip()
         install_sid = str(payload.get("install_session_id") or "").strip()
 
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {}
             rec = self.fleet_devices[dev_id]
@@ -1542,6 +1642,7 @@ class FleetStore:
                     comp_name=effective_comp_name,
                     serial_num=eff_sn,
                     client_ip=client_ip,
+                    previous_hostname=prev_host,
                 )
 
         return dev_id
@@ -1559,58 +1660,7 @@ class FleetStore:
 
     @staticmethod
     def _merge_reports_in_memory(existing_rep: dict, incoming_rep: dict) -> dict:
-        merged = dict(existing_rep) if isinstance(existing_rep, dict) else {}
-        inc = incoming_rep if isinstance(incoming_rep, dict) else {}
-        old_dur = _parse_duration_seconds(merged.get("duration_seconds") or merged.get("duration"))
-        new_dur = _parse_duration_seconds(inc.get("duration_seconds") or inc.get("duration"))
-
-        for k, v in inc.items():
-            if k in ("duration_seconds", "duration_formatted", "duration"):
-                continue
-            if isinstance(v, dict):
-                old_v = merged.get(k)
-                if isinstance(old_v, dict) and old_v:
-                    if v:
-                        sub = dict(old_v)
-                        for sk, sv in v.items():
-                            if sv not in (None, "", []):
-                                sub[sk] = sv
-                        merged[k] = sub
-                elif v:
-                    merged[k] = dict(v)
-            elif k in ("errors", "notes"):
-                old_list = merged.get(k)
-                if isinstance(v, list) and v:
-                    if isinstance(old_list, list) and old_list:
-                        comb = list(old_list)
-                        for item in v:
-                            if item not in comb:
-                                comb.append(item)
-                        merged[k] = comb
-                    else:
-                        merged[k] = list(v)
-            elif v not in (None, ""):
-                if k == "diagnostics_status" and merged.get(k) == "THERMAL_CRITICAL":
-                    continue
-                if k == "diagnostics_status" and v == "NOT_VERIFIED" and merged.get(k) not in (None, "", "NOT_VERIFIED"):
-                    continue
-                if k == "cooling_verified" and merged.get(k) is True and v is False and merged.get("diagnostics_status") == "OK":
-                    continue
-                merged[k] = v
-
-        if new_dur > old_dur:
-            merged["duration_seconds"] = new_dur
-            if inc.get("duration_formatted") and inc.get("duration_formatted") != "N/A":
-                merged["duration_formatted"] = inc["duration_formatted"]
-            else:
-                merged["duration_formatted"] = f"{new_dur // 60}m {new_dur % 60:02d}s"
-        elif old_dur > 0:
-            merged["duration_seconds"] = old_dur
-            if not merged.get("duration_formatted") or merged.get("duration_formatted") == "N/A":
-                merged["duration_formatted"] = f"{old_dur // 60}m {old_dur % 60:02d}s"
-
-        merged.update(diagnostics_contract(merged))
-        return merged
+        return merge_report_payloads(existing_rep, incoming_rep)
 
     def record_lifecycle_complete(self, payload: dict, client_ip: str) -> str:
         """Obrada COMPLETED događaja životnog ciklusa i atomično arhiviranje kartona."""
@@ -1619,9 +1669,37 @@ class FleetStore:
         comp_name = payload.get("computer_name") or "UNKNOWN-PC"
         incoming_hw = extract_hw_from_payload(payload)
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        prev_host = str(payload.get("previous_hostname") or "").strip()
 
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
+
+        # IMP-94b: Parcijalni HwTest payload iz Faze 5 ne sme kreirati ili pregaziti završni karton!
+        if is_partial_hwtest_payload(payload):
+            with self.fleet_lock:
+                if dev_id not in self.fleet_devices:
+                    self.fleet_devices[dev_id] = {"computer_name": comp_name, "client_ip": client_ip}
+                rec = self.fleet_devices[dev_id]
+                if isinstance(payload.get("hwtest"), dict) and payload["hwtest"]:
+                    rec["hwtest"] = payload["hwtest"]
+                if payload.get("manual_driver_bypass") is True:
+                    rec["manual_driver_bypass"] = True
+                if payload.get("driver_gate_emergency_override_reason"):
+                    rec["driver_gate_emergency_override_reason"] = str(payload["driver_gate_emergency_override_reason"]).strip()
+                if incoming_hw:
+                    existing_hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else {}
+                    rec["hw"] = merge_hw_dicts(existing_hw, incoming_hw)
+                if canonical_sn and is_placeholder_hw_value(rec.get("serial_number")):
+                    rec["serial_number"] = canonical_sn
+                rec["last_seen"] = time.time()
+                self.cleanup_duplicate_devices_locked(
+                    dev_id,
+                    comp_name=comp_name,
+                    serial_num=canonical_sn,
+                    client_ip=client_ip,
+                    previous_hostname=prev_host,
+                )
+            return dev_id
 
         enriched_payload = self.enrich_report_payload(dev_id, payload, comp_name=comp_name)
 
@@ -1719,6 +1797,7 @@ class FleetStore:
                 comp_name=effective_comp_name,
                 serial_num=enriched_payload.get("serial_number", ""),
                 client_ip=client_ip,
+                previous_hostname=prev_host,
             )
 
         if self.reports_dir and not skip_disk_write:
@@ -1763,9 +1842,15 @@ class FleetStore:
         ssd_pct = payload.get("ssd_health_percent") or smart_data.get("health_percent") or smart_data.get("percent") or 0
         ssd_cat = payload.get("ssd_health_category") or smart_data.get("category") or "HEALTHY"
 
+        incoming_hw = extract_hw_from_payload(payload)
+        canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        prev_host = str(payload.get("previous_hostname") or "").strip()
+
         session_record = {
             "session_id": session_id,
             "computer_name": comp_name,
+            "previous_hostname": prev_host,
+            "serial_number": canonical_sn,
             "device_model": model_info,
             "client_ip": client_ip,
             "last_seen": now,
@@ -1787,6 +1872,7 @@ class FleetStore:
             "state": payload,
         }
 
+        prev_host_upper = prev_host.upper() if prev_host and not is_placeholder_hw_value(prev_host) else ""
         with self.session_lock:
             stale_cutoff = now - 86400.0
             for old_sid in [
@@ -1794,6 +1880,27 @@ class FleetStore:
                 if sid != session_id and (now - float(srec.get("last_seen", now) or now)) > 86400.0
             ]:
                 self.fleet_sessions.pop(old_sid, None)
+
+            # IMP-72: Spoji aktivnu sesiju istog uređaja po serial_number ili previous_hostname (W-AAD-* -> TK-LAPTOP-<SN>)
+            if canonical_sn or prev_host_upper:
+                dup_sids = []
+                for old_sid, srec in list(self.fleet_sessions.items()):
+                    if old_sid == session_id or not isinstance(srec, dict):
+                        continue
+                    old_sn = str(srec.get("serial_number") or "").strip().upper()
+                    old_cn = str(srec.get("computer_name") or "").strip().upper()
+                    if canonical_sn and old_sn and old_sn != canonical_sn:
+                        continue
+                    sn_hit = bool(canonical_sn and old_sn and old_sn == canonical_sn)
+                    prev_hit = bool(prev_host_upper and (old_cn == prev_host_upper or str(old_sid).strip().upper() == prev_host_upper))
+                    if sn_hit or prev_hit:
+                        dup_sids.append(old_sid)
+                for old_sid in dup_sids:
+                    self.fleet_sessions.pop(old_sid, None)
+                    old_subs = self.session_subscribers.pop(old_sid, None)
+                    if old_subs:
+                        self.session_subscribers.setdefault(session_id, []).extend(old_subs)
+
             self.fleet_sessions[session_id] = session_record
             if session_id in self.session_subscribers:
                 for sub_q, sub_lock in self.session_subscribers[session_id]:
@@ -1801,10 +1908,8 @@ class FleetStore:
                         sub_q.append(dict(session_record))
                         sub_lock.notify_all()
 
-        incoming_hw = extract_hw_from_payload(payload)
-        canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
         with self.fleet_lock:
-            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn)
+            dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
             if dev_id not in self.fleet_devices:
                 self.fleet_devices[dev_id] = {"computer_name": comp_name}
             effective_comp_name = (
@@ -1824,6 +1929,18 @@ class FleetStore:
                 "is_paused": is_paused,
                 "usb_free": usb_free,
             })
+            if canonical_sn and is_placeholder_hw_value(self.fleet_devices[dev_id].get("serial_number")):
+                self.fleet_devices[dev_id]["serial_number"] = canonical_sn
+            if prev_host:
+                self.fleet_devices[dev_id]["previous_hostname"] = prev_host
+            if canonical_sn or prev_host:
+                self.cleanup_duplicate_devices_locked(
+                    dev_id,
+                    comp_name=effective_comp_name,
+                    serial_num=canonical_sn,
+                    client_ip=client_ip,
+                    previous_hostname=prev_host,
+                )
             if tab_data and isinstance(tab_data, dict):
                 self.fleet_devices[dev_id]["tab_data"] = tab_data
                 if "smart" in tab_data:

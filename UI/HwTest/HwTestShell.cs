@@ -85,7 +85,13 @@ namespace WIS.HwTest
 
         // V344-01: Driver Readiness Gate za interaktivne testove
         private Func<DriverGateState> _driverGateProvider;
+        private Func<DriverGateState> _preAutoDriverGateFreshProvider;
+        private Action<string, string, string> _driverGateStatusHandler;
+        private Action<string> _phase5LiveStatusHandler;
         private Action _openDriversTabHandler;
+        private volatile bool _suppressPassiveAutoChecks = false;
+        private volatile bool _waitingInPreAutoDriverGate = false;
+        private readonly AutoResetEvent _driverGateWakeEvent = new AutoResetEvent(false);
         private bool _driverGateEmergencyUnlocked = false;
         private string _driverGateEmergencyOverrideReason = "";
         private bool _driverGateWasLocked = false;
@@ -106,6 +112,63 @@ namespace WIS.HwTest
         {
             _driverGateProvider = provider;
             RefreshDriverGateUi();
+        }
+
+        public void SetPreAutoDriverGateFreshProvider(Func<DriverGateState> provider)
+        {
+            _preAutoDriverGateFreshProvider = provider;
+        }
+
+        public void SetDriverGateStatusHandler(Action<string, string, string> handler)
+        {
+            _driverGateStatusHandler = handler;
+        }
+
+        public void SetPhase5LiveStatusHandler(Action<string> handler)
+        {
+            _phase5LiveStatusHandler = handler;
+        }
+
+        public void SetSuppressPassiveAutoChecks(bool suppress)
+        {
+            _suppressPassiveAutoChecks = suppress;
+            if (suppress) _cancelPassiveAutoChecks = true;
+        }
+
+        public bool IsWaitingForDriverGate
+        {
+            get { return _phase5WorkflowActive && _waitingInPreAutoDriverGate && !_phase5CompletedNotified; }
+        }
+
+        public void GetInteractiveProgressCounts(out int doneCount, out int totalCount)
+        {
+            doneCount = 0;
+            totalCount = 0;
+            for (int i = 0; i < _testItems.Count; i++)
+            {
+                TestItemResult t = _testItems[i];
+                if (!t.IsAutomated && t.Status != TestStatus.NotApplicable)
+                {
+                    totalCount++;
+                    if (t.Status != TestStatus.Pending && t.Status != TestStatus.Running)
+                    {
+                        doneCount++;
+                    }
+                }
+            }
+        }
+
+        private void EmitCurrentInteractiveWaitLiveStatus()
+        {
+            int manualDone;
+            int manualTotal;
+            GetInteractiveProgressCounts(out manualDone, out manualTotal);
+            string msg = string.Format("Faza 5: Čeka operatera za interaktivne testove ({0}/{1})", manualDone, manualTotal);
+            Action<string> handler = _phase5LiveStatusHandler;
+            if (handler != null)
+            {
+                try { handler(msg); } catch { }
+            }
         }
 
         public void SetOpenDriversTabHandler(Action handler)
@@ -672,6 +735,9 @@ namespace WIS.HwTest
         {
             HwTestLocalization.LanguageChanged -= OnHwTestLanguageChanged;
             _phase5WorkflowActive = false;
+            _waitingInPreAutoDriverGate = false;
+            _autoStressCancel.Cancel();
+            try { _driverGateWakeEvent.Set(); } catch { }
             if (_runningUiTimer != null)
             {
                 try { _runningUiTimer.Stop(); } catch { }
@@ -680,7 +746,6 @@ namespace WIS.HwTest
             {
                 try { _driverGatePollTimer.Stop(); } catch { }
             }
-            _autoStressCancel.Cancel();
             if (!_uefiBiosRebootRequested && HasAnyCompletedTestsForCheckpoint())
             {
                 try { SaveCheckpoint(""); } catch { }
@@ -691,7 +756,9 @@ namespace WIS.HwTest
         public void CancelPhase5Workflow()
         {
             _phase5WorkflowActive = false;
+            _waitingInPreAutoDriverGate = false;
             _autoStressCancel.Cancel();
+            try { _driverGateWakeEvent.Set(); } catch { }
         }
 
         private static bool IsPlaceholderIdentity(string val)
@@ -1147,7 +1214,15 @@ namespace WIS.HwTest
             }
             _testItems.Add(fp);
 
-            // Logovanje finalne odluke vidljivosti testova
+            // Logovanje finalne odluke vidljivosti testova (IMP-93: ne logovati dok inicijalni probe nije završen)
+            if (_initialHardwareProbeCompleted)
+            {
+                LogTestVisibilityDecision();
+            }
+        }
+
+        private void LogTestVisibilityDecision()
+        {
             List<string> shown = new List<string>();
             List<string> hidden = new List<string>();
             foreach (TestItemResult item in _testItems)
@@ -1406,7 +1481,11 @@ namespace WIS.HwTest
                 Margin = new Thickness(0, 0, 6, 4),
                 Cursor = System.Windows.Input.Cursors.Hand
             };
-            _btnDriverGateRecheck.Click += (s, e) => RefreshDriverGateUi();
+            _btnDriverGateRecheck.Click += (s, e) =>
+            {
+                RefreshDriverGateUi();
+                try { _driverGateWakeEvent.Set(); } catch { }
+            };
             btnPanel.Children.Add(_btnDriverGateRecheck);
 
             _btnDriverGateEmergencyUnlock = new Button
@@ -1439,6 +1518,133 @@ namespace WIS.HwTest
         {
             DriverGateState st = EvaluateEffectiveDriverGateState();
             return st != null && st.IsUnlocked;
+        }
+
+        private DriverGateState EvaluatePreAutoDriverGateState()
+        {
+            DriverGateState raw = null;
+            Func<DriverGateState> freshProvider = _preAutoDriverGateFreshProvider;
+            if (freshProvider != null)
+            {
+                try { raw = freshProvider(); }
+                catch { raw = null; }
+            }
+            if (raw == null)
+            {
+                raw = DriverReadinessGate.EvaluateLocal();
+            }
+            if (raw == null)
+            {
+                raw = new DriverGateState { IsUnlocked = true };
+            }
+
+            if (!raw.IsUnlocked &&
+                _driverGateEmergencyUnlocked &&
+                !string.IsNullOrEmpty(_driverGateEmergencyOverrideReason) &&
+                raw.CanEmergencyUnlock &&
+                !raw.IsDriverInstallActive &&
+                !raw.HasCode14PendingReboot &&
+                !raw.HasBackgroundWuDrivers)
+            {
+                DriverGateState unlockedOverride = new DriverGateState
+                {
+                    IsUnlocked = true,
+                    CanEmergencyUnlock = false,
+                    ReasonTitle = raw.ReasonTitle,
+                    ReasonDetail = raw.ReasonDetail,
+                    ProblemDevices = raw.ProblemDevices != null ? new List<string>(raw.ProblemDevices) : new List<string>(),
+                    IsDriverInstallActive = false,
+                    HasCode14PendingReboot = false,
+                    HasBackgroundWuDrivers = false
+                };
+                _lastDriverGateState = unlockedOverride;
+                return unlockedOverride;
+            }
+
+            _lastDriverGateState = raw;
+            return raw;
+        }
+
+        private static string FormatDriverGateProblemDevicesDetail(DriverGateState state)
+        {
+            if (state == null) return string.Empty;
+            string detail = state.ReasonDetail ?? string.Empty;
+            if (state.ProblemDevices != null && state.ProblemDevices.Count > 0)
+            {
+                string joined = string.Join("; ", state.ProblemDevices.ToArray());
+                if (string.IsNullOrEmpty(detail))
+                {
+                    detail = joined;
+                }
+                else if (detail.IndexOf(state.ProblemDevices[0], StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    detail = detail + "\n" + joined;
+                }
+            }
+            return detail;
+        }
+
+        private static void PersistManualDriverBypassToDeployState(string reason, List<string> problemDevices)
+        {
+            try
+            {
+                const string statePath = @"C:\setup\deploy-state.json";
+                string dir = Path.GetDirectoryName(statePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                JavaScriptSerializer ser = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
+                Dictionary<string, object> stateMap = null;
+                if (File.Exists(statePath))
+                {
+                    try
+                    {
+                        string existing = File.ReadAllText(statePath, Encoding.UTF8);
+                        if (!string.IsNullOrWhiteSpace(existing))
+                        {
+                            stateMap = ser.DeserializeObject(existing) as Dictionary<string, object>;
+                        }
+                    }
+                    catch { stateMap = null; }
+                }
+                if (stateMap == null)
+                {
+                    stateMap = new Dictionary<string, object>();
+                }
+                stateMap["manual_driver_bypass"] = true;
+                stateMap["driver_gate_emergency_override_reason"] = reason ?? "";
+                if (problemDevices != null && problemDevices.Count > 0)
+                {
+                    stateMap["manual_driver_bypass_devices"] = new List<string>(problemDevices);
+                }
+                stateMap["timestamp"] = DateTime.Now.ToString("o");
+                File.WriteAllText(statePath, ser.Serialize(stateMap), Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        private void TryRestoreManualDriverBypassFromDeployState()
+        {
+            try
+            {
+                const string statePath = @"C:\setup\deploy-state.json";
+                if (!File.Exists(statePath)) return;
+                string raw = File.ReadAllText(statePath, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(raw)) return;
+                JavaScriptSerializer ser = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
+                IDictionary<string, object> root = ser.DeserializeObject(raw) as IDictionary<string, object>;
+                if (root == null) return;
+                bool bypass = ReadCpBool(root, "manual_driver_bypass");
+                string reason = ReadCpString(root, "driver_gate_emergency_override_reason");
+                if (bypass && !string.IsNullOrEmpty(reason) && reason.Trim().Length >= 5)
+                {
+                    _driverGateEmergencyOverrideReason = reason.Trim();
+                    _driverGateEmergencyUnlocked = true;
+                }
+            }
+            catch { }
         }
 
         private DriverGateState EvaluateEffectiveDriverGateState()
@@ -1538,8 +1744,9 @@ namespace WIS.HwTest
                 }
                 if (_driverGateBannerDetail != null)
                 {
-                    _driverGateBannerDetail.Text = !string.IsNullOrEmpty(state.ReasonDetail)
-                        ? state.ReasonDetail
+                    string detailText = FormatDriverGateProblemDevicesDetail(state);
+                    _driverGateBannerDetail.Text = !string.IsNullOrEmpty(detailText)
+                        ? detailText
                         : HwTestLocalization.Pick("Instalirajte sve nedostajuće drajvere pre pokretanja interaktivnih testova periferija.", "请先安装所有缺失的驱动程序，然后再启动外设交互式测试。");
                 }
                 if (_btnDriverGateOpenDrivers != null)
@@ -1559,20 +1766,36 @@ namespace WIS.HwTest
             for (int i = 0; i < _testItems.Count; i++)
             {
                 TestItemResult t = _testItems[i];
-                if (!t.IsAutomated)
+                Button btnRun;
+                if (_runBtnMap.TryGetValue(t.Id, out btnRun) && btnRun != null)
                 {
-                    Button btnRun;
-                    if (_runBtnMap.TryGetValue(t.Id, out btnRun) && btnRun != null)
+                    if (!t.IsAutomated)
                     {
                         btnRun.IsEnabled = unlocked;
                         btnRun.Opacity = unlocked ? 1.0 : 0.45;
                     }
+                    else if (_waitingInPreAutoDriverGate && !unlocked)
+                    {
+                        btnRun.IsEnabled = false;
+                        btnRun.Opacity = 0.45;
+                    }
+                    else if (!_autoStressRunning)
+                    {
+                        btnRun.IsEnabled = true;
+                        btnRun.Opacity = 1.0;
+                    }
                 }
+            }
+
+            if (_btnRunAutoSuite != null && _waitingInPreAutoDriverGate && !unlocked)
+            {
+                _btnRunAutoSuite.IsEnabled = false;
+                _btnRunAutoSuite.Opacity = 0.45;
             }
 
             if (_btnRunAll != null)
             {
-                bool wouldStartInteractive = !HasPendingAutomatedTests() || (_phase5WorkflowActive && _waitingForManualPeripherals);
+                bool wouldStartInteractive = _waitingInPreAutoDriverGate || !HasPendingAutomatedTests() || (_phase5WorkflowActive && _waitingForManualPeripherals);
                 bool canRunAll = !_autoStressRunning && (unlocked || !wouldStartInteractive);
                 _btnRunAll.IsEnabled = canRunAll;
                 _btnRunAll.Opacity = canRunAll ? 1.0 : 0.50;
@@ -1602,6 +1825,7 @@ namespace WIS.HwTest
                             pendingNames.Count,
                             string.Join(", ", pendingNames.ToArray()));
                     }
+                    EmitCurrentInteractiveWaitLiveStatus();
                     RaisePendingInteractiveTestsRequired();
                 }
                 else
@@ -1772,9 +1996,17 @@ namespace WIS.HwTest
             {
                 _driverGateEmergencyOverrideReason = enteredReason;
                 _driverGateEmergencyUnlocked = true;
-                HwTestLogger.Warn("DRIVER_GATE_OVERRIDE", "Vanredno otključani interaktivni testovi uz razlog: " + _driverGateEmergencyOverrideReason);
+                PersistManualDriverBypassToDeployState(enteredReason, state.ProblemDevices);
+                string bypassMsg = "Vanredno otključani testovi (manual_driver_bypass=true) uz razlog: " + _driverGateEmergencyOverrideReason;
+                HwTestLogger.Warn("DRIVER_GATE_OVERRIDE", bypassMsg);
+                Action<string, string, string> statusCb = _driverGateStatusHandler;
+                if (statusCb != null)
+                {
+                    try { statusCb("WARN", "Faza 5: Vanredno otključano — pokrećem testove...", bypassMsg); } catch { }
+                }
                 try { SaveCheckpoint(""); } catch { }
                 RefreshDriverGateUi();
+                try { _driverGateWakeEvent.Set(); } catch { }
             }
         }
 
@@ -1986,6 +2218,12 @@ namespace WIS.HwTest
 
                 RefreshCardVisibility();
                 UpdateSummaryBadge();
+                if (!_initialHardwareProbeCompleted)
+                {
+                    _initialHardwareProbeCompleted = true;
+                    try { _initialProbeDoneEvent.Set(); } catch { }
+                }
+                LogTestVisibilityDecision();
                 if (isPostDriverRefresh)
                 {
                     HwTestLogger.Info("PROBE_REFRESH", string.Format(
@@ -2772,6 +3010,10 @@ namespace WIS.HwTest
             if (!t.IsAutomated && !_inSequentialPeripheralRun)
             {
                 CheckAndHandlePhase5InteractiveCompletion();
+                if (_phase5WorkflowActive && _waitingForManualPeripherals && !_phase5CompletedNotified && HasUnfinishedInteractiveTests())
+                {
+                    EmitCurrentInteractiveWaitLiveStatus();
+                }
                 if (t.Status == TestStatus.Pass || t.Status == TestStatus.Fail)
                 {
                     ReconcilePhase5StateAndReportAfterTest();
@@ -2879,17 +3121,17 @@ namespace WIS.HwTest
 
         private void StartPassiveAutoChecks()
         {
-            if (_passiveChecksStarted || _phase5WorkflowActive || _cancelPassiveAutoChecks) return;
+            if (_passiveChecksStarted || _phase5WorkflowActive || _cancelPassiveAutoChecks || _suppressPassiveAutoChecks) return;
             _passiveChecksStarted = true;
             Thread th = new Thread(() =>
             {
                 TestItemResult[] passiveResults = new TestItemResult[7];
-                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks || _suppressPassiveAutoChecks) return;
                 try { passiveResults[0] = _autoEngine.RunBatteryCheck(); } catch { }
-                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
+                if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks && !_suppressPassiveAutoChecks)
                     Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[0], true)));
 
-                if (_phase5WorkflowActive || _cancelPassiveAutoChecks) return;
+                if (_phase5WorkflowActive || _cancelPassiveAutoChecks || _suppressPassiveAutoChecks) return;
                 try { passiveResults[1] = _autoEngine.RunNetworkCheck(_profileClient); } catch { }
                 if (!_phase5WorkflowActive && !_cancelPassiveAutoChecks)
                     Dispatcher.BeginInvoke(new Action(() => ApplyAutoPassiveResult(passiveResults[1], true)));
@@ -3672,6 +3914,7 @@ namespace WIS.HwTest
                     _autoSectionStatus.Text = HwTestLocalization.PickFormat("⏳ Preostalo {0} obaveznih interaktivnih testova. Dovršite preostale testove da biste otključali završetak i čuvanje izveštaja.", "⏳ 剩余 {0} 项必选交互式测试。请完成剩余测试以解锁完成并保存报告。",
                         remainingInteractive);
                 }
+                EmitCurrentInteractiveWaitLiveStatus();
                 RaisePendingInteractiveTestsRequired();
             }
         }
@@ -3747,6 +3990,7 @@ namespace WIS.HwTest
             Action<HwTestRunResult, int, float, float, bool, bool> onPhase5Finished)
         {
             _cancelPassiveAutoChecks = true;
+            _suppressPassiveAutoChecks = true;
 
             if (_autoStressRunning)
             {
@@ -3755,7 +3999,14 @@ namespace WIS.HwTest
                 _autoStressCancel.Reset();
             }
 
-            _autoStressRunning = true;
+            _autoStressCancel.Reset();
+            lock (_phase5Lock)
+            {
+                _phase5WorkflowActive = true;
+                _phase5CompletedNotified = false;
+                _phase5StepCallback = onStepProgress;
+                _phase5FinishedCallback = onPhase5Finished;
+            }
 
             Thread th = new Thread(() =>
             {
@@ -3773,6 +4024,121 @@ namespace WIS.HwTest
                     Dispatcher.Invoke(new Action(() =>
                     {
                         try { TryRestorePersistedTestState(); } catch { }
+                        TryRestoreManualDriverBypassFromDeployState();
+                    }));
+
+                    // WIS-TASK-278: PreAutoDriverGate — pre pokretanja ijednog auto_* ili interaktivnog testa
+                    DriverGateState preAutoGate = EvaluatePreAutoDriverGateState();
+                    if (preAutoGate != null && !preAutoGate.IsUnlocked && !_driverGateEmergencyUnlocked)
+                    {
+                        _waitingInPreAutoDriverGate = true;
+                        string lastGateSignature = "";
+                        DateTime lastGateLogUtc = DateTime.MinValue;
+
+                        while (!_autoStressCancel.IsCancelled && _phase5WorkflowActive && !_uefiBiosRebootRequested)
+                        {
+                            string problemSummary = (preAutoGate.ProblemDevices != null && preAutoGate.ProblemDevices.Count > 0)
+                                ? string.Join(", ", preAutoGate.ProblemDevices.ToArray())
+                                : (preAutoGate.ReasonTitle ?? "Device Manager nije čist");
+                            string gateSig = (preAutoGate.ReasonTitle ?? "") + "|" + problemSummary;
+                            bool shouldLogNow = !string.Equals(gateSig, lastGateSignature, StringComparison.Ordinal) ||
+                                                (DateTime.UtcNow - lastGateLogUtc).TotalSeconds >= 60.0;
+
+                            string gateLevel = (preAutoGate.ProblemDevices != null && preAutoGate.ProblemDevices.Count > 0 && !preAutoGate.IsDriverInstallActive)
+                                ? "ERROR"
+                                : "WARN";
+                            string liveMsg = string.Format("Faza 5 (PreAutoDriverGate): Čeka drajvere ({0}) — {1}",
+                                preAutoGate.ProblemDevices != null ? preAutoGate.ProblemDevices.Count : 0,
+                                problemSummary);
+                            string fullLogMsg = string.Format("PreAutoDriverGate blokirao ulaz u Fazu 5 (0 pokrenutih testova): {0} | Uređaji: {1}",
+                                preAutoGate.ReasonTitle ?? "Drajveri nisu spremni",
+                                problemSummary);
+
+                            if (shouldLogNow)
+                            {
+                                lastGateSignature = gateSig;
+                                lastGateLogUtc = DateTime.UtcNow;
+                                if (gateLevel == "ERROR")
+                                    HwTestLogger.Error("PRE_AUTO_DRIVER_GATE", fullLogMsg);
+                                else
+                                    HwTestLogger.Warn("PRE_AUTO_DRIVER_GATE", fullLogMsg);
+
+                                Action<string, string, string> statusCb = _driverGateStatusHandler;
+                                if (statusCb != null)
+                                {
+                                    try { statusCb(gateLevel, liveMsg, fullLogMsg); } catch { }
+                                }
+                            }
+                            else
+                            {
+                                Action<string> liveCb = _phase5LiveStatusHandler;
+                                if (liveCb != null)
+                                {
+                                    try { liveCb(liveMsg); } catch { }
+                                }
+                            }
+
+                            Dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                RefreshDriverGateUi();
+                                if (_autoSectionStatus != null)
+                                {
+                                    _autoSectionStatus.Text = HwTestLocalization.PickFormat(
+                                        "🔒 PreAutoDriverGate: 0 testova pokrenuto dok Device Manager ne bude čist ({0}).",
+                                        "🔒 PreAutoDriverGate：设备管理器未就绪前不运行任何测试 ({0})。",
+                                        problemSummary);
+                                    _autoSectionStatus.ToolTip = _autoSectionStatus.Text;
+                                }
+                            }));
+
+                            _driverGateWakeEvent.WaitOne(5000);
+                            if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive || _uefiBiosRebootRequested)
+                            {
+                                break;
+                            }
+
+                            preAutoGate = EvaluatePreAutoDriverGateState();
+                            if (preAutoGate == null || preAutoGate.IsUnlocked || _driverGateEmergencyUnlocked)
+                            {
+                                break;
+                            }
+                        }
+
+                        _waitingInPreAutoDriverGate = false;
+                        if (_autoStressCancel.IsCancelled || !_phase5WorkflowActive || _uefiBiosRebootRequested)
+                        {
+                            return;
+                        }
+
+                        string unlockMsg = _driverGateEmergencyUnlocked
+                            ? "PreAutoDriverGate vanredno otključan (manual_driver_bypass=true) — pokrećem Fazu 5..."
+                            : "PreAutoDriverGate otključan (Device Manager čist) — osvežavam hardversku probu i pokrećem Fazu 5...";
+                        HwTestLogger.Info("PRE_AUTO_DRIVER_GATE", unlockMsg);
+                        Action<string, string, string> unlockCb = _driverGateStatusHandler;
+                        if (unlockCb != null)
+                        {
+                            try { unlockCb("INFO", "Faza 5: Automatski hardverski testovi u toku...", unlockMsg); } catch { }
+                        }
+                    }
+
+                    if (!_hardwareProbeRefreshedAfterDrivers)
+                    {
+                        Dispatcher.Invoke(new Action(() =>
+                        {
+                            try { RefreshHardwareProbeAfterDrivers(true); } catch { }
+                        }));
+                        Stopwatch probeWaitSw = Stopwatch.StartNew();
+                        while (Interlocked.CompareExchange(ref _probeRefreshInFlight, 0, 0) != 0 && probeWaitSw.ElapsedMilliseconds < 8000)
+                        {
+                            Thread.Sleep(100);
+                        }
+                    }
+
+                    _autoStressRunning = true;
+
+                    Dispatcher.Invoke(new Action(() =>
+                    {
+                        RefreshDriverGateUi();
 
                         // V344-01: Osvezi hardversku probu nakon instalacije drajvera u Fazi 2 (nikada ne gazi vec zavrsene ili restaurirane testove)
                         DriverGateState preGate = EvaluateEffectiveDriverGateState();
@@ -4330,6 +4696,7 @@ namespace WIS.HwTest
                             pendingNames.Count,
                             string.Join(", ", pendingNames.ToArray()));
                     }
+                    EmitCurrentInteractiveWaitLiveStatus();
                     RaisePendingInteractiveTestsRequired();
                 }));
             });
@@ -4464,9 +4831,10 @@ namespace WIS.HwTest
                     { "active_hwtest_sec", activeHwTestSec }
                 }
             };
-            if (!string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
+            if (_driverGateEmergencyUnlocked || !string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
             {
-                runResult.Summary["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason;
+                runResult.Summary["manual_driver_bypass"] = true;
+                runResult.Summary["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason ?? "";
             }
 
             foreach (TestItemResult t in _testItems)
@@ -4513,9 +4881,10 @@ namespace WIS.HwTest
                 { "phase5_metrics", phase5MetricsReport },
                 { "tests", runResult.Tests }
             };
-            if (!string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
+            if (_driverGateEmergencyUnlocked || !string.IsNullOrEmpty(_driverGateEmergencyOverrideReason))
             {
-                reportPayload["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason;
+                reportPayload["manual_driver_bypass"] = true;
+                reportPayload["driver_gate_emergency_override_reason"] = _driverGateEmergencyOverrideReason ?? "";
             }
             if (!string.IsNullOrEmpty(_phase5ThermalNote))
             {
@@ -4762,6 +5131,7 @@ namespace WIS.HwTest
                 { "serial", _serialNumber ?? "" },
                 { "model", _modelName ?? "" },
                 { "reboot_reason_test_id", reasonId },
+                { "manual_driver_bypass", _driverGateEmergencyUnlocked },
                 { "driver_gate_emergency_override_reason", _driverGateEmergencyOverrideReason ?? "" },
                 { "phase5_metrics", phase5Metrics },
                 { "completed_tests", completedTests }

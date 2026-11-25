@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -28,6 +29,9 @@ namespace WIS.UI
         private int _consecutiveFailures = 0;
         private bool _benchmarkFetched = false;
         private string _cachedInstallSessionId = null;
+        private readonly string _initialMachineHostname = Environment.MachineName ?? "";
+        private string _cachedPreviousHostname = null;
+        private bool? _cachedEnclosureIsLaptop = null;
 
         private const string InstallSessionIdPath = @"C:\setup\install-session-id.txt";
 
@@ -460,6 +464,11 @@ namespace WIS.UI
                         { "computer_name", Environment.MachineName },
                         { "timestamp", DateTime.Now.ToString("o") }
                     };
+                    string sessionId = GetOrCreateInstallSessionId();
+                    if (!string.IsNullOrEmpty(sessionId))
+                    {
+                        payload["install_session_id"] = sessionId;
+                    }
 
                     if (data != null)
                     {
@@ -477,6 +486,16 @@ namespace WIS.UI
                         && !IsPlaceholderHwValue(serialSnapshot))
                     {
                         payload["serial_number"] = serialSnapshot;
+                    }
+                    string canonDevId = GetCanonicalDeviceId(serialSnapshot);
+                    if (!string.IsNullOrEmpty(canonDevId) && !payload.ContainsKey("device_id"))
+                    {
+                        payload["device_id"] = canonDevId;
+                    }
+                    string prevHost = GetPreviousHostname();
+                    if (!string.IsNullOrEmpty(prevHost) && !payload.ContainsKey("previous_hostname"))
+                    {
+                        payload["previous_hostname"] = prevHost;
                     }
 
                     if (string.Equals(eventType, "COMPLETED", StringComparison.OrdinalIgnoreCase) ||
@@ -995,6 +1014,184 @@ namespace WIS.UI
             return IsPlaceholderHwValue(serial) ? "" : serial.Trim();
         }
 
+        private bool ResolveIsLaptop()
+        {
+            if (_viewModel != null && _viewModel.IsLaptop) return true;
+            if (_cachedEnclosureIsLaptop.HasValue) return _cachedEnclosureIsLaptop.Value;
+
+            bool detected = false;
+            try
+            {
+                EnumerationOptions opts = new EnumerationOptions
+                {
+                    Timeout = TimeSpan.FromMilliseconds(1500),
+                    ReturnImmediately = true,
+                    Rewindable = false
+                };
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    new ManagementScope(@"root\CIMV2"),
+                    new SelectQuery("SELECT ChassisTypes FROM Win32_SystemEnclosure"),
+                    opts))
+                {
+                    using (ManagementObjectCollection results = searcher.Get())
+                    {
+                        foreach (ManagementObject mo in results)
+                        {
+                            ushort[] types = mo["ChassisTypes"] as ushort[];
+                            if (types == null) continue;
+                            for (int i = 0; i < types.Length; i++)
+                            {
+                                ushort ct = types[i];
+                                if (ct == 8 || ct == 9 || ct == 10 || ct == 11 || ct == 12 || ct == 14 || ct == 30 || ct == 31 || ct == 32)
+                                {
+                                    detected = true;
+                                    break;
+                                }
+                            }
+                            if (detected) break;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (!detected && _viewModel != null)
+            {
+                string model = _viewModel.ComputerModel ?? "";
+                if (model.IndexOf("Laptop", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("Surface", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("ThinkPad", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("Latitude", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("EliteBook", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("ProBook", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    model.IndexOf("ZenBook", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    detected = true;
+                }
+            }
+
+            _cachedEnclosureIsLaptop = detected;
+            return detected;
+        }
+
+        private string GetCanonicalDeviceId(string serialSnapshot)
+        {
+            if (!IsPlaceholderHwValue(serialSnapshot))
+            {
+                string cleanSn = SanitizeFleetIdSegment(serialSnapshot);
+                if (!string.IsNullOrEmpty(cleanSn) && cleanSn != "UNKNOWN")
+                {
+                    string chassisTag = ResolveIsLaptop() ? "LAPTOP" : "DESKTOP";
+                    return "TK-" + chassisTag + "-" + cleanSn;
+                }
+            }
+            return "";
+        }
+
+        private string GetPreviousHostname()
+        {
+            lock (_stateLock)
+            {
+                if (!string.IsNullOrEmpty(_cachedPreviousHostname))
+                {
+                    return _cachedPreviousHostname;
+                }
+            }
+
+            string found = "";
+            try
+            {
+                string statePath = @"C:\setup\deploy-state.json";
+                if (File.Exists(statePath))
+                {
+                    string json = File.ReadAllText(statePath, Encoding.UTF8);
+                    JsonNode root = JsonHelper.Parse(json);
+                    if (root != null && root.IsObject)
+                    {
+                        string[] keys = new string[] { "previous_hostname", "initial_hostname" };
+                        for (int i = 0; i < keys.Length; i++)
+                        {
+                            if (root.ContainsKey(keys[i]))
+                            {
+                                string cand = root[keys[i]].AsString("");
+                                if (!IsPlaceholderHwValue(cand))
+                                {
+                                    found = cand.Trim();
+                                    break;
+                                }
+                            }
+                        }
+                        if (string.IsNullOrEmpty(found) && root.ContainsKey("computer_name"))
+                        {
+                            string cn = root["computer_name"].AsString("");
+                            if (!IsPlaceholderHwValue(cn) && !cn.Trim().StartsWith("TK-", StringComparison.OrdinalIgnoreCase))
+                            {
+                                found = cn.Trim();
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrEmpty(found) && !IsPlaceholderHwValue(_initialMachineHostname) &&
+                !_initialMachineHostname.Trim().StartsWith("TK-", StringComparison.OrdinalIgnoreCase))
+            {
+                found = _initialMachineHostname.Trim();
+            }
+
+            if (!string.IsNullOrEmpty(found))
+            {
+                lock (_stateLock)
+                {
+                    _cachedPreviousHostname = found;
+                }
+            }
+            return found;
+        }
+
+        private static void ApplyManualDriverBypassMetadata(Dictionary<string, object> payload)
+        {
+            if (payload == null) return;
+            bool bypass = false;
+            string reason = "";
+
+            string[] files = new string[] { @"C:\setup\deploy-state.json", @"C:\setup\hwtest-result.json" };
+            for (int i = 0; i < files.Length; i++)
+            {
+                try
+                {
+                    if (!File.Exists(files[i])) continue;
+                    string json = File.ReadAllText(files[i], Encoding.UTF8);
+                    JsonNode root = JsonHelper.Parse(json);
+                    if (root == null || !root.IsObject) continue;
+                    if (root.ContainsKey("manual_driver_bypass") && root["manual_driver_bypass"].AsBool(false))
+                    {
+                        bypass = true;
+                    }
+                    if (string.IsNullOrEmpty(reason) && root.ContainsKey("driver_gate_emergency_override_reason"))
+                    {
+                        string r = root["driver_gate_emergency_override_reason"].AsString("");
+                        if (!string.IsNullOrWhiteSpace(r))
+                        {
+                            reason = r.Trim();
+                            bypass = true;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (bypass)
+            {
+                payload["manual_driver_bypass"] = true;
+                if (!string.IsNullOrEmpty(reason))
+                {
+                    payload["driver_gate_emergency_override_reason"] = reason;
+                }
+            }
+        }
+
         private Dictionary<string, object> BuildHardwarePayload()
         {
             var hw = new Dictionary<string, object>();
@@ -1080,6 +1277,21 @@ namespace WIS.UI
             if (!string.IsNullOrEmpty(sessionId))
             {
                 data["install_session_id"] = sessionId;
+            }
+            string resolvedSerial = GetResolvedSerialNumber();
+            if (!string.IsNullOrEmpty(resolvedSerial))
+            {
+                data["serial_number"] = resolvedSerial;
+                string canonDevId = GetCanonicalDeviceId(resolvedSerial);
+                if (!string.IsNullOrEmpty(canonDevId))
+                {
+                    data["device_id"] = canonDevId;
+                }
+            }
+            string prevHost = GetPreviousHostname();
+            if (!string.IsNullOrEmpty(prevHost))
+            {
+                data["previous_hostname"] = prevHost;
             }
 
             if (_viewModel != null)
@@ -1190,6 +1402,16 @@ namespace WIS.UI
                     if (!string.IsNullOrEmpty(resolvedSerial))
                     {
                         payload["serial_number"] = resolvedSerial;
+                        string canonDevId = GetCanonicalDeviceId(resolvedSerial);
+                        if (!string.IsNullOrEmpty(canonDevId))
+                        {
+                            payload["device_id"] = canonDevId;
+                        }
+                    }
+                    string prevHost = GetPreviousHostname();
+                    if (!string.IsNullOrEmpty(prevHost))
+                    {
+                        payload["previous_hostname"] = prevHost;
                     }
                     string sessionId = GetOrCreateInstallSessionId();
                     if (!string.IsNullOrEmpty(sessionId))
@@ -1321,6 +1543,86 @@ namespace WIS.UI
             return string.IsNullOrEmpty(cleaned) ? "UNKNOWN" : cleaned;
         }
 
+        public void SendPartialHwTestReportAsync()
+        {
+            if (!_isEnabled) return;
+
+            Dictionary<string, object> hwSnapshot = BuildHardwarePayload();
+            bool isLaptopSnapshot = ResolveIsLaptop();
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(HubUrl))
+                    {
+                        DiscoverHub();
+                        if (string.IsNullOrEmpty(HubUrl)) return;
+                    }
+
+                    string hwTestJsonPath = @"C:\setup\hwtest-result.json";
+                    if (!File.Exists(hwTestJsonPath)) return;
+
+                    string hwJson = File.ReadAllText(hwTestJsonPath, Encoding.UTF8);
+                    JsonNode hwNode = JsonHelper.Parse(hwJson);
+                    if (hwNode == null || !hwNode.IsObject) return;
+
+                    string serialSnapshot = hwSnapshot.ContainsKey("serial") && hwSnapshot["serial"] != null
+                        ? hwSnapshot["serial"].ToString()
+                        : "";
+                    string devId = GetCanonicalDeviceId(serialSnapshot);
+                    if (string.IsNullOrWhiteSpace(devId))
+                    {
+                        string chassisTag = isLaptopSnapshot ? "LAPTOP" : "DESKTOP";
+                        string idSeed = !IsPlaceholderHwValue(serialSnapshot) ? serialSnapshot : Environment.MachineName;
+                        devId = "TK-" + chassisTag + "-" + SanitizeFleetIdSegment(idSeed);
+                    }
+
+                    var partialPayload = new Dictionary<string, object>
+                    {
+                        { "device_id", devId },
+                        { "computer_name", Environment.MachineName },
+                        { "chassis", isLaptopSnapshot ? "Laptop" : "Desktop" },
+                        { "hw", hwSnapshot },
+                        { "hwtest", JsonNodeToNativeObject(hwNode) },
+                        { "is_partial_hwtest", true },
+                        { "report_stage", "phase5_hwtest" },
+                        { "timestamp", DateTime.Now.ToString("o") }
+                    };
+
+                    if (!IsPlaceholderHwValue(serialSnapshot))
+                    {
+                        partialPayload["serial_number"] = serialSnapshot;
+                    }
+                    string prevHost = GetPreviousHostname();
+                    if (!string.IsNullOrEmpty(prevHost))
+                    {
+                        partialPayload["previous_hostname"] = prevHost;
+                    }
+                    string sessionId = GetOrCreateInstallSessionId();
+                    if (!string.IsNullOrEmpty(sessionId))
+                    {
+                        partialPayload["install_session_id"] = sessionId;
+                    }
+                    ApplyManualDriverBypassMetadata(partialPayload);
+
+                    string serialized = JsonHelper.Serialize(partialPayload);
+                    string url = HubUrl.TrimEnd('/') + "/api/devices/" + Uri.EscapeDataString(devId) + "/report";
+                    Dictionary<string, string> headers = null;
+                    string tok = GetClientToken();
+                    if (!string.IsNullOrEmpty(tok))
+                    {
+                        headers = new Dictionary<string, string>();
+                        headers["X-ServisHub-Client-Token"] = tok;
+                    }
+
+                    bool ok;
+                    HttpPostWithResponse(url, serialized, 5000, out ok, headers);
+                }
+                catch { }
+            });
+        }
+
         public void ReuploadUpdatedReportAfterHwTestAsync(Action<bool, string> onCompleted)
         {
             if (!_isEnabled)
@@ -1401,10 +1703,16 @@ namespace WIS.UI
                         serialSnapshot = Environment.MachineName;
                     }
 
+                    string canonDevId = GetCanonicalDeviceId(serialSnapshot);
                     string devId = reportPayload.ContainsKey("device_id") && reportPayload["device_id"] != null
                         ? reportPayload["device_id"].ToString()
                         : "";
-                    if (string.IsNullOrWhiteSpace(devId))
+                    if (!string.IsNullOrEmpty(canonDevId))
+                    {
+                        devId = canonDevId;
+                        reportPayload["device_id"] = devId;
+                    }
+                    else if (string.IsNullOrWhiteSpace(devId))
                     {
                         string chassisTag = isLaptopSnapshot ? "LAPTOP" : "DESKTOP";
                         devId = "TK-" + chassisTag + "-" + SanitizeFleetIdSegment(serialSnapshot);
@@ -1413,6 +1721,11 @@ namespace WIS.UI
                     if (!reportPayload.ContainsKey("computer_name") || reportPayload["computer_name"] == null)
                     {
                         reportPayload["computer_name"] = Environment.MachineName;
+                    }
+                    string prevHost = GetPreviousHostname();
+                    if (!string.IsNullOrEmpty(prevHost) && !reportPayload.ContainsKey("previous_hostname"))
+                    {
+                        reportPayload["previous_hostname"] = prevHost;
                     }
                     if (!reportPayload.ContainsKey("chassis") || reportPayload["chassis"] == null)
                     {
@@ -1429,12 +1742,15 @@ namespace WIS.UI
 
                     reportPayload["status"] = "COMPLETED";
                     reportPayload["handover_ready"] = true;
+                    reportPayload["is_partial_hwtest"] = false;
+                    reportPayload["report_stage"] = "phase6_final";
                     reportPayload["timestamp"] = DateTime.Now.ToString("o");
                     string sessionId = GetOrCreateInstallSessionId();
                     if (!string.IsNullOrEmpty(sessionId))
                     {
                         reportPayload["install_session_id"] = sessionId;
                     }
+                    ApplyManualDriverBypassMetadata(reportPayload);
                     EnrichLicenseTelemetryPayload(reportPayload);
 
                     string serialized = JsonHelper.Serialize(reportPayload);

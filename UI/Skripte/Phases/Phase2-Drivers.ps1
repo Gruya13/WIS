@@ -11,7 +11,7 @@
 param(
     [string]$LocalSetupDir = "C:\setup",
     [switch]$SkipWindowsUpdate,
-    [ValidateSet("FastNas", "InstallStaged", "PostRebootFinalize", "DeltaHarvest", "Full")]
+    [ValidateSet("FastNas", "InstallStaged", "ApplyDeferredRename", "PostRebootFinalize", "DeltaHarvest", "Full")]
     [string]$Stage = "FastNas"
 )
 

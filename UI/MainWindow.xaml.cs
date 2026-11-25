@@ -5901,9 +5901,11 @@ namespace WIS.UI
             }
 
             // V350-06: Post-Reboot Finalize u Fazi 5 pre otključavanja DriverReadinessGate i starta HwTest-a
+            bool postRebootFinalizeExecuted = false;
             if (phaseNumber == 5 && (_postRebootFinalizePending || GetSavedPostRebootFinalizeFlag()) &&
                 string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
             {
+                postRebootFinalizeExecuted = true;
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.SubPhase = LocalizationService.Get("WinPostRebootFinalizeSub", "Završna aktivacija drajvera i kalibracija ekrana...");
@@ -5911,7 +5913,7 @@ namespace WIS.UI
                     ViewModel.AddLog("INFO", "TaskRunner", "V350-06: Pokrećem PostRebootFinalize pre Faze 5...");
                 }));
 
-                RunPhase2DriversStage("PostRebootFinalize", 3);
+                RunPhase2DriversStage("PostRebootFinalize", 8);
 
                 try { DetectDisplay(); } catch { }
                 try { RefreshPeripheralsAfterDrivers(); } catch { }
@@ -5931,9 +5933,80 @@ namespace WIS.UI
                         ViewModel.PhaseName = LocalizationService.Get("WinPhase5Name", "Faza 5: Hardverski test (Stres + Periferije)");
                     }
                 }));
+            }
 
-                RunPhase2DriversStageAsync("DeltaHarvest");
-                NotifyHwTestDriverStateChanged(true);
+            // WIS-TASK-278: Provera zaostalog kontrolisanog restarta (V353-01) i Code 14 restarta sa BitLocker suspendom pre ulaska u HwTestShell
+            if (phaseNumber == 5 && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("WIS_STRESS_TEST_INPUT_JSON")))
+            {
+                string pendingRebootFlag = @"C:\setup\pending-controlled-reboot.flag";
+                bool hasPendingRenameRebootFlag = false;
+                try
+                {
+                    if (File.Exists(pendingRebootFlag))
+                    {
+                        hasPendingRenameRebootFlag = true;
+                        File.Delete(pendingRebootFlag);
+                    }
+                }
+                catch { }
+
+                WIS.HwTest.Core.DriverGateState code14Gate = WIS.HwTest.Core.DriverReadinessGate.EvaluateLocal();
+                bool hasCode14 = (code14Gate != null && code14Gate.HasCode14PendingReboot);
+
+                if (hasPendingRenameRebootFlag || hasCode14)
+                {
+                    int gateReboots = GetDeployStateInt("driver_gate_reboots", 0);
+                    if (gateReboots < 2)
+                    {
+                        int nextReboots = gateReboots + 1;
+                        SetDeployStateInt("driver_gate_reboots", nextReboots);
+                        string reasonLabel = hasPendingRenameRebootFlag
+                            ? "zaostalo preimenovanje lokalnog naloga"
+                            : "uređaj zahteva restart radi učitavanja drajvera (Code 14)";
+                        string rebootMsg = string.Format(
+                            "Detektovan uslov za kontrolisani restart ({0}) pre Faze 5 — suspendujem BitLocker i pokrećem restart ({1}/2)...",
+                            reasonLabel, nextReboots);
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog("[WARN] [DriverGate] " + rebootMsg);
+                        }
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("WARN", "DriverGate", rebootMsg);
+                                ViewModel.SubPhase = "Potreban restart za aktivaciju drajvera (Code 14)...";
+                                ViewModel.LiveStatus = rebootMsg;
+                            }
+                        }));
+                        SuspendBitLockerBeforeReboot();
+                        HandleInterimReboot();
+                        return;
+                    }
+                    else
+                    {
+                        string maxRebootWarn = string.Format(
+                            "Code 14 / restart zahtev je i dalje aktivan, ali je limit automatskih restarta dostignut ({0}/2) — nastavljam u PreAutoDriverGate.",
+                            gateReboots);
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog("[WARN] [DriverGate] " + maxRebootWarn);
+                        }
+                        Dispatcher.BeginInvoke((Action)(() =>
+                        {
+                            if (ViewModel != null)
+                            {
+                                ViewModel.AddLog("WARN", "DriverGate", maxRebootWarn);
+                            }
+                        }));
+                    }
+                }
+
+                if (postRebootFinalizeExecuted)
+                {
+                    RunPhase2DriversStageAsync("DeltaHarvest");
+                    NotifyHwTestDriverStateChanged(true);
+                }
             }
 
             // Za Fazu 5: u produkcionom toku pokrećemo ugrađeni hardverski test (stres + periferije);
@@ -6196,7 +6269,21 @@ namespace WIS.UI
                             ViewModel.AddLog("INFO", "TaskRunner", "V350-06: Pokrećem Fazu 4B (Phase2-Drivers.ps1 -Stage InstallStaged)...");
                         }));
 
-                        RunPhase2DriversStage("InstallStaged", 25);
+                        try
+                        {
+                            RunPhase2DriversStage("InstallStaged", 25);
+                        }
+                        finally
+                        {
+                            Dispatcher.BeginInvoke((Action)(() =>
+                            {
+                                if (ViewModel != null)
+                                {
+                                    ViewModel.AddLog("INFO", "TaskRunner", "V353-01: Primenjujem odloženo preimenovanje naloga (Phase2-Drivers.ps1 -Stage ApplyDeferredRename) pre 4B restarta...");
+                                }
+                            }));
+                            RunPhase2DriversStage("ApplyDeferredRename", 1);
+                        }
                         HandleInterimReboot();
                         return;
                     }
@@ -7353,6 +7440,97 @@ namespace WIS.UI
             }
         }
 
+        private static object JsonNodeToNativeObject(JsonNode node)
+        {
+            if (node == null || node.IsNull) return null;
+            switch (node.NodeType)
+            {
+                case JsonNodeType.Boolean:
+                case JsonNodeType.Number:
+                case JsonNodeType.String:
+                    return node.Value;
+                case JsonNodeType.Array:
+                    var list = new List<object>();
+                    for (int i = 0; i < node.Elements.Count; i++)
+                    {
+                        list.Add(JsonNodeToNativeObject(node.Elements[i]));
+                    }
+                    return list;
+                case JsonNodeType.Object:
+                    var dict = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+                    foreach (KeyValuePair<string, JsonNode> kvp in node.Properties)
+                    {
+                        dict[kvp.Key] = JsonNodeToNativeObject(kvp.Value);
+                    }
+                    return dict;
+                default:
+                    return null;
+            }
+        }
+
+        private Dictionary<string, object> ReadExistingDeployStateMapLocked()
+        {
+            var map = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+            string statePath = @"C:\setup\deploy-state.json";
+            if (!File.Exists(statePath)) return map;
+            try
+            {
+                string existingJson = File.ReadAllText(statePath, Encoding.UTF8);
+                JsonNode existingRoot = JsonHelper.Parse(existingJson);
+                if (existingRoot != null && existingRoot.IsObject)
+                {
+                    var converted = JsonNodeToNativeObject(existingRoot) as Dictionary<string, object>;
+                    if (converted != null)
+                    {
+                        foreach (KeyValuePair<string, object> kv in converted)
+                        {
+                            map[kv.Key] = kv.Value;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return map;
+        }
+
+        private int GetDeployStateInt(string key, int fallback)
+        {
+            if (string.IsNullOrEmpty(key)) return fallback;
+            lock (_restartScheduleLock)
+            {
+                try
+                {
+                    string statePath = @"C:\setup\deploy-state.json";
+                    if (!File.Exists(statePath)) return fallback;
+                    string json = File.ReadAllText(statePath, Encoding.UTF8);
+                    JsonNode root = JsonHelper.Parse(json);
+                    if (root != null && root.IsObject && root.ContainsKey(key))
+                    {
+                        return root[key].AsInt(fallback);
+                    }
+                }
+                catch { }
+                return fallback;
+            }
+        }
+
+        private void SetDeployStateInt(string key, int value)
+        {
+            if (string.IsNullOrEmpty(key)) return;
+            lock (_restartScheduleLock)
+            {
+                try
+                {
+                    if (!Directory.Exists(@"C:\setup")) Directory.CreateDirectory(@"C:\setup");
+                    Dictionary<string, object> stateMap = ReadExistingDeployStateMapLocked();
+                    stateMap[key] = value;
+                    stateMap["timestamp"] = DateTime.Now.ToString("o");
+                    File.WriteAllText(@"C:\setup\deploy-state.json", JsonHelper.Serialize(stateMap), Encoding.UTF8);
+                }
+                catch { }
+            }
+        }
+
         private bool TryPersistRestartScheduleState(out string errorMessage)
         {
             errorMessage = null;
@@ -7366,38 +7544,34 @@ namespace WIS.UI
                         _initialStartTimeIso = DateTime.Now.ToString("o");
                     }
 
+                    Dictionary<string, object> stateMap = ReadExistingDeployStateMapLocked();
                     int phaseToSave = 1;
                     string statePath = @"C:\setup\deploy-state.json";
-                    if (File.Exists(statePath))
+                    if (stateMap.ContainsKey("phase") && stateMap["phase"] != null)
                     {
-                        try
-                        {
-                            string existingJson = File.ReadAllText(statePath, Encoding.UTF8);
-                            var root = JsonHelper.Parse(existingJson);
-                            if (root != null && !root.IsNull)
-                            {
-                                if (root.ContainsKey("phase")) phaseToSave = root["phase"].AsInt(1);
-                                else if (root.ContainsKey("Phase")) phaseToSave = root["Phase"].AsInt(1);
-                            }
-                        }
-                        catch { }
+                        int.TryParse(Convert.ToString(stateMap["phase"], System.Globalization.CultureInfo.InvariantCulture), out phaseToSave);
+                    }
+                    else if (stateMap.ContainsKey("Phase") && stateMap["Phase"] != null)
+                    {
+                        int.TryParse(Convert.ToString(stateMap["Phase"], System.Globalization.CultureInfo.InvariantCulture), out phaseToSave);
                     }
                     else if (ViewModel != null && ViewModel.CurrentPhase > 0)
                     {
                         phaseToSave = ViewModel.CurrentPhase;
                     }
+                    if (phaseToSave <= 0) phaseToSave = 1;
 
-                    var stateMap = new Dictionary<string, object>
+                    stateMap["phase"] = phaseToSave;
+                    stateMap["Phase"] = phaseToSave;
+                    if (!stateMap.ContainsKey("initial_start_time") || stateMap["initial_start_time"] == null)
                     {
-                        { "phase", phaseToSave },
-                        { "Phase", phaseToSave },
-                        { "initial_start_time", _initialStartTimeIso },
-                        { "timestamp", DateTime.Now.ToString("o") },
-                        { "computer_name", Environment.MachineName },
-                        { "restart_pending", _restartPending && _restartDueAtUtc > DateTime.UtcNow },
-                        { "restart_due_at", _restartDueAtUtc > DateTime.MinValue ? _restartDueAtUtc.ToLocalTime().ToString("o") : "" },
-                        { "delayed_restart_minutes", _delayedRestartMinutesTotal }
-                    };
+                        stateMap["initial_start_time"] = _initialStartTimeIso;
+                    }
+                    stateMap["timestamp"] = DateTime.Now.ToString("o");
+                    stateMap["computer_name"] = Environment.MachineName;
+                    stateMap["restart_pending"] = _restartPending && _restartDueAtUtc > DateTime.UtcNow;
+                    stateMap["restart_due_at"] = _restartDueAtUtc > DateTime.MinValue ? _restartDueAtUtc.ToLocalTime().ToString("o") : "";
+                    stateMap["delayed_restart_minutes"] = _delayedRestartMinutesTotal;
 
                     string json = JsonHelper.Serialize(stateMap);
                     File.WriteAllText(statePath, json, Encoding.UTF8);
@@ -7649,6 +7823,7 @@ namespace WIS.UI
         {
             string statusPath = @"C:\setup\driver-stage-status.json";
             DateTime startUtc = DateTime.UtcNow;
+            DateTime lastHeartbeatLogUtc = DateTime.MinValue;
             string lastNormState = "";
             int lastWorkerPid = 0;
             while ((DateTime.UtcNow - startUtc).TotalSeconds < maxWaitSeconds)
@@ -7690,11 +7865,16 @@ namespace WIS.UI
 
                 if (!IsDriverStageStatusAlive(normState, workerPid, updatedAtIso, fileWriteUtc))
                 {
+                    string deadWorkerMsg = "V351-02: Pozadinski radnik za preuzimanje drajvera više nije aktivan — resetujem driver-stage-status.json i nastavljam.";
+                    if (_telemetryService != null)
+                    {
+                        _telemetryService.PushLog("[WARN] [TaskRunner] " + deadWorkerMsg);
+                    }
                     Dispatcher.BeginInvoke((Action)(() =>
                     {
                         if (ViewModel != null)
                         {
-                            ViewModel.AddLog("WARN", "TaskRunner", "V351-02: Pozadinski radnik za preuzimanje drajvera više nije aktivan — resetujem driver-stage-status.json i nastavljam.");
+                            ViewModel.AddLog("WARN", "TaskRunner", deadWorkerMsg);
                         }
                     }));
                     ForceResetStuckDriverStageStatus("Pozadinski radnik za preuzimanje drajvera vise nije aktivan");
@@ -7704,15 +7884,38 @@ namespace WIS.UI
 
                 PollDriverStageStatusFile();
                 int doneCount = hubStaged + wuDownloaded;
+                int elapsedSec = Math.Max(0, (int)(DateTime.UtcNow - startUtc).TotalSeconds);
+                string elapsedLabel = string.Format("{0}m {1:D2}s", elapsedSec / 60, elapsedSec % 60);
+                string itemLabel = !string.IsNullOrWhiteSpace(currentItem) ? currentItem.Trim() : "obrada zahteva...";
+
                 string waitMsg = totalCount > 0
-                    ? string.Format(LocalizationService.Get("WinWaitDriverDownloadProgressFmt", "Čekam dovršetak preuzimanja drajvera ({0}/{1})... {2}"), doneCount, totalCount, currentItem)
-                    : LocalizationService.Get("WinWaitDriverDownloadLive", "Čekam dovršetak preuzimanja drajvera u pozadini...");
+                    ? string.Format(LocalizationService.Get("WinWaitDriverDownloadProgressFmt", "Čekam dovršetak preuzimanja drajvera ({0}/{1})... {2}"), doneCount, totalCount, itemLabel)
+                    : string.Format("{0} ({1}: {2})", LocalizationService.Get("WinWaitDriverDownloadLive", "Čekam dovršetak preuzimanja drajvera u pozadini..."), elapsedLabel, itemLabel);
 
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     ViewModel.SubPhase = LocalizationService.Get("WinWaitDriverDownloadSub", "Preuzimanje drajvera u toku...");
                     ViewModel.LiveStatus = waitMsg;
                 }));
+
+                if (lastHeartbeatLogUtc == DateTime.MinValue || (DateTime.UtcNow - lastHeartbeatLogUtc).TotalSeconds >= 30.0)
+                {
+                    lastHeartbeatLogUtc = DateTime.UtcNow;
+                    string hbLog = totalCount > 0
+                        ? string.Format("IMP-96: Pozadinsko preuzimanje drajvera [{0}] ({1}/{2}, proteklo {3}) — CurrentItem: {4}", normState, doneCount, totalCount, elapsedLabel, itemLabel)
+                        : string.Format("IMP-96: Pozadinsko preuzimanje drajvera [{0}] (proteklo {1}) — CurrentItem: {2}", normState, elapsedLabel, itemLabel);
+                    if (_telemetryService != null)
+                    {
+                        _telemetryService.PushLog("[INFO] [TaskRunner] " + hbLog);
+                    }
+                    Dispatcher.BeginInvoke((Action)(() =>
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("INFO", "TaskRunner", hbLog);
+                        }
+                    }));
+                }
 
                 Thread.Sleep(2000);
             }
@@ -7721,11 +7924,16 @@ namespace WIS.UI
             {
                 TryKillPowerShellWorker(lastWorkerPid);
                 ForceResetStuckDriverStageStatus("Timeout (15 min) pozadinskog preuzimanja drajvera");
+                string dlTimeoutMsg = "V351-02: Isteklo čekanje na pozadinsko preuzimanje drajvera; nastavljam sa lokalno preuzetim drajverima.";
+                if (_telemetryService != null)
+                {
+                    _telemetryService.PushLog("[WARN] [TaskRunner] " + dlTimeoutMsg);
+                }
                 Dispatcher.BeginInvoke((Action)(() =>
                 {
                     if (ViewModel != null)
                     {
-                        ViewModel.AddLog("WARN", "TaskRunner", "V351-02: Isteklo čekanje na pozadinsko preuzimanje drajvera; nastavljam sa lokalno preuzetim drajverima.");
+                        ViewModel.AddLog("WARN", "TaskRunner", dlTimeoutMsg);
                     }
                 }));
             }
@@ -7802,12 +8010,31 @@ namespace WIS.UI
                     proc.BeginErrorReadLine();
                     if (!WaitForPhaseProcessExitWithActiveTime(proc, timeoutMinutes))
                     {
+                        try
+                        {
+                            ProcessStartInfo tkPsi = new ProcessStartInfo("taskkill.exe", string.Format("/PID {0} /T /F", proc.Id))
+                            {
+                                CreateNoWindow = true,
+                                UseShellExecute = false,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            };
+                            using (Process tk = Process.Start(tkPsi))
+                            {
+                                if (tk != null) tk.WaitForExit(5000);
+                            }
+                        }
+                        catch { }
                         try { proc.Kill(); } catch { }
+                        string stageTimeoutMsg = string.Format("V351-02: Timeout ({0} min) za driver stage '{1}' — prekidam proces i čistim status.", timeoutMinutes, stage);
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.PushLog("[WARN] [TaskRunner] " + stageTimeoutMsg);
+                        }
                         Dispatcher.BeginInvoke((Action)(() =>
                         {
                             if (ViewModel != null)
                             {
-                                ViewModel.AddLog("WARN", "TaskRunner", string.Format("V351-02: Timeout ({0} min) za driver stage '{1}' — prekidam proces i čistim status.", timeoutMinutes, stage));
+                                ViewModel.AddLog("WARN", "TaskRunner", stageTimeoutMsg);
                             }
                         }));
                         ResetStuckStageStatusIfActive(stage, string.Format("Timeout ({0} min) za Stage={1}", timeoutMinutes, stage));
@@ -7861,6 +8088,7 @@ namespace WIS.UI
                         _initialStartTimeIso = DateTime.Now.ToString("o");
                     }
 
+                    Dictionary<string, object> stateMap = ReadExistingDeployStateMapLocked();
                     Dictionary<string, string> existingApps = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     string existingHubUrl = null;
                     string statePath = @"C:\setup\deploy-state.json";
@@ -7906,18 +8134,36 @@ namespace WIS.UI
                         }
                     }
 
-                    var stateMap = new Dictionary<string, object>
+                    string prevRecordedComp = stateMap.ContainsKey("computer_name") && stateMap["computer_name"] != null
+                        ? Convert.ToString(stateMap["computer_name"]).Trim()
+                        : "";
+                    string curComp = Environment.MachineName ?? "";
+                    if (!string.IsNullOrEmpty(prevRecordedComp) &&
+                        !string.Equals(prevRecordedComp, curComp, StringComparison.OrdinalIgnoreCase) &&
+                        !prevRecordedComp.StartsWith("TK-", StringComparison.OrdinalIgnoreCase) &&
+                        (!stateMap.ContainsKey("previous_hostname") || stateMap["previous_hostname"] == null || string.IsNullOrWhiteSpace(Convert.ToString(stateMap["previous_hostname"]))))
                     {
-                        { "phase", phase },
-                        { "Phase", phase },
-                        { "post_reboot_finalize", postRebootFinalize },
-                        { "initial_start_time", _initialStartTimeIso },
-                        { "timestamp", DateTime.Now.ToString("o") },
-                        { "computer_name", Environment.MachineName },
-                        { "restart_pending", _restartPending && _restartDueAtUtc > DateTime.UtcNow },
-                        { "restart_due_at", _restartDueAtUtc > DateTime.MinValue ? _restartDueAtUtc.ToLocalTime().ToString("o") : "" },
-                        { "delayed_restart_minutes", _delayedRestartMinutesTotal }
-                    };
+                        stateMap["previous_hostname"] = prevRecordedComp;
+                    }
+                    if (!string.IsNullOrEmpty(curComp) &&
+                        !curComp.StartsWith("TK-", StringComparison.OrdinalIgnoreCase) &&
+                        (!stateMap.ContainsKey("initial_hostname") || stateMap["initial_hostname"] == null || string.IsNullOrWhiteSpace(Convert.ToString(stateMap["initial_hostname"]))))
+                    {
+                        stateMap["initial_hostname"] = curComp;
+                    }
+
+                    stateMap["phase"] = phase;
+                    stateMap["Phase"] = phase;
+                    stateMap["post_reboot_finalize"] = postRebootFinalize;
+                    if (!stateMap.ContainsKey("initial_start_time") || stateMap["initial_start_time"] == null)
+                    {
+                        stateMap["initial_start_time"] = _initialStartTimeIso;
+                    }
+                    stateMap["timestamp"] = DateTime.Now.ToString("o");
+                    stateMap["computer_name"] = curComp;
+                    stateMap["restart_pending"] = _restartPending && _restartDueAtUtc > DateTime.UtcNow;
+                    stateMap["restart_due_at"] = _restartDueAtUtc > DateTime.MinValue ? _restartDueAtUtc.ToLocalTime().ToString("o") : "";
+                    stateMap["delayed_restart_minutes"] = _delayedRestartMinutesTotal;
                     if (!string.IsNullOrEmpty(existingHubUrl))
                     {
                         stateMap["hub_url"] = existingHubUrl;

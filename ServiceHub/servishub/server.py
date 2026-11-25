@@ -11,11 +11,13 @@ import socket
 import subprocess
 import signal
 import threading
+from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
 
-from servishub.config import HubConfig, active_config
+from servishub.config import HubConfig, active_config, get_free_disk_gb
 from servishub.telemetry import FleetStore, FLEET_STORE
 from servishub.payload import PayloadManager
+from servishub.releases import prune_old_releases
 from servishub.drivers.cache import DriverCacheManager
 from servishub.drivers.pool import DriverPoolManager
 from servishub.drivers.scraper import MsUpdateCatalogScraper
@@ -23,6 +25,46 @@ from servishub.discovery import UdpDiscoveryServer
 from servishub.handlers import ServisHubHandler
 from servishub.predictive_cache import PredictiveCacheManager
 from servishub.version import VERSION
+
+
+def _seconds_until_next_local_time(target_hour: int = 3, target_minute: int = 0, now_dt: datetime = None) -> float:
+    """Računa broj sekundi do sledećeg lokalnog termina (podrazumevano 03:00 CET)."""
+    cur = now_dt if now_dt is not None else datetime.now()
+    target = cur.replace(hour=int(target_hour), minute=int(target_minute), second=0, microsecond=0)
+    if target <= cur:
+        target = target + timedelta(days=1)
+    return max(1.0, (target - cur).total_seconds())
+
+
+def _run_oem_catalog_scheduler_step(pool_mgr, lock: threading.Lock, min_free_gb: float = 15.0) -> dict:
+    """Izvršava jedno osvežavanje zastarelih OEM kataloga uz mutex i proveru slobodnog diska >= 15 GB."""
+    if pool_mgr is None:
+        return {"status": "skipped_no_pool"}
+    if not lock.acquire(blocking=False):
+        return {"status": "skipped_busy"}
+    try:
+        free_gb = get_free_disk_gb(getattr(pool_mgr, "pool_dir", None))
+        if free_gb is not None and free_gb < float(min_free_gb):
+            return {
+                "status": "skipped_low_disk",
+                "free_gb": round(free_gb, 2),
+                "min_free_gb": float(min_free_gb),
+            }
+        return pool_mgr.refresh_stale_oem_catalogs()
+    finally:
+        lock.release()
+
+
+def _run_nightly_gc_step(pool_mgr, cache_dir: str, lock: threading.Lock, keep_last: int = 3) -> dict:
+    """Izvršava noćni Garbage Collector: prune_unused_packages() + prune_old_releases(keep_last=3)."""
+    if not lock.acquire(blocking=False):
+        return {"status": "skipped_busy"}
+    try:
+        pool_res = pool_mgr.prune_unused_packages() if pool_mgr is not None else None
+        rel_res = prune_old_releases(cache_dir, keep_last=keep_last) if cache_dir else None
+        return {"status": "ok", "pool": pool_res, "releases": rel_res}
+    finally:
+        lock.release()
 
 
 def run_hub_server(
@@ -55,7 +97,13 @@ def run_hub_server(
     cleaned_tmp_dirs = DriverPoolManager.cleanup_stale_temp_dirs()
     if cleaned_tmp_dirs:
         print(f" [*] Očišćeno {cleaned_tmp_dirs} zaostalih privremenih wis-pool-extract-* foldera.")
-    driver_pool_mgr = DriverPoolManager(pool_dir=cfg.driver_pool_dir)
+    driver_pool_mgr = DriverPoolManager(
+        pool_dir=cfg.driver_pool_dir,
+        max_bundles_gb=cfg.max_bundles_gb,
+        bundle_ttl_hours=cfg.bundle_ttl_hours,
+        delete_ingested_archives=cfg.delete_ingested_archives,
+        oem_catalog_stale_hours=cfg.oem_catalog_stale_hours,
+    )
 
     def _on_driver_cab_cached(cab_path: str, saved_meta: dict):
         def _bg_ingest():
@@ -166,6 +214,49 @@ def run_hub_server(
                 break
 
     _wh_threading.Thread(target=_harvest_pool_watcher, name="wis-harvest-pool-watcher", daemon=True).start()
+
+    oem_sched_lock = _wh_threading.Lock()
+    nightly_gc_lock = _wh_threading.Lock()
+
+    def _oem_catalog_scheduler():
+        # 60s posle starta, zatim na svakih 12h uz mutex i disk guard >= 15 GB
+        if watcher_stop.wait(60.0):
+            return
+        while not watcher_stop.is_set():
+            try:
+                res = _run_oem_catalog_scheduler_step(driver_pool_mgr, oem_sched_lock, min_free_gb=15.0)
+                if res.get("status") == "skipped_low_disk":
+                    print(
+                        f"[OEM Scheduler] Preskačem osvežavanje kataloga: slobodno {res.get('free_gb')} GB < {res.get('min_free_gb')} GB.",
+                        file=sys.stderr,
+                    )
+            except Exception as ex:
+                print(f"[OEM Scheduler] Upozorenje pri osvežavanju OEM kataloga: {ex}", file=sys.stderr)
+            if watcher_stop.wait(12.0 * 3600.0):
+                break
+
+    def _nightly_gc_worker():
+        # Noćni Garbage Collector oko 03:00 lokalno (CET)
+        while not watcher_stop.is_set():
+            wait_s = _seconds_until_next_local_time(3, 0)
+            if watcher_stop.wait(wait_s):
+                break
+            try:
+                gc_res = _run_nightly_gc_step(driver_pool_mgr, cfg.cache_dir, nightly_gc_lock, keep_last=3)
+                pool_r = gc_res.get("pool") or {}
+                rel_r = gc_res.get("releases") or {}
+                if pool_r.get("removed_packages") or pool_r.get("removed_bundles") or rel_r.get("removed"):
+                    print(
+                        f"[Nightly GC] Očišćeno: {pool_r.get('removed_packages', 0)} paketa, "
+                        f"{pool_r.get('removed_bundles', 0)} bundlova, {len(rel_r.get('removed') or [])} starih izdanja."
+                    )
+            except Exception as ex:
+                print(f"[Nightly GC] Upozorenje pri noćnom čišćenju: {ex}", file=sys.stderr)
+            if watcher_stop.wait(60.0):
+                break
+
+    _wh_threading.Thread(target=_oem_catalog_scheduler, name="wis-oem-catalog-scheduler", daemon=True).start()
+    _wh_threading.Thread(target=_nightly_gc_worker, name="wis-nightly-gc", daemon=True).start()
 
     def handle_shutdown(signum, frame):
         print("\n[!] Zaustavljam Servisni Hub...")

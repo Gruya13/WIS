@@ -189,6 +189,32 @@ namespace WIS.UI
         {
             TriggerAsyncDriverGateRefresh(false);
             DriverGateState state = CloneDriverGateState(_cachedLocalDriverGate);
+            return CombineDriverGateWithUiState(state);
+        }
+
+        public DriverGateState EvaluatePreAutoDriverGateFresh()
+        {
+            DriverGateState evaluated = DriverReadinessGate.EvaluateLocal();
+            if (evaluated == null) evaluated = new DriverGateState();
+            _cachedLocalDriverGate = evaluated;
+            _lastDriverGateEvalUtc = DateTime.UtcNow;
+
+            DriverGateState snapshot = CloneDriverGateState(evaluated);
+            if (Dispatcher != null && !Dispatcher.CheckAccess() && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                DriverGateState combined = null;
+                Dispatcher.Invoke((Action)delegate
+                {
+                    combined = CombineDriverGateWithUiState(snapshot);
+                });
+                return combined ?? snapshot;
+            }
+            return CombineDriverGateWithUiState(snapshot);
+        }
+
+        private DriverGateState CombineDriverGateWithUiState(DriverGateState state)
+        {
+            if (state == null) state = new DriverGateState();
 
             int currentPhase = (ViewModel != null) ? ViewModel.CurrentPhase : 1;
             bool isServiceFinished = (ViewModel != null) && (ViewModel.IsServiceFinished || ViewModel.IsCompleted);
@@ -384,6 +410,49 @@ namespace WIS.UI
             }
         }
 
+        private void OnHwTestDriverGateStatusUpdate(string level, string liveStatus, string logMessage)
+        {
+            string effLevel = string.IsNullOrEmpty(level) ? "WARN" : level.Trim().ToUpperInvariant();
+            if (!string.IsNullOrEmpty(logMessage) && _telemetryService != null)
+            {
+                _telemetryService.PushLog(string.Format("[{0}] [DriverGate] {1}", effLevel, logMessage));
+            }
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                Dispatcher.BeginInvoke((Action)delegate
+                {
+                    if (ViewModel == null) return;
+                    if (!string.IsNullOrEmpty(liveStatus))
+                    {
+                        ViewModel.SubPhase = "PreAutoDriverGate: provera drajvera...";
+                        ViewModel.LiveStatus = liveStatus;
+                    }
+                    if (!string.IsNullOrEmpty(logMessage))
+                    {
+                        ViewModel.AddLog(effLevel, "DriverGate", logMessage);
+                    }
+                });
+            }
+        }
+
+        private void OnHwTestPhase5LiveStatusChanged(string liveStatus)
+        {
+            if (string.IsNullOrEmpty(liveStatus)) return;
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                Dispatcher.BeginInvoke((Action)delegate
+                {
+                    if (ViewModel == null) return;
+                    ViewModel.LiveStatus = liveStatus;
+                    if (!string.IsNullOrEmpty(ViewModel.SubPhase) &&
+                        ViewModel.SubPhase.IndexOf("post-reboot", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        ViewModel.SubPhase = "Čekaju interaktivni testovi...";
+                    }
+                });
+            }
+        }
+
         private void EnsureEmbeddedHwTestTab()
         {
             try
@@ -413,7 +482,14 @@ namespace WIS.UI
                     _embeddedHwTestShell = new HwTestShell(@"C:\setup\hwtest-result.json", model, serial, mfg, sku, client);
                     _embeddedHwTestShell.SetUefiBiosRebootHandler(HandlePhase5UefiBiosRebootRequest);
                     _embeddedHwTestShell.SetInteractiveTestsGateProvider(EvaluateInteractiveTestsDriverGate);
+                    _embeddedHwTestShell.SetPreAutoDriverGateFreshProvider(EvaluatePreAutoDriverGateFresh);
+                    _embeddedHwTestShell.SetDriverGateStatusHandler(OnHwTestDriverGateStatusUpdate);
+                    _embeddedHwTestShell.SetPhase5LiveStatusHandler(OnHwTestPhase5LiveStatusChanged);
                     _embeddedHwTestShell.SetOpenDriversTabHandler(OpenDriversTabFromHwTest);
+                    if (ViewModel != null && ViewModel.CurrentPhase >= 5)
+                    {
+                        _embeddedHwTestShell.SetSuppressPassiveAutoChecks(true);
+                    }
                     _embeddedHwTestShell.PendingInteractiveTestsRequired += OnPendingInteractiveTestsRequired;
                 }
 
@@ -843,9 +919,20 @@ namespace WIS.UI
 
                 if (ViewModel != null)
                 {
+                    int manualDone = 0;
+                    int manualTotal = currentPending.Count;
+                    if (_embeddedHwTestShell != null)
+                    {
+                        try
+                        {
+                            _embeddedHwTestShell.GetInteractiveProgressCounts(out manualDone, out manualTotal);
+                        }
+                        catch { }
+                    }
+                    if (manualTotal <= 0) manualTotal = currentPending.Count;
                     ViewModel.IsCompleted = false;
                     ViewModel.SubPhase = string.Format(LocalizationService.Get("HwTPendingInteractiveSubPhase", "Čekaju obavezni interaktivni testovi ({0})..."), currentPending.Count);
-                    ViewModel.LiveStatus = string.Format(LocalizationService.Get("HwTAutoDonePendingInteractive", "⚠️ Automatski proces je završen — preostalo {0} obaveznih interaktivnih testova u Fazi 5."), currentPending.Count);
+                    ViewModel.LiveStatus = string.Format("Faza 5: Čeka operatera za interaktivne testove ({0}/{1})", manualDone, manualTotal);
                     ViewModel.AddLog("WARN", "Hardver", string.Format(
                         "Automatski proces je završen; obavezni interaktivni testovi čekaju servisera ({0}): {1}",
                         currentPending.Count,
@@ -1330,6 +1417,10 @@ namespace WIS.UI
 
                     if (!phase6AlreadyCompleted)
                     {
+                        if (_telemetryService != null)
+                        {
+                            _telemetryService.SendPartialHwTestReportAsync();
+                        }
                         bool waitLoopActive = false;
                         lock (_phase5HwSyncLock)
                         {
@@ -1579,11 +1670,15 @@ namespace WIS.UI
             bool tabReady = false;
             Dispatcher.Invoke((Action)(() =>
             {
-                EnsureEmbeddedHwTestTab();
                 if (ViewModel != null && ViewModel.CurrentPhase < 5)
                 {
                     ViewModel.CurrentPhase = 5;
                 }
+                if (_embeddedHwTestShell != null)
+                {
+                    _embeddedHwTestShell.SetSuppressPassiveAutoChecks(true);
+                }
+                EnsureEmbeddedHwTestTab();
                 if (_embeddedHwTestShell != null && _hwTestTabItem != null)
                 {
                     RefreshEmbeddedHwTestIdentity();
@@ -1649,8 +1744,14 @@ namespace WIS.UI
                 if (signaled || _phase5UefiRebootInProgress) break;
 
                 bool waitingManual = false;
-                try { waitingManual = (_embeddedHwTestShell != null && _embeddedHwTestShell.IsWaitingForManualTests); } catch { }
-                if (!waitingManual)
+                bool waitingDriverGate = false;
+                try
+                {
+                    waitingManual = (_embeddedHwTestShell != null && _embeddedHwTestShell.IsWaitingForManualTests);
+                    waitingDriverGate = (_embeddedHwTestShell != null && _embeddedHwTestShell.IsWaitingForDriverGate);
+                }
+                catch { }
+                if (!waitingManual && !waitingDriverGate)
                 {
                     elapsedAutoMs += 500;
                     if (elapsedAutoMs >= timeoutMs)

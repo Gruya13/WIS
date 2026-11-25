@@ -5,12 +5,14 @@ REST API ruter i HTTP handler za ServisHub.
 """
 
 import os
+import re
 import sys
 import time
 import hmac
 import json
 import uuid
 import shutil
+import tarfile
 import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +34,8 @@ from servishub.reports import (
     diagnostics_contract,
     is_enospc_error,
     log_enospc_rate_limited,
+    is_partial_hwtest_payload,
+    merge_app_statuses,
 )
 from servishub.version import VERSION, RELEASE_STATUS
 from servishub.web.dashboard import HTML_DASHBOARD
@@ -289,6 +293,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     pool_dir=abs_pool,
                     max_bundles_gb=getattr(self.config, "max_bundles_gb", None) if self.config else None,
                     bundle_ttl_hours=getattr(self.config, "bundle_ttl_hours", None) if self.config else None,
+                    delete_ingested_archives=getattr(self.config, "delete_ingested_archives", None) if self.config else None,
                     oem_catalog_stale_hours=getattr(self.config, "oem_catalog_stale_hours", None) if self.config else None,
                 )
                 ServisHubHandler._driver_pool_instances[abs_pool] = mgr
@@ -508,12 +513,54 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             threading.Thread(target=_worker, daemon=True).start()
             return job
 
+    def _stream_packages_tar(self, package_entries, filename: str, extra_headers=None):
+        """
+        On-the-fly strimuje .tar arhivu direktno iz Pool/packages u HTTP wfile
+        bez upisa u bundles/ i bez X-Model-SHA256 headera (Connection: close za HTTP/1.0).
+        """
+        from servishub.drivers.pool import FORBIDDEN_DRIVER_EXTENSIONS
+
+        safe_fn = os.path.basename(str(filename or "driver_pool_bundle.tar")).replace('"', "_")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-tar")
+        self.send_header("Content-Disposition", f'attachment; filename="{safe_fn}"')
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        self._send_cors_headers()
+        self._send_security_headers()
+        if isinstance(extra_headers, dict):
+            for hk, hv in extra_headers.items():
+                if hv is not None and hk.lower() != "x-model-sha256":
+                    self.send_header(str(hk), str(hv))
+        self.end_headers()
+
+        with tarfile.open(fileobj=self.wfile, mode="w|") as tf:
+            for pid, pmeta, pdir in (package_entries or []):
+                if not pdir or not os.path.isdir(pdir) or os.path.islink(pdir):
+                    continue
+                stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str((pmeta or {}).get("inf_stem") or "drv")).strip("_") or "drv"
+                folder_prefix = f"{stem}_{str(pid)[:8]}"
+                for rdir, _, files in os.walk(pdir, followlinks=False):
+                    for fn in sorted(files):
+                        if fn.lower().endswith(FORBIDDEN_DRIVER_EXTENSIONS):
+                            continue
+                        full_f = os.path.join(rdir, fn)
+                        if os.path.islink(full_f):
+                            continue
+                        rel = os.path.relpath(full_f, pdir).replace("\\", "/")
+                        tf.add(full_f, arcname=f"{folder_prefix}/{rel}", recursive=False)
+        try:
+            self.wfile.flush()
+        except OSError:
+            pass
+
     def _resolve_single_device_hwids(
         self,
         raw_hwids,
         device_name="UnknownDevice",
         manufacturer="",
         model="",
+        system_sku="",
         async_download=False,
         inline_wait_sec=None,
     ):
@@ -529,7 +576,39 @@ class ServisHubHandler(BaseHTTPRequestHandler):
         cache_scope = os.path.abspath(str(getattr(self.driver_cache_mgr, "cache_dir", "no-cache")))
         print(f"[*] [DriverResolve] Primljen upit za {len(clean_hwids)} HWID-ja (Uređaj: {device_name} / {manufacturer} {model})...")
 
-        # 1. Cache-first provera svih HWID kandidata uz early-stop na prvom pogotku
+        # 1. Lokalni oem_pack / manifest winner iz Driver Pool-a
+        try:
+            pool_mgr = self._get_driver_pool_mgr()
+        except Exception:
+            pool_mgr = None
+
+        if pool_mgr is not None:
+            try:
+                pool_res = pool_mgr.resolve_device_hwids(clean_hwids, model=model)
+                pool_matches = pool_res.get("matches") or []
+                if pool_matches:
+                    best_m = pool_matches[0]
+                    pkg_id = best_m["pkg_id"]
+                    srcs = best_m.get("sources") or []
+                    src_lbl = "oem_pack" if "oem_pack" in srcs else "driver_pool"
+                    results.append({
+                        "hwid": best_m["hwid"],
+                        "status": "ready",
+                        "driver_id": pkg_id,
+                        "pkg_id": pkg_id,
+                        "title": best_m.get("inf_name") or f"PoolDriver ({pkg_id[:8]})",
+                        "driver_ver": best_m.get("driver_ver"),
+                        "driver_date": best_m.get("driver_date"),
+                        "download_url": f"/api/drivers/pool/package?id={quote(pkg_id)}",
+                        "size_bytes": best_m.get("size_bytes", 0),
+                        "source": src_lbl,
+                        "sources": srcs,
+                    })
+                    return results
+            except Exception as ex:
+                print(f"[!] [DriverResolve] Pool lookup greška: {ex}", file=sys.stderr)
+
+        # 1b. Cache-first provera svih HWID kandidata uz early-stop na prvom pogotku
         if self.driver_cache_mgr:
             for hwid_str in clean_hwids:
                 cached = self.driver_cache_mgr.get_cached(hwid_str)
@@ -539,7 +618,48 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     results.append(self._build_ready_driver_entry(hwid_str, cached, source="cache"))
                     return results
 
-        # 1b. Provera da li je za neki od HWID-jeva već u toku dedupovano pozadinsko preuzimanje
+        # 2. Ako postoji/u toku je OEM paket za dati model u Pool-u, pokreni asinhroni OEM ingest
+        if pool_mgr is not None and manufacturer and model:
+            try:
+                from servishub.drivers.oem.catalogs import detect_oem_vendor
+                from servishub.drivers.pool import is_generic_model_pack_name, sanitize_model_pack_name
+                oem_vendor = detect_oem_vendor(manufacturer, model)
+                if oem_vendor and not is_generic_model_pack_name(model):
+                    active_oem = pool_mgr.get_active_oem_job(manufacturer, model)
+                    oem_entry = None
+                    if not active_oem and not pool_mgr.has_oem_pack_in_manifest(model):
+                        oem_entry = pool_mgr.catalog_mgr.find_driver_pack(
+                            manufacturer=manufacturer,
+                            model=model,
+                            system_sku=system_sku,
+                        )
+                    if active_oem or oem_entry:
+                        if not active_oem:
+                            try:
+                                clean_m = sanitize_model_pack_name(model).lower()
+                            except ValueError:
+                                clean_m = model.strip().lower()
+                            active_oem = pool_mgr.start_dedup_background_job(
+                                "ingest_oem",
+                                f"oem:{oem_vendor}:{clean_m}",
+                                pool_mgr.ingest_oem_pack,
+                                manufacturer,
+                                model,
+                                system_sku=system_sku,
+                            )
+                        results.append({
+                            "hwid": clean_hwids[0],
+                            "status": "downloading",
+                            "job_id": active_oem.get("job_id", ""),
+                            "retry_after_sec": 10,
+                            "title": (oem_entry or {}).get("package_name") or f"OEM Driver Pack ({manufacturer} {model})",
+                            "source": "oem_pack_async",
+                        })
+                        return results
+            except Exception as ex:
+                print(f"[!] [DriverResolve] OEM async ingest provera greška: {ex}", file=sys.stderr)
+
+        # 1c. Provera da li je za neki od HWID-jeva već u toku dedupovano pozadinsko preuzimanje (ms_catalog)
         active_job = None
         active_hwid = clean_hwids[0]
         with ServisHubHandler._driver_dl_lock:
@@ -970,6 +1090,30 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                         except ValueError:
                             pass
                 self.fleet_store.release_sse_slot(sse_channel)
+            return
+
+        if path == "/api/drivers/pool/package":
+            query_params = parse_qs(parsed.query)
+            pkg_id = (query_params.get("id") or [None])[0]
+            if not pkg_id:
+                self._send_json({"error": "Nedostaje parametar 'id'."}, 400)
+                return
+            try:
+                pool_mgr = self._get_driver_pool_mgr()
+                snap = pool_mgr.get_package_snapshot(pkg_id)
+                if not snap:
+                    self._send_json({"error": "Paket nije pronađen u Driver Pool-u."}, 404)
+                    return
+                pmeta, pdir = snap
+                self._stream_packages_tar(
+                    [(pkg_id, pmeta, pdir)],
+                    f"{pkg_id[:12]}.tar",
+                    extra_headers={"X-Driver-Pool-Package": pkg_id},
+                )
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception as e:
+                self._send_json({"error": f"Greška pri strimovanju paketa: {e}"}, 500)
             return
 
         if path == "/api/drivers/pool/stats":
@@ -1860,6 +2004,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 return
             model_val = str(payload.get("model") or "").strip()
             mfg_val = str(payload.get("manufacturer") or "").strip()
+            system_sku = str(payload.get("system_sku") or payload.get("system_id") or payload.get("sku") or "").strip()
             missing_hwids = payload.get("missing_hwids")
             if isinstance(missing_hwids, str):
                 missing_hwids = [missing_hwids]
@@ -1873,11 +2018,36 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             metadata_only = bool(payload.get("metadata_only", False))
 
             pool_mgr = self._get_driver_pool_mgr()
+
+            # Rani P2 OEM Prefetch: kad su zadati manufacturer i model (i opcionalno system_sku),
+            # a u model manifestu još nema oem_pack izvora, pokreni deduplikovani background ingest.
+            if mfg_val and model_val:
+                try:
+                    from servishub.drivers.oem.catalogs import detect_oem_vendor
+                    from servishub.drivers.pool import is_generic_model_pack_name, sanitize_model_pack_name
+                    oem_vendor = detect_oem_vendor(mfg_val, model_val)
+                    if oem_vendor and not is_generic_model_pack_name(model_val) and not pool_mgr.has_oem_pack_in_manifest(model_val):
+                        try:
+                            clean_m = sanitize_model_pack_name(model_val).lower()
+                        except ValueError:
+                            clean_m = model_val.lower()
+                        pool_mgr.start_dedup_background_job(
+                            "ingest_oem",
+                            f"oem:{oem_vendor}:{clean_m}",
+                            pool_mgr.ingest_oem_pack,
+                            mfg_val,
+                            model_val,
+                            system_sku=system_sku,
+                        )
+                except Exception:
+                    pass
+
             try:
                 bundle = pool_mgr.build_bundle_tar(
                     model=model_val,
                     missing_hwids=missing_hwids,
                     all_hwids=all_hwids,
+                    allow_stream_plan=True,
                 )
             except Exception as ex:
                 self._send_json({"error": f"Greška pri sklapanju Driver Pool paketa: {ex}"}, 500)
@@ -1886,11 +2056,36 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             if metadata_only:
                 out_meta = dict(bundle)
                 out_meta.pop("bundle_path", None)
+                out_meta.pop("package_entries", None)
                 self._send_json(out_meta, 200)
                 return
 
+            if bundle.get("available") and bundle.get("stream_only"):
+                try:
+                    extra = {
+                        "X-Model-Name": bundle.get("model") or model_val or "pool",
+                        "X-Driver-Pool-Count": str(bundle.get("package_count") or 0),
+                        "X-Driver-Pool-Sources": ",".join(bundle.get("sources") or []),
+                        "X-Driver-Pool-Cache-Hit": "false",
+                        "X-Driver-Pool-Stream": "true",
+                    }
+                    self._stream_packages_tar(
+                        bundle.get("package_entries") or [],
+                        bundle.get("bundle_filename") or "driver_pool_bundle.tar",
+                        extra_headers=extra,
+                    )
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                except Exception as e:
+                    print(f"[ERROR] Greška pri on-the-fly strimovanju Driver Pool bundle-a: {e}", file=sys.stderr)
+                return
+
             if not bundle.get("available") or not bundle.get("bundle_path") or not os.path.isfile(bundle["bundle_path"]):
-                oem_entry = pool_mgr.catalog_mgr.find_driver_pack(manufacturer=mfg_val, model=model_val)
+                oem_entry = pool_mgr.catalog_mgr.find_driver_pack(
+                    manufacturer=mfg_val,
+                    model=model_val,
+                    system_sku=system_sku,
+                )
                 self._send_json({
                     "status": "not_found",
                     "available": False,
@@ -2147,7 +2342,9 @@ class ServisHubHandler(BaseHTTPRequestHandler):
             device_name = payload.get("device_name", "UnknownDevice")
             manufacturer = str(payload.get("manufacturer") or "").strip()
             model = str(payload.get("model") or "").strip()
+            system_sku = str(payload.get("system_sku") or payload.get("system_id") or payload.get("sku") or "").strip()
             serial_number = str(payload.get("serial_number") or payload.get("serial") or "").strip()
+            include_warranty = bool(payload.get("include_warranty", False))
             async_download = bool(payload.get("async_download", False))
             inline_wait_raw = payload.get("inline_wait_sec")
             inline_wait_sec = None
@@ -2169,16 +2366,17 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 try:
                     provider = get_oem_provider(manufacturer)
                     if provider:
-                        try:
-                            warranty_info = provider.get_warranty_info(serial_number, model)
-                        except Exception as e:
-                            print(f"[!] [OEM] Greška pri dohvatanju garancije: {e}", file=sys.stderr)
-                            warranty_info = {
-                                "status": "fallback",
-                                "in_warranty": False,
-                                "status_label": "Nepoznato (Greška)",
-                                "error": str(e),
-                            }
+                        if include_warranty:
+                            try:
+                                warranty_info = provider.get_warranty_info(serial_number, model)
+                            except Exception as e:
+                                print(f"[!] [OEM] Greška pri dohvatanju garancije: {e}", file=sys.stderr)
+                                warranty_info = {
+                                    "status": "fallback",
+                                    "in_warranty": False,
+                                    "status_label": "Nepoznato (Greška)",
+                                    "error": str(e),
+                                }
 
                         try:
                             oem_info = provider.resolve_driver_pack(model)
@@ -2200,20 +2398,24 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     if not isinstance(dev, dict):
                         continue
                     d_name = str(dev.get("device_name") or f"Device-{idx + 1}")
+                    d_mfg = str(dev.get("manufacturer") or manufacturer).strip()
+                    d_mod = str(dev.get("model") or model).strip()
+                    d_sku = str(dev.get("system_sku") or dev.get("system_id") or dev.get("sku") or system_sku).strip()
                     d_hwids = dev.get("hwids", [])
                     if isinstance(d_hwids, str):
                         d_hwids = [d_hwids]
                     elif not isinstance(d_hwids, list):
                         d_hwids = []
-                    normalized_devices.append((d_name, d_hwids))
+                    normalized_devices.append((d_name, d_hwids, d_mfg, d_mod, d_sku))
 
                 def _resolve_dev_task(item):
-                    d_name, d_hwids = item
+                    d_name, d_hwids, d_mfg, d_mod, d_sku = item
                     d_res = self._resolve_single_device_hwids(
                         d_hwids,
                         device_name=d_name,
-                        manufacturer=manufacturer,
-                        model=model,
+                        manufacturer=d_mfg,
+                        model=d_mod,
+                        system_sku=d_sku,
                         async_download=async_download,
                         inline_wait_sec=inline_wait_sec,
                     )
@@ -2239,6 +2441,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     device_name=device_name,
                     manufacturer=manufacturer,
                     model=model,
+                    system_sku=system_sku,
                     async_download=async_download,
                     inline_wait_sec=inline_wait_sec,
                 )
@@ -2486,8 +2689,43 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 dev_id = payload.get("device_id") or url_dev_id
                 clean_id = sanitize_id(dev_id)
                 comp_name = payload.get("computer_name") or dev_id
+                prev_host = str(payload.get("previous_hostname") or "").strip() or None
                 if self.fleet_store and hasattr(self.fleet_store, "enrich_report_payload"):
                     payload = self.fleet_store.enrich_report_payload(clean_id, payload, comp_name=comp_name)
+
+                # IMP-94b: Parcijalni HwTest payload iz Faze 5 ne sme kreirati ili pregaziti završni karton
+                if is_partial_hwtest_payload(payload):
+                    serial_raw = payload.get("serial_number") or (payload.get("hw") or {}).get("serial")
+                    serial_num = str(serial_raw).strip() if not is_placeholder_hw_value(serial_raw) else ""
+                    with self.fleet_store.fleet_lock:
+                        target_key = clean_id
+                        if hasattr(self.fleet_store, "_resolve_device_key_locked"):
+                            resolved_k = self.fleet_store._resolve_device_key_locked(
+                                dev_id,
+                                canonical_sn=serial_num.upper() if serial_num else "",
+                                previous_hostname=prev_host,
+                            )
+                            if resolved_k:
+                                target_key = resolved_k
+                        rec = self.fleet_store.fleet_devices.setdefault(target_key, {"computer_name": comp_name})
+                        if isinstance(payload.get("hwtest"), dict):
+                            rec["hwtest"] = dict(payload["hwtest"])
+                        if isinstance(payload.get("hw"), dict):
+                            rec["hw"] = merge_hw_dicts(rec.get("hw") if isinstance(rec.get("hw"), dict) else {}, payload["hw"])
+                        if "manual_driver_bypass" in payload:
+                            rec["manual_driver_bypass"] = bool(payload.get("manual_driver_bypass"))
+                        if payload.get("driver_gate_emergency_override_reason"):
+                            rec["driver_gate_emergency_override_reason"] = str(payload["driver_gate_emergency_override_reason"])
+                        rec["last_seen"] = time.time()
+                    self._send_json({
+                        "status": "ok",
+                        "partial": True,
+                        "report_saved": False,
+                        "message": "Parcijalni HwTest payload zabeležen u memoriji (završni karton nije kreiran/pregažen).",
+                        "device_id": dev_id,
+                    }, 200)
+                    return
+
                 chassis_raw = payload.get("chassis")
                 chassis = str(chassis_raw).strip() if not is_placeholder_hw_value(chassis_raw) else "Desktop"
                 serial_raw = payload.get("serial_number") or (payload.get("hw") or {}).get("serial")
@@ -2549,26 +2787,32 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                     target_key = clean_id
                     if hasattr(self.fleet_store, "_resolve_device_key_locked"):
                         canon_sn_val = serial_num if not is_placeholder_hw_value(serial_num) else ""
-                        resolved_k = self.fleet_store._resolve_device_key_locked(dev_id, canonical_sn=canon_sn_val.upper() if canon_sn_val else "")
+                        resolved_k = self.fleet_store._resolve_device_key_locked(
+                            dev_id,
+                            canonical_sn=canon_sn_val.upper() if canon_sn_val else "",
+                            previous_hostname=prev_host,
+                        )
                         if resolved_k:
                             target_key = resolved_k
                         if comp_name and hasattr(self.fleet_store, "_alias_index"):
                             self.fleet_store._alias_index[sanitize_id(comp_name).upper()] = target_key
                     if target_key not in self.fleet_store.fleet_devices:
                         self.fleet_store.fleet_devices[target_key] = {"computer_name": comp_name}
-                    existing_hw = self.fleet_store.fleet_devices[target_key].get("hw")
+                    existing_rec = self.fleet_store.fleet_devices[target_key]
+                    existing_hw = existing_rec.get("hw")
                     merged_hw = merge_hw_dicts(
                         existing_hw if isinstance(existing_hw, dict) else {},
                         payload.get("hw") if isinstance(payload.get("hw"), dict) else {},
                     )
-                    self.fleet_store.fleet_devices[target_key].update({
+                    merged_apps = merge_app_statuses(existing_rec.get("apps"), apps)
+                    existing_rec.update({
                         "computer_name": comp_name,
                         "status_label": "Zavrseno" if status.upper() in ("COMPLETED", "SUCCESS", "OK") else ("Upozorenje" if errors else status),
                         "phase": 6,
                         "worker_progress": 100,
                         "duration_seconds": dur_sec,
                         "duration_formatted": dur_fmt,
-                        "apps": apps,
+                        "apps": merged_apps,
                         "errors": errors,
                         "serial_number": serial_num,
                         "chassis": chassis,
@@ -2579,17 +2823,20 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                         "_last_report_saved_ts": time.time(),
                         "last_seen": time.time(),
                     })
+                    if prev_host:
+                        existing_rec["previous_hostname"] = prev_host
                     if merged_hw:
-                        self.fleet_store.fleet_devices[target_key]["hw"] = merged_hw
+                        existing_rec["hw"] = merged_hw
                     if payload.get("install_session_id"):
-                        self.fleet_store.fleet_devices[target_key]["install_session_id"] = str(payload["install_session_id"]).strip()
-                    self.fleet_store.fleet_devices[target_key].update(diagnostics_contract(payload))
+                        existing_rec["install_session_id"] = str(payload["install_session_id"]).strip()
+                    existing_rec.update(diagnostics_contract(payload))
                     if hasattr(self.fleet_store, "cleanup_duplicate_devices_locked"):
                         self.fleet_store.cleanup_duplicate_devices_locked(
                             target_key,
                             comp_name=comp_name,
                             serial_num=serial_num,
                             client_ip=self.client_address[0],
+                            previous_hostname=prev_host,
                         )
 
                 print(f"[*] [REPORT] Zaprimljen završni izveštaj za {comp_name} ({clean_id}) -> {json_fn}, {md_fn}")
@@ -2816,6 +3063,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
 
         if path == "/api/log":
             comp_name = payload.get("computer_name") or "UNKNOWN-PC"
+            prev_host = str(payload.get("previous_hostname") or "").strip() or None
             serial_num = (
                 payload.get("serial_number")
                 or payload.get("serial")
@@ -2831,6 +3079,7 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 lines,
                 serial_number=serial_num,
                 install_session_id=install_sid,
+                previous_hostname=prev_host,
             )
             self._send_json({"status": "ok", "appended": appended})
             return
@@ -2844,7 +3093,8 @@ class ServisHubHandler(BaseHTTPRequestHandler):
                 return
             elif event == "COMPLETED":
                 dev_id = self.fleet_store.record_lifecycle_complete(payload, client_ip)
-                self._send_json({"status": "ok", "event": "COMPLETED", "device_id": dev_id, "report_saved": True})
+                is_partial = is_partial_hwtest_payload(payload)
+                self._send_json({"status": "ok", "event": "COMPLETED", "device_id": dev_id, "report_saved": not is_partial})
                 return
             else:
                 self._send_json({"error": f"Nepoznat event: {event}"}, 400)

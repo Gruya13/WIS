@@ -46,9 +46,11 @@ DEFAULT_UPDATES_DIR = os.environ.get(
     os.environ.get("SERVIS_HUB_UPDATES_DIR", os.path.join(STORAGE_DIR, "updates", "Win11"))
 )
 
-# IMP-63 & IMP-68: LRU kvote za Driver Pool bundles, drivers_cache i disk guard za ms_catalog
-DEFAULT_MAX_BUNDLES_GB = float(os.environ.get("SERVIS_POOL_MAX_BUNDLES_GB", "12.0"))
+# IMP-63 & IMP-68 & v3.5.4: LRU kvote za Driver Pool bundles, drivers_cache i disk guard za ms_catalog
+DEFAULT_MAX_BUNDLES_GB = float(os.environ.get("SERVIS_POOL_MAX_BUNDLES_GB", "16.0"))
 DEFAULT_BUNDLE_TTL_HOURS = float(os.environ.get("SERVIS_POOL_BUNDLE_TTL_HOURS", "24.0"))
+DEFAULT_BUNDLE_CACHE_MIN_HITS = int(os.environ.get("SERVIS_POOL_BUNDLE_MIN_HITS", "2"))
+DEFAULT_BUNDLE_CACHE_MAX_GB = float(os.environ.get("SERVIS_POOL_BUNDLE_MAX_GB", "4.0"))
 DEFAULT_MAX_DRIVERS_CACHE_GB = float(os.environ.get("SERVIS_MAX_DRIVERS_CACHE_GB", "25.0"))
 DEFAULT_MS_CATALOG_MIN_FREE_GB = float(os.environ.get("SERVIS_MS_CATALOG_MIN_FREE_GB", "20.0"))
 DEFAULT_OEM_CATALOG_STALE_HOURS = float(os.environ.get("SERVIS_OEM_CATALOG_STALE_HOURS", "72.0"))

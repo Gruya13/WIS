@@ -70,6 +70,14 @@ $hwMod = @(
 
 if ($hwMod) { Import-Module $hwMod -Force -ErrorAction SilentlyContinue }
 
+$appsMod = @(
+    (Join-Path $PSScriptRoot "..\Modules\WIS.Apps.psm1"),
+    (Join-Path $LocalSetupDir "Skripte\Modules\WIS.Apps.psm1"),
+    "C:\setup\Skripte\Modules\WIS.Apps.psm1"
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if ($appsMod) { Import-Module $appsMod -Force -DisableNameChecking -ErrorAction SilentlyContinue }
+
 
 # 2. Verifikacija administratorskih privilegija
 try {
@@ -188,10 +196,19 @@ try {
         } else {
             @{ Ready = $false; Reason = "Test-WisDeviceManagerReadyForHarvest nedostupan" }
         }
-        if ($harvestReadyP6.Ready -and (Get-Command Export-ServisHardwareDrivers -ErrorAction SilentlyContinue)) {
-            Export-ServisHardwareDrivers
-            foreach ($dfFlag in @((Join-Path $LocalSetupDir "driver-harvest-deferred.flag"), "C:\setup\driver-harvest-deferred.flag")) {
-                if (Test-Path $dfFlag) { Remove-Item -Path $dfFlag -Force -ErrorAction SilentlyContinue }
+        if ($harvestReadyP6.Ready) {
+            $harvestDoneP6 = $false
+            if (Get-Command Invoke-DeltaDriverHarvest -ErrorAction SilentlyContinue) {
+                $harvestDoneP6 = [bool](Invoke-DeltaDriverHarvest -LocalSetupDir $LocalSetupDir)
+            }
+            if ((-not $harvestDoneP6) -and (Get-Command Export-ServisHardwareDrivers -ErrorAction SilentlyContinue)) {
+                Export-ServisHardwareDrivers
+                $harvestDoneP6 = $true
+            }
+            if ($harvestDoneP6) {
+                foreach ($dfFlag in @((Join-Path $LocalSetupDir "driver-harvest-deferred.flag"), "C:\setup\driver-harvest-deferred.flag")) {
+                    if (Test-Path $dfFlag) { Remove-Item -Path $dfFlag -Force -ErrorAction SilentlyContinue }
+                }
             }
         } elseif (-not $harvestReadyP6.Ready -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
             Write-ServisLog "Faza 6: Preskacem berbu <Model>.tar jer Device Manager i dalje nije cist ($($harvestReadyP6.Reason))." -Level "WARN" -Component "Phase6"
@@ -505,11 +522,31 @@ try {
                     }
                 } catch {}
             }
+            $comp = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
             if (-not $kMap.Contains("device_id")) {
-                $comp = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
-                $kMap["device_id"] = "TK-$comp"
+                $kMap["device_id"] = if ($Global:FleetDeviceId) {
+                    $Global:FleetDeviceId
+                } elseif (Get-Command Get-FleetDeviceId -ErrorAction SilentlyContinue) {
+                    try { Get-FleetDeviceId } catch { "TK-DESKTOP-$comp" }
+                } else {
+                    "TK-DESKTOP-$comp"
+                }
                 $kMap["hostname"]  = $comp
                 $kMap["timestamp"] = (Get-Date -Format "o")
+            }
+            if (-not $kMap.Contains("serial_number") -or [string]::IsNullOrWhiteSpace([string]$kMap["serial_number"])) {
+                if ($Global:FleetSerialNumber) {
+                    $kMap["serial_number"] = $Global:FleetSerialNumber
+                } elseif (Get-Command Get-FleetHardwareInfo -ErrorAction SilentlyContinue) {
+                    try { $kMap["serial_number"] = (Get-FleetHardwareInfo).SerialNumber } catch {}
+                }
+            }
+            if (-not $kMap.Contains("previous_hostname") -or [string]::IsNullOrWhiteSpace([string]$kMap["previous_hostname"])) {
+                $kMap["previous_hostname"] = if (Get-Command Get-WisPreviousHostname -ErrorAction SilentlyContinue) {
+                    Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+                } else {
+                    $comp
+                }
             }
             $kMap["status"]              = $FinalStatus
             $kMap["deployment_status"]   = $FinalStatus

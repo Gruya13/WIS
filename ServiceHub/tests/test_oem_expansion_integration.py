@@ -624,6 +624,7 @@ class TestOEMRestApiIntegration(unittest.TestCase):
             "manufacturer": "Dell Inc.",
             "model": "Latitude 5420",
             "serial_number": "DL54201",
+            "include_warranty": True,
             "hwids": ["PCI\\VEN_8086&DEV_0A30"],
         }
         status, data = self._request("POST", "/api/drivers/resolve", payload)
@@ -647,6 +648,7 @@ class TestOEMRestApiIntegration(unittest.TestCase):
             "manufacturer": "DELL",
             "model": "Dell OptiPlex 7080",
             "serial": "J3K9L22",
+            "include_warranty": True,
         }
         status, data = self._request("POST", "/api/drivers/resolve", payload)
         self.assertEqual(status, 200)
@@ -667,6 +669,7 @@ class TestOEMRestApiIntegration(unittest.TestCase):
             "manufacturer": "Hewlett-Packard",
             "model": "HP EliteBook 840 G7 Notebook PC",
             "serial_number": "5CG1234567",
+            "include_warranty": True,
         }
         status, data = self._request("POST", "/api/drivers/resolve", payload)
         self.assertEqual(status, 200)
