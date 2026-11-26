@@ -23,6 +23,7 @@ Ključne mogućnosti:
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -32,6 +33,7 @@ import hashlib
 import argparse
 import tempfile
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Tuple, List
 
@@ -83,6 +85,7 @@ INCLUDED_ROOT_ITEMS = [
     "load_vmd.cmd",
     "WIS-AcceleratePE.cmd",
     "WIS-ConnectNAS.cmd",
+    "WIS_IMAGE_PROFILE.tag",
     "Programi.tar",
 ]
 
@@ -107,6 +110,120 @@ EXCLUDED_NAMES = {
     "support",
     "boot.wim.bak",
 }
+
+
+def sanitize_profile_tag_value(value: Optional[str], default: str = "unknown") -> str:
+    """
+    Sanitizuje vrednosti za WIS_IMAGE_PROFILE.tag kako bi bile 100% bezbedne za WinPE cmd.exe
+    (dozvoljeni samo alfanumerički znaci, tačka, crtica i donja crta; zabranjeni & | < > ^ % ! " CR LF).
+    """
+    if not value:
+        return default
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "", str(value).strip())
+    return cleaned[:96] if cleaned else default
+
+
+def format_image_profile_tag(profile_data: Dict[str, Any]) -> str:
+    """Generiše tekstualni sadržaj za \\WIS_IMAGE_PROFILE.tag čitljiv u WinPE cmd.exe (CRLF)."""
+    img_type = sanitize_profile_tag_value(profile_data.get("image_type"), default="lean")
+    wim_ver = sanitize_profile_tag_value(profile_data.get("wim_version"), default="unknown")
+    lines = [
+        f"IMAGE_TYPE={img_type}",
+        f"WIM_VERSION={wim_ver}",
+        f"PROFILE_SIGNATURE={img_type}|{wim_ver}",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+def detect_wim_image_profile(
+    project_root: Path,
+    selected_image: str = "install.wim",
+    iso_profile: str = "lean",
+    image_type_override: str = "auto",
+    wim_version_override: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Određuje metapodatke profila slike (image_type, wim_version, preinstalled_apps)
+    za \\sources\\wis-image-profile.json i \\WIS_IMAGE_PROFILE.tag (IMP-112).
+    """
+    detected: Dict[str, Any] = {}
+
+    # 1. Provera postojećih lokalnih profile markera na disku
+    json_candidates = [
+        project_root / "sources" / "wis-image-profile.json",
+        project_root / "sources" / "$OEM$" / "$$" / "Logs" / "WIS" / "image-profile.json",
+        project_root / "image-profile.json",
+    ]
+    for cand in json_candidates:
+        if cand.is_file():
+            try:
+                loaded = json.loads(cand.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    detected = loaded
+                    break
+            except Exception:
+                pass
+
+    # 2. Ako profil nije pronađen na disku, proveri ugrađeni /Windows/Logs/WIS/image-profile.json unutar realne WIM/ESD slike
+    if not detected:
+        img_path = project_root / "sources" / selected_image
+        if img_path.is_file():
+            try:
+                with open(img_path, "rb") as f:
+                    magic = f.read(8)
+                if magic in (b"MSWIM\x00\x00\x00", b"WLPWM\x00\x00\x00"):
+                    wim_tool = shutil.which("wimlib-imagex")
+                    if wim_tool:
+                        ext = subprocess.run(
+                            [wim_tool, "extract", str(img_path), "1", "/Windows/Logs/WIS/image-profile.json", "--to-stdout"],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=5,
+                            check=False,
+                        )
+                        if ext.returncode == 0 and ext.stdout:
+                            loaded = json.loads(ext.stdout.decode("utf-8", errors="replace"))
+                            if isinstance(loaded, dict):
+                                detected = loaded
+            except Exception:
+                pass
+
+    target_build = read_target_build(project_root)
+    override_norm = (image_type_override or "auto").strip().lower()
+    if override_norm != "auto":
+        raw_image_type = override_norm
+    elif detected.get("image_type"):
+        raw_image_type = str(detected.get("image_type")).strip().lower()
+    else:
+        raw_image_type = (iso_profile or "lean").strip().lower()
+
+    image_type = sanitize_profile_tag_value(raw_image_type, default="lean")
+
+    if wim_version_override:
+        raw_wim_ver = wim_version_override
+    elif detected.get("wim_version"):
+        raw_wim_ver = str(detected.get("wim_version"))
+    else:
+        raw_wim_ver = f"{target_build}-{image_type}"
+
+    wim_version = sanitize_profile_tag_value(raw_wim_ver, default=f"{target_build}-{image_type}")
+
+    preinstalled_apps = detected.get("preinstalled_apps")
+    if not isinstance(preinstalled_apps, list):
+        preinstalled_apps = []
+
+    built_at = detected.get("built_at")
+    if not isinstance(built_at, str) or not built_at.strip():
+        built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    return {
+        "image_type": image_type,
+        "wim_version": wim_version,
+        "iso_profile": (iso_profile or "lean").strip().lower(),
+        "selected_image": selected_image,
+        "preinstalled_apps": [str(a) for a in preinstalled_apps],
+        "built_at": built_at,
+    }
 
 
 def read_target_build(project_root: Path) -> str:
@@ -420,6 +537,8 @@ class IsoBuilder:
         engine: str = "auto",
         staging_dir: Optional[Path] = None,
         skip_media_verify: bool = False,
+        image_type: str = "auto",
+        wim_version: Optional[str] = None,
         **kwargs
     ):
         self.project_root = Path(project_root or PROJECT_ROOT).resolve()
@@ -429,6 +548,10 @@ class IsoBuilder:
         self.image_format = (image_format or "auto").strip().lower()
         if self.image_format not in ["auto", "esd", "wim"]:
             raise ValueError(f"Nepodržan format slike '{image_format}'. Dozvoljeni formati su 'auto', 'esd' i 'wim'.")
+        self.image_type_override = (image_type or "auto").strip().lower()
+        if self.image_type_override not in ["auto", "lean", "preinstalled", "full"]:
+            raise ValueError(f"Nepodržan tip slike '{image_type}'. Dozvoljeni su 'auto', 'lean', 'preinstalled' i 'full'.")
+        self.wim_version_override = wim_version
         self.no_prompt = no_prompt
         self.force = force
         self.dry_run = dry_run
@@ -480,6 +603,51 @@ class IsoBuilder:
             raise ValueError(
                 f"Nepodržan format slike: '{self.image_format}'. Dozvoljeni su: 'auto', 'esd', 'wim'."
             )
+
+    def resolve_image_profile(self, selected_image: Optional[str] = None) -> Dict[str, Any]:
+        """Određuje i sanitizuje profil slike za \\sources\\wis-image-profile.json i \\WIS_IMAGE_PROFILE.tag."""
+        img_name = selected_image or self.resolve_image_file()
+        return detect_wim_image_profile(
+            project_root=self.project_root,
+            selected_image=img_name,
+            iso_profile=self.profile,
+            image_type_override=self.image_type_override,
+            wim_version_override=self.wim_version_override,
+        )
+
+    def write_image_profile_markers(
+        self,
+        staging_dir: Path,
+        selected_image: str,
+        log_cb: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Upisuje marker profila slike u koren ISO staging stabla:
+        - \\sources\\wis-image-profile.json
+        - \\WIS_IMAGE_PROFILE.tag (čitljiv u WinPE cmd.exe)
+        """
+        profile_data = self.resolve_image_profile(selected_image=selected_image)
+        sources_dir = staging_dir / "sources"
+        sources_dir.mkdir(parents=True, exist_ok=True)
+
+        json_dst = sources_dir / "wis-image-profile.json"
+        tag_dst = staging_dir / "WIS_IMAGE_PROFILE.tag"
+
+        # Ukloni eventualni prethodni hard-link iz sources/ pre upisa svežeg markera (da ne menjamo izvorni fajl!)
+        if json_dst.exists():
+            json_dst.unlink()
+        if tag_dst.exists():
+            tag_dst.unlink()
+
+        json_dst.write_text(json.dumps(profile_data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tag_dst.write_bytes(format_image_profile_tag(profile_data).encode("ascii"))
+
+        if log_cb:
+            log_cb(
+                f"  [+] IMP-112 marker profila upisan: image_type={profile_data['image_type']}, "
+                f"wim_version={profile_data['wim_version']} (\\sources\\wis-image-profile.json & \\WIS_IMAGE_PROFILE.tag)"
+            )
+        return profile_data
 
     def _determine_staging_base(self) -> Path:
         """
@@ -668,6 +836,9 @@ class IsoBuilder:
                             shutil.copy2(src_file, dst_file)
                             stats["copied"] += 1
 
+        # IMP-112: Upis svežeg markera profila slike u koren ISO medijuma (\sources\wis-image-profile.json i \WIS_IMAGE_PROFILE.tag)
+        self.write_image_profile_markers(staging_dir, selected_image=selected_image, log_cb=_log)
+
         _log(f"Staging stablo završeno: {stats['linked']} hard linkova, {stats['copied']} kopiranih, {stats['skipped']} preskočenih.")
         return stats
 
@@ -732,7 +903,9 @@ class IsoBuilder:
             raise RuntimeError(err_msg)
 
         selected_image = self.resolve_image_file()
+        image_profile_meta = self.resolve_image_profile(selected_image=selected_image)
         _log(f"ℹ️  Aktivna slika sistema:  sources/{selected_image}")
+        _log(f"🏷️  Profil slike (IMP-112): image_type={image_profile_meta['image_type']}, wim_version={image_profile_meta['wim_version']}")
 
         # 2. Provera slobodnog prostora
         _update("Provera slobodnog prostora na disku", 10)
@@ -864,6 +1037,8 @@ class IsoBuilder:
                 "profile": self.profile,
                 "image_format": self.image_format,
                 "selected_image": selected_image,
+                "image_type": image_profile_meta["image_type"],
+                "wim_version": image_profile_meta["wim_version"],
                 "output_path": str(self.output_path),
                 "engine": engine_type,
                 "command": " ".join(cmd),
@@ -958,6 +1133,8 @@ class IsoBuilder:
                 "profile": self.profile,
                 "image_format": self.image_format,
                 "selected_image": selected_image,
+                "image_type": image_profile_meta["image_type"],
+                "wim_version": image_profile_meta["wim_version"],
                 "output_path": str(self.output_path),
                 "iso_size_bytes": iso_size_bytes,
                 "iso_size_gb": round(iso_size_gb, 2),
@@ -1059,6 +1236,20 @@ Primeri korišćenja:
     )
 
     parser.add_argument(
+        "--image-type",
+        choices=["auto", "lean", "preinstalled", "full"],
+        default="auto",
+        help="IMP-112 tip slike za \\sources\\wis-image-profile.json i \\WIS_IMAGE_PROFILE.tag ('auto' detektuje iz WIM-a ili profila, ili eksplicitno 'preinstalled'/'lean'/'full')"
+    )
+
+    parser.add_argument(
+        "--wim-version",
+        type=str,
+        default=None,
+        help="IMP-112 eksplicitna verzija WIM slike za \\WIS_IMAGE_PROFILE.tag (npr. '26200.8037-heavy-v1')"
+    )
+
+    parser.add_argument(
         "--skip-media-verify",
         action="store_true",
         help="Preskače proveru .wis-media-attestation.json za lokalne i direktne radioničke build-ove"
@@ -1088,7 +1279,9 @@ def main():
         preview=args.preview,
         engine=args.engine,
         staging_dir=args.staging_dir,
-        skip_media_verify=args.skip_media_verify
+        skip_media_verify=args.skip_media_verify,
+        image_type=args.image_type,
+        wim_version=args.wim_version
     )
 
     try:

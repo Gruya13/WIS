@@ -59,13 +59,21 @@ namespace WIS.AutopilotAuditor
         public string TenantDomain { get; set; }
         public string AssignedDeviceName { get; set; }
         public bool PolicyCacheFound { get; set; }
+        public int PolicyCacheEntriesCount { get; set; }
         public bool EstablishedCorr { get; set; }
+        public int EstablishedCorrelationsCount { get; set; }
+        public bool AutopilotSettingsFound { get; set; }
+        public bool EnterpriseAssignedAccessFound { get; set; }
+        public bool EnrollmentStatusTrackingFound { get; set; }
+        public bool WaadDeviceNameMatched { get; set; }
+        public string MatchedWaadName { get; set; }
         public bool AzureAdJoined { get; set; }
         public bool MdmEnrolled { get; set; }
         public string AzureAdStatus { get; set; }
         public string MdmStatus { get; set; }
         public List<string> MdmEnrollmentUrls { get; set; }
         public List<string> OrgCertificates { get; set; }
+        public List<string> EvidenceDetails { get; set; }
         public string CloudDomainJoinTenant { get; set; }
         public string CloudDomainJoinUser { get; set; }
 
@@ -76,13 +84,21 @@ namespace WIS.AutopilotAuditor
             TenantDomain = "";
             AssignedDeviceName = "";
             PolicyCacheFound = false;
+            PolicyCacheEntriesCount = 0;
             EstablishedCorr = false;
+            EstablishedCorrelationsCount = 0;
+            AutopilotSettingsFound = false;
+            EnterpriseAssignedAccessFound = false;
+            EnrollmentStatusTrackingFound = false;
+            WaadDeviceNameMatched = false;
+            MatchedWaadName = "";
             AzureAdJoined = false;
             MdmEnrolled = false;
             AzureAdStatus = "Nije pridružen (NO)";
             MdmStatus = "Nije upisan (NO)";
             MdmEnrollmentUrls = new List<string>();
             OrgCertificates = new List<string>();
+            EvidenceDetails = new List<string>();
             CloudDomainJoinTenant = "";
             CloudDomainJoinUser = "";
         }
@@ -91,6 +107,7 @@ namespace WIS.AutopilotAuditor
     public class CloudZtdDetails
     {
         public bool OnlineChecked { get; set; }
+        public bool NetworkReachable { get; set; }
         public bool IsRegistered { get; set; }
         public bool ConfirmedFree { get; set; }
         public string QueryMode { get; set; }
@@ -99,11 +116,13 @@ namespace WIS.AutopilotAuditor
         public string ProfileTenantId { get; set; }
         public string ProfileTenantDomain { get; set; }
         public string ProfileDeviceName { get; set; }
+        public string ZtdRegistrationState { get; set; }
         public string GdsServerUrl { get; set; }
 
         public CloudZtdDetails()
         {
             OnlineChecked = false;
+            NetworkReachable = false;
             IsRegistered = false;
             ConfirmedFree = false;
             QueryMode = "NONE";
@@ -112,6 +131,7 @@ namespace WIS.AutopilotAuditor
             ProfileTenantId = "";
             ProfileTenantDomain = "";
             ProfileDeviceName = "";
+            ZtdRegistrationState = "";
             GdsServerUrl = "";
         }
     }
@@ -123,12 +143,15 @@ namespace WIS.AutopilotAuditor
         public string MatrixCodeString { get { return MatrixCode.ToString(); } }
         public StatusSeverity StatusLevel { get; set; }
         public string StatusLevelString { get { return StatusLevel.ToString(); } }
+        public string BinaryVerdict { get; set; }
         public string StatusTitle { get; set; }
         public string StatusDescription { get; set; }
         public string RecommendedAction { get; set; }
         public bool IsLocked { get; set; }
+        public bool ConfirmedFree { get; set; }
         public string TenantDomain { get; set; }
         public string TenantId { get; set; }
+        public string AssignedDeviceName { get; set; }
         public HardwareDetails Hardware { get; set; }
         public LocalForensicsDetails LocalForensics { get; set; }
         public CloudZtdDetails CloudZtd { get; set; }
@@ -137,13 +160,16 @@ namespace WIS.AutopilotAuditor
         {
             Timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
             MatrixCode = MatrixStatus.UNKNOWN;
-            StatusLevel = StatusSeverity.INFO;
-            StatusTitle = "NEPOZNATO STANJE";
+            StatusLevel = StatusSeverity.WARNING;
+            BinaryVerdict = "NIJE_PROVERENO";
+            StatusTitle = "⚠️ NIJE PROVERENO";
             StatusDescription = "Analiza nije pokrenuta.";
-            RecommendedAction = "Pokrenite proveru radi dobijanja rezultata.";
+            RecommendedAction = "Pokrenite proveru sa aktivnom mrežom radi dobijanja rezultata.";
             IsLocked = false;
+            ConfirmedFree = false;
             TenantDomain = "";
             TenantId = "";
+            AssignedDeviceName = "";
             Hardware = new HardwareDetails();
             LocalForensics = new LocalForensicsDetails();
             CloudZtd = new CloudZtdDetails();
@@ -156,12 +182,18 @@ namespace WIS.AutopilotAuditor
             sb.AppendFormat("  \"timestamp\": \"{0}\",\n", EscapeJson(Timestamp));
             sb.AppendFormat("  \"matrix_code\": \"{0}\",\n", MatrixCodeString);
             sb.AppendFormat("  \"status_level\": \"{0}\",\n", StatusLevelString);
+            sb.AppendFormat("  \"binary_verdict\": \"{0}\",\n", EscapeJson(BinaryVerdict));
             sb.AppendFormat("  \"status_title\": \"{0}\",\n", EscapeJson(StatusTitle));
             sb.AppendFormat("  \"status_description\": \"{0}\",\n", EscapeJson(StatusDescription));
             sb.AppendFormat("  \"recommended_action\": \"{0}\",\n", EscapeJson(RecommendedAction));
             sb.AppendFormat("  \"is_locked\": {0},\n", IsLocked ? "true" : "false");
+            sb.AppendFormat("  \"confirmed_free\": {0},\n", ConfirmedFree ? "true" : "false");
+            sb.AppendFormat("  \"has_local_traces\": {0},\n", LocalForensics.HasTraces ? "true" : "false");
             sb.AppendFormat("  \"tenant_domain\": \"{0}\",\n", EscapeJson(TenantDomain));
             sb.AppendFormat("  \"tenant_id\": \"{0}\",\n", EscapeJson(TenantId));
+            sb.AppendFormat("  \"assigned_device_name\": \"{0}\",\n", EscapeJson(AssignedDeviceName));
+            sb.AppendFormat("  \"query_mode\": \"{0}\",\n", EscapeJson(CloudZtd.QueryMode));
+            sb.AppendFormat("  \"source\": \"autopilot_auditor\",\n");
             sb.AppendFormat("  \"device_serial\": \"{0}\",\n", EscapeJson(Hardware.SerialNumber));
             sb.AppendFormat("  \"device_model\": \"{0}\",\n", EscapeJson(Hardware.Model));
 
@@ -184,7 +216,14 @@ namespace WIS.AutopilotAuditor
             sb.AppendFormat("    \"tenant_id\": \"{0}\",\n", EscapeJson(LocalForensics.TenantId));
             sb.AppendFormat("    \"assigned_device_name\": \"{0}\",\n", EscapeJson(LocalForensics.AssignedDeviceName));
             sb.AppendFormat("    \"policy_cache_found\": {0},\n", LocalForensics.PolicyCacheFound ? "true" : "false");
+            sb.AppendFormat("    \"policy_cache_entries_count\": {0},\n", LocalForensics.PolicyCacheEntriesCount);
             sb.AppendFormat("    \"established_corr\": {0},\n", LocalForensics.EstablishedCorr ? "true" : "false");
+            sb.AppendFormat("    \"established_correlations_count\": {0},\n", LocalForensics.EstablishedCorrelationsCount);
+            sb.AppendFormat("    \"autopilot_settings_found\": {0},\n", LocalForensics.AutopilotSettingsFound ? "true" : "false");
+            sb.AppendFormat("    \"enterprise_assigned_access_found\": {0},\n", LocalForensics.EnterpriseAssignedAccessFound ? "true" : "false");
+            sb.AppendFormat("    \"enrollment_status_tracking_found\": {0},\n", LocalForensics.EnrollmentStatusTrackingFound ? "true" : "false");
+            sb.AppendFormat("    \"waad_device_name_matched\": {0},\n", LocalForensics.WaadDeviceNameMatched ? "true" : "false");
+            sb.AppendFormat("    \"matched_waad_name\": \"{0}\",\n", EscapeJson(LocalForensics.MatchedWaadName));
             sb.AppendFormat("    \"azure_ad_joined\": {0},\n", LocalForensics.AzureAdJoined ? "true" : "false");
             sb.AppendFormat("    \"mdm_enrolled\": {0},\n", LocalForensics.MdmEnrolled ? "true" : "false");
             sb.AppendFormat("    \"azure_ad_status\": \"{0}\",\n", EscapeJson(LocalForensics.AzureAdStatus));
@@ -203,12 +242,20 @@ namespace WIS.AutopilotAuditor
             {
                 sb.AppendFormat("\"{0}\"{1}", EscapeJson(LocalForensics.MdmEnrollmentUrls[i]), i < LocalForensics.MdmEnrollmentUrls.Count - 1 ? ", " : "");
             }
+            sb.Append("],\n");
+
+            sb.Append("    \"evidence_details\": [");
+            for (int i = 0; i < LocalForensics.EvidenceDetails.Count; i++)
+            {
+                sb.AppendFormat("\"{0}\"{1}", EscapeJson(LocalForensics.EvidenceDetails[i]), i < LocalForensics.EvidenceDetails.Count - 1 ? ", " : "");
+            }
             sb.Append("]\n");
             sb.Append("  },\n");
 
             // Cloud ZTD
             sb.Append("  \"cloud_ztd\": {\n");
             sb.AppendFormat("    \"online_checked\": {0},\n", CloudZtd.OnlineChecked ? "true" : "false");
+            sb.AppendFormat("    \"network_reachable\": {0},\n", CloudZtd.NetworkReachable ? "true" : "false");
             sb.AppendFormat("    \"is_registered\": {0},\n", CloudZtd.IsRegistered ? "true" : "false");
             sb.AppendFormat("    \"confirmed_free\": {0},\n", CloudZtd.ConfirmedFree ? "true" : "false");
             sb.AppendFormat("    \"query_mode\": \"{0}\",\n", EscapeJson(CloudZtd.QueryMode));
@@ -216,7 +263,8 @@ namespace WIS.AutopilotAuditor
             sb.AppendFormat("    \"raw_status_message\": \"{0}\",\n", EscapeJson(CloudZtd.RawStatusMessage));
             sb.AppendFormat("    \"profile_tenant_domain\": \"{0}\",\n", EscapeJson(CloudZtd.ProfileTenantDomain));
             sb.AppendFormat("    \"profile_tenant_id\": \"{0}\",\n", EscapeJson(CloudZtd.ProfileTenantId));
-            sb.AppendFormat("    \"profile_device_name\": \"{0}\"\n", EscapeJson(CloudZtd.ProfileDeviceName));
+            sb.AppendFormat("    \"profile_device_name\": \"{0}\",\n", EscapeJson(CloudZtd.ProfileDeviceName));
+            sb.AppendFormat("    \"ztd_registration_state\": \"{0}\"\n", EscapeJson(CloudZtd.ZtdRegistrationState));
             sb.Append("  }\n");
 
             sb.Append("}\n");

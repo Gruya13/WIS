@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.Eventing.Reader;
 using System.IO;
@@ -13,71 +14,169 @@ namespace WIS.AutopilotAuditor
 {
     public static class CloudZtdInspector
     {
+        private const string ZeroGuid = "00000000-0000-0000-0000-000000000000";
+        private static readonly Regex WaadDeviceNameRegex = new Regex(@"\bW-AAD-\d{9}\b", RegexOptions.IgnoreCase);
+        private static readonly Regex GuidRegex = new Regex(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
+
+        private static bool IsValidNonZeroGuid(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            string cleaned = value.Trim().Trim('{', '}');
+            if (string.Equals(cleaned, ZeroGuid, StringComparison.OrdinalIgnoreCase)) return false;
+            return GuidRegex.IsMatch(cleaned);
+        }
+
+        public static List<KeyValuePair<string, string>> GetZtdFileCandidates()
+        {
+            List<KeyValuePair<string, string>> candidates = new List<KeyValuePair<string, string>>();
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (string.IsNullOrEmpty(winDir))
+            {
+                winDir = @"C:\Windows";
+            }
+
+            // 1. PRIMARNA Windows 11 putanja: C:\Windows\ServiceState\wmansvc\AutopilotDDSZTDFile.json
+            candidates.Add(new KeyValuePair<string, string>(
+                Path.Combine(winDir, @"ServiceState\wmansvc\AutopilotDDSZTDFile.json"),
+                "WMANSVC_ZTD_FILE"));
+
+            // 2. PRIMARNI Windows 11 Provisioning direktorijum: C:\Windows\Provisioning\Autopilot\
+            string provDir = Path.Combine(winDir, @"Provisioning\Autopilot");
+            candidates.Add(new KeyValuePair<string, string>(
+                Path.Combine(provDir, "AutopilotConfigurationFile.json"),
+                "PROVISIONING_AUTOPILOT"));
+            candidates.Add(new KeyValuePair<string, string>(
+                Path.Combine(provDir, "AutopilotDDSZTDFile.json"),
+                "PROVISIONING_AUTOPILOT"));
+            try
+            {
+                if (Directory.Exists(provDir))
+                {
+                    string[] provJsonFiles = Directory.GetFiles(provDir, "*.json");
+                    for (int i = 0; i < provJsonFiles.Length; i++)
+                    {
+                        string pf = provJsonFiles[i];
+                        bool alreadyAdded = false;
+                        for (int j = 0; j < candidates.Count; j++)
+                        {
+                            if (string.Equals(candidates[j].Key, pf, StringComparison.OrdinalIgnoreCase))
+                            {
+                                alreadyAdded = true;
+                                break;
+                            }
+                        }
+                        if (!alreadyAdded)
+                        {
+                            candidates.Add(new KeyValuePair<string, string>(pf, "PROVISIONING_AUTOPILOT"));
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // 3. SEKUNDARNI fallback: Pre-OOBE rezervna kopija i starija ServiceState\Autopilot putanja
+            candidates.Add(new KeyValuePair<string, string>(
+                @"C:\Windows\Logs\WIS\AutopilotDDSZTDFile.preoobe.json",
+                "PREOOBE_ZTD_FILE"));
+            candidates.Add(new KeyValuePair<string, string>(
+                Path.Combine(winDir, @"ServiceState\Autopilot\AutopilotDDSZTDFile.json"),
+                "SERVICE_STATE_CACHE"));
+
+            return candidates;
+        }
+
+        private static bool TryInspectAllZtdFiles(CloudZtdDetails report, string overrideQueryMode)
+        {
+            List<KeyValuePair<string, string>> candidates = GetZtdFileCandidates();
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                string ztdPath = candidates[i].Key;
+                string mode = !string.IsNullOrEmpty(overrideQueryMode) ? overrideQueryMode : candidates[i].Value;
+                try
+                {
+                    if (File.Exists(ztdPath))
+                    {
+                        string rawZtd = File.ReadAllText(ztdPath, Encoding.UTF8);
+                        if (TryParseZtdJsonContent(rawZtd, report, mode))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+            }
+            return false;
+        }
+
         public static CloudZtdDetails Inspect(string targetSerial)
         {
             CloudZtdDetails report = new CloudZtdDetails();
 
-            // 0. Brza provera trajno sačuvanog Pre-OOBE izveštaja i ZTD keša (radi i offline!)
+            // 0. Brza provera ZTD fajlova (primarno wmansvc + Provisioning\Autopilot) i sačuvanog Pre-OOBE izveštaja (radi i offline!)
             if (TryLoadCachedReport(targetSerial, report))
             {
                 return report;
             }
 
-            // 1. Provera mrežne konekcije ka Microsoft ZTD endpoint-ima
-            bool canReachZtd = TestTcpAndTlsConnection("ztd.dds.microsoft.com", 443, 3000);
-            bool canReachLive = TestTcpAndTlsConnection("login.live.com", 443, 3000);
-
-            if (!canReachZtd && !canReachLive)
-            {
-                report.OnlineChecked = false;
-                report.RawStatusMessage = "OFFLINE - Microsoft ZTD servis i internet nisu dostupni";
-                report.QueryMode = "OFFLINE";
-                return report;
-            }
-
-            report.OnlineChecked = true;
-
-            // 2. ULTRA-FAST PATH: Provera živog Windows Autopilot Event Dnevnika
+            // 1. Provera živog Windows Autopilot Event Dnevnika (čak i ako je mreža trenutno offline, OOBE je možda već završio ZTD razmenu!)
             if (Environment.OSVersion.Platform == PlatformID.Win32NT)
             {
                 try
                 {
                     TryReadLiveEventLog(report);
-                }
-                catch { }
-            }
-
-            // 3. Provera postojećeg profila u ServiceState kešu
-            if (!report.IsRegistered && !report.ConfirmedFree)
-            {
-                try
-                {
-                    string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                    string serviceStateJson = Path.Combine(winDir, @"ServiceState\Autopilot\AutopilotDDSZTDFile.json");
-
-                    if (File.Exists(serviceStateJson))
+                    if (report.IsRegistered || report.ConfirmedFree)
                     {
-                        string rawJson = File.ReadAllText(serviceStateJson);
-                        TryParseZtdJsonContent(rawJson, report, "SERVICE_STATE_CACHE");
+                        return report;
                     }
                 }
                 catch { }
             }
 
-            // 4. Opcioni upit ka lokalnom ServisHub / GDS serveru (ako postoji u radionici)
+            // 2. Provera mrežne dostupnosti Microsoft ZTD servisa (ztd.dds.microsoft.com:443)
+            // BITNO: puko uspostavljanje TCP konekcije NIKADA ne postavlja OnlineChecked = true!
+            // OnlineChecked = true se postavlja isključivo kada postoji realna ZTD razmena/odgovor.
+            bool canReachZtd = TestTcpAndTlsConnection("ztd.dds.microsoft.com", 443, 3000);
+            report.NetworkReachable = canReachZtd;
+
+            // 3. Opcioni upit ka lokalnom ServisHub / GDS serveru (ako postoji u radionici)
             if (!report.IsRegistered && !report.ConfirmedFree && !string.IsNullOrEmpty(targetSerial) && targetSerial != "Nepoznato")
             {
                 try
                 {
                     CheckGdsServerStatus(targetSerial, report);
+                    if (report.IsRegistered || report.ConfirmedFree)
+                    {
+                        return report;
+                    }
                 }
                 catch { }
             }
 
-            // 5. AKTIVNO POZADINSKO BUĐENJE ZTD RADNIKA (ako još nismo dobili eksplicitan odgovor)
+            if (!canReachZtd)
+            {
+                report.OnlineChecked = false;
+                report.RawStatusMessage = "OFFLINE - Microsoft ZTD servis (ztd.dds.microsoft.com:443) nije dostupan";
+                report.QueryMode = "OFFLINE";
+                return report;
+            }
+
+            // 4. Aktivno pozadinsko buđenje ZTD radnika ako je ztd.dds.microsoft.com dostupan, a još nema eksplicitnog odgovora
             if (!report.IsRegistered && !report.ConfirmedFree)
             {
                 TriggerActiveZtdDiagnostics(report);
+            }
+
+            if (!report.IsRegistered && !report.ConfirmedFree)
+            {
+                report.OnlineChecked = false;
+                if (string.IsNullOrEmpty(report.QueryMode) || report.QueryMode == "NONE")
+                {
+                    report.QueryMode = "UNVERIFIED_NO_ZTD_RESPONSE";
+                }
+                if (string.IsNullOrEmpty(report.RawStatusMessage) || report.RawStatusMessage == "Nije provereno")
+                {
+                    report.RawStatusMessage = "ztd.dds.microsoft.com je dostupan, ali Windows ZTD servis nije vratio eksplicitan Event 806/807 odgovor";
+                }
             }
 
             return report;
@@ -87,43 +186,62 @@ namespace WIS.AutopilotAuditor
         {
             if (string.IsNullOrEmpty(rawJson) || report == null) return false;
 
-            bool hasTenantKey = Regex.IsMatch(rawJson, "\"CloudAssignedTenantId\"\\s*:", RegexOptions.IgnoreCase);
-            if (hasTenantKey)
-            {
-                string tenantId = ExtractJsonString(rawJson, "CloudAssignedTenantId");
-                if (!string.IsNullOrEmpty(tenantId) &&
-                    !string.Equals(tenantId, "00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase))
-                {
-                    report.OnlineChecked = true;
-                    report.IsRegistered = true;
-                    report.ConfirmedFree = false;
-                    report.ProfileTenantId = tenantId;
-                    report.ProfileTenantDomain = ExtractJsonString(rawJson, "CloudAssignedTenantDomain");
-                    report.ProfileDeviceName = ExtractJsonString(rawJson, "CloudAssignedDeviceName");
-                    report.QueryMode = queryMode;
-                    report.RawStatusMessage = "Uređaj je 100% REGISTROVAN u Microsoft Autopilot bazi (" + queryMode + ")";
-                    return true;
-                }
+            string tenantId = ExtractJsonString(rawJson, "CloudAssignedTenantId");
+            string tenantDomain = ExtractJsonString(rawJson, "CloudAssignedTenantDomain");
+            string deviceName = ExtractJsonString(rawJson, "CloudAssignedDeviceName");
+            string ztdRegState = ExtractJsonString(rawJson, "ZtdRegistrationState");
 
-                // Validan ZTD odgovor bez dodeljenog tenanta znači da uređaj nije registrovan u Autopilot bazi
+            if (!string.IsNullOrEmpty(ztdRegState) && string.IsNullOrEmpty(report.ZtdRegistrationState))
+            {
+                report.ZtdRegistrationState = ztdRegState;
+            }
+
+            bool hasValidTenantId = IsValidNonZeroGuid(tenantId);
+            bool hasTenantDomain = !string.IsNullOrEmpty(tenantDomain);
+            bool hasWaadDeviceName = !string.IsNullOrEmpty(deviceName) && WaadDeviceNameRegex.IsMatch(deviceName);
+
+            if (hasValidTenantId || hasTenantDomain || hasWaadDeviceName)
+            {
                 report.OnlineChecked = true;
-                report.IsRegistered = false;
-                report.ConfirmedFree = true;
-                report.ErrorCode = "807 - ZtdDeviceIsNotRegistered (ZTD File)";
+                report.IsRegistered = true;
+                report.ConfirmedFree = false;
+                report.ProfileTenantId = hasValidTenantId ? tenantId.Trim().Trim('{', '}') : "";
+                report.ProfileTenantDomain = tenantDomain;
+                report.ProfileDeviceName = deviceName;
                 report.QueryMode = queryMode;
-                report.RawStatusMessage = "Slobodan (Microsoft ZTD profil potvrdio: Uređaj nije registrovan)";
+                report.RawStatusMessage = "Uređaj je 100% REGISTROVAN u Microsoft Autopilot bazi (" + queryMode + ")";
                 return true;
             }
 
-            if (Regex.IsMatch(rawJson, "\"ProfileState\"\\s*:\\s*(0|\"NotAssigned\")", RegexOptions.IgnoreCase))
+            // Eksplicitna ZTD 807 / ZtdDeviceIsNotRegistered potvrda je OBAVEZNA za ConfirmedFree = true.
+            // Puko ProfileState=NotAssigned ili prazan CloudAssignedTenantId NIKADA ne sme dati ConfirmedFree = true!
+            bool explicitNotRegistered =
+                rawJson.IndexOf("ZtdDeviceIsNotRegistered", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                Regex.IsMatch(rawJson, "\"(?:ErrorCode|EventId|ZtdStatusCode)\"\\s*:\\s*(?:807|\"807[^\"]*\")", RegexOptions.IgnoreCase);
+
+            if (explicitNotRegistered)
             {
                 report.OnlineChecked = true;
                 report.IsRegistered = false;
                 report.ConfirmedFree = true;
-                report.ErrorCode = "807 - ZtdDeviceIsNotRegistered (ZTD File)";
+                report.ErrorCode = "807 - ZtdDeviceIsNotRegistered";
                 report.QueryMode = queryMode;
-                report.RawStatusMessage = "Slobodan (Microsoft ZTD profil potvrdio: Uređaj nije registrovan)";
+                report.RawStatusMessage = "Slobodan (Microsoft ZTD eksplicitno potvrdio: Event 807 - ZtdDeviceIsNotRegistered)";
                 return true;
+            }
+
+            // Zabeleži napomenu ako fajl sadrži prazan TenantId ili ProfileState=NotAssigned bez Event 807 potvrde
+            bool hasEmptyTenantKey = Regex.IsMatch(rawJson, "\"CloudAssignedTenantId\"\\s*:", RegexOptions.IgnoreCase);
+            bool hasNotAssignedState = Regex.IsMatch(rawJson, "\"ProfileState\"\\s*:\\s*(0|\"NotAssigned\")", RegexOptions.IgnoreCase);
+            if (hasEmptyTenantKey || hasNotAssignedState)
+            {
+                report.IsRegistered = false;
+                report.ConfirmedFree = false;
+                if (string.IsNullOrEmpty(report.ZtdRegistrationState))
+                {
+                    report.ZtdRegistrationState = "Unverified_NotAssigned";
+                }
+                report.RawStatusMessage = "ZTD fajl sadrži prazan CloudAssignedTenantId / ProfileState=NotAssigned bez eksplicitne Event 807 (ZtdDeviceIsNotRegistered) potvrde";
             }
 
             return false;
@@ -135,31 +253,13 @@ namespace WIS.AutopilotAuditor
 
             try
             {
-                string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                string[] ztdFileCandidates = new string[]
+                // 1. Prvo proveravamo primarne Windows 11 ZTD fajlove (wmansvc, Provisioning\Autopilot), pa sekundarne fallback lokacije
+                if (TryInspectAllZtdFiles(report, null))
                 {
-                    @"C:\Windows\Logs\WIS\AutopilotDDSZTDFile.preoobe.json",
-                    Path.Combine(winDir, @"ServiceState\Autopilot\AutopilotDDSZTDFile.json")
-                };
-
-                for (int i = 0; i < ztdFileCandidates.Length; i++)
-                {
-                    string ztdPath = ztdFileCandidates[i];
-                    try
-                    {
-                        if (File.Exists(ztdPath))
-                        {
-                            string rawZtd = File.ReadAllText(ztdPath, Encoding.UTF8);
-                            string mode = i == 0 ? "PREOOBE_ZTD_FILE" : "SERVICE_STATE_CACHE";
-                            if (TryParseZtdJsonContent(rawZtd, report, mode))
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                    catch { }
+                    return true;
                 }
 
+                // 2. Zatim proveravamo sačuvani trajni Pre-OOBE / OOBE izveštaj
                 string[] reportCandidates = new string[]
                 {
                     @"C:\Windows\Logs\WIS\autopilot_report.json",
@@ -186,13 +286,14 @@ namespace WIS.AutopilotAuditor
                         }
 
                         string matrixCode = ExtractJsonString(rawJson, "matrix_code").ToUpperInvariant();
-                        bool cachedRegistered = ExtractJsonBool(rawJson, "is_registered");
+                        bool cachedRegistered = ExtractJsonBool(rawJson, "is_registered") || ExtractJsonBool(rawJson, "is_locked");
                         bool cachedFree = ExtractJsonBool(rawJson, "confirmed_free");
                         string profDom = ExtractJsonString(rawJson, "profile_tenant_domain");
                         if (string.IsNullOrEmpty(profDom)) profDom = ExtractJsonString(rawJson, "tenant_domain");
                         string profId = ExtractJsonString(rawJson, "profile_tenant_id");
                         if (string.IsNullOrEmpty(profId)) profId = ExtractJsonString(rawJson, "tenant_id");
                         string profDev = ExtractJsonString(rawJson, "profile_device_name");
+                        if (string.IsNullOrEmpty(profDev)) profDev = ExtractJsonString(rawJson, "assigned_device_name");
                         string errCode = ExtractJsonString(rawJson, "error_code");
                         string rawMsg = ExtractJsonString(rawJson, "raw_status_message");
 
@@ -212,14 +313,21 @@ namespace WIS.AutopilotAuditor
                             return true;
                         }
 
-                        if (matrixCode == "CONFIRMED_CLEAN" || matrixCode == "RELEASED_LOCAL_TRACES" || cachedFree)
+                        // Samo eksplicitna 807 / ZtdDeviceIsNotRegistered potvrda iz sačuvanog OOBE izveštaja
+                        bool hasExplicit807 =
+                            !string.IsNullOrEmpty(errCode) &&
+                            (errCode.IndexOf("807", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             errCode.IndexOf("ZtdDeviceIsNotRegistered", StringComparison.OrdinalIgnoreCase) >= 0) &&
+                            errCode.IndexOf("(ZTD File)", StringComparison.OrdinalIgnoreCase) < 0;
+
+                        if (cachedFree && hasExplicit807 && (matrixCode == "CONFIRMED_CLEAN" || matrixCode == "RELEASED_LOCAL_TRACES"))
                         {
                             report.OnlineChecked = true;
                             report.IsRegistered = false;
                             report.ConfirmedFree = true;
-                            report.ErrorCode = !string.IsNullOrEmpty(errCode) ? errCode : "807 - CachedPreOOBE";
+                            report.ErrorCode = errCode;
                             report.QueryMode = "PREOOBE_CACHED_REPORT";
-                            report.RawStatusMessage = "Slobodan (Potvrđeno iz sačuvanog OOBE izveštaja)";
+                            report.RawStatusMessage = "Slobodan (Potvrđeno iz sačuvanog OOBE Event 807 izveštaja)";
                             return true;
                         }
                     }
@@ -235,21 +343,30 @@ namespace WIS.AutopilotAuditor
         {
             if (string.IsNullOrEmpty(json)) return false;
             string matrixCode = ExtractJsonString(json, "matrix_code").ToUpperInvariant();
-            if (matrixCode == "LOCKED_TENANT" ||
-                matrixCode == "HIDDEN_LOCK" ||
-                matrixCode == "RELEASED_LOCAL_TRACES" ||
-                matrixCode == "CONFIRMED_CLEAN")
+            if (matrixCode == "LOCKED_TENANT" || matrixCode == "HIDDEN_LOCK")
             {
                 return true;
             }
-            return ExtractJsonBool(json, "is_registered") || ExtractJsonBool(json, "confirmed_free");
+            if (ExtractJsonBool(json, "is_registered") || ExtractJsonBool(json, "is_locked"))
+            {
+                return true;
+            }
+            if ((matrixCode == "CONFIRMED_CLEAN" || matrixCode == "RELEASED_LOCAL_TRACES") && ExtractJsonBool(json, "confirmed_free"))
+            {
+                string errCode = ExtractJsonString(json, "error_code");
+                if (string.IsNullOrEmpty(errCode) || errCode.IndexOf("(ZTD File)", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         public static void SaveCachedReport(AuditorResult result)
         {
             if (result == null) return;
 
-            bool newIsConfirmed = result.CloudZtd != null && (result.CloudZtd.IsRegistered || result.CloudZtd.ConfirmedFree);
+            bool newIsConfirmed = result.IsLocked || (result.CloudZtd != null && (result.CloudZtd.IsRegistered || result.CloudZtd.ConfirmedFree));
             string jsonContent = result.ToJson();
             UTF8Encoding utf8NoBom = new UTF8Encoding(false);
 
@@ -293,19 +410,25 @@ namespace WIS.AutopilotAuditor
                 catch { }
             }
 
+            // Rezervna kopija ZTD fajla sa primarnih Windows 11 putanja (wmansvc, Provisioning\Autopilot) pa tek onda sekundarnih
             try
             {
-                string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                string serviceStateJson = Path.Combine(winDir, @"ServiceState\Autopilot\AutopilotDDSZTDFile.json");
                 string preOobeCopy = @"C:\Windows\Logs\WIS\AutopilotDDSZTDFile.preoobe.json";
-                if (File.Exists(serviceStateJson))
+                List<KeyValuePair<string, string>> candidates = GetZtdFileCandidates();
+                for (int i = 0; i < candidates.Count; i++)
                 {
-                    string wisLogDir = Path.GetDirectoryName(preOobeCopy);
-                    if (!string.IsNullOrEmpty(wisLogDir) && !Directory.Exists(wisLogDir))
+                    string src = candidates[i].Key;
+                    if (string.Equals(src, preOobeCopy, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (File.Exists(src))
                     {
-                        Directory.CreateDirectory(wisLogDir);
+                        string wisLogDir = Path.GetDirectoryName(preOobeCopy);
+                        if (!string.IsNullOrEmpty(wisLogDir) && !Directory.Exists(wisLogDir))
+                        {
+                            Directory.CreateDirectory(wisLogDir);
+                        }
+                        File.Copy(src, preOobeCopy, true);
+                        break;
                     }
-                    File.Copy(serviceStateJson, preOobeCopy, true);
                 }
             }
             catch { }
@@ -323,20 +446,11 @@ namespace WIS.AutopilotAuditor
 
                     client.EndConnect(ar);
 
-                    // Pokušaj osnovnog TLS handshaka
-                    try
+                    using (SslStream ssl = new SslStream(client.GetStream(), false, (sender, cert, chain, sslPolicyErrors) => sslPolicyErrors == System.Net.Security.SslPolicyErrors.None))
                     {
-                        using (SslStream ssl = new SslStream(client.GetStream(), false, (sender, cert, chain, sslPolicyErrors) => sslPolicyErrors == System.Net.Security.SslPolicyErrors.None))
-                        {
-                            ssl.ReadTimeout = timeoutMs;
-                            ssl.WriteTimeout = timeoutMs;
-                            ssl.AuthenticateAsClient(hostname);
-                            return true;
-                        }
-                    }
-                    catch
-                    {
-                        // Ako TLS baci izuzetak, TCP konekcija je ipak uspela
+                        ssl.ReadTimeout = timeoutMs;
+                        ssl.WriteTimeout = timeoutMs;
+                        ssl.AuthenticateAsClient(hostname);
                         return true;
                     }
                 }
@@ -391,6 +505,7 @@ namespace WIS.AutopilotAuditor
                 StartServiceSilently("tbs");
                 StartServiceSilently("wlidsvc");
                 StartServiceSilently("dmwappushservice");
+                StartServiceSilently("wmansvc");
 
                 // 2. Buđenje svih OOBE Provisioning zadataka u Task Scheduler-u
                 string[] tasks = new string[]
@@ -448,7 +563,6 @@ namespace WIS.AutopilotAuditor
                                         TryReadLiveEventLog(report);
                                         if (report.IsRegistered || report.ConfirmedFree)
                                         {
-                                            // Odgovor iz oblaka je stigao!
                                             try { proc.Kill(); } catch { }
                                             return;
                                         }
@@ -456,19 +570,13 @@ namespace WIS.AutopilotAuditor
                                     catch { }
                                 }
 
-                                // Proveri ServiceState keš fajl
+                                // Proveri primarne i sekundarne ZTD fajlove (wmansvc, Provisioning\Autopilot, fallback)
                                 try
                                 {
-                                    string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-                                    string sStateJson = Path.Combine(winDir, @"ServiceState\Autopilot\AutopilotDDSZTDFile.json");
-                                    if (File.Exists(sStateJson))
+                                    if (TryInspectAllZtdFiles(report, "ACTIVE_ZTD_DIAG"))
                                     {
-                                        string rawJson = File.ReadAllText(sStateJson);
-                                        if (TryParseZtdJsonContent(rawJson, report, "ACTIVE_ZTD_DIAG"))
-                                        {
-                                            try { proc.Kill(); } catch { }
-                                            return;
-                                        }
+                                        try { proc.Kill(); } catch { }
+                                        return;
                                     }
                                 }
                                 catch { }
@@ -508,18 +616,22 @@ namespace WIS.AutopilotAuditor
                             }
                         }
 
-                        // Provera raspakovanog AutopilotDDSZTDFile.json
-                        string ztdJsonFile = Path.Combine(outDir, "AutopilotDDSZTDFile.json");
-                        if (File.Exists(ztdJsonFile))
+                        // Provera raspakovanih JSON ZTD fajlova
+                        string[] extractedJsonFiles = Directory.GetFiles(outDir, "*Autopilot*.json");
+                        for (int i = 0; i < extractedJsonFiles.Length; i++)
                         {
-                            string rawJson = File.ReadAllText(ztdJsonFile);
-                            if (TryParseZtdJsonContent(rawJson, report, "ACTIVE_ZTD_DIAG"))
+                            try
                             {
-                                return;
+                                string rawJson = File.ReadAllText(extractedJsonFiles[i], Encoding.UTF8);
+                                if (TryParseZtdJsonContent(rawJson, report, "ACTIVE_ZTD_DIAG"))
+                                {
+                                    return;
+                                }
                             }
+                            catch { }
                         }
 
-                        // Provera izvučenih .evtx logova
+                        // Provera izvučenih .evtx logova (i registracije i eksplicitnog Event 807)
                         string[] evtxFiles = Directory.GetFiles(outDir, "*.evtx");
                         foreach (string ef in evtxFiles)
                         {
@@ -527,12 +639,8 @@ namespace WIS.AutopilotAuditor
                             {
                                 try
                                 {
-                                    if (TryCheckEvtxForEvent807(ef))
+                                    if (TryInspectEvtxFile(ef, report))
                                     {
-                                        report.ConfirmedFree = true;
-                                        report.ErrorCode = "807 - ZtdDeviceIsNotRegistered";
-                                        report.QueryMode = "ACTIVE_ZTD_DIAG";
-                                        report.RawStatusMessage = "Slobodan (Microsoft potvrdio: Uređaj nije registrovan)";
                                         return;
                                     }
                                 }
@@ -555,12 +663,14 @@ namespace WIS.AutopilotAuditor
                         catch { }
                     }
 
-                    report.RawStatusMessage = "ZTD dijagnostički upit poslat, čeka se obrada servisa";
+                    report.OnlineChecked = false;
+                    report.RawStatusMessage = "ZTD dijagnostika nije dobila eksplicitan Event 806/807 odgovor od Microsoft oblaka (potrebna OOBE ZTD razmena)";
                     report.QueryMode = "ACTIVE_ZTD_UNCONFIRMED";
                 }
             }
             catch (Exception ex)
             {
+                report.OnlineChecked = false;
                 report.RawStatusMessage = "Dijagnostička greška: " + ex.Message;
             }
             finally
@@ -698,7 +808,9 @@ namespace WIS.AutopilotAuditor
                                 string status = ExtractJsonString(json, "status").ToUpperInvariant();
                                 if (status == "LOCKED")
                                 {
+                                    report.OnlineChecked = true;
                                     report.IsRegistered = true;
+                                    report.ConfirmedFree = false;
                                     report.ProfileTenantDomain = ExtractJsonString(json, "tenant_domain");
                                     report.ProfileTenantId = ExtractJsonString(json, "tenant_id");
                                     report.GdsServerUrl = url;
@@ -708,7 +820,10 @@ namespace WIS.AutopilotAuditor
                                 }
                                 else if (status == "CLEAN")
                                 {
+                                    report.OnlineChecked = true;
+                                    report.IsRegistered = false;
                                     report.ConfirmedFree = true;
+                                    report.ErrorCode = "807 - GDS_CENTRAL_SERVER";
                                     report.GdsServerUrl = url;
                                     report.QueryMode = "GDS_CENTRAL_SERVER";
                                     report.RawStatusMessage = "Potvrđeno slobodan prema ServisHub bazi";
@@ -743,77 +858,183 @@ namespace WIS.AutopilotAuditor
             return false;
         }
 
+        private static string ExtractNamedFieldFromEvent(string text, string fieldName)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(fieldName)) return "";
+
+            // 1. XML Data element format: <Data Name="CloudAssignedTenantDomain">firma.com</Data>
+            string xmlPat = string.Format("<Data\\s+Name\\s*=\\s*[\"']{0}[\"'][^>]*>([^<]+)</Data>", Regex.Escape(fieldName));
+            Match mx = Regex.Match(text, xmlPat, RegexOptions.IgnoreCase);
+            if (mx.Success)
+            {
+                return mx.Groups[1].Value.Trim();
+            }
+
+            // 2. JSON or Key=Value / Key: Value format
+            string kvPat = string.Format("\"?{0}\"?\\s*[:=]\\s*\"?([^\"\\r\\n,;<>]+)\"?", Regex.Escape(fieldName));
+            Match mk = Regex.Match(text, kvPat, RegexOptions.IgnoreCase);
+            if (mk.Success)
+            {
+                return mk.Groups[1].Value.Trim();
+            }
+
+            return "";
+        }
+
+        public static bool ParseAutopilotEventPayload(int eventId, string description, string xmlPayload, CloudZtdDetails report, string queryMode)
+        {
+            if (report == null) return false;
+            string combined = (description ?? "") + "\n" + (xmlPayload ?? "");
+
+            // Izvlačenje ključnih polja iz 24H2/25H2 događaja (100, 110, 170, 171, 806, 807 i ostalih)
+            string tenantId = ExtractNamedFieldFromEvent(combined, "CloudAssignedTenantId");
+            if (!IsValidNonZeroGuid(tenantId))
+            {
+                Match mTenant = Regex.Match(combined, @"CloudAssignedTenantId[^0-9a-fA-F]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", RegexOptions.IgnoreCase);
+                if (mTenant.Success && IsValidNonZeroGuid(mTenant.Groups[1].Value))
+                {
+                    tenantId = mTenant.Groups[1].Value.Trim();
+                }
+                else
+                {
+                    tenantId = "";
+                }
+            }
+            else
+            {
+                tenantId = tenantId.Trim().Trim('{', '}');
+            }
+
+            string tenantDomain = ExtractNamedFieldFromEvent(combined, "CloudAssignedTenantDomain");
+            string deviceName = ExtractNamedFieldFromEvent(combined, "CloudAssignedDeviceName");
+            string ztdRegState = ExtractNamedFieldFromEvent(combined, "ZtdRegistrationState");
+
+            if (!string.IsNullOrEmpty(ztdRegState) && string.IsNullOrEmpty(report.ZtdRegistrationState))
+            {
+                report.ZtdRegistrationState = ztdRegState;
+            }
+            if (string.IsNullOrEmpty(deviceName))
+            {
+                Match waadMatch = WaadDeviceNameRegex.Match(combined);
+                if (waadMatch.Success)
+                {
+                    deviceName = waadMatch.Value.ToUpperInvariant();
+                }
+            }
+
+            if (!string.IsNullOrEmpty(tenantId) && string.IsNullOrEmpty(report.ProfileTenantId))
+            {
+                report.ProfileTenantId = tenantId;
+            }
+            if (!string.IsNullOrEmpty(tenantDomain) && string.IsNullOrEmpty(report.ProfileTenantDomain))
+            {
+                report.ProfileTenantDomain = tenantDomain;
+            }
+            if (!string.IsNullOrEmpty(deviceName) && string.IsNullOrEmpty(report.ProfileDeviceName))
+            {
+                report.ProfileDeviceName = deviceName;
+            }
+
+            bool isModernProfileEvent = (eventId == 100 || eventId == 110 || eventId == 170 || eventId == 171);
+            bool hasRegisteredEvidence =
+                eventId == 806 ||
+                !string.IsNullOrEmpty(tenantId) ||
+                !string.IsNullOrEmpty(tenantDomain) ||
+                (!string.IsNullOrEmpty(deviceName) && WaadDeviceNameRegex.IsMatch(deviceName)) ||
+                (isModernProfileEvent && !string.IsNullOrEmpty(deviceName)) ||
+                (!string.IsNullOrEmpty(ztdRegState) &&
+                 ztdRegState.IndexOf("Registered", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 ztdRegState.IndexOf("NotRegistered", StringComparison.OrdinalIgnoreCase) < 0 &&
+                 ztdRegState.IndexOf("Unregistered", StringComparison.OrdinalIgnoreCase) < 0);
+
+            if (hasRegisteredEvidence)
+            {
+                report.OnlineChecked = true;
+                report.IsRegistered = true;
+                report.ConfirmedFree = false;
+                report.QueryMode = queryMode;
+                report.RawStatusMessage = string.Format("Uređaj je 100% REGISTROVAN u Microsoft Autopilot bazi (Event {0})", eventId);
+                return true;
+            }
+
+            // ISKLJUČIVO eksplicitni Event 807 ili ZtdDeviceIsNotRegistered daje ConfirmedFree = true.
+            // NIKADA za puko ProfileState=NotAssigned!
+            if (eventId == 807 || combined.IndexOf("ZtdDeviceIsNotRegistered", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                report.OnlineChecked = true;
+                report.IsRegistered = false;
+                report.ConfirmedFree = true;
+                report.ErrorCode = "807 - ZtdDeviceIsNotRegistered";
+                report.QueryMode = queryMode;
+                report.RawStatusMessage = "Slobodan (Microsoft potvrdio: Event 807 - ZtdDeviceIsNotRegistered)";
+                return true;
+            }
+
+            return false;
+        }
+
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static void TryReadLiveEventLog(CloudZtdDetails report)
         {
             string logName = "Microsoft-Windows-ModernDeployment-Diagnostics-Provider/Autopilot";
-            EventLogQuery query = new EventLogQuery(logName, PathType.LogName, "*[System[(EventID=806 or EventID=807)]]")
+            EventLogQuery fullQuery = new EventLogQuery(logName, PathType.LogName, "*")
             {
                 ReverseDirection = true
             };
 
-            using (EventLogReader reader = new EventLogReader(query))
-            {
-                EventRecord record = reader.ReadEvent();
-                if (record != null)
-                {
-                    if (record.Id == 806)
-                    {
-                        report.IsRegistered = true;
-                        report.QueryMode = "LIVE_EVENT_LOG";
-                        report.RawStatusMessage = "Uređaj je 100% REGISTROVAN u Microsoft Autopilot bazi (Event 806)";
-                        return;
-                    }
-                    else if (record.Id == 807)
-                    {
-                        report.IsRegistered = false;
-                        report.ConfirmedFree = true;
-                        report.ErrorCode = "807 - ZtdDeviceIsNotRegistered";
-                        report.QueryMode = "LIVE_EVENT_LOG";
-                        report.RawStatusMessage = "Slobodan (Microsoft potvrdio: Uređaj nije registrovan)";
-                        return;
-                    }
-                }
-            }
+            bool foundDecisive = false;
+            int enrichRemaining = 0;
 
-            // Šira provera poslednjih 50 događaja ako 806/807 nisu eksplicitno upisani pod tim ID-om
-            EventLogQuery broadQuery = new EventLogQuery(logName, PathType.LogName, "*")
+            using (EventLogReader reader = new EventLogReader(fullQuery))
             {
-                ReverseDirection = true
-            };
-            using (EventLogReader broadReader = new EventLogReader(broadQuery))
-            {
-                int checkedCount = 0;
                 EventRecord record;
-                while (checkedCount < 50 && (record = broadReader.ReadEvent()) != null)
+                while ((record = reader.ReadEvent()) != null)
                 {
-                    checkedCount++;
-                    string desc = "";
-                    try { desc = record.FormatDescription() ?? ""; } catch { }
-                    if (string.IsNullOrEmpty(desc)) continue;
-
-                    if (desc.IndexOf("ZtdDeviceIsNotRegistered", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        Regex.IsMatch(desc, @"ProfileState\s*=\s*NotAssigned", RegexOptions.IgnoreCase))
+                    using (record)
                     {
-                        report.IsRegistered = false;
-                        report.ConfirmedFree = true;
-                        report.ErrorCode = "807 - ZtdDeviceIsNotRegistered";
-                        report.QueryMode = "LIVE_EVENT_LOG";
-                        report.RawStatusMessage = "Slobodan (Microsoft potvrdio: Uređaj nije registrovan)";
-                        return;
-                    }
+                        int evId = record.Id;
+                        string desc = "";
+                        string xml = "";
+                        try { desc = record.FormatDescription() ?? ""; } catch { }
+                        try { xml = record.ToXml() ?? ""; } catch { }
 
-                    Match mTenant = Regex.Match(desc, @"CloudAssignedTenantId[^0-9a-fA-F]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", RegexOptions.IgnoreCase);
-                    if (mTenant.Success)
-                    {
-                        string guid = mTenant.Groups[1].Value;
-                        if (!string.Equals(guid, "00000000-0000-0000-0000-000000000000", StringComparison.OrdinalIgnoreCase))
+                        if (!foundDecisive)
                         {
-                            report.IsRegistered = true;
-                            report.ProfileTenantId = guid;
-                            report.QueryMode = "LIVE_EVENT_LOG";
-                            report.RawStatusMessage = "Uređaj je 100% REGISTROVAN u Microsoft Autopilot bazi (Event Log)";
-                            return;
+                            if (ParseAutopilotEventPayload(evId, desc, xml, report, "LIVE_EVENT_LOG"))
+                            {
+                                foundDecisive = true;
+                                if (report.IsRegistered && (string.IsNullOrEmpty(report.ProfileTenantDomain) || string.IsNullOrEmpty(report.ProfileTenantId) || string.IsNullOrEmpty(report.ProfileDeviceName)))
+                                {
+                                    // Nastavi kratko čitanje susednih 100/110/170/171 događaja radi dopune domena/imena uređaja
+                                    enrichRemaining = 25;
+                                    continue;
+                                }
+                                return;
+                            }
+                        }
+                        else if (enrichRemaining > 0)
+                        {
+                            enrichRemaining--;
+                            string combined = desc + "\n" + xml;
+                            if (string.IsNullOrEmpty(report.ProfileTenantId))
+                            {
+                                string tid = ExtractNamedFieldFromEvent(combined, "CloudAssignedTenantId");
+                                if (IsValidNonZeroGuid(tid)) report.ProfileTenantId = tid.Trim().Trim('{', '}');
+                            }
+                            if (string.IsNullOrEmpty(report.ProfileTenantDomain))
+                            {
+                                string dom = ExtractNamedFieldFromEvent(combined, "CloudAssignedTenantDomain");
+                                if (!string.IsNullOrEmpty(dom)) report.ProfileTenantDomain = dom;
+                            }
+                            if (string.IsNullOrEmpty(report.ProfileDeviceName))
+                            {
+                                string dev = ExtractNamedFieldFromEvent(combined, "CloudAssignedDeviceName");
+                                if (!string.IsNullOrEmpty(dev)) report.ProfileDeviceName = dev;
+                            }
+                            if (enrichRemaining == 0 || (!string.IsNullOrEmpty(report.ProfileTenantDomain) && !string.IsNullOrEmpty(report.ProfileTenantId) && !string.IsNullOrEmpty(report.ProfileDeviceName)))
+                            {
+                                return;
+                            }
                         }
                     }
                 }
@@ -821,14 +1042,32 @@ namespace WIS.AutopilotAuditor
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        private static bool TryCheckEvtxForEvent807(string ef)
+        private static bool TryInspectEvtxFile(string ef, CloudZtdDetails report)
         {
-            EventLogQuery evQuery = new EventLogQuery(ef, PathType.FilePath, "*[System[(EventID=807)]]");
+            EventLogQuery evQuery = new EventLogQuery(ef, PathType.FilePath, "*")
+            {
+                ReverseDirection = true
+            };
             using (EventLogReader reader = new EventLogReader(evQuery))
             {
-                EventRecord rec = reader.ReadEvent();
-                return (rec != null);
+                EventRecord rec;
+                while ((rec = reader.ReadEvent()) != null)
+                {
+                    using (rec)
+                    {
+                        string desc = "";
+                        string xml = "";
+                        try { desc = rec.FormatDescription() ?? ""; } catch { }
+                        try { xml = rec.ToXml() ?? ""; } catch { }
+
+                        if (ParseAutopilotEventPayload(rec.Id, desc, xml, report, "ACTIVE_ZTD_DIAG"))
+                        {
+                            return true;
+                        }
+                    }
+                }
             }
+            return false;
         }
     }
 }

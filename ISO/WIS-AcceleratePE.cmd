@@ -7,14 +7,17 @@ echo  [*] WIS WinPE: Inicijalizacija instalacionog medijuma
 echo =======================================================
 echo [%TIME%] === WIS WIS-AcceleratePE.cmd start === >> "%WIS_LOG%" 2>nul
 
-:: 0. Idempotentnost: Ako su i Z:\win11 i Y:\ vec spremni za multi-client SMB rad
+:: 0. Idempotentnost: Ako su i Z:\win11 i Y:\ vec aktivni kao NAS i pre-format forenzika je uradjena
 set "HAS_Z_MEDIA="
 set "HAS_Y_MEDIA="
+set "Y_ALREADY_NAS="
 if exist "Z:\win11\sources\install.esd" set "HAS_Z_MEDIA=1"
 if exist "Z:\win11\sources\install.wim" set "HAS_Z_MEDIA=1"
 if exist "Y:\sources\install.esd" set "HAS_Y_MEDIA=1"
 if exist "Y:\sources\install.wim" set "HAS_Y_MEDIA=1"
-if defined HAS_Z_MEDIA if defined HAS_Y_MEDIA (
+net.exe use Y: 2>nul | find.exe /I "win11" >nul 2>&1 && set "Y_ALREADY_NAS=1"
+if defined HAS_Z_MEDIA if defined HAS_Y_MEDIA if defined Y_ALREADY_NAS (
+    call :RunWinPeForensics
     echo [+] WIS: Z:\win11 i Y:\ su vec aktivni. >> "%WIS_LOG%" 2>nul
     ver >nul
     exit /b 0
@@ -33,6 +36,7 @@ for %%d in (C D E F G H I J K L M N O P Q R S U V W) do (
             if errorlevel 1 (
                 echo [+] WIS: Detektovan fizicki USB instalacioni medijum %%d:!
                 echo [%TIME%] Detektovan fizicki USB %%d: >> "%WIS_LOG%" 2>nul
+                call :RunWinPeForensics
                 ver >nul
                 exit /b 0
             )
@@ -45,6 +49,7 @@ for %%d in (C D E F G H I J K L M N O P Q R S U V W) do (
             if errorlevel 1 (
                 echo [+] WIS: Detektovan fizicki USB instalacioni medijum %%d:!
                 echo [%TIME%] Detektovan fizicki USB %%d: >> "%WIS_LOG%" 2>nul
+                call :RunWinPeForensics
                 ver >nul
                 exit /b 0
             )
@@ -91,6 +96,9 @@ if not defined HAS_IPV4 (
     :DhcpReady
     echo [%TIME%] DHCP provera zavrsena [DHCP_WAIT=!DHCP_WAIT!, HAS_IPV4=!HAS_IPV4!]. >> "%WIS_LOG%" 2>nul
 )
+
+:: 3a. IMP-114 Sloj B: WinPE pre-format Autopilot forenzika (cim je mreza inicijalizovana, PRE formatiranja diska!)
+call :RunWinPeForensics
 
 :: Ako i dalje nema IPv4, ne gubimo vreme na ping/SMB timeout vec ostavljamo postojeci fallback medijum
 if not defined HAS_IPV4 (
@@ -142,7 +150,7 @@ if not defined HAS_Z_MEDIA (
     )
 )
 
-:: 5. Ako je Z:\ uspesno montiran i sadrzi win11, oslobadjamo iVentoy port 10445 i prebacujemo Y:\ na TrueNAS SMB 3.1.1
+:: 5. IMP-112 Provera podudarnosti WIS_IMAGE_PROFILE.tag pre prebacivanja sa Y:\ na Z:\win11
 set "Z_READY="
 if exist "Z:\win11\sources\install.esd" set "Z_READY=1"
 if exist "Z:\win11\sources\install.wim" set "Z_READY=1"
@@ -151,19 +159,82 @@ if defined Z_READY (
     echo [+] TrueNAS SMB 3.1.1 montiran na Z:\ [Z:\win11\sources je spreman]!
     echo [%TIME%] TrueNAS uspesno montiran na Z:\. >> "%WIS_LOG%" 2>nul
 
-    :: Ako postoji iVentoy T:\iventoy.iso virtualni disk, sada ga bezbedno demontiramo
+    set "Y_IS_NAS="
+    net.exe use Y: 2>nul | find.exe /I "win11" >nul 2>&1 && set "Y_IS_NAS=1"
+
+    set "Y_HAS_SOURCE="
+    if exist "Y:\sources\install.esd" set "Y_HAS_SOURCE=1"
+    if exist "Y:\sources\install.wim" set "Y_HAS_SOURCE=1"
+
+    set "ALLOW_Z_SWITCH=1"
+    set "Y_IMAGE_TYPE="
+    set "Y_WIM_VERSION="
+    set "Z_IMAGE_TYPE="
+    set "Z_WIM_VERSION="
+
+    if not defined Y_IS_NAS (
+        if exist "Y:\WIS_IMAGE_PROFILE.tag" (
+            call :ReadProfileTag "Y:\WIS_IMAGE_PROFILE.tag" Y
+            if exist "Z:\win11\WIS_IMAGE_PROFILE.tag" (
+                call :ReadProfileTag "Z:\win11\WIS_IMAGE_PROFILE.tag" Z
+                if "!Y_IMAGE_TYPE!"=="" (
+                    set "ALLOW_Z_SWITCH=0"
+                    echo [!] IMP-112: Nevalidan Y:\WIS_IMAGE_PROFILE.tag - zadrzavam izvorni medijum Y:\.
+                    echo [%TIME%] IMP-112 BLOKADA: Y:\WIS_IMAGE_PROFILE.tag nema IMAGE_TYPE - zadrzan Y:\. >> "%WIS_LOG%" 2>nul
+                ) else if "!Y_WIM_VERSION!"=="" (
+                    set "ALLOW_Z_SWITCH=0"
+                    echo [!] IMP-112: Y:\WIS_IMAGE_PROFILE.tag nema WIM_VERSION - zadrzavam izvorni medijum Y:\.
+                    echo [%TIME%] IMP-112 BLOKADA: Y:\WIS_IMAGE_PROFILE.tag nema WIM_VERSION - zadrzan Y:\. >> "%WIS_LOG%" 2>nul
+                ) else if /I not "!Y_IMAGE_TYPE!"=="!Z_IMAGE_TYPE!" (
+                    set "ALLOW_Z_SWITCH=0"
+                    echo [!] IMP-112 BLOKADA: Razlicit profil slike! Y:\=[!Y_IMAGE_TYPE!/!Y_WIM_VERSION!] vs Z:\win11=[!Z_IMAGE_TYPE!/!Z_WIM_VERSION!] - zadrzavam Y:\!
+                    echo [%TIME%] IMP-112 BLOKADA: Neslaganje IMAGE_TYPE Y=[!Y_IMAGE_TYPE!] vs Z=[!Z_IMAGE_TYPE!] - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
+                ) else if /I not "!Y_WIM_VERSION!"=="!Z_WIM_VERSION!" (
+                    set "ALLOW_Z_SWITCH=0"
+                    echo [!] IMP-112 BLOKADA: Razlicita verzija slike! Y:\=[!Y_IMAGE_TYPE!/!Y_WIM_VERSION!] vs Z:\win11=[!Z_IMAGE_TYPE!/!Z_WIM_VERSION!] - zadrzavam Y:\!
+                    echo [%TIME%] IMP-112 BLOKADA: Neslaganje WIM_VERSION Y=[!Y_WIM_VERSION!] vs Z=[!Z_WIM_VERSION!] - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
+                ) else (
+                    echo [+] IMP-112 OK: Profil i verzija se poklapaju [!Y_IMAGE_TYPE! / !Y_WIM_VERSION!] - dozvoljeno prebacivanje na Z:\win11.
+                    echo [%TIME%] IMP-112 OK: Poklapanje WIS_IMAGE_PROFILE.tag [!Y_IMAGE_TYPE! / !Y_WIM_VERSION!] - prebacujem na Z:\win11. >> "%WIS_LOG%" 2>nul
+                )
+            ) else (
+                set "ALLOW_Z_SWITCH=0"
+                echo [!] IMP-112 BLOKADA: Izvorni Y:\ ima WIS_IMAGE_PROFILE.tag [!Y_IMAGE_TYPE!/!Y_WIM_VERSION!], a Z:\win11 nema marker - zadrzavam Y:\!
+                echo [%TIME%] IMP-112 BLOKADA: Z:\win11 nema WIS_IMAGE_PROFILE.tag (Y=[!Y_IMAGE_TYPE!/!Y_WIM_VERSION!]) - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
+            )
+        ) else if defined Y_HAS_SOURCE (
+            if exist "Z:\win11\WIS_IMAGE_PROFILE.tag" (
+                call :ReadProfileTag "Z:\win11\WIS_IMAGE_PROFILE.tag" Z
+                if /I not "!Z_IMAGE_TYPE!"=="lean" (
+                    set "ALLOW_Z_SWITCH=0"
+                    echo [!] IMP-112 BLOKADA: Izvorni Y:\ nema marker, dok Z:\win11 ima profil [!Z_IMAGE_TYPE!/!Z_WIM_VERSION!] - zadrzavam Y:\!
+                    echo [%TIME%] IMP-112 BLOKADA: Y:\ bez taga vs Z:\win11=[!Z_IMAGE_TYPE!/!Z_WIM_VERSION!] - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
+                )
+            )
+        )
+    )
+
+    if "!ALLOW_Z_SWITCH!"=="0" (
+        echo 1 > "X:\WIS_PROFILE_MISMATCH.tag"
+        net.exe use Z: /delete /y >nul 2>&1
+        echo [*] IMP-112: TrueNAS Z:\ je bezbedno otkacen radi zastite izvornog medijuma Y:\.
+        echo [%TIME%] IMP-112: Z:\ otkacen zbog neslaganja profila; aktivan ostaje izvorni Y:\. >> "%WIS_LOG%" 2>nul
+        goto :FinishAccelerate
+    )
+
+    :: Profil se poklapa: oslobadjamo iVentoy port 10445 i prebacujemo Y:\ na TrueNAS SMB 3.1.1
     if exist "T:\iventoy.iso" (
         echo select vdisk file="T:\iventoy.iso" > "X:\wis_detach.txt" 2>nul
         echo detach vdisk >> "X:\wis_detach.txt" 2>nul
         diskpart.exe /s "X:\wis_detach.txt" >nul 2>&1
         del /f /q "X:\wis_detach.txt" >nul 2>&1
-        net.exe use T: /delete /y >nul 2>&1
     )
+    net.exe use T: /delete /y >nul 2>&1
 
-    :: Mapiraj Y: ka \\truenas.servis\WIS\win11 deljenju ako vec nije mapiran na taj SMB share
-    set "Y_IS_NAS="
-    net.exe use Y: 2>nul | find.exe /I "win11" >nul 2>&1 && set "Y_IS_NAS=1"
     if not defined Y_IS_NAS (
+        mountvol.exe Y: /D >nul 2>&1
+        mountvol.exe Y: /P >nul 2>&1
+        net.exe use Y: /delete /y >nul 2>&1
         echo [*] Povezujem TrueNAS SMB 3.1.1 [\\truenas.servis\WIS\win11] na disk Y:\...
         if exist "X:\Windows\System32\WIS-ConnectNAS.cmd" (
             call "X:\Windows\System32\WIS-ConnectNAS.cmd" Y:
@@ -191,6 +262,11 @@ if exist "Z:\win11\sources\install.esd" (
     echo  [+] USPEH: TrueNAS SMB 3.1.1 [Z:\win11\sources\install.esd] aktivan!
     echo  [+] Podrzano do 20 istovremenih instalacija u paraleli!
     echo =======================================================
+) else if exist "Z:\win11\sources\install.wim" (
+    echo =======================================================
+    echo  [+] USPEH: TrueNAS SMB 3.1.1 [Z:\win11\sources\install.wim] aktivan!
+    echo  [+] Podrzano do 20 istovremenih instalacija u paraleli!
+    echo =======================================================
 ) else if exist "Y:\sources\install.esd" (
     echo =======================================================
     echo  [+] USPEH: Instalacioni medijum [Y:\sources\install.esd] aktivan!
@@ -206,3 +282,61 @@ if exist "Z:\win11\sources\install.esd" (
 echo [%TIME%] === WIS WIS-AcceleratePE.cmd zavrsen === >> "%WIS_LOG%" 2>nul
 ver >nul
 exit /b 0
+
+:: ==============================================================================
+:: POMOCNA RUTINA: Bezbedno citanje WIS_IMAGE_PROFILE.tag (IMP-112)
+:: ==============================================================================
+:ReadProfileTag
+set "_TAG_FILE=%~1"
+set "_TAG_PREFIX=%~2"
+if not exist "!_TAG_FILE!" goto :eof
+for /f "usebackq tokens=1,* delims==" %%k in ("!_TAG_FILE!") do (
+    set "_RAW_K=%%k"
+    set "_RAW_V=%%l"
+    if defined _RAW_V (
+        set "_RAW_V=!_RAW_V:"=!"
+        for /f "tokens=* delims= " %%v in ("!_RAW_V!") do set "_CLEAN_V=%%v"
+        if /I "!_RAW_K!"=="IMAGE_TYPE" set "!_TAG_PREFIX!_IMAGE_TYPE=!_CLEAN_V!"
+        if /I "!_RAW_K!"=="WIM_VERSION" set "!_TAG_PREFIX!_WIM_VERSION=!_CLEAN_V!"
+    )
+)
+goto :eof
+
+:: ==============================================================================
+:: POMOCNA RUTINA: WinPE Pre-Format Autopilot Forenzika (IMP-114 Sloj B)
+:: ==============================================================================
+:RunWinPeForensics
+if exist "X:\WIS_WinPE_Forensics_Done.tag" goto :eof
+echo [*] WIS WinPE: Pokrecem pre-format Autopilot forenziku (IMP-114 Sloj B)...
+echo [%TIME%] Pokrecem WinPE pre-format Autopilot forenziku... >> "%WIS_LOG%" 2>nul
+
+set "WIS_WINPE_PS1="
+if exist "X:\Windows\System32\Invoke-WinPeAutopilotForensics.ps1" set "WIS_WINPE_PS1=X:\Windows\System32\Invoke-WinPeAutopilotForensics.ps1"
+if not defined WIS_WINPE_PS1 if exist "X:\Invoke-WinPeAutopilotForensics.ps1" set "WIS_WINPE_PS1=X:\Invoke-WinPeAutopilotForensics.ps1"
+if not defined WIS_WINPE_PS1 if exist "%~dp0Invoke-WinPeAutopilotForensics.ps1" set "WIS_WINPE_PS1=%~dp0Invoke-WinPeAutopilotForensics.ps1"
+if not defined WIS_WINPE_PS1 if exist "Y:\Skripte\Invoke-WinPeAutopilotForensics.ps1" set "WIS_WINPE_PS1=Y:\Skripte\Invoke-WinPeAutopilotForensics.ps1"
+
+if defined WIS_WINPE_PS1 if exist "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "!WIS_WINPE_PS1!" >> "%WIS_LOG%" 2>&1
+    echo 1 > "X:\WIS_WinPE_Forensics_Done.tag"
+    goto :eof
+)
+
+:: Lagani nativni reg.exe fallback ako WinPE slika nema PowerShell komponentu (uz bezuslovni reg unload!)
+for %%p in (C D E F G H I J K L M N O P Q R S U V W) do (
+    if exist "%%p:\Windows\ServiceState\wmansvc\AutopilotDDSZTDFile.json" (
+        echo [!] WinPE-Forensics: Pronadjen zateceni wmansvc\AutopilotDDSZTDFile.json na %%p:\ >> "%WIS_LOG%" 2>nul
+        copy /y "%%p:\Windows\ServiceState\wmansvc\AutopilotDDSZTDFile.json" "X:\wis_winpe_ztd_backup.json" >nul 2>&1
+    )
+    if exist "%%p:\Windows\System32\config\SOFTWARE" (
+        reg.exe load HKLM\WIS_OFFLINE_SW "%%p:\Windows\System32\config\SOFTWARE" >nul 2>&1
+        if not errorlevel 1 (
+            reg.exe query "HKLM\WIS_OFFLINE_SW\Microsoft\Provisioning\Diagnostics\AutoPilot" /s >> "X:\wis_winpe_reg_dump.txt" 2>nul
+            reg.exe query "HKLM\WIS_OFFLINE_SW\Microsoft\Provisioning\AutopilotSettings" /s >> "X:\wis_winpe_reg_dump.txt" 2>nul
+            reg.exe unload HKLM\WIS_OFFLINE_SW >nul 2>&1
+            echo [%TIME%] WinPE-Forensics: Offline SOFTWARE hive sa %%p:\ proveren i bezbedno demontiran (reg unload). >> "%WIS_LOG%" 2>nul
+        )
+    )
+)
+echo 1 > "X:\WIS_WinPE_Forensics_Done.tag"
+goto :eof
