@@ -1743,6 +1743,42 @@ class TestHwTestComponents(unittest.TestCase):
             self.assertIn(tok, tel_cs)
         self.assertIn("SendPartialHwTestReportAsync();", hwt_cs)
 
+    def test_wis_task_279_v355_hwtest_and_gate_contracts(self):
+        """Proverava WIS-TASK-279 (v3.5.5): IMP-99 (aktivni auto-oporavak u PreAutoDriverGate + ukidanje 60s ERROR spama) i IMP-102 HwTest integraciju."""
+        shell_src = (HWTEST_DIR / "HwTestShell.cs").read_text(encoding="utf-8")
+        hwt_cs = (ROOT / "UI" / "MainWindow.HwTest.cs").read_text(encoding="utf-8")
+
+        # IMP-99: ograničeni auto-oporavak (max 1x) + pnputil /restart-device za Code 10 + host re-resolve callback
+        for tok in (
+            "const int maxAutoRecoveryAttempts = 1;",
+            "const double autoRecoveryCooldownSeconds = 60.0;",
+            "const double infoHeartbeatIntervalSeconds = 300.0;",
+            "HasCode10ProblemDevice(",
+            "IsSafePnpInstanceId(",
+            "TryRecoverCode10DevicesViaPnpUtil(",
+            '/restart-device',
+            "SetDriverGateRecoveryHandler(",
+            "signatureChanged",
+        ):
+            self.assertIn(tok, shell_src)
+
+        wf_blk = shell_src.split("public void StartPhase5FullWorkflow(", 1)[1].split("EmitPhase5Step(\"P5.AutoDiag\"", 1)[0]
+        # Uklonjen 60-sekundni ponavljajući ERROR spam za isti gateSig
+        self.assertNotIn("lastGateLogUtc", wf_blk)
+        self.assertIn("infoHeartbeatIntervalSeconds", wf_blk)
+        self.assertIn('statusCb("INFO", liveMsg, heartbeatMsg)', wf_blk)
+
+        # IMP-99 + IMP-102 u MainWindow.HwTest.cs
+        for tok in (
+            "SetDriverGateRecoveryHandler(TriggerDriverGateAutoRecoveryFromHwTest)",
+            "TriggerDriverGateAutoRecoveryFromHwTest(",
+            "CancelEmbeddedPhase5ForRemoteOverride()",
+            "_phase5RemoteAbortRequested",
+        ):
+            self.assertIn(tok, hwt_cs)
+        self.assertIn("ApplyRemoteEmergencyDriverGateUnlock(", shell_src)
+        self.assertIn("NotifyDriverStateRecheck()", shell_src)
+
 
 if __name__ == "__main__":
     unittest.main()

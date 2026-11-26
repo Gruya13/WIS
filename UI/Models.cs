@@ -807,6 +807,10 @@ namespace WIS.UI
         private bool _cloudChecked = false;
         private bool _isRegistered = false;
         private bool _isLocked = false;
+        private bool _confirmedFree = false;
+        private string _binaryVerdict = "NIJE_PROVERENO";
+        private string _queryMode = "";
+        private string _source = "";
         private string _cloudCheckedText = LocalizationService.Get("MdlApCloudWaiting", "Čeka se provera...");
         private string _cloudStatusText = LocalizationService.Get("MdlApCloudConnecting", "Povezivanje sa ztd.dds.microsoft.com...");
         private Brush _cloudStatusBrush = CreateFrozenBrush(140, 140, 140);
@@ -927,7 +931,10 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _isRegistered, value))
                 {
+                    if (value) _confirmedFree = false;
+                    BinaryVerdict = ComputeBinaryVerdict(_matrixCode, _isLocked, _isRegistered, _confirmedFree);
                     UpdateCloudDisplay();
+                    UpdateAlertState();
                 }
             }
         }
@@ -939,9 +946,46 @@ namespace WIS.UI
             {
                 if (SetProperty(ref _isLocked, value))
                 {
+                    if (value) _confirmedFree = false;
+                    BinaryVerdict = ComputeBinaryVerdict(_matrixCode, _isLocked, _isRegistered, _confirmedFree);
+                    UpdateCloudDisplay();
                     UpdateAlertState();
                 }
             }
+        }
+
+        public bool ConfirmedFree
+        {
+            get { return _confirmedFree; }
+            set
+            {
+                bool safeVal = value && !_isRegistered && !_isLocked;
+                if (SetProperty(ref _confirmedFree, safeVal))
+                {
+                    BinaryVerdict = ComputeBinaryVerdict(_matrixCode, _isLocked, _isRegistered, _confirmedFree);
+                    UpdateCloudDisplay();
+                    UpdateAlertState();
+                }
+            }
+        }
+
+        public string BinaryVerdict { get { return _binaryVerdict; } set { SetProperty(ref _binaryVerdict, value); } }
+        public string QueryMode { get { return _queryMode; } set { SetProperty(ref _queryMode, value); } }
+        public string Source { get { return _source; } set { SetProperty(ref _source, value); } }
+
+        public static string ComputeBinaryVerdict(string matrixCode, bool isLocked, bool isRegistered, bool confirmedFree)
+        {
+            string code = (matrixCode ?? "").ToUpperInvariant().Trim();
+            if (isLocked || isRegistered || code == "LOCKED_TENANT" || code == "HIDDEN_LOCK")
+            {
+                return "IMA_AUTOPILOT";
+            }
+            if (confirmedFree && !isRegistered && !isLocked &&
+                (code == "CONFIRMED_CLEAN" || code == "CLEAN" || code == "RELEASED_LOCAL_TRACES"))
+            {
+                return "NEMA_AUTOPILOT";
+            }
+            return "NIJE_PROVERENO";
         }
 
         public string CloudCheckedText { get { return _cloudCheckedText; } set { SetProperty(ref _cloudCheckedText, value); } }
@@ -989,7 +1033,7 @@ namespace WIS.UI
             switch (code)
             {
                 case "LOCKED_TENANT":
-                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_LockedTenant", "🔴 ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)");
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_LockedTenant", "🔴 IMA AUTOPILOT — ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)");
                     StatusDescription = string.Format(LocalizationService.Instance.GetString("ApMatrixDesc_LockedTenant", "Uređaj je registrovan u Microsoft oblaku ({0}). OOBE zahteva nalog korporacije!"), _tenantDomain);
                     RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_LockedTenant", "OBAVEZNO KONTAKTIRATI KORPORACIJU ILI PRODAVCA ZA DEREGISTRACIJU IZ INTUNE-A.");
                     break;
@@ -999,24 +1043,44 @@ namespace WIS.UI
                     RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_ReleasedLocalTraces", "Preporučuje se čista instalacija (Clean Install / OOBE reset) radi brisanja lokalnih sertifikata.");
                     break;
                 case "HIDDEN_LOCK":
-                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_HiddenLock", "🔴 SKRIVENA OPASNOST - ZAKLJUČAN U OBLAKU (DISK OBRISAN)");
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_HiddenLock", "🔴 IMA AUTOPILOT — ZAKLJUČAN U OBLAKU (DISK OBRISAN)");
                     StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_HiddenLock", "Lokalni sistem nema tragova, ali je hardverski hash ovog računara i dalje vezan u Microsoft bazi!");
                     RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_HiddenLock", "Računar ne sme ići u dalju prodaju dok ga vlasnik tenanta ne oslobodi iz Microsoft Intune portala.");
                     break;
+                case "CONFIRMED_CLEAN":
                 case "CLEAN":
-                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_Clean", "🟢 100% ČISTO - UREĐAJ JE POTPUNO SLOBODAN");
-                    StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_Clean", "Hardverski otisak nije registrovan u Microsoft oblaku. Nema lokalnih MDM/Autopilot tragova.");
-                    RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_Clean", "Uređaj je u potpunosti čist i bezbedan za rad bilo kog korisnika.");
+                    if (_confirmedFree && !_isRegistered && !_isLocked)
+                    {
+                        StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_Clean", "🟢 NEMA AUTOPILOT — POTVRĐENO SLOBODAN U OBLAKU");
+                        StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_Clean", "Microsoft ZTD oblak potvrdio je da hardver nije registrovan (Event 807). Nema lokalnih tragova.");
+                        RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_Clean", "Uređaj je u potpunosti čist i bezbedan za rad bilo kog korisnika.");
+                    }
+                    else
+                    {
+                        StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedClean", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
+                        StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedClean", "Lokalni sistem nema tragova, ali Microsoft ZTD oblak nije potvrdio status uređaja. Uređaj se NE može proglasiti slobodnim bez online OOBE provere.");
+                        RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedClean", "OBAVEZNO obezbediti mrežu u OOBE-u ili ponoviti online ZTD proveru pre predaje uređaja.");
+                    }
+                    break;
+                case "UNVERIFIED_LOCAL_TRACES":
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedLocalTraces", "⚠️ NIJE PROVERENO — LOKALNI TRAGOVI (potrebna mreža u OOBE-u)");
+                    StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedLocalTraces", "Pronađeni su registarski tragovi organizacije, ali Microsoft ZTD oblak nije vratio eksplicitnu potvrdu.");
+                    RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedLocalTraces", "Povežite stabilnu internet vezu i kliknite 'Osveži Proveru'.");
                     break;
                 case "OFFLINE_LOCAL_TRACES":
-                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineLocalTraces", "🟡 OFFLINE - DETEKTOVANI LOKALNI TRAGOVI");
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineLocalTraces", "⚠️ NIJE PROVERENO — OFFLINE + LOKALNI TRAGOVI (potrebna mreža u OOBE-u)");
                     StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineLocalTraces", "Nema internet konekcije za proveru oblaka, a pronađeni su registarski tragovi organizacije.");
                     RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineLocalTraces", "Povežite internet i kliknite 'Osveži Proveru' za online proveru.");
                     break;
+                case "UNVERIFIED_CLEAN":
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedClean", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
+                    StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedClean", "Lokalni sistem nema tragova, ali Microsoft ZTD oblak nije potvrdio status uređaja. Uređaj se NE može proglasiti slobodnim bez online OOBE provere.");
+                    RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedClean", "OBAVEZNO obezbediti mrežu u OOBE-u ili ponoviti online ZTD proveru pre predaje uređaja.");
+                    break;
                 case "OFFLINE_CLEAN_LOCAL":
-                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineCleanLocal", "🔵 USLOVNO ČISTO - NEMA LOKALNIH TRAGOVA (OFFLINE)");
-                    StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineCleanLocal", "Lokalni sistem nema tragova, ali je računar bio OFFLINE. Status u oblaku ostaje nepoznat.");
-                    RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineCleanLocal", "Za stopostotnu sigurnost, povežite računar na mrežu i ponovite test.");
+                    StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineCleanLocal", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
+                    StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineCleanLocal", "Računar je bio OFFLINE tokom provere. Status u Microsoft ZTD oblaku nije potvrđen — uređaj NIJE potvrđeno slobodan.");
+                    RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineCleanLocal", "Povežite mrežu u OOBE-u ili kliknite 'Osveži Proveru' za potvrdu iz Microsoft ZTD oblaka.");
                     break;
                 case "PENDING":
                 case "SCANNING":
@@ -1048,24 +1112,26 @@ namespace WIS.UI
 
         private void UpdateCloudDisplay()
         {
-            if (_cloudChecked)
+            if (_isRegistered || _isLocked)
+            {
+                CloudCheckedText = _cloudChecked
+                    ? LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera")
+                    : LocalizationService.Instance.GetString("ApCloudOffline", "Offline / Nije provereno");
+                CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "🔴 IMA AUTOPILOT (Registrovan u Microsoft oblaku)");
+                CloudStatusBrush = CreateFrozenBrush(231, 76, 60);
+            }
+            else if (_confirmedFree)
             {
                 CloudCheckedText = LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera");
-                if (_isRegistered)
-                {
-                    CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "REGISTROVAN U MICROSOFT OBLAKU");
-                    CloudStatusBrush = CreateFrozenBrush(231, 76, 60);
-                }
-                else
-                {
-                    CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "Slobodan (Nije registrovan u oblaku)");
-                    CloudStatusBrush = CreateFrozenBrush(46, 204, 113);
-                }
+                CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "🟢 NEMA AUTOPILOT (Potvrđeno slobodan u oblaku)");
+                CloudStatusBrush = CreateFrozenBrush(46, 204, 113);
             }
             else
             {
-                CloudCheckedText = LocalizationService.Instance.GetString("ApCloudOffline", "Offline / Nije provereno");
-                CloudStatusText = LocalizationService.Instance.GetString("ApCloudNotVerified", "ZTD Oblak nije proveren (Offline)");
+                CloudCheckedText = _cloudChecked
+                    ? LocalizationService.Instance.GetString("ApCloudNotConfirmedShort", "Online bez ZTD potvrde")
+                    : LocalizationService.Instance.GetString("ApCloudOffline", "Offline / Nije provereno");
+                CloudStatusText = LocalizationService.Instance.GetString("ApCloudNotVerified", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
                 CloudStatusBrush = CreateFrozenBrush(241, 196, 15);
             }
         }
@@ -1074,36 +1140,48 @@ namespace WIS.UI
         {
             string lvl = (_statusLevel ?? "").ToUpperInvariant().Trim();
             string code = (_matrixCode ?? "").ToUpperInvariant().Trim();
-            if (_isLocked || lvl == "CRITICAL" || code == "LOCKED_TENANT" || code == "HIDDEN_LOCK")
+            if (_isLocked || _isRegistered || lvl == "CRITICAL" || lvl == "ERROR" || code == "LOCKED_TENANT" || code == "HIDDEN_LOCK")
             {
                 IsAlertActive = true;
+                return;
             }
-            else
+            if (code == "PENDING" || code == "SCANNING")
             {
                 IsAlertActive = false;
+                return;
             }
+            bool isConfirmedClean = _confirmedFree && !_isRegistered && !_isLocked &&
+                (code == "CONFIRMED_CLEAN" || code == "CLEAN");
+            if (isConfirmedClean && (lvl == "OK" || lvl == "SUCCESS"))
+            {
+                IsAlertActive = false;
+                return;
+            }
+            // IMP-114: UNVERIFIED_*, OFFLINE_*, WARNING i svako nepotvrđeno stanje aktivira obavezno upozorenje
+            IsAlertActive = true;
         }
 
         private void UpdateStatusBrushes()
         {
             string lvl = (_statusLevel ?? "").ToUpperInvariant().Trim();
-            switch (lvl)
+            string code = (_matrixCode ?? "").ToUpperInvariant().Trim();
+            BinaryVerdict = ComputeBinaryVerdict(code, _isLocked, _isRegistered, _confirmedFree);
+            if (_isLocked || _isRegistered || lvl == "CRITICAL" || lvl == "ERROR" || code == "LOCKED_TENANT" || code == "HIDDEN_LOCK")
             {
-                case "CRITICAL":
-                case "ERROR":
-                    StatusBrush = CreateFrozenBrush(231, 76, 60);
-                    break;
-                case "WARNING":
-                case "WARN":
-                    StatusBrush = CreateFrozenBrush(241, 196, 15);
-                    break;
-                case "OK":
-                case "SUCCESS":
-                    StatusBrush = CreateFrozenBrush(46, 204, 113);
-                    break;
-                default:
-                    StatusBrush = CreateFrozenBrush(0, 122, 204);
-                    break;
+                StatusBrush = CreateFrozenBrush(231, 76, 60);
+            }
+            else if ((lvl == "OK" || lvl == "SUCCESS") && _confirmedFree && !_isRegistered && !_isLocked &&
+                     (code == "CONFIRMED_CLEAN" || code == "CLEAN"))
+            {
+                StatusBrush = CreateFrozenBrush(46, 204, 113);
+            }
+            else if (code == "PENDING" || code == "SCANNING")
+            {
+                StatusBrush = CreateFrozenBrush(0, 122, 204);
+            }
+            else
+            {
+                StatusBrush = CreateFrozenBrush(241, 196, 15);
             }
             UpdateAlertState();
         }
@@ -4523,6 +4601,9 @@ namespace WIS.UI
                 if (e.PropertyName == "IsAlertActive" ||
                     e.PropertyName == "IsLocked" ||
                     e.PropertyName == "IsRegistered" ||
+                    e.PropertyName == "ConfirmedFree" ||
+                    e.PropertyName == "BinaryVerdict" ||
+                    e.PropertyName == "MatrixCode" ||
                     e.PropertyName == "TenantDomain" ||
                     e.PropertyName == "ProfileTenantDomain" ||
                     e.PropertyName == "StatusTitle" ||
@@ -5482,34 +5563,59 @@ namespace WIS.UI
                 items.Add(OverviewAlertItem.Create("thermal", "WARNING", LocalizationService.Get("MdlAlertThermalWarnTitle", "Povišena temperatura / trotlovanje"), detail, "diagnostics"));
             }
 
-            // 2. Windows Autopilot / MDM
-            if (Autopilot != null && (Autopilot.IsAlertActive || Autopilot.IsLocked || Autopilot.IsRegistered))
+            // 2. Windows Autopilot / MDM (IMP-114: binarni status + obavezno blokirajuće upozorenje kad nije provereno)
+            if (Autopilot != null)
             {
-                string sev = (Autopilot.IsLocked ||
-                    string.Equals(Autopilot.StatusLevel, "CRITICAL", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(Autopilot.StatusLevel, "ERROR", StringComparison.OrdinalIgnoreCase))
-                    ? "CRITICAL"
-                    : "WARNING";
-                string title = Autopilot.IsLocked
-                    ? LocalizationService.Get("MdlAlertApLockedTitle", "Detektovan Windows Autopilot")
-                    : LocalizationService.Get("MdlAlertApMdmTitle", "Detektovan Autopilot / MDM");
-                string tenant = !string.IsNullOrWhiteSpace(Autopilot.ProfileTenantDomain)
-                    ? Autopilot.ProfileTenantDomain
-                    : Autopilot.TenantDomain;
-                if (string.IsNullOrWhiteSpace(tenant) ||
-                    tenant.StartsWith("Nema", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(tenant, LocalizationService.Get("MdlApNoneNotAssigned", "Nema (Nije dodeljen)"), StringComparison.OrdinalIgnoreCase) ||
-                    tenant == "N/A")
+                string apCode = (Autopilot.MatrixCode ?? "").ToUpperInvariant().Trim();
+                bool apScanning = Autopilot.IsScanning || apCode == "PENDING" || apCode == "SCANNING";
+                bool apLocked = Autopilot.IsLocked || Autopilot.IsRegistered || apCode == "LOCKED_TENANT" || apCode == "HIDDEN_LOCK" ||
+                    string.Equals(Autopilot.StatusLevel, "CRITICAL", StringComparison.OrdinalIgnoreCase);
+                bool apConfirmedClean = !apLocked && Autopilot.ConfirmedFree &&
+                    (apCode == "CONFIRMED_CLEAN" || apCode == "CLEAN") &&
+                    (string.Equals(Autopilot.StatusLevel, "OK", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(Autopilot.StatusLevel, "SUCCESS", StringComparison.OrdinalIgnoreCase));
+
+                if (apLocked || Autopilot.IsAlertActive || (!apScanning && !apConfirmedClean))
                 {
-                    tenant = !string.IsNullOrWhiteSpace(Autopilot.StatusTitle)
-                        ? Autopilot.StatusTitle
-                        : LocalizationService.Get("MdlAlertApCheckTab", "Proverite Autopilot karticu za detalje");
+                    string sev = (apLocked || string.Equals(Autopilot.StatusLevel, "ERROR", StringComparison.OrdinalIgnoreCase))
+                        ? "CRITICAL"
+                        : "WARNING";
+                    string title;
+                    string detail;
+                    if (apLocked)
+                    {
+                        title = LocalizationService.Get("MdlAlertApLockedTitle", "🔴 IMA AUTOPILOT");
+                        string tenant = !string.IsNullOrWhiteSpace(Autopilot.ProfileTenantDomain)
+                            ? Autopilot.ProfileTenantDomain
+                            : Autopilot.TenantDomain;
+                        if (string.IsNullOrWhiteSpace(tenant) ||
+                            tenant.StartsWith("Nema", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(tenant, LocalizationService.Get("MdlApNoneNotAssigned", "Nema (Nije dodeljen)"), StringComparison.OrdinalIgnoreCase) ||
+                            tenant == "N/A")
+                        {
+                            detail = !string.IsNullOrWhiteSpace(Autopilot.StatusTitle)
+                                ? Autopilot.StatusTitle
+                                : LocalizationService.Get("MdlAlertApCheckTab", "Proverite Autopilot karticu za detalje");
+                        }
+                        else
+                        {
+                            detail = "Tenant: " + tenant;
+                        }
+                    }
+                    else if (!Autopilot.ConfirmedFree)
+                    {
+                        title = LocalizationService.Get("MdlAlertApUnverifiedTitle", "⚠️ Autopilot NIJE PROVERENO");
+                        detail = LocalizationService.Get("MdlAlertApUnverifiedDetail", "Potrebna mreža u OOBE-u za potvrdu iz Microsoft ZTD oblaka");
+                    }
+                    else
+                    {
+                        title = LocalizationService.Get("MdlAlertApMdmTitle", "Detektovan Autopilot / MDM");
+                        detail = !string.IsNullOrWhiteSpace(Autopilot.StatusTitle)
+                            ? Autopilot.StatusTitle
+                            : LocalizationService.Get("MdlAlertApCheckTab", "Proverite Autopilot karticu za detalje");
+                    }
+                    items.Add(OverviewAlertItem.Create("autopilot", sev, title, detail, "autopilot"));
                 }
-                else
-                {
-                    tenant = "Tenant: " + tenant;
-                }
-                items.Add(OverviewAlertItem.Create("autopilot", sev, title, tenant, "autopilot"));
             }
 
             // 3. Nedostajući ili problematični drajveri

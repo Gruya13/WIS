@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Management;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows;
@@ -87,6 +89,7 @@ namespace WIS.HwTest
         private Func<DriverGateState> _driverGateProvider;
         private Func<DriverGateState> _preAutoDriverGateFreshProvider;
         private Action<string, string, string> _driverGateStatusHandler;
+        private Action<List<string>> _driverGateRecoveryHandler;
         private Action<string> _phase5LiveStatusHandler;
         private Action _openDriversTabHandler;
         private volatile bool _suppressPassiveAutoChecks = false;
@@ -122,6 +125,59 @@ namespace WIS.HwTest
         public void SetDriverGateStatusHandler(Action<string, string, string> handler)
         {
             _driverGateStatusHandler = handler;
+        }
+
+        public void SetDriverGateRecoveryHandler(Action<List<string>> handler)
+        {
+            _driverGateRecoveryHandler = handler;
+        }
+
+        public void NotifyDriverStateRecheck()
+        {
+            RefreshDriverGateUi();
+            try { _driverGateWakeEvent.Set(); } catch { }
+        }
+
+        public bool ApplyRemoteEmergencyDriverGateUnlock(string reason)
+        {
+            string cleanReason = (reason ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
+            if (cleanReason.Length < 5)
+            {
+                cleanReason = string.IsNullOrEmpty(cleanReason)
+                    ? "Daljinsko otključavanje putem ServiceHub-a (unlock_driver_gate)"
+                    : ("ServiceHub override: " + cleanReason);
+            }
+            if (cleanReason.Length > 300)
+            {
+                cleanReason = cleanReason.Substring(0, 300);
+            }
+
+            List<string> problemDevices = null;
+            try
+            {
+                DriverGateState cur = _lastDriverGateState ?? EvaluateEffectiveDriverGateState();
+                if (cur != null && cur.ProblemDevices != null && cur.ProblemDevices.Count > 0)
+                {
+                    problemDevices = new List<string>(cur.ProblemDevices);
+                }
+            }
+            catch { }
+
+            _driverGateEmergencyOverrideReason = cleanReason;
+            _driverGateEmergencyUnlocked = true;
+            PersistManualDriverBypassToDeployState(cleanReason, problemDevices);
+
+            string bypassMsg = "Daljinsko vanredno otključavanje DriverGate (unlock_driver_gate, manual_driver_bypass=true) uz razlog: " + cleanReason;
+            HwTestLogger.Warn("DRIVER_GATE_OVERRIDE", bypassMsg);
+            Action<string, string, string> statusCb = _driverGateStatusHandler;
+            if (statusCb != null)
+            {
+                try { statusCb("WARN", "Faza 5: Daljinski otključan DriverGate — nastavljam testove...", bypassMsg); } catch { }
+            }
+            try { SaveCheckpoint(""); } catch { }
+            RefreshDriverGateUi();
+            try { _driverGateWakeEvent.Set(); } catch { }
+            return true;
         }
 
         public void SetPhase5LiveStatusHandler(Action<string> handler)
@@ -3985,6 +4041,123 @@ namespace WIS.HwTest
             return applicable > 0;
         }
 
+        private static readonly Regex SafePnpInstanceIdRegex = new Regex(
+            @"^[A-Za-z0-9_\\&{}\-\.\+]+$",
+            RegexOptions.Compiled);
+
+        private static bool HasCode10ProblemDevice(DriverGateState state)
+        {
+            if (state == null || state.ProblemDevices == null) return false;
+            for (int i = 0; i < state.ProblemDevices.Count; i++)
+            {
+                string entry = state.ProblemDevices[i];
+                if (!string.IsNullOrEmpty(entry) &&
+                    entry.IndexOf("(Code 10)", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsSafePnpInstanceId(string instanceId)
+        {
+            if (string.IsNullOrWhiteSpace(instanceId)) return false;
+            string trimmed = instanceId.Trim();
+            if (trimmed.Length < 4 || trimmed.Length > 240) return false;
+            return SafePnpInstanceIdRegex.IsMatch(trimmed);
+        }
+
+        private int TryRecoverCode10DevicesViaPnpUtil()
+        {
+            int restartedCount = 0;
+            List<string> code10Ids = new List<string>();
+            try
+            {
+                EnumerationOptions opts = new EnumerationOptions
+                {
+                    Timeout = TimeSpan.FromMilliseconds(2500),
+                    ReturnImmediately = true,
+                    Rewindable = false
+                };
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher(
+                    new ManagementScope(@"root\CIMV2"),
+                    new SelectQuery("SELECT DeviceID, PNPClass, HardwareID, ConfigManagerErrorCode FROM Win32_PnPEntity WHERE ConfigManagerErrorCode = 10"),
+                    opts))
+                {
+                    using (ManagementObjectCollection results = searcher.Get())
+                    {
+                        foreach (ManagementObject mo in results)
+                        {
+                            string devId = mo["DeviceID"] != null ? mo["DeviceID"].ToString().Trim() : "";
+                            string pnpClass = mo["PNPClass"] != null ? mo["PNPClass"].ToString().Trim() : "";
+                            string[] hwIds = mo["HardwareID"] as string[];
+                            bool hasHwId = hwIds != null && hwIds.Length > 0;
+                            if (DriverReadinessGate.IsIgnoredPnpDevice(devId, pnpClass, hasHwId)) continue;
+                            if (!IsSafePnpInstanceId(devId)) continue;
+                            if (!code10Ids.Contains(devId))
+                            {
+                                code10Ids.Add(devId);
+                                if (code10Ids.Count >= 5) break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            string sysDir = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            string pnpUtilExe = !string.IsNullOrEmpty(sysDir) ? Path.Combine(sysDir, "pnputil.exe") : "pnputil.exe";
+            if (!File.Exists(pnpUtilExe)) pnpUtilExe = "pnputil.exe";
+
+            for (int i = 0; i < code10Ids.Count; i++)
+            {
+                string instanceId = code10Ids[i];
+                try
+                {
+                    ProcessStartInfo psi = new ProcessStartInfo
+                    {
+                        FileName = pnpUtilExe,
+                        Arguments = string.Format("/restart-device \"{0}\"", instanceId),
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+                    using (Process p = Process.Start(psi))
+                    {
+                        if (p != null)
+                        {
+                            if (!p.WaitForExit(15000))
+                            {
+                                try { p.Kill(); } catch { }
+                            }
+                            else
+                            {
+                                restartedCount++;
+                                HwTestLogger.Info("PRE_AUTO_DRIVER_GATE", string.Format(
+                                    "IMP-99: pnputil /restart-device \"{0}\" završen (ExitCode={1}).",
+                                    instanceId, p.ExitCode));
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    HwTestLogger.Warn("PRE_AUTO_DRIVER_GATE", string.Format(
+                        "IMP-99: pnputil /restart-device nije uspeo za {0}: {1}",
+                        instanceId, ex.Message));
+                }
+            }
+
+            if (restartedCount > 0)
+            {
+                Thread.Sleep(2500);
+            }
+            return restartedCount;
+        }
+
         public void StartPhase5FullWorkflow(
             Action<string, string, string, string> onStepProgress,
             Action<HwTestRunResult, int, float, float, bool, bool> onPhase5Finished)
@@ -4027,13 +4200,18 @@ namespace WIS.HwTest
                         TryRestoreManualDriverBypassFromDeployState();
                     }));
 
-                    // WIS-TASK-278: PreAutoDriverGate — pre pokretanja ijednog auto_* ili interaktivnog testa
+                    // WIS-TASK-278 / IMP-99: PreAutoDriverGate — pre pokretanja ijednog auto_* ili interaktivnog testa
                     DriverGateState preAutoGate = EvaluatePreAutoDriverGateState();
                     if (preAutoGate != null && !preAutoGate.IsUnlocked && !_driverGateEmergencyUnlocked)
                     {
                         _waitingInPreAutoDriverGate = true;
+                        const int maxAutoRecoveryAttempts = 1;
+                        const double autoRecoveryCooldownSeconds = 60.0;
+                        const double infoHeartbeatIntervalSeconds = 300.0;
+                        int autoRecoveryAttempts = 0;
+                        DateTime lastRecoveryAttemptUtc = DateTime.MinValue;
                         string lastGateSignature = "";
-                        DateTime lastGateLogUtc = DateTime.MinValue;
+                        DateTime lastInfoHeartbeatUtc = DateTime.MinValue;
 
                         while (!_autoStressCancel.IsCancelled && _phase5WorkflowActive && !_uefiBiosRebootRequested)
                         {
@@ -4041,8 +4219,7 @@ namespace WIS.HwTest
                                 ? string.Join(", ", preAutoGate.ProblemDevices.ToArray())
                                 : (preAutoGate.ReasonTitle ?? "Device Manager nije čist");
                             string gateSig = (preAutoGate.ReasonTitle ?? "") + "|" + problemSummary;
-                            bool shouldLogNow = !string.Equals(gateSig, lastGateSignature, StringComparison.Ordinal) ||
-                                                (DateTime.UtcNow - lastGateLogUtc).TotalSeconds >= 60.0;
+                            bool signatureChanged = !string.Equals(gateSig, lastGateSignature, StringComparison.Ordinal);
 
                             string gateLevel = (preAutoGate.ProblemDevices != null && preAutoGate.ProblemDevices.Count > 0 && !preAutoGate.IsDriverInstallActive)
                                 ? "ERROR"
@@ -4054,10 +4231,10 @@ namespace WIS.HwTest
                                 preAutoGate.ReasonTitle ?? "Drajveri nisu spremni",
                                 problemSummary);
 
-                            if (shouldLogNow)
+                            if (signatureChanged)
                             {
                                 lastGateSignature = gateSig;
-                                lastGateLogUtc = DateTime.UtcNow;
+                                lastInfoHeartbeatUtc = DateTime.UtcNow;
                                 if (gateLevel == "ERROR")
                                     HwTestLogger.Error("PRE_AUTO_DRIVER_GATE", fullLogMsg);
                                 else
@@ -4069,12 +4246,83 @@ namespace WIS.HwTest
                                     try { statusCb(gateLevel, liveMsg, fullLogMsg); } catch { }
                                 }
                             }
+                            else if ((DateTime.UtcNow - lastInfoHeartbeatUtc).TotalSeconds >= infoHeartbeatIntervalSeconds)
+                            {
+                                lastInfoHeartbeatUtc = DateTime.UtcNow;
+                                string heartbeatMsg = string.Format(
+                                    "PreAutoDriverGate heartbeat (čekanje bez promene >= 5 min): {0} | Uređaji: {1}",
+                                    preAutoGate.ReasonTitle ?? "Drajveri nisu spremni",
+                                    problemSummary);
+                                HwTestLogger.Info("PRE_AUTO_DRIVER_GATE", heartbeatMsg);
+
+                                Action<string, string, string> statusCb = _driverGateStatusHandler;
+                                if (statusCb != null)
+                                {
+                                    try { statusCb("INFO", liveMsg, heartbeatMsg); } catch { }
+                                }
+                            }
                             else
                             {
                                 Action<string> liveCb = _phase5LiveStatusHandler;
                                 if (liveCb != null)
                                 {
                                     try { liveCb(liveMsg); } catch { }
+                                }
+                            }
+
+                            // IMP-99: Ograničeni aktivni auto-oporavak (1x sa cooldown-om) za blokirane uređaje (posebno Code 10)
+                            bool eligibleForAutoRecovery =
+                                autoRecoveryAttempts < maxAutoRecoveryAttempts &&
+                                !_driverGateEmergencyUnlocked &&
+                                !preAutoGate.IsDriverInstallActive &&
+                                !preAutoGate.HasCode14PendingReboot &&
+                                !preAutoGate.HasBackgroundWuDrivers &&
+                                preAutoGate.ProblemDevices != null &&
+                                preAutoGate.ProblemDevices.Count > 0 &&
+                                (DateTime.UtcNow - lastRecoveryAttemptUtc).TotalSeconds >= autoRecoveryCooldownSeconds;
+
+                            if (eligibleForAutoRecovery)
+                            {
+                                autoRecoveryAttempts++;
+                                lastRecoveryAttemptUtc = DateTime.UtcNow;
+
+                                string recoveryStartMsg = string.Format(
+                                    "IMP-99: Pokrećem ograničeni auto-oporavak drajvera ({0}/{1}) za blokirane uređaje: {2}",
+                                    autoRecoveryAttempts, maxAutoRecoveryAttempts, problemSummary);
+                                HwTestLogger.Info("PRE_AUTO_DRIVER_GATE", recoveryStartMsg);
+                                Action<string, string, string> recCb = _driverGateStatusHandler;
+                                if (recCb != null)
+                                {
+                                    try { recCb("INFO", "Faza 5 (PreAutoDriverGate): Auto-oporavak drajvera (1/1)...", recoveryStartMsg); } catch { }
+                                }
+
+                                if (HasCode10ProblemDevice(preAutoGate))
+                                {
+                                    TryRecoverCode10DevicesViaPnpUtil();
+                                    preAutoGate = EvaluatePreAutoDriverGateState();
+                                    if (preAutoGate == null || preAutoGate.IsUnlocked || _driverGateEmergencyUnlocked)
+                                    {
+                                        break;
+                                    }
+                                }
+
+                                Action<List<string>> hostRecovery = _driverGateRecoveryHandler;
+                                if (hostRecovery != null && !_autoStressCancel.IsCancelled && _phase5WorkflowActive && !_uefiBiosRebootRequested)
+                                {
+                                    try
+                                    {
+                                        hostRecovery(new List<string>(preAutoGate.ProblemDevices));
+                                    }
+                                    catch (Exception recEx)
+                                    {
+                                        HwTestLogger.Warn("PRE_AUTO_DRIVER_GATE", "IMP-99: Host callback za re-resolve drajvera bacio izuzetak: " + recEx.Message);
+                                    }
+
+                                    preAutoGate = EvaluatePreAutoDriverGateState();
+                                    if (preAutoGate == null || preAutoGate.IsUnlocked || _driverGateEmergencyUnlocked)
+                                    {
+                                        break;
+                                    }
                                 }
                             }
 
