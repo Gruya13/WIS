@@ -370,16 +370,22 @@
                 const serial = d.hw && d.hw.serial ? `S/N: ${d.hw.serial}` : (d.client_ip || '');
                 const liveStatus = deviceLiveStatus(d);
 
-                // Autopilot bedž
+                // Autopilot bedž (IMP-114 kanonski binarni model bez lažnog zelenog)
                 const ap = d.autopilot || {};
-                const apStatus = ap.status || (d.hw && d.hw.autopilot_status) || 'Nepoznato';
+                const apStatus = ap.status || (d.hw && d.hw.autopilot_status) || '';
+                const apVerdict = String(ap.binary_verdict || '').toUpperCase();
+                const apTenant = ap.tenant_domain || ap.tenant || ap.assigned_device_name || '';
                 let apBadge = '';
-                if (apStatus === 'Autopilot') {
-                    apBadge = `<span class="header-badge" style="background:rgba(239,68,68,0.25); color:#ef4444; border:1px solid #ef4444; font-weight:bold;">🚨 ! AUTOPILOT REGISTROVAN (${escapeHtml(ap.tenant || 'Zaključan')})</span>`;
+                if (ap.is_locked === true || apVerdict === 'IMA_AUTOPILOT' || apStatus === 'Autopilot') {
+                    apBadge = `<span class="header-badge" style="background:rgba(239,68,68,0.25); color:#ef4444; border:1px solid #ef4444; font-weight:bold;">🔴 IMA AUTOPILOT (${escapeHtml(apTenant || 'Zaključan')})</span>`;
+                } else if (apVerdict === 'NEMA_AUTOPILOT' && ap.confirmed_free === true) {
+                    apBadge = `<span class="header-badge" style="background:rgba(34,197,94,0.2); color:#22c55e; border:1px solid #22c55e;">🟢 NEMA AUTOPILOT</span>`;
+                } else if (apVerdict === 'NIJE_PROVERENO' || ap.matrix_code) {
+                    apBadge = `<span class="header-badge" style="background:rgba(234,179,8,0.22); color:#eab308; border:1px solid #eab308; font-weight:600;">⚠️ NIJE PROVERENO</span>`;
                 } else if (apStatus === 'AadMdm') {
                     apBadge = `<span class="header-badge" style="background:rgba(234,179,8,0.2); color:#eab308; border:1px solid #eab308;">⚠️ ~ AAD/MDM</span>`;
-                } else if (apStatus === 'Clean') {
-                    apBadge = `<span class="header-badge" style="background:rgba(34,197,94,0.2); color:#22c55e; border:1px solid #22c55e;">✓ * ČISTO</span>`;
+                } else if (apStatus === 'Clean' && ap.confirmed_free === true) {
+                    apBadge = `<span class="header-badge" style="background:rgba(34,197,94,0.2); color:#22c55e; border:1px solid #22c55e;">🟢 NEMA AUTOPILOT</span>`;
                 }
 
                 // SMART / Hardware Health bedž
@@ -1463,6 +1469,20 @@
 
             const hw = data.hw || {};
             const ap = data.autopilot || {};
+            const apVerdict = String(ap.binary_verdict || '').toUpperCase();
+            const apTenant = ap.tenant_domain || ap.tenant || '';
+            let apDisplayHtml = escapeHtml(ap.status || 'Nepoznato');
+            if (ap.is_locked === true || apVerdict === 'IMA_AUTOPILOT' || ap.status === 'Autopilot') {
+                apDisplayHtml = `<span style="color:#ef4444; font-weight:700;">🔴 IMA AUTOPILOT</span>${apTenant ? ' (' + escapeHtml(apTenant) + ')' : ''}${ap.assigned_device_name ? ' [' + escapeHtml(ap.assigned_device_name) + ']' : ''}`;
+            } else if (apVerdict === 'NEMA_AUTOPILOT' && ap.confirmed_free === true) {
+                apDisplayHtml = `<span style="color:#22c55e; font-weight:700;">🟢 NEMA AUTOPILOT</span>`;
+            } else if (apVerdict === 'NIJE_PROVERENO' || ap.matrix_code) {
+                apDisplayHtml = `<span style="color:#eab308; font-weight:700;">⚠️ NIJE PROVERENO</span>${ap.matrix_code ? ' (' + escapeHtml(ap.matrix_code) + ')' : ''}`;
+            } else if (apTenant) {
+                apDisplayHtml += ' (' + escapeHtml(apTenant) + ')';
+            }
+            const imgType = data.image_type || 'lean';
+            const wimVer = data.wim_version || '';
             const bm = data.benchmark || null;
             let bmHtml = '';
             if (bm && typeof bm === 'object') {
@@ -1487,7 +1507,8 @@
                         <div><strong>🔢 Serijski broj:</strong> ${escapeHtml(data.serial_number || hw.serial || 'N/A')}</div>
                         <div><strong>⏱️ Trajanje:</strong> ${escapeHtml(data.duration_formatted || 'N/A')} (${data.duration_seconds || 0}s)</div>
                         <div><strong>🏢 Model:</strong> ${escapeHtml(hw.manufacturer || '')} ${escapeHtml(hw.model || '')}</div>
-                        <div><strong>🛡️ Autopilot:</strong> ${escapeHtml(ap.status || 'Nepoznato')} ${ap.tenant ? '(' + escapeHtml(ap.tenant) + ')' : ''}</div>
+                        <div><strong>🛡️ Autopilot:</strong> ${apDisplayHtml}</div>
+                        <div><strong>💿 WIM Profil:</strong> ${escapeHtml(imgType)}${wimVer && wimVer !== 'unknown' ? ' (' + escapeHtml(wimVer) + ')' : ''}</div>
                         <div><strong>📅 Datum servisa:</strong> ${escapeHtml(data.timestamp || 'N/A')}</div>
                     </div>
                     ${bmHtml}

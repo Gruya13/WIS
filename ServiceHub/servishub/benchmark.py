@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional
 
 from servishub.drivers.cache import sanitize_id
 from servishub.model_profiles import get_profiles_dir, list_model_profiles, normalize_model_name
-from servishub.reports import compute_handover_status
+from servishub.reports import (
+    compute_handover_status,
+    extract_image_profile,
+    merge_autopilot_status,
+    merge_image_profile,
+)
 
 _BENCHMARK_CACHE_LOCK = threading.Lock()
 _PARSED_REPORTS_CACHE: Dict[str, Dict[str, tuple]] = {}
@@ -208,9 +213,12 @@ def extract_device_benchmark(report_data: dict) -> dict:
     raw_active_hw = hwtest_summary.get("active_hwtest_sec")
     op_wait_sec = round(_safe_float(raw_op_wait, 0.0), 1) if raw_op_wait is not None else None
     active_hw_sec = round(_safe_float(raw_active_hw, 0.0), 1) if raw_active_hw is not None else None
+    img_type, wim_ver, _ = extract_image_profile(report_data)
 
     return {
         "has_benchmark": bool(bm),
+        "image_type": img_type,
+        "wim_version": wim_ver,
         "phase_durations_sec": phase_durations,
         "total_duration_sec": round(dur_sec, 1) if dur_sec > 0 else 0,
         "cache_hits": hits,
@@ -357,6 +365,8 @@ def _merge_report_records(
 
     merged = dict(older)
     for k, v in newer.items():
+        if k in ("image_type", "wim_version", "autopilot"):
+            continue
         if isinstance(v, dict):
             old_v = merged.get(k)
             if isinstance(old_v, dict) and old_v:
@@ -378,6 +388,16 @@ def _merge_report_records(
                 merged[k] = v
         elif v not in (None, ""):
             merged[k] = v
+
+    img_t, wim_v = merge_image_profile(older, newer)
+    if any(k in older or k in newer for k in ("image_type", "wim_version", "run_meta", "image_profile")):
+        merged["image_type"] = img_t
+        if wim_v != "unknown" or "wim_version" in older or "wim_version" in newer:
+            merged["wim_version"] = wim_v
+
+    merged_ap = merge_autopilot_status(older.get("autopilot"), newer.get("autopilot"))
+    if merged_ap:
+        merged["autopilot"] = merged_ap
 
     return (best_ts, merged)
 
@@ -574,6 +594,15 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
     legacy_durations: List[float] = []
     op_wait_samples: List[float] = []
     active_hw_samples: List[float] = []
+    image_type_buckets: Dict[str, dict] = {
+        img_k: {
+            "total": 0,
+            "successful": 0,
+            "durations": [],
+            "phase_buckets": {pk: [] for pk in PHASE_KEYS},
+        }
+        for img_k in ("preinstalled", "lean")
+    }
 
     alias_map = _build_model_alias_map()
     sorted_records = sorted(records_by_id.items(), key=lambda x: x[1][0], reverse=True)
@@ -613,10 +642,19 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
         if bm.get("active_hwtest_sec") is not None:
             active_hw_samples.append(bm["active_hwtest_sec"])
 
+        img_type_key = bm.get("image_type") if bm.get("image_type") in image_type_buckets else "lean"
+        itb = image_type_buckets[img_type_key]
+        itb["total"] += 1
+        if ok:
+            itb["successful"] += 1
+        if dur > 0 and not is_outlier_dur:
+            itb["durations"].append(dur)
+
         for pk in PHASE_KEYS:
             pv = _safe_float(bm["phase_durations_sec"].get(pk), 0.0)
             if 0 < pv <= OUTLIER_DURATION_THRESHOLD_SEC and not is_outlier_dur:
                 phase_buckets[pk].append(pv)
+                itb["phase_buckets"][pk].append(pv)
 
         total_hits += bm["cache_hits"]
         total_misses += bm["cache_misses"]
@@ -660,6 +698,8 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
                 "device_id": dev_id,
                 "computer_name": rec.get("computer_name") or dev_id,
                 "model": model_label,
+                "image_type": bm.get("image_type", "lean"),
+                "wim_version": bm.get("wim_version", "unknown"),
                 "status": effective_run_st,
                 "handover_status": handover_st,
                 "success": ok,
@@ -716,6 +756,53 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
     sorted_v3_durs = sorted(v3_durations)
     sorted_leg_durs = sorted(legacy_durations)
 
+    by_image_type = {}
+    for img_k in ("preinstalled", "lean"):
+        bkt = image_type_buckets[img_k]
+        b_total = bkt["total"]
+        b_succ = bkt["successful"]
+        b_durs = sorted(bkt["durations"])
+        b_p4 = sorted(bkt["phase_buckets"]["Phase4"])
+        b_phase_avgs = {
+            pk: (round(sum(bkt["phase_buckets"][pk]) / len(bkt["phase_buckets"][pk]), 1) if bkt["phase_buckets"][pk] else 0.0)
+            for pk in PHASE_KEYS
+        }
+        by_image_type[img_k] = {
+            "total": b_total,
+            "successful": b_succ,
+            "success_rate_pct": round((b_succ / float(b_total)) * 100.0, 1) if b_total > 0 else None,
+            "avg_duration_seconds": round(sum(b_durs) / len(b_durs), 1) if b_durs else 0.0,
+            "p50_duration_seconds": _percentile(b_durs, 50.0),
+            "p90_duration_seconds": _percentile(b_durs, 90.0),
+            "avg_phase4_seconds": round(sum(b_p4) / len(b_p4), 1) if b_p4 else 0.0,
+            "p50_phase4_seconds": _percentile(b_p4, 50.0),
+            "phase4_samples": len(b_p4),
+            "phase_averages_sec": b_phase_avgs,
+        }
+
+    pre_stats = by_image_type["preinstalled"]
+    lean_stats = by_image_type["lean"]
+    p4_savings_sec = (
+        round(lean_stats["avg_phase4_seconds"] - pre_stats["avg_phase4_seconds"], 1)
+        if (lean_stats["phase4_samples"] > 0 and pre_stats["phase4_samples"] > 0)
+        else None
+    )
+    p4_savings_pct = (
+        round((p4_savings_sec / lean_stats["avg_phase4_seconds"]) * 100.0, 1)
+        if (p4_savings_sec is not None and lean_stats["avg_phase4_seconds"] > 0)
+        else None
+    )
+    tot_savings_sec = (
+        round(lean_stats["avg_duration_seconds"] - pre_stats["avg_duration_seconds"], 1)
+        if (len(image_type_buckets["lean"]["durations"]) > 0 and len(image_type_buckets["preinstalled"]["durations"]) > 0)
+        else None
+    )
+    tot_savings_pct = (
+        round((tot_savings_sec / lean_stats["avg_duration_seconds"]) * 100.0, 1)
+        if (tot_savings_sec is not None and lean_stats["avg_duration_seconds"] > 0)
+        else None
+    )
+
     result = {
         "status": "ok",
         "total_installations": total,
@@ -729,6 +816,23 @@ def compute_fleet_benchmark_summary(fleet_store: Any = None, reports_dir: Option
         "outlier_sessions_excluded": outlier_sessions_excluded,
         "phase_averages_sec": phase_averages,
         "bottleneck_phase": bottleneck_phase,
+        "by_image_type": by_image_type,
+        "image_type_comparison": {
+            "preinstalled": {
+                "total": pre_stats["total"],
+                "avg_phase4_seconds": pre_stats["avg_phase4_seconds"],
+                "avg_duration_seconds": pre_stats["avg_duration_seconds"],
+            },
+            "lean": {
+                "total": lean_stats["total"],
+                "avg_phase4_seconds": lean_stats["avg_phase4_seconds"],
+                "avg_duration_seconds": lean_stats["avg_duration_seconds"],
+            },
+            "phase4_savings_seconds": p4_savings_sec,
+            "phase4_savings_pct": p4_savings_pct,
+            "total_savings_seconds": tot_savings_sec,
+            "total_savings_pct": tot_savings_pct,
+        },
         "cohorts": {
             "v3_modern": {
                 "total": v3_total,
