@@ -18,6 +18,7 @@ Funkcionalnosti:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -35,6 +36,18 @@ TMP_SCAN_DIRS: Tuple[str, ...] = (
     "/mnt/TK_NAS/WIS/shared/Drivers/Harvested",
     "/mnt/TK_NAS/ServiceHub/data",
 )
+
+# IMP-110: Svi aktivni i sekundarni releases/ koreni na TrueNAS-u (uz current.json + keep_last=3 zaštitu)
+RELEASE_ROOT_DIRS: Tuple[str, ...] = (
+    "/mnt/TK_NAS/ServiceHub/data/cache",
+    "/mnt/TK_NAS/ServiceHub/storage/cache",
+    "/mnt/TK_NAS/Servis/servis-hub/storage/cache",
+    "/mnt/TK_NAS/WIS/shared",
+    "/mnt/TK_NAS/WIS/shared/cache",
+    "/mnt/TK_NAS/Servis/WIS",
+    "/mnt/TK_NAS/Servis/WIS/cache",
+)
+RELEASE_KEEP_LAST = 3
 
 ORPHAN_MAX_AGE_SEC = 1800  # 30 minuta
 LOW_DISK_THRESHOLD_GB = 12.0
@@ -348,6 +361,212 @@ def _evict_lru_bundles(
     return {"removed": removed, "freed_bytes": freed, "skipped_open": skipped_open}
 
 
+def prune_old_releases_dir(
+    root_dir: str,
+    keep_last: int = RELEASE_KEEP_LAST,
+    dry_run: bool = False,
+    open_files_fn=get_open_files_via_lsof,
+) -> Dict[str, object]:
+    """
+    Briše zastarela izdanja iz `<root_dir>/releases/` uz očuvanje najmanje `keep_last` (3)
+    najnovijih foldera, apsolutnu zaštitu aktivnog `release_id` iz `<root_dir>/current.json`,
+    strogu symlink / path-traversal zaštitu i `lsof` proveru otvorenih fajlova (IMP-110).
+    """
+    keep_n = max(0, int(keep_last))
+    result: Dict[str, object] = {
+        "status": "ok",
+        "root_dir": root_dir,
+        "active_release_id": None,
+        "kept": [],
+        "removed": [],
+        "freed_bytes": 0,
+        "skipped_open": 0,
+        "lsof_ok": True,
+    }
+    if not root_dir or os.path.islink(root_dir) or not os.path.isdir(root_dir):
+        return result
+
+    real_root = os.path.realpath(root_dir)
+    current_file = os.path.join(real_root, "current.json")
+    active_id: Optional[str] = None
+    if os.path.islink(current_file):
+        # Fail-safe: symlink current.json -> ne briši ništa u ovom korenu
+        result["status"] = "skipped_symlink_current"
+        return result
+    if os.path.isfile(current_file):
+        try:
+            if os.path.commonpath([real_root, os.path.realpath(current_file)]) != real_root:
+                result["status"] = "skipped_unsafe_current"
+                return result
+            with open(current_file, "r", encoding="utf-8") as cf:
+                cur_data = json.load(cf)
+            if isinstance(cur_data, dict):
+                raw_id = str(cur_data.get("release_id") or "").strip()
+                if raw_id:
+                    active_id = raw_id
+        except Exception:
+            # Fail-safe: oštećen ili nečitljiv current.json -> ne briši ništa!
+            result["status"] = "skipped_unreadable_current"
+            return result
+    result["active_release_id"] = active_id
+
+    releases_dir = os.path.join(real_root, "releases")
+    if os.path.islink(releases_dir) or not os.path.isdir(releases_dir):
+        return result
+    real_releases = os.path.realpath(releases_dir)
+    if os.path.commonpath([real_root, real_releases]) != real_root:
+        return result
+
+    candidates: List[Tuple[float, str, str]] = []
+    try:
+        with os.scandir(real_releases) as it:
+            entries = list(it)
+    except OSError:
+        return result
+
+    for entry in entries:
+        name = entry.name
+        if not name or name.startswith(".") or ".." in name or "/" in name or "\\" in name:
+            continue
+        if entry.is_symlink() or os.path.islink(entry.path):
+            continue
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            real_target = os.path.realpath(entry.path)
+            if os.path.commonpath([real_releases, real_target]) != real_releases:
+                continue
+            st = entry.stat(follow_symlinks=False)
+            sort_ts = float(st.st_mtime)
+            meta_file = os.path.join(real_target, "payload_meta.json")
+            if os.path.isfile(meta_file) and not os.path.islink(meta_file):
+                try:
+                    sort_ts = max(sort_ts, float(os.path.getmtime(meta_file)))
+                except OSError:
+                    pass
+            candidates.append((sort_ts, name, real_target))
+        except (OSError, ValueError):
+            continue
+
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    protected: Set[str] = {name for _, name, _ in candidates[:keep_n]}
+    if active_id:
+        protected.add(active_id)
+
+    to_delete: List[Tuple[str, str, List[str], int]] = []
+    all_check_files: List[str] = []
+
+    for _, name, ep in candidates:
+        if name in protected:
+            result["kept"].append(name)  # type: ignore[union-attr]
+            continue
+        rel_files: List[str] = []
+        dir_bytes = 0
+        has_unsafe = False
+        for rdir, dirnames, files in os.walk(ep, followlinks=False):
+            dirnames[:] = [d for d in sorted(dirnames) if not os.path.islink(os.path.join(rdir, d))]
+            for fn in sorted(files):
+                fp = os.path.join(rdir, fn)
+                if os.path.islink(fp):
+                    continue
+                try:
+                    real_fp = os.path.realpath(fp)
+                    if os.path.commonpath([ep, real_fp]) != ep:
+                        has_unsafe = True
+                        continue
+                    dir_bytes += int(os.lstat(real_fp).st_size)
+                    rel_files.append(real_fp)
+                except (OSError, ValueError):
+                    continue
+        if has_unsafe:
+            result["kept"].append(name)  # type: ignore[union-attr]
+            continue
+        to_delete.append((name, ep, rel_files, dir_bytes))
+        all_check_files.extend(rel_files)
+
+    if not to_delete:
+        return result
+
+    open_map: Dict[str, str] = {}
+    lsof_ok = True
+    if all_check_files:
+        open_map, lsof_ok = open_files_fn(all_check_files)
+    result["lsof_ok"] = bool(lsof_ok)
+    if not lsof_ok:
+        for name, _, _, _ in to_delete:
+            result["kept"].append(name)  # type: ignore[union-attr]
+        result["skipped_open"] = len(to_delete)
+        return result
+
+    for name, ep, rel_files, dir_bytes in to_delete:
+        if any(rf in open_map for rf in rel_files):
+            result["kept"].append(name)  # type: ignore[union-attr]
+            result["skipped_open"] = int(result["skipped_open"]) + 1  # type: ignore[arg-type]
+            continue
+        if dry_run:
+            result["removed"].append(name)  # type: ignore[union-attr]
+            result["freed_bytes"] = int(result["freed_bytes"]) + dir_bytes  # type: ignore[arg-type]
+            continue
+        try:
+            if os.path.islink(ep) or os.path.commonpath([real_releases, os.path.realpath(ep)]) != real_releases:
+                result["kept"].append(name)  # type: ignore[union-attr]
+                continue
+            shutil.rmtree(ep)
+            result["removed"].append(name)  # type: ignore[union-attr]
+            result["freed_bytes"] = int(result["freed_bytes"]) + dir_bytes  # type: ignore[arg-type]
+        except (OSError, ValueError):
+            result["kept"].append(name)  # type: ignore[union-attr]
+
+    return result
+
+
+def prune_nas_releases(
+    release_roots: Sequence[str] = RELEASE_ROOT_DIRS,
+    keep_last: int = RELEASE_KEEP_LAST,
+    dry_run: bool = False,
+    open_files_fn=get_open_files_via_lsof,
+) -> Dict[str, object]:
+    """
+    Primenjuje `prune_old_releases_dir(keep_last=3)` uz `current.json` zaštitu na sve
+    konfigurisane/sekundarne `releases/` korene na TrueNAS-u (deduplikovano po realpath).
+    """
+    seen_real: Set[str] = set()
+    roots_results: Dict[str, Dict[str, object]] = {}
+    total_removed = 0
+    total_freed = 0
+    total_skipped_open = 0
+    all_lsof_ok = True
+
+    for root in release_roots:
+        r = str(root or "").strip()
+        if not r or os.path.islink(r) or not os.path.isdir(r):
+            continue
+        real_r = os.path.realpath(r)
+        if real_r in seen_real:
+            continue
+        seen_real.add(real_r)
+        res = prune_old_releases_dir(
+            r,
+            keep_last=keep_last,
+            dry_run=dry_run,
+            open_files_fn=open_files_fn,
+        )
+        roots_results[r] = res
+        total_removed += len(res.get("removed") or [])  # type: ignore[arg-type]
+        total_freed += int(res.get("freed_bytes") or 0)  # type: ignore[arg-type]
+        total_skipped_open += int(res.get("skipped_open") or 0)  # type: ignore[arg-type]
+        if not res.get("lsof_ok", True):
+            all_lsof_ok = False
+
+    return {
+        "removed": total_removed,
+        "freed_bytes": total_freed,
+        "skipped_open": total_skipped_open,
+        "lsof_ok": all_lsof_ok,
+        "roots": roots_results,
+    }
+
+
 def run_space_guard(
     bundles_dir: str = BUNDLES_DIR,
     tmp_scan_dirs: Sequence[str] = TMP_SCAN_DIRS,
@@ -358,10 +577,14 @@ def run_space_guard(
     now: Optional[float] = None,
     open_files_fn=get_open_files_via_lsof,
     disk_usage_fn=shutil.disk_usage,
+    release_roots: Sequence[str] = RELEASE_ROOT_DIRS,
+    keep_last_releases: int = RELEASE_KEEP_LAST,
 ) -> Dict[str, object]:
     """
     Glavni prolaz Space Guard-a:
     - Uvek (i u NORMAL režimu) čisti siroče temp/lock fajlove starije od 30 min (`1800s`).
+    - Uvek (i u NORMAL režimu) rotira zastarela izdanja u svim NAS `releases/` korenima
+      (`keep_last=3` uz `current.json` i `lsof` zaštitu — IMP-110).
     - Ako je slobodan prostor ispod `low_disk_threshold_gb` (`12 GB`), prelazi u `LOW_DISK`
       režim i radi LRU evikciju najstarijih bundle fajlova.
     """
@@ -390,9 +613,16 @@ def run_space_guard(
         open_files_fn=open_files_fn,
     )
 
+    releases_res = prune_nas_releases(
+        release_roots=release_roots,
+        keep_last=keep_last_releases,
+        dry_run=dry_run,
+        open_files_fn=open_files_fn,
+    )
+
     bundles_evicted = 0
     bundles_freed_bytes = 0
-    skipped_open = int(orphan_res["skipped_open"])
+    skipped_open = int(orphan_res["skipped_open"]) + int(releases_res["skipped_open"])
 
     if mode == "LOW_DISK":
         need_bytes = int(max(0.0, float(target_free_gb) - free_gb) * (1024.0 ** 3))
@@ -406,8 +636,10 @@ def run_space_guard(
         bundles_freed_bytes = evict_res["freed_bytes"]
         skipped_open += evict_res["skipped_open"]
 
-    total_removed = int(orphan_res["removed"]) + bundles_evicted
-    total_freed = int(orphan_res["freed_bytes"]) + bundles_freed_bytes
+    releases_removed = int(releases_res["removed"])
+    releases_freed_bytes = int(releases_res["freed_bytes"])
+    total_removed = int(orphan_res["removed"]) + bundles_evicted + releases_removed
+    total_freed = int(orphan_res["freed_bytes"]) + bundles_freed_bytes + releases_freed_bytes
 
     return {
         "timestamp": datetime.now().isoformat(),
@@ -417,22 +649,44 @@ def run_space_guard(
         "removed": total_removed,
         "orphan_tmp_removed": int(orphan_res["removed"]),
         "bundles_removed": bundles_evicted,
+        "releases_removed": releases_removed,
+        "releases_freed_bytes": releases_freed_bytes,
+        "releases_details": releases_res["roots"],
         "freed_bytes": total_freed,
         "skipped_open": skipped_open,
-        "lsof_ok": bool(orphan_res["lsof_ok"]),
+        "lsof_ok": bool(orphan_res["lsof_ok"]) and bool(releases_res["lsof_ok"]),
         "dry_run": dry_run,
     }
 
 
+def _resolve_cli_release_roots(cli_roots: Optional[Sequence[str]] = None) -> Tuple[str, ...]:
+    roots: List[str] = list(RELEASE_ROOT_DIRS)
+    env_raw = os.environ.get("WIS_RELEASE_ROOTS", "").strip() or os.environ.get("SERVIS_RELEASE_ROOTS", "").strip()
+    if env_raw:
+        for chunk in env_raw.replace(",", os.pathsep).split(os.pathsep):
+            c = chunk.strip()
+            if c and c not in roots:
+                roots.append(c)
+    if cli_roots:
+        for item in cli_roots:
+            c = str(item or "").strip()
+            if c and c not in roots:
+                roots.append(c)
+    return tuple(roots)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="WIS NAS Space Guard (v3.5.4)")
+    parser = argparse.ArgumentParser(description="WIS NAS Space Guard (v3.5.5)")
     parser.add_argument("--bundles-dir", default=BUNDLES_DIR)
     parser.add_argument("--min-free-gb", type=float, default=LOW_DISK_THRESHOLD_GB)
     parser.add_argument("--target-free-gb", type=float, default=TARGET_FREE_GB)
     parser.add_argument("--orphan-age-sec", type=int, default=ORPHAN_MAX_AGE_SEC)
+    parser.add_argument("--release-root", action="append", default=[])
+    parser.add_argument("--keep-last-releases", type=int, default=RELEASE_KEEP_LAST)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
+    eff_release_roots = _resolve_cli_release_roots(args.release_root)
     res = run_space_guard(
         bundles_dir=args.bundles_dir,
         tmp_scan_dirs=TMP_SCAN_DIRS,
@@ -440,11 +694,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         target_free_gb=args.target_free_gb,
         orphan_max_age_sec=args.orphan_age_sec,
         dry_run=args.dry_run,
+        release_roots=eff_release_roots,
+        keep_last_releases=args.keep_last_releases,
     )
     print(
         f"[SPACE_GUARD] mode={res['mode']}, free={res['free_gb']}GB, "
         f"bundles_before={res['bundles_before_gb']}GB, removed={res['removed']}, "
-        f"orphan_tmp={res['orphan_tmp_removed']}, skipped_open={res['skipped_open']}"
+        f"orphan_tmp={res['orphan_tmp_removed']}, releases_removed={res['releases_removed']}, "
+        f"skipped_open={res['skipped_open']}"
     )
     return 0
 

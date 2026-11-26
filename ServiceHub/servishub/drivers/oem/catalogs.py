@@ -33,7 +33,6 @@ CATALOG_URLS: Dict[str, str] = {
     "dell": "https://downloads.dell.com/catalog/DriverPackCatalog.cab",
     "hp": "https://hpia.hpcloud.hp.com/downloads/driverpackcatalog/HPClientDriverPackCatalog.cab",
     "lenovo": "https://download.lenovo.com/cdrt/td/catalogv2.xml",
-    "microsoft": "https://download.microsoft.com/download/surface/catalog.json",
     "fujitsu": "https://support.ts.fujitsu.com/DeskUpdate/Catalog/DeskUpdateCatalog.xml",
 }
 
@@ -95,25 +94,57 @@ def detect_oem_vendor(manufacturer: str = "", model: str = "") -> str:
     combined = f"{manufacturer or ''} {model or ''}".strip().upper()
     if not combined:
         return ""
-    if any(k in combined for k in ("LENOVO", "THINKPAD", "THINKCENTRE", "IDEAPAD", "THINKBOOK", "YOGA", "LEGION")):
+
+    # 1. Eksplicitni nazivi proizvođača / brendova (sprečava kolizije serija poput "ASUS ... Creator")
+    if "LENOVO" in combined:
         return "lenovo"
-    if any(k in combined for k in ("DELL", "LATITUDE", "OPTIPLEX", "PRECISION", "XPS", "VOSTRO", "INSPIRON")):
+    if "DELL" in combined:
         return "dell"
-    if any(k in combined for k in ("HEWLETT", "HP ", " HP", "HP\t", "ELITEBOOK", "PROBOOK", "ZBOOK", "ELITEDESK", "PRODESK")) or combined == "HP":
+    if "HEWLETT" in combined or combined == "HP" or re.search(r"(?<![A-Z0-9])HP(?![A-Z0-9])", combined):
         return "hp"
-    # MSI mora biti proveren pre/odvojeno od MICROSOFT ('MICRO-STAR' != 'MICROSOFT', word-boundary MSI)
+    # MSI mora biti proveren odvojeno od MICROSOFT ('MICRO-STAR' != 'MICROSOFT', word-boundary MSI)
     if "MICRO-STAR" in combined or "MICRO STAR" in combined or re.search(r"(?<![A-Z0-9])MSI(?![A-Z0-9])", combined):
         return "msi"
     # Microsoft Surface zahteva SURFACE (kako Hyper-V Virtual Machine sa Microsoft Corporation ne bi bio Surface)
     if re.search(r"(?<![A-Z0-9])SURFACE(?![A-Z0-9])", combined):
         return "microsoft"
-    if re.search(r"(?<![A-Z0-9])(FUJITSU|LIFEBOOK|ESPRIMO|CELSIUS)(?![A-Z0-9])", combined):
+    if re.search(r"(?<![A-Z0-9])FUJITSU(?![A-Z0-9])", combined):
         return "fujitsu"
-    if re.search(r"(?<![A-Z0-9])(ASUS|ASUSTEK|ZENBOOK|EXPERTBOOK|TUF|ROG)(?![A-Z0-9])", combined):
+    if re.search(r"(?<![A-Z0-9])(ASUS|ASUSTEK)(?![A-Z0-9])", combined):
         return "asus"
-    if re.search(r"(?<![A-Z0-9])(ACER|TRAVELMATE|ASPIRE|NITRO)(?![A-Z0-9])", combined):
+    if re.search(r"(?<![A-Z0-9])ACER(?![A-Z0-9])", combined):
         return "acer"
-    if re.search(r"(?<![A-Z0-9])(DYNABOOK|TOSHIBA|TECRA|PORTEGE|PORTÉGÉ)(?![A-Z0-9])", combined):
+    if re.search(r"(?<![A-Z0-9])(DYNABOOK|TOSHIBA)(?![A-Z0-9])", combined):
+        return "dynabook"
+
+    # 2. Prepoznavanje po serijama modela kada Manufacturer nije popunjen (IMP-108)
+    if any(k in combined for k in ("THINKPAD", "THINKCENTRE", "IDEAPAD", "THINKBOOK", "YOGA", "LEGION")):
+        return "lenovo"
+    if any(k in combined for k in ("LATITUDE", "OPTIPLEX", "PRECISION", "XPS", "VOSTRO", "INSPIRON")):
+        return "dell"
+    if re.search(
+        r"(?<![A-Z0-9])(ELITEBOOK|PROBOOK|ZBOOK|ELITEDESK|PRODESK|PAVILION|ENVY|OMEN|VICTUS|OMNIBOOK)(?![A-Z0-9])",
+        combined,
+    ):
+        return "hp"
+    if re.search(r"(?<![A-Z0-9])(LIFEBOOK|ESPRIMO|CELSIUS)(?![A-Z0-9])", combined):
+        return "fujitsu"
+    if re.search(
+        r"(?<![A-Z0-9])(ZENBOOK|VIVOBOOK|PROART|EXPERTBOOK|TUF|ROG)(?![A-Z0-9])",
+        combined,
+    ):
+        return "asus"
+    if re.search(
+        r"(?<![A-Z0-9])(TRAVELMATE|ASPIRE|NITRO|SWIFT|EXTENSA|VERITON|PREDATOR)(?![A-Z0-9])",
+        combined,
+    ):
+        return "acer"
+    if re.search(
+        r"(?<![A-Z0-9])(PRESTIGE|MODERN|KATANA|STEALTH|CREATOR)(?![A-Z0-9])",
+        combined,
+    ):
+        return "msi"
+    if re.search(r"(?<![A-Z0-9])(TECRA|PORTEGE|PORTÉGÉ)(?![A-Z0-9])", combined):
         return "dynabook"
     return ""
 
@@ -708,6 +739,7 @@ class OemCatalogManager:
             }
 
         if v == "microsoft":
+            from servishub.drivers.oem.dropin import DropInOEMProvider
             from servishub.drivers.oem.microsoft_surface import MicrosoftOEMProvider, parse_microsoft_catalog
             custom_env_url = os.environ.get("SERVIS_SURFACE_CATALOG_URL", "").strip()
             if v in self._custom_catalog_urls or custom_env_url:
@@ -715,8 +747,24 @@ class OemCatalogManager:
                 raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
                 entries = parse_microsoft_catalog(raw_bytes, allowed_hosts=self.allowed_hosts)
             else:
-                url = "builtin://microsoft-surface-index"
-                entries = MicrosoftOEMProvider.get_builtin_catalog_entries()
+                dropin_entries = DropInOEMProvider(vendor="microsoft", dropin_dir=self.dropin_dir).scan_packages(
+                    vendor="microsoft"
+                )
+                dynamic_entries: List[Dict[str, Any]] = []
+                if os.environ.get("SERVIS_SURFACE_DYNAMIC_DISCOVERY", "").strip().lower() in ("1", "true", "yes"):
+                    dynamic_entries = MicrosoftOEMProvider.discover_verified_catalog_entries(
+                        timeout=min(float(timeout), 10.0),
+                        verify_head=True,
+                        allowed_hosts=self.allowed_hosts,
+                    )
+                builtin_entries = MicrosoftOEMProvider.get_builtin_catalog_entries()
+                entries = list(dropin_entries) + list(dynamic_entries) + list(builtin_entries)
+                if dynamic_entries:
+                    url = "dynamic+microsoft-download-center"
+                elif dropin_entries:
+                    url = "dropin+microsoft-surface-index"
+                else:
+                    url = "builtin://microsoft-surface-index"
             saved = self._save_vendor_catalog(v, entries, source_url=url)
             return {
                 "vendor": v,
@@ -727,7 +775,8 @@ class OemCatalogManager:
             }
 
         if v == "fujitsu":
-            from servishub.drivers.oem.fujitsu import FujitsuOEMProvider, parse_fujitsu_catalog_xml
+            from servishub.drivers.oem.dropin import DropInOEMProvider
+            from servishub.drivers.oem.fujitsu import parse_fujitsu_catalog_xml
             url = self.catalog_urls.get(v) or CATALOG_URLS[v]
             if v in self._custom_catalog_urls:
                 raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
@@ -736,9 +785,20 @@ class OemCatalogManager:
                 try:
                     raw_bytes = self._http_fetch_bytes(url, timeout=timeout)
                     entries = parse_fujitsu_catalog_xml(raw_bytes, allowed_hosts=self.allowed_hosts)
-                except (urllib.error.URLError, OSError, TimeoutError):
-                    url = "builtin://fujitsu-deskupdate-index"
-                    entries = FujitsuOEMProvider.get_builtin_catalog_entries()
+                except (
+                    urllib.error.URLError,
+                    urllib.error.HTTPError,
+                    OSError,
+                    TimeoutError,
+                    ValueError,
+                    ET.ParseError,
+                ):
+                    entries = []
+                if not entries:
+                    url = "dropin://fujitsu"
+                    entries = DropInOEMProvider(vendor="fujitsu", dropin_dir=self.dropin_dir).scan_packages(
+                        vendor="fujitsu"
+                    )
             saved = self._save_vendor_catalog(v, entries, source_url=url)
             return {
                 "vendor": v,
@@ -925,7 +985,7 @@ class OemCatalogManager:
             mtm_candidates.add(t)
 
         best_entry = None
-        best_rank: Tuple[int, int, int, int, str] = (-1, -1, -1, -1, "")
+        best_rank: Tuple[int, int, int, int, int, str] = (-1, -1, -1, -1, -1, "")
 
         for entry in entries_list:
             match_score = 0
@@ -956,22 +1016,45 @@ class OemCatalogManager:
             feat_rank = int(entry.get("os_feature_rank") or 0)
             exact_feat_bonus = 1 if (req_feat > 100 and feat_rank == req_feat) else 0
             rel_date = str(entry.get("release_date") or "")
-            rank = (match_score, os_match_score, exact_feat_bonus, feat_rank, rel_date)
+            is_downloadable = 1 if (str(entry.get("download_url") or "").strip() or str(entry.get("local_path") or "").strip()) else 0
+            rank = (match_score, is_downloadable, os_match_score, exact_feat_bonus, feat_rank, rel_date)
             if rank > best_rank:
                 best_rank = rank
                 best_entry = dict(entry)
                 best_entry["match_score"] = match_score
 
         if best_entry is not None:
+            # Ako je katalog vratio samo indeksni zapis bez lokalnog fajla / verifikovanog CDN URL-a
+            # (npr. Microsoft Surface Download Center referenca), proveri lokalni Drop-in prvo!
+            if not str(best_entry.get("download_url") or "").strip() and not str(best_entry.get("local_path") or "").strip():
+                from servishub.drivers.oem.dropin import DropInOEMProvider
+                dropin_prov = DropInOEMProvider(vendor=vendor, dropin_dir=self.dropin_dir)
+                dropin_hits = []
+                if system_sku:
+                    dropin_hits = dropin_prov.scan_packages(vendor=vendor, model=system_sku, os_ver=os_ver)
+                if not dropin_hits:
+                    dropin_hits = dropin_prov.scan_packages(vendor=vendor, model=model, os_ver=os_ver)
+                if dropin_hits:
+                    chosen_dropin = dict(dropin_hits[0])
+                    if best_entry.get("download_page_url") and not chosen_dropin.get("download_page_url"):
+                        chosen_dropin["download_page_url"] = best_entry["download_page_url"]
+                    return chosen_dropin
             return best_entry
 
         # Tier 1 fallback na Drop-in ako zvanični katalog nije imao pogodak
         from servishub.drivers.oem.dropin import DropInOEMProvider
-        dropin_fallback = DropInOEMProvider(vendor=vendor, dropin_dir=self.dropin_dir).scan_packages(
+        dropin_prov = DropInOEMProvider(vendor=vendor, dropin_dir=self.dropin_dir)
+        dropin_fallback = dropin_prov.scan_packages(
             vendor=vendor,
             model=model,
             os_ver=os_ver,
         )
+        if not dropin_fallback and system_sku:
+            dropin_fallback = dropin_prov.scan_packages(
+                vendor=vendor,
+                model=system_sku,
+                os_ver=os_ver,
+            )
         if dropin_fallback:
             return dropin_fallback[0]
         return None

@@ -23,11 +23,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from servishub.drivers.oem.base import (
     BaseOEMProvider,
@@ -35,6 +36,7 @@ from servishub.drivers.oem.base import (
     make_keyboard_layout_name,
 )
 from servishub.drivers.oem.catalogs import (
+    MAX_CATALOG_BYTES,
     _check_xml_safe,
     _extract_os_family_and_feature,
     _norm_model_tokens,
@@ -42,6 +44,14 @@ from servishub.drivers.oem.catalogs import (
     _strip_ns,
     validate_oem_download_url,
 )
+
+SURFACE_SUPPORT_INDEX_URL = (
+    "https://support.microsoft.com/en-us/surface/"
+    "download-drivers-and-firmware-for-surface-09bb2e09-2a4b-cb69-0951-078a7739e120"
+)
+_DOWNLOAD_CENTER_DETAILS_TMPL = "https://www.microsoft.com/en-us/download/details.aspx?id={download_id}"
+_MSI_URL_RE = re.compile(r"https?://[^\s\"'<>\\]+\.msi(?:\?[^\s\"'<>\\]*)?", re.IGNORECASE)
+_MSI_VER_RE = re.compile(r"(\d+\.\d+\.\d+(?:\.\d+)?)\.msi$", re.IGNORECASE)
 
 ALLOWED_MSI_DRIVER_EXTENSIONS: Tuple[str, ...] = (
     ".inf",
@@ -164,229 +174,276 @@ def extract_surface_os_build(os_ver: str = "") -> str:
     return ""
 
 
-# Kanonski indeks zvaničnih Microsoft Surface MSI paketa po SystemSKU i OS buildu
+# Kanonski indeks Microsoft Surface modela po SystemSKU i OS buildu sa zvaničnim
+# Microsoft Download Center stranicama (bez sintetičkih/placeholder .msi CDN linkova — IMP-98 & IMP-113).
+# Stvarni .msi paketi se preuzimaju dinamičkim fetchom + HTTP HEAD verifikacijom ili preko DropInOEMProvider-a.
 SURFACE_CATALOG_SPECS: Tuple[Dict[str, Any], ...] = (
     {
         "package_id": "SurfacePro7_Win11_22621",
-        "package_name": "SurfacePro7_Win11_22621_24.061.12345.0.msi",
-        "version": "24.061.12345.0",
+        "package_name": "SurfacePro7_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-06-15",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/6/b/8/6b8d2f45-1c4b-4a6c-9d9b-surfacepro7/SurfacePro7_Win11_22621_24.061.12345.0.msi",
-        "size_bytes": 945820000,
+        "download_center_id": "100419",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="100419"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_7/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 7"],
         "system_skus": ["Surface_Pro_7_1866"],
         "bios_version": "15.11.140",
     },
     {
         "package_id": "SurfacePro7Plus_Win11_22621",
-        "package_name": "SurfacePro7Plus_Win11_22621_24.082.21040.0.msi",
-        "version": "24.082.21040.0",
+        "package_name": "SurfacePro7Plus_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-08-20",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/7/c/1/7c1e3a12-4d5e-4b77-8a11-surfacepro7plus/SurfacePro7Plus_Win11_22621_24.082.21040.0.msi",
-        "size_bytes": 1024600000,
+        "download_center_id": "102633",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="102633"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_7_Plus/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 7+", "Surface Pro 7 Plus"],
         "system_skus": ["Surface_Pro_7+_1960", "Surface_Pro_7+_1961"],
         "bios_version": "21.101.143",
     },
     {
         "package_id": "SurfacePro8_Win11_22621",
-        "package_name": "SurfacePro8_Win11_22621_24.091.19830.0.msi",
-        "version": "24.091.19830.0",
+        "package_name": "SurfacePro8_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-09-12",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/8/a/2/8a2f4b18-9e12-4c33-9f22-surfacepro8/SurfacePro8_Win11_22621_24.091.19830.0.msi",
-        "size_bytes": 1245000000,
+        "download_center_id": "103503",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="103503"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_8/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 8", "Surface Pro 8 for Business"],
         "system_skus": ["Surface_Pro_8_1983", "Surface_Pro_8_for_Business_1983", "Surface_Pro_8_LTE_1982"],
         "bios_version": "25.102.141",
     },
     {
         "package_id": "SurfacePro9_Win11_26100",
-        "package_name": "SurfacePro9_Win11_26100_25.012.23890.0.msi",
-        "version": "25.012.23890.0",
+        "package_name": "SurfacePro9_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-01-20",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/1/a/9/1a9e5c11-2b44-4d88-9a33-surfacepro9/SurfacePro9_Win11_26100_25.012.23890.0.msi",
-        "size_bytes": 1412000000,
+        "download_center_id": "104680",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="104680"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_9/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 9", "Surface Pro 9 for Business"],
         "system_skus": ["Surface_Pro_9_2038", "Surface_Pro_9_for_Business_2038"],
         "bios_version": "18.101.143",
     },
     {
         "package_id": "SurfacePro9_Win11_22621",
-        "package_name": "SurfacePro9_Win11_22621_24.102.23890.0.msi",
-        "version": "24.102.23890.0",
+        "package_name": "SurfacePro9_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-10-15",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/1/a/9/1a9e5c11-2b44-4d88-9a33-surfacepro9/SurfacePro9_Win11_22621_24.102.23890.0.msi",
-        "size_bytes": 1398000000,
+        "download_center_id": "104680",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="104680"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_9/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 9", "Surface Pro 9 for Business"],
         "system_skus": ["Surface_Pro_9_2038", "Surface_Pro_9_for_Business_2038"],
         "bios_version": "18.100.143",
     },
     {
         "package_id": "SurfacePro9With5G_Win11_22621",
-        "package_name": "SurfacePro9With5G_Win11_22621_24.084.42100.0.msi",
-        "version": "24.084.42100.0",
+        "package_name": "SurfacePro9With5G_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-08-25",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "arm64",
-        "download_url": "https://download.microsoft.com/download/2/b/7/2b7c1d22-3e55-4f99-8b44-surfacepro95g/SurfacePro9With5G_Win11_22621_24.084.42100.0.msi",
-        "size_bytes": 910500000,
+        "download_center_id": "105941",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="105941"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_9_with_5G/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 9 with 5G", "Surface Pro 9 5G"],
         "system_skus": ["Surface_Pro_9_With_5G_1997", "Surface_Pro_9_5G_2046"],
         "bios_version": "14.101.143",
     },
     {
         "package_id": "SurfacePro10_Win11_26100",
-        "package_name": "SurfacePro10_Win11_26100_25.021.31020.0.msi",
-        "version": "25.021.31020.0",
+        "package_name": "SurfacePro10_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-02-18",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/3/c/4/3c4d2e33-4f66-4a00-9c55-surfacepro10/SurfacePro10_Win11_26100_25.021.31020.0.msi",
-        "size_bytes": 1520000000,
+        "download_center_id": "105947",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="105947"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_10_for_Business/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 10", "Surface Pro 10 for Business"],
         "system_skus": ["Surface_Pro_10_for_Business_2079", "Surface_Pro_10_2079"],
         "bios_version": "10.104.143",
     },
     {
         "package_id": "SurfacePro11_ARM64_Win11_26100",
-        "package_name": "SurfacePro11thEdition_ARM64_Win11_26100_25.031.11200.0.msi",
-        "version": "25.031.11200.0",
+        "package_name": "SurfacePro11thEdition_ARM64_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-03-10",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "arm64",
-        "download_url": "https://download.microsoft.com/download/4/d/5/4d5e3f44-5a77-4b11-8d66-surfacepro11arm/SurfacePro11thEdition_ARM64_Win11_26100_25.031.11200.0.msi",
-        "size_bytes": 980400000,
+        "download_center_id": "106119",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="106119"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_11th_Edition/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 11th Edition", "Surface Pro Copilot+ PC"],
         "system_skus": ["Surface_Pro_11th_Edition_2076"],
         "bios_version": "11.102.143",
     },
     {
         "package_id": "SurfacePro11_Intel_Win11_26100",
-        "package_name": "SurfacePro11thEditionforBusiness_Win11_26100_25.032.21100.0.msi",
-        "version": "25.032.21100.0",
+        "package_name": "SurfacePro11thEditionforBusiness_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-03-14",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/4/d/6/4d6f4a55-6b88-4c22-9e77-surfacepro11intel/SurfacePro11thEditionforBusiness_Win11_26100_25.032.21100.0.msi",
-        "size_bytes": 1580000000,
+        "download_center_id": "108013",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="108013"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Pro_11th_Edition_for_Business/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Pro 11th Edition for Business", "Surface Pro for Business 11th Edition with Intel"],
         "system_skus": ["Surface_Pro_11th_Edition_for_Business_2110"],
         "bios_version": "12.101.143",
     },
     {
         "package_id": "SurfaceLaptop3_Intel_Win11_22621",
-        "package_name": "SurfaceLaptop3_Win11_22621_24.051.18670.0.msi",
-        "version": "24.051.18670.0",
+        "package_name": "SurfaceLaptop3_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-05-10",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/5/e/1/5e1a6b77-7c99-4d33-8f88-surfacelaptop3/SurfaceLaptop3_Win11_22621_24.051.18670.0.msi",
-        "size_bytes": 890000000,
+        "download_center_id": "100429",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="100429"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_3/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop 3"],
         "system_skus": ["Surface_Laptop_3_1867:1868", "Surface_Laptop_3_1867", "Surface_Laptop_3_1872"],
         "bios_version": "17.101.140",
     },
     {
         "package_id": "SurfaceLaptop4_Intel_Win11_22621",
-        "package_name": "SurfaceLaptop4_Intel_Win11_22621_24.072.19500.0.msi",
-        "version": "24.072.19500.0",
+        "package_name": "SurfaceLaptop4_Intel_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-07-18",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/6/f/2/6f2b7c88-8d00-4e44-9a99-surfacelaptop4/SurfaceLaptop4_Intel_Win11_22621_24.072.19500.0.msi",
-        "size_bytes": 1150000000,
+        "download_center_id": "102924",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="102924"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_4/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop 4"],
         "system_skus": ["Surface_Laptop_4_1950:1951", "Surface_Laptop_4_1950", "Surface_Laptop_4_1951", "Surface_Laptop_4_1978:1979"],
         "bios_version": "21.102.143",
     },
     {
         "package_id": "SurfaceLaptop5_Win11_26100",
-        "package_name": "SurfaceLaptop5_Win11_26100_25.020.19500.0.msi",
-        "version": "25.020.19500.0",
+        "package_name": "SurfaceLaptop5_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-02-05",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/7/a/3/7a3c8d99-9e11-4f55-8b00-surfacelaptop5/SurfaceLaptop5_Win11_26100_25.020.19500.0.msi",
-        "size_bytes": 1340000000,
+        "download_center_id": "104679",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="104679"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_5/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop 5", "Surface Laptop 5 for Business"],
         "system_skus": ["Surface_Laptop_5_1950:1951", "Surface_Laptop_5_1950", "Surface_Laptop_5_1951", "Surface_Laptop_5_1979", "Surface_Laptop_5_for_Business_1950"],
         "bios_version": "16.101.143",
     },
     {
         "package_id": "SurfaceLaptop6_Win11_26100",
-        "package_name": "SurfaceLaptop6forBusiness_Win11_26100_25.030.20810.0.msi",
-        "version": "25.030.20810.0",
+        "package_name": "SurfaceLaptop6forBusiness_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-03-01",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/8/b/4/8b4d9e00-0f22-4a66-9c11-surfacelaptop6/SurfaceLaptop6forBusiness_Win11_26100_25.030.20810.0.msi",
-        "size_bytes": 1490000000,
+        "download_center_id": "105946",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="105946"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_6_for_Business/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop 6 for Business", "Surface Laptop 6"],
         "system_skus": ["Surface_Laptop_6_for_Business_2081", "Surface_Laptop_6_2080"],
         "bios_version": "12.104.143",
     },
     {
         "package_id": "SurfaceLaptop7_ARM64_Win11_26100",
-        "package_name": "SurfaceLaptop7thEdition_ARM64_Win11_26100_25.031.20360.0.msi",
-        "version": "25.031.20360.0",
+        "package_name": "SurfaceLaptop7thEdition_ARM64_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-03-08",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "arm64",
-        "download_url": "https://download.microsoft.com/download/9/c/5/9c5e0f11-1a33-4b77-8d22-surfacelaptop7arm/SurfaceLaptop7thEdition_ARM64_Win11_26100_25.031.20360.0.msi",
-        "size_bytes": 1015000000,
+        "download_center_id": "106120",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="106120"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_7th_Edition/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop 7th Edition"],
         "system_skus": ["Surface_Laptop_7th_Edition_2036", "Surface_Laptop_7th_Edition_2037"],
         "bios_version": "11.103.143",
     },
     {
         "package_id": "SurfaceLaptop7_Intel_Win11_26100",
-        "package_name": "SurfaceLaptop7thEditionforBusiness_Win11_26100_25.041.20950.0.msi",
-        "version": "25.041.20950.0",
+        "package_name": "SurfaceLaptop7thEditionforBusiness_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-04-02",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/a/d/6/ad6f1a22-2b44-4c88-9e33-surfacelaptop7intel/SurfaceLaptop7thEditionforBusiness_Win11_26100_25.041.20950.0.msi",
-        "size_bytes": 1620000000,
+        "download_center_id": "108014",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="108014"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_7th_Edition_for_Business/*.msi",
+        "size_bytes": 0,
         "models": [
             "Surface Laptop 7th Edition for Business",
             "Surface Laptop for Business 7th Edition with Intel",
@@ -394,35 +451,43 @@ SURFACE_CATALOG_SPECS: Tuple[Dict[str, Any], ...] = (
         "system_skus": [
             "Surface_Laptop_7th_Edition_for_Business_2095",
             "Surface_Laptop_for_Business_7th_Edition_with_Intel_2095",
+            "Surface_Laptop_7th_Edition_With_Intel_For_Business_2107",
+            "Surface_Laptop_for_Business_7th_Edition_with_Intel_2107",
         ],
         "bios_version": "13.102.143",
     },
     {
         "package_id": "SurfaceLaptopStudio2_Win11_26100",
-        "package_name": "SurfaceLaptopStudio2_Win11_26100_25.011.20290.0.msi",
-        "version": "25.011.20290.0",
+        "package_name": "SurfaceLaptopStudio2_Win11_26100.msi",
+        "version": "",
         "release_date": "2025-01-14",
         "os": "win11",
         "os_build": "26100",
         "os_feature_rank": 242,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/b/e/7/be7a2b33-3c55-4d99-8f44-surfacestudio2/SurfaceLaptopStudio2_Win11_26100_25.011.20290.0.msi",
-        "size_bytes": 1850000000,
+        "download_center_id": "105610",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="105610"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Laptop_Studio_2/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Laptop Studio 2", "Surface Laptop Studio"],
         "system_skus": ["Surface_Laptop_Studio_2_2029", "Surface_Laptop_Studio_1964"],
         "bios_version": "15.101.143",
     },
     {
         "package_id": "SurfaceGo4_Win11_22621",
-        "package_name": "SurfaceGo4_Win11_22621_24.092.20670.0.msi",
-        "version": "24.092.20670.0",
+        "package_name": "SurfaceGo4_Win11_22621.msi",
+        "version": "",
         "release_date": "2024-09-18",
         "os": "win11",
         "os_build": "22621",
         "os_feature_rank": 222,
         "arch": "x64",
-        "download_url": "https://download.microsoft.com/download/c/f/8/cf8b3c44-4d66-4e00-9a55-surfacego4/SurfaceGo4_Win11_22621_24.092.20670.0.msi",
-        "size_bytes": 760000000,
+        "download_center_id": "105609",
+        "download_page_url": _DOWNLOAD_CENTER_DETAILS_TMPL.format(download_id="105609"),
+        "download_url": "",
+        "dropin_hint": "<dropin_dir>/microsoft/Surface_Go_4/*.msi",
+        "size_bytes": 0,
         "models": ["Surface Go 4", "Surface Go 3"],
         "system_skus": ["Surface_Go_4_2067", "Surface_Go_3_1926"],
         "bios_version": "10.102.143",
@@ -434,13 +499,199 @@ def _normalize_surface_sku(sku: str) -> str:
     return re.sub(r"[^a-z0-9_+:-]+", "_", str(sku or "").strip().lower()).strip("_")
 
 
+def verify_surface_msi_url(
+    url: str,
+    timeout: float = 5.0,
+    allowed_hosts: Optional[Sequence[str]] = None,
+) -> Tuple[bool, int]:
+    """
+    Verifikuje da je Surface `.msi` URL dozvoljen HTTPS allowlistom i da stvarno postoji
+    (HTTP HEAD 200/206 i ne-HTML Content-Type, uz fallback na Range GET pri 405).
+    """
+    try:
+        valid_url = validate_oem_download_url(url, allowed_hosts=allowed_hosts)
+    except ValueError:
+        return False, 0
+
+    eff_timeout = max(0.5, min(15.0, float(timeout)))
+    headers = {"User-Agent": "WIS-ServiceHub/3.7"}
+
+    for method, extra_hdrs in (("HEAD", {}), ("GET", {"Range": "bytes=0-0"})):
+        req = urllib.request.Request(valid_url, method=method, headers={**headers, **extra_hdrs})
+        try:
+            with urllib.request.urlopen(req, timeout=eff_timeout) as resp:
+                status = getattr(resp, "status", None) or resp.getcode()
+                ctype = str(resp.headers.get("Content-Type") or "").lower()
+                if status not in (200, 206) or ctype.startswith("text/html"):
+                    return False, 0
+                raw_len = resp.headers.get("Content-Length") or "0"
+                content_range = str(resp.headers.get("Content-Range") or "")
+                size_bytes = 0
+                if "/" in content_range:
+                    try:
+                        size_bytes = int(content_range.rsplit("/", 1)[1].strip())
+                    except ValueError:
+                        size_bytes = 0
+                if size_bytes <= 0:
+                    try:
+                        size_bytes = int(raw_len)
+                    except ValueError:
+                        size_bytes = 0
+                return True, max(0, size_bytes)
+        except urllib.error.HTTPError as exc:
+            code = exc.code
+            try:
+                exc.close()
+            except Exception:
+                pass
+            if method == "HEAD" and code == 405:
+                continue
+            return False, 0
+        except (urllib.error.URLError, OSError, TimeoutError):
+            return False, 0
+    return False, 0
+
+
+def parse_microsoft_download_center_html(
+    raw_html: bytes,
+    spec: Optional[Dict[str, Any]] = None,
+    allowed_hosts: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Izvlači stvarne verifikovane `.msi` URL-ove iz HTML/JSON odgovora Microsoft Download Center stranice
+    (`details.aspx` / `confirmation.aspx`), uz striktnu `validate_oem_download_url` proveru.
+    """
+    if not raw_html or not isinstance(raw_html, (bytes, bytearray)):
+        return []
+    head_upper = bytes(raw_html[:65536]).upper()
+    if b"<!ENTITY" in head_upper:
+        raise ValueError("HTML odgovor sadrži zabranjenu <!ENTITY deklaraciju.")
+
+    text = bytes(raw_html).decode("utf-8", errors="ignore").replace("\\u002F", "/").replace("\\/", "/")
+    raw_urls = _MSI_URL_RE.findall(text)
+    entries: List[Dict[str, Any]] = []
+    seen_urls = set()
+
+    base_models = list((spec or {}).get("models") or [])
+    base_skus = list((spec or {}).get("system_skus") or [])
+    base_arch = str((spec or {}).get("arch") or "x64").lower()
+    base_page = str((spec or {}).get("download_page_url") or "")
+    base_id = str((spec or {}).get("download_center_id") or "")
+
+    for cand_url in raw_urls:
+        clean_u = cand_url.strip().rstrip(".,;)")
+        if not clean_u or clean_u in seen_urls:
+            continue
+        try:
+            valid_url = validate_oem_download_url(clean_u, allowed_hosts=allowed_hosts)
+        except ValueError:
+            continue
+        seen_urls.add(valid_url)
+
+        pkg_name = os.path.basename(urllib.parse.urlparse(valid_url).path) or "surface_drivers.msi"
+        os_build = extract_surface_os_build(pkg_name) or str((spec or {}).get("os_build") or "")
+        os_fam, feat_rank = _extract_os_family_and_feature(os_build or pkg_name)
+        if os_fam == "other":
+            os_fam = "win11"
+        arch = "arm64" if ("ARM64" in pkg_name.upper() or base_arch == "arm64") else "x64"
+        ver_m = _MSI_VER_RE.search(pkg_name)
+        version = ver_m.group(1) if ver_m else ""
+
+        entries.append({
+            "vendor": "microsoft",
+            "source": "microsoft_download_center",
+            "package_id": os.path.splitext(pkg_name)[0],
+            "package_name": pkg_name,
+            "version": version,
+            "release_date": str((spec or {}).get("release_date") or ""),
+            "os": os_fam,
+            "os_build": os_build,
+            "os_feature_rank": feat_rank,
+            "os_supported": [os_fam],
+            "arch": arch,
+            "format": "msi",
+            "download_url": valid_url,
+            "download_page_url": base_page,
+            "download_center_id": base_id,
+            "size_bytes": 0,
+            "sha256": "",
+            "md5": "",
+            "models": list(base_models),
+            "system_skus": list(base_skus),
+            "system_ids": list(base_skus),
+            "mtms": [],
+        })
+    return entries
+
+
+def discover_surface_msi_entries(
+    spec: Dict[str, Any],
+    timeout: float = 5.0,
+    verify_head: bool = True,
+    allowed_hosts: Optional[Sequence[str]] = None,
+    fetch_bytes_fn: Optional[Callable[[str, float], bytes]] = None,
+    verify_head_fn: Optional[Callable[..., Tuple[bool, int]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Dinamički preuzima i verifikuje stvarne `.msi` linkove sa zvanične Microsoft Download Center
+    stranice za zadati Surface model, poštujući HTTPS allowlistu i HTTP HEAD verifikaciju.
+    Pri mrežnoj/HTTP grešci vraća praznu listu bez izmišljenih URL-ova.
+    """
+    page_url = str((spec or {}).get("download_page_url") or "").strip()
+    if not page_url:
+        return []
+    try:
+        valid_page = validate_oem_download_url(page_url, allowed_hosts=allowed_hosts)
+    except ValueError:
+        return []
+
+    eff_timeout = max(0.5, min(15.0, float(timeout)))
+    try:
+        if fetch_bytes_fn is not None:
+            raw_html = fetch_bytes_fn(valid_page, eff_timeout)
+        else:
+            req = urllib.request.Request(
+                valid_page,
+                headers={"User-Agent": "WIS-ServiceHub/3.7", "Accept": "text/html,application/json"},
+            )
+            buf = bytearray()
+            with urllib.request.urlopen(req, timeout=eff_timeout) as resp:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    if len(buf) + len(chunk) > MAX_CATALOG_BYTES:
+                        raise ValueError("Prekoračen limit veličine za Microsoft Download Center stranicu.")
+                    buf.extend(chunk)
+            raw_html = bytes(buf)
+    except Exception:
+        return []
+
+    candidates = parse_microsoft_download_center_html(raw_html, spec=spec, allowed_hosts=allowed_hosts)
+    if not verify_head:
+        return candidates
+
+    verifier = verify_head_fn or verify_surface_msi_url
+    verified: List[Dict[str, Any]] = []
+    for entry in candidates:
+        ok, sz = verifier(entry["download_url"], timeout=eff_timeout, allowed_hosts=allowed_hosts)
+        if not ok:
+            continue
+        item = dict(entry)
+        if sz > 0:
+            item["size_bytes"] = sz
+        item["head_verified"] = True
+        verified.append(item)
+    return verified
+
+
 def parse_microsoft_catalog(
     raw_bytes: bytes,
     allowed_hosts: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Parsira prilagođeni Microsoft Surface JSON ili XML katalog uz `_check_xml_safe`
-    XXE zaštitu i `validate_oem_download_url` proveru za svaki paket.
+    Parsira prilagođeni Microsoft Surface JSON, XML ili Download Center HTML katalog uz
+    `_check_xml_safe` XXE zaštitu i `validate_oem_download_url` proveru za svaki paket.
     """
     if not raw_bytes or not isinstance(raw_bytes, (bytes, bytearray)):
         raise ValueError("Prazan sadržaj Microsoft Surface kataloga.")
@@ -452,6 +703,10 @@ def parse_microsoft_catalog(
     entries: List[Dict[str, Any]] = []
 
     if stripped.startswith(b"<"):
+        head_low = stripped[:2048].lower()
+        if b"<html" in head_low or b"<!doctype html" in head_low:
+            return parse_microsoft_download_center_html(data, allowed_hosts=allowed_hosts)
+
         clean_bytes = _check_xml_safe(data)
         root = ET.fromstring(clean_bytes)
         for elem in root.iter():
@@ -486,7 +741,10 @@ def parse_microsoft_catalog(
             dl_url = fields.get("downloadurl") or fields.get("url") or fields.get("download_url") or ""
             if not dl_url:
                 continue
-            dl_url = validate_oem_download_url(dl_url, allowed_hosts=allowed_hosts)
+            try:
+                dl_url = validate_oem_download_url(dl_url, allowed_hosts=allowed_hosts)
+            except ValueError:
+                continue
             os_raw = fields.get("os") or fields.get("osbuild") or fields.get("os_build") or "win11"
             os_fam, feat_rank = _extract_os_family_and_feature(os_raw)
             if os_fam == "other":
@@ -532,7 +790,10 @@ def parse_microsoft_catalog(
         dl_url = str(item.get("download_url") or item.get("url") or "").strip()
         if not dl_url:
             continue
-        dl_url = validate_oem_download_url(dl_url, allowed_hosts=allowed_hosts)
+        try:
+            dl_url = validate_oem_download_url(dl_url, allowed_hosts=allowed_hosts)
+        except ValueError:
+            continue
         os_raw = str(item.get("os_build") or item.get("os") or "win11")
         os_fam, feat_rank = _extract_os_family_and_feature(os_raw)
         if os_fam == "other":
@@ -574,6 +835,7 @@ class MicrosoftOEMProvider(BaseOEMProvider):
         cache_dir: Optional[str] = None,
         timeout: float = 5.0,
         max_cache_gb: Optional[float] = None,
+        dropin_dir: Optional[str] = None,
     ):
         if cache_dir:
             self.base_cache_dir = os.path.abspath(cache_dir)
@@ -588,6 +850,11 @@ class MicrosoftOEMProvider(BaseOEMProvider):
 
         self.max_drivers_cache_gb = float(max_cache_gb) if max_cache_gb is not None else 25.0
         self.timeout = self._clamp_timeout(timeout)
+        self.dropin_dir = (
+            os.path.abspath(str(dropin_dir).strip())
+            if (dropin_dir is not None and str(dropin_dir).strip())
+            else os.path.abspath(os.environ.get("SERVIS_OEM_DROPIN_DIR", "/app/oem_dropin"))
+        )
         self.lock = threading.Lock()
 
         with self.lock:
@@ -599,13 +866,19 @@ class MicrosoftOEMProvider(BaseOEMProvider):
 
     @classmethod
     def get_builtin_catalog_entries(cls) -> List[Dict[str, Any]]:
-        """Vraća kanonsku listu ugrađenih Microsoft Surface MSI paketa sa HTTPS URL validacijom."""
+        """
+        Vraća kanonski indeks Microsoft Surface modela sa zvaničnim Microsoft Download Center
+        stranicama (HTTPS allowlist validacija) i Drop-in uputima, bez izmišljenih CDN URL-ova.
+        """
         entries: List[Dict[str, Any]] = []
         for spec in SURFACE_CATALOG_SPECS:
-            url = validate_oem_download_url(spec["download_url"])
+            page_url = validate_oem_download_url(spec["download_page_url"])
+            raw_dl = str(spec.get("download_url") or "").strip()
+            valid_dl = validate_oem_download_url(raw_dl) if raw_dl else ""
             skus = list(spec.get("system_skus") or [])
             entries.append({
                 "vendor": "microsoft",
+                "source": "microsoft_surface_download_center",
                 "package_id": spec["package_id"],
                 "package_name": spec["package_name"],
                 "version": spec["version"],
@@ -616,8 +889,12 @@ class MicrosoftOEMProvider(BaseOEMProvider):
                 "os_supported": [spec["os"]],
                 "arch": spec["arch"],
                 "format": "msi",
-                "download_url": url,
-                "size_bytes": int(spec["size_bytes"]),
+                "download_center_id": spec.get("download_center_id", ""),
+                "download_page_url": page_url,
+                "download_url": valid_dl,
+                "dropin_required": not bool(valid_dl),
+                "dropin_hint": spec.get("dropin_hint", ""),
+                "size_bytes": int(spec.get("size_bytes") or 0),
                 "sha256": "",
                 "md5": "",
                 "models": list(spec.get("models") or []),
@@ -627,6 +904,37 @@ class MicrosoftOEMProvider(BaseOEMProvider):
                 "bios_version": spec.get("bios_version", ""),
             })
         return entries
+
+    @classmethod
+    def discover_verified_catalog_entries(
+        cls,
+        timeout: float = 5.0,
+        verify_head: bool = True,
+        allowed_hosts: Optional[Sequence[str]] = None,
+        fetch_bytes_fn: Optional[Callable[[str, float], bytes]] = None,
+        verify_head_fn: Optional[Callable[..., Tuple[bool, int]]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Dinamički preuzima i HTTP HEAD verifikuje `.msi` pakete sa zvaničnih Microsoft Download Center
+        stranica iz `SURFACE_CATALOG_SPECS` (deduplikovano po `download_center_id`).
+        """
+        out: List[Dict[str, Any]] = []
+        seen_pages = set()
+        for spec in SURFACE_CATALOG_SPECS:
+            page_url = str(spec.get("download_page_url") or "").strip()
+            if not page_url or page_url in seen_pages:
+                continue
+            seen_pages.add(page_url)
+            found = discover_surface_msi_entries(
+                spec,
+                timeout=timeout,
+                verify_head=verify_head,
+                allowed_hosts=allowed_hosts,
+                fetch_bytes_fn=fetch_bytes_fn,
+                verify_head_fn=verify_head_fn,
+            )
+            out.extend(found)
+        return out
 
     @staticmethod
     def _normalize_serial(serial: str) -> str:
@@ -755,8 +1063,15 @@ class MicrosoftOEMProvider(BaseOEMProvider):
         os_ver: str = "win11-x64",
         system_sku: str = "",
         os_build: str = "",
+        allow_dynamic_fetch: bool = False,
     ) -> Dict[str, Any]:
-        """Pronalazi zvanični Surface `.msi` paket drajvera i firmvera u lokalnom kešu ili indeksu."""
+        """
+        Pronalazi zvanični Surface `.msi` paket drajvera i firmvera:
+        1. Lokalni disk keš (`base_cache_dir/<key>/*.msi`)
+        2. Lokalni Drop-in paket (`DropInOEMProvider` u `<dropin_dir>/microsoft/<model>/`)
+        3. Opciono dinamički fetch + HTTP HEAD verifikacija sa zvanične Microsoft Download Center stranice
+        4. Čist Drop-in fallback bez izmišljenih CDN URL-ova.
+        """
         clean_key = _normalize_surface_sku(system_sku or model)
         if not clean_key:
             return {
@@ -791,6 +1106,25 @@ class MicrosoftOEMProvider(BaseOEMProvider):
                                 "size_bytes": f_size,
                             }
 
+        # 2. Čist DropInOEMProvider fallback za lokalno postavljene zvanične Surface .msi pakete
+        from servishub.drivers.oem.dropin import DropInOEMProvider
+        dropin_prov = DropInOEMProvider(vendor="microsoft", dropin_dir=self.dropin_dir)
+        dropin_hits = []
+        if system_sku:
+            dropin_hits = dropin_prov.scan_packages(vendor="microsoft", model=system_sku, os_ver=os_ver)
+        if not dropin_hits and model:
+            dropin_hits = dropin_prov.scan_packages(vendor="microsoft", model=model, os_ver=os_ver)
+        if dropin_hits:
+            best_di = dropin_hits[0]
+            return {
+                "status": "ok",
+                "source": "dropin",
+                "package_name": best_di["package_name"],
+                "download_url": "",
+                "local_path": best_di["local_path"],
+                "size_bytes": int(best_di.get("size_bytes") or 0),
+            }
+
         spec = self.find_surface_spec(model=model, os_ver=os_ver, system_sku=system_sku, os_build=os_build)
         if not spec:
             return {
@@ -802,6 +1136,43 @@ class MicrosoftOEMProvider(BaseOEMProvider):
                 "size_bytes": 0,
             }
 
+        resolved_dl_url = str(spec.get("download_url") or "").strip()
+        resolved_pkg_name = str(spec.get("package_name") or "")
+        resolved_size = int(spec.get("size_bytes") or 0)
+        resolved_source = "microsoft_surface_download_center"
+
+        if not resolved_dl_url and allow_dynamic_fetch:
+            discovered = discover_surface_msi_entries(spec, timeout=self.timeout, verify_head=True)
+            if discovered:
+                req_build = extract_surface_os_build(os_build or os_ver)
+                discovered.sort(
+                    key=lambda e: (
+                        1 if (req_build and e.get("os_build") == req_build) else 0,
+                        1 if e.get("arch") == spec.get("arch") else 0,
+                        int(e.get("os_feature_rank") or 0),
+                        str(e.get("version") or ""),
+                    ),
+                    reverse=True,
+                )
+                chosen_dyn = discovered[0]
+                resolved_dl_url = chosen_dyn["download_url"]
+                resolved_pkg_name = chosen_dyn["package_name"]
+                resolved_size = int(chosen_dyn.get("size_bytes") or 0)
+
+        if not resolved_dl_url:
+            return {
+                "status": "not_found",
+                "source": "microsoft_surface_dropin_required",
+                "package_name": resolved_pkg_name,
+                "download_url": "",
+                "download_page_url": spec.get("download_page_url", ""),
+                "download_center_id": spec.get("download_center_id", ""),
+                "dropin_required": True,
+                "dropin_hint": spec.get("dropin_hint", ""),
+                "local_path": "",
+                "size_bytes": 0,
+            }
+
         with self.lock:
             self._atomic_write_json(
                 os.path.join(model_dir, "package_meta.json"),
@@ -809,23 +1180,25 @@ class MicrosoftOEMProvider(BaseOEMProvider):
                     "model": model,
                     "system_sku": system_sku,
                     "os_ver": os_ver,
-                    "package_name": spec["package_name"],
-                    "download_url": spec["download_url"],
-                    "size_bytes": spec["size_bytes"],
+                    "package_name": resolved_pkg_name,
+                    "download_url": resolved_dl_url,
+                    "download_page_url": spec.get("download_page_url", ""),
+                    "size_bytes": resolved_size,
                     "arch": spec["arch"],
                     "os_build": spec["os_build"],
-                    "source": "microsoft_surface_index",
+                    "source": resolved_source,
                     "resolved_at": datetime.now().isoformat(),
                 },
             )
 
         return {
             "status": "ok",
-            "source": "microsoft_surface_index",
-            "package_name": spec["package_name"],
-            "download_url": spec["download_url"],
+            "source": resolved_source,
+            "package_name": resolved_pkg_name,
+            "download_url": resolved_dl_url,
+            "download_page_url": spec.get("download_page_url", ""),
             "local_path": "",
-            "size_bytes": int(spec["size_bytes"]),
+            "size_bytes": resolved_size,
         }
 
     def check_bios_update(self, model: str, current_bios: str = "") -> Dict[str, Any]:
@@ -853,7 +1226,7 @@ class MicrosoftOEMProvider(BaseOEMProvider):
             "update_available": update_avail,
             "latest_version": latest,
             "current_version": current_bios,
-            "download_url": spec["download_url"],
+            "download_url": spec.get("download_url") or spec.get("download_page_url") or "",
             "release_date": spec.get("release_date", ""),
         }
 

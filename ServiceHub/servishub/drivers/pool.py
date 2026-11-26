@@ -11,6 +11,7 @@ Model Manifest datotekama i automatskim spajanjem sva 3 izvora drajvera:
 from __future__ import annotations
 
 import copy
+import fnmatch
 import gc
 import hashlib
 import json
@@ -30,7 +31,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from servishub.drivers.hwid import generate_hwid_candidates
 from servishub.drivers.oem.catalogs import OemCatalogManager, TIER1_OEM_VENDORS, detect_oem_vendor
-from servishub.drivers.oem.microsoft_surface import extract_msi_drivers
+from servishub.drivers.oem.microsoft_surface import discover_surface_msi_entries, extract_msi_drivers
 from servishub.drivers.version import is_catalog_driver_newer, parse_driver_date
 
 try:
@@ -67,6 +68,18 @@ except Exception:
 FORBIDDEN_DRIVER_EXTENSIONS = tuple(_FORBIDDEN_MODEL_PACK_EXTENSIONS)
 _IGNORED_INBOX_INFS = frozenset({"prnms009.inf", "autorun.inf"})
 
+# IMP-113: Stroga crna lista za Class=Firmware i firmware/CFU INF obrasce iz harvest izvora
+BLOCKED_HARVEST_FIRMWARE_CLASSES = frozenset({"firmware"})
+BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS: Tuple[str, ...] = (
+    "surfaceuefi*.inf",
+    "surfacesam*.inf",
+    "surfaceme*.inf",
+    "surfacetouchpadprocessorupdate*.inf",
+    "surfacecfuoverhid*.inf",
+    "surfacestoragefwupdate*.inf",
+    "*fwupdate*.inf",
+)
+
 MAX_ARCHIVE_FILE_BYTES = int(os.environ.get("SERVIS_POOL_MAX_ARCHIVE_BYTES", str(16 * 1024 ** 3)))
 MAX_ARCHIVE_UNPACKED_BYTES = int(os.environ.get("SERVIS_POOL_MAX_UNPACKED_BYTES", str(24 * 1024 ** 3)))
 MAX_ARCHIVE_MEMBERS = int(os.environ.get("SERVIS_POOL_MAX_ARCHIVE_MEMBERS", "50000"))
@@ -79,8 +92,10 @@ _SOURCE_PRIORITY = {
 
 # Strogi 4-delni SUBSYS match (VEN + DEV + 8-hex SUBSYS) za IMP-89
 _STRICT_SUBSYS_RE = re.compile(r"VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}&SUBSYS_[0-9A-F]{8}", re.IGNORECASE)
+_OS_BUILD_NUM_RE = re.compile(r"(?<!\d)(1904\d|22\d{3}|26\d{3}|27\d{3}|28\d{3})(?!\d)")
+_COMPONENT_IDS_LINE_RE = re.compile(r"(?im)^\s*ComponentIDs\s*=\s*(.+)$")
 
-# Prepoznavanje HWID stringova unutar .inf datoteka (PCI, USB, Audio, ACPI, HID, NVMe, SCSI, SD, I2C/SPI)
+# Prepoznavanje HWID stringova unutar .inf datoteka (PCI, USB, Audio, ACPI, HID, NVMe, SCSI, SD, I2C/SPI, SWC)
 _POOL_INF_HWID_RE = re.compile(
     r"(?i)(?:^|[^A-Za-z0-9_])("
     r"(?:PCI\\VEN_[0-9A-F]{4}&DEV_[0-9A-F]{4}(?:&SUBSYS_[0-9A-F]{8})?(?:&REV_[0-9A-F]{2,4})?)"
@@ -91,8 +106,164 @@ _POOL_INF_HWID_RE = re.compile(
     r"|(?:\*[A-Z]{3,4}[0-9A-Z]{4})"
     r"|(?:HID\\(?:VID_[0-9A-F]{4}&PID_[0-9A-F]{4}|VEN_[A-Z0-9_]{3,6}&DEV_[A-Z0-9_]{3,6})(?:&REV_[0-9A-F]{2,4})?(?:&MI_[0-9A-F]{2})?(?:&COL[0-9A-F]{2})?)"
     r"|(?:(?:BTHENUM|DISPLAY|SCSI|NVME|SD|I2C|SPI)\\[A-Z0-9_&.-]{4,64})"
+    r"|(?:SWC\\[A-Z0-9_&.{}-]{3,96})"
     r")"
 )
+
+
+def is_blocked_firmware_inf(inf_name: str = "", driver_class: str = "") -> bool:
+    """
+    Vraća True ako INF paket pripada `Class=Firmware` ili poznatom firmware/CFU obrascu
+    (`SurfaceUEFI*.inf`, `SurfaceSAM*.inf`, `SurfaceME*.inf`, `SurfaceTouchPadProcessorUpdate*.inf`,
+    `SurfaceCFUOverHid*.inf`, `SurfaceStorageFwUpdate*.inf`, `*FwUpdate*.inf`).
+    """
+    cls_norm = str(driver_class or "").strip().lower()
+    if cls_norm in BLOCKED_HARVEST_FIRMWARE_CLASSES:
+        return True
+    base = os.path.basename(str(inf_name or "").strip()).lower()
+    if not base:
+        return False
+    return any(fnmatch.fnmatchcase(base, pat) for pat in BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS)
+
+
+def is_blocked_harvest_firmware_package(
+    pmeta: Optional[Dict[str, Any]],
+    pkg_dir: Optional[str] = None,
+    force_harvest: bool = False,
+) -> bool:
+    """
+    Proverava da li je paket iz `harvest` izvora (bez `oem_pack`) blokirani firmware/CFU paket
+    po metapodacima ili stvarnim `.inf` datotekama u direktorijumu paketa (IMP-113).
+    """
+    if not isinstance(pmeta, dict):
+        return False
+    if not force_harvest:
+        raw_sources = pmeta.get("sources")
+        if raw_sources is None:
+            raw_sources = [pmeta.get("source")] if pmeta.get("source") else []
+        sources = {str(s).strip().lower() for s in raw_sources if str(s).strip()}
+        if "oem_pack" in sources:
+            return False
+        if sources and "harvest" not in sources:
+            return False
+
+    if is_blocked_firmware_inf(str(pmeta.get("inf_name") or ""), str(pmeta.get("driver_class") or "")):
+        return True
+    for cls_item in (pmeta.get("driver_classes") or []):
+        if is_blocked_firmware_inf("", str(cls_item or "")):
+            return True
+    for inf_item in (pmeta.get("inf_names") or []):
+        if is_blocked_firmware_inf(str(inf_item or ""), ""):
+            return True
+
+    if pkg_dir and not os.path.islink(pkg_dir) and os.path.isdir(pkg_dir):
+        try:
+            for _, _, files in os.walk(pkg_dir, followlinks=False):
+                for fn in files:
+                    if fn.lower().endswith(".inf") and is_blocked_firmware_inf(fn, ""):
+                        return True
+        except OSError:
+            pass
+    return False
+
+
+def _get_dch_role(driver_class: str = "") -> str:
+    cls_low = str(driver_class or "").strip().lower()
+    if cls_low == "extension":
+        return "extension"
+    if cls_low == "softwarecomponent":
+        return "software_component"
+    return "base"
+
+
+def _normalize_component_id(raw_id: str) -> str:
+    clean = str(raw_id or "").strip().strip('"').strip("'").upper()
+    clean = re.sub(r"\\+", r"\\", clean)
+    if not clean or clean.startswith(("ROOT\\", "SWD\\")):
+        return ""
+    if not clean.startswith("SWC\\"):
+        clean = f"SWC\\{clean}"
+    return clean
+
+
+def _normalize_os_build(raw_build: Any) -> str:
+    text = str(raw_build or "").strip().upper()
+    if not text:
+        return ""
+    m = _OS_BUILD_NUM_RE.search(text)
+    if m:
+        return m.group(1)
+    if "25H2" in text:
+        return "26200"
+    if "24H2" in text:
+        return "26100"
+    if "23H2" in text:
+        return "22631"
+    if "22H2" in text:
+        return "19045" if ("WIN10" in text or "WINDOWS 10" in text) else "22621"
+    return ""
+
+
+def _detect_os_build_from_dir(extracted_dir: str) -> str:
+    if not extracted_dir or os.path.islink(extracted_dir) or not os.path.isdir(extracted_dir):
+        return ""
+    real_root = os.path.realpath(extracted_dir)
+    for meta_name in ("harvest_meta.json", "delta_meta.json", "os_build.txt"):
+        fp = os.path.join(real_root, meta_name)
+        if os.path.islink(fp) or not os.path.isfile(fp):
+            continue
+        try:
+            if os.path.commonpath([real_root, os.path.realpath(fp)]) != real_root:
+                continue
+            with open(fp, "r", encoding="utf-8", errors="ignore") as f:
+                raw = f.read(65536).strip()
+            if meta_name.endswith(".json"):
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    cand = _normalize_os_build(obj.get("os_build") or obj.get("build") or "")
+                    if cand:
+                        return cand
+            else:
+                cand = _normalize_os_build(raw)
+                if cand:
+                    return cand
+        except Exception:
+            continue
+    return ""
+
+
+def _get_pkg_os_builds(pmeta: Optional[Dict[str, Any]]) -> set:
+    if not isinstance(pmeta, dict):
+        return set()
+    builds = set()
+    for b in (pmeta.get("os_builds") or []):
+        nb = _normalize_os_build(b)
+        if nb:
+            builds.add(nb)
+    nb_single = _normalize_os_build(pmeta.get("os_build"))
+    if nb_single:
+        builds.add(nb_single)
+    return builds
+
+
+def _is_pkg_compatible_with_os_build(pmeta: Optional[Dict[str, Any]], req_build: str) -> bool:
+    """
+    Sprečava slepo mešanje `26200` i `26100` (ili drugih) harvest-only paketa (IMP-113).
+    Zvanični `oem_pack` / `ms_catalog` i legacy harvest paketi bez build metapodataka ostaju kompatibilni.
+    """
+    norm_req = _normalize_os_build(req_build)
+    if not norm_req or not isinstance(pmeta, dict):
+        return True
+    raw_sources = pmeta.get("sources")
+    if raw_sources is None:
+        raw_sources = [pmeta.get("source")] if pmeta.get("source") else []
+    sources = {str(s).strip().lower() for s in raw_sources if str(s).strip()}
+    if "oem_pack" in sources or "ms_catalog" in sources:
+        return True
+    pkg_builds = _get_pkg_os_builds(pmeta)
+    if not pkg_builds:
+        return True
+    return norm_req in pkg_builds
 
 
 def _decode_inf_text(raw: bytes) -> str:
@@ -211,29 +382,55 @@ def parse_inf_metadata(inf_path: str) -> Optional[Dict[str, Any]]:
             if cat_name and cat_name not in catalog_files:
                 catalog_files.append(cat_name)
 
-    resolved_body = "\n".join(_resolve_inf_tokens(line, strings_kv) for line in body_lines)
+    resolved_lines = [_resolve_inf_tokens(line, strings_kv) for line in body_lines]
+    dch_role = _get_dch_role(driver_class)
+
+    component_ids: List[str] = []
+    seen_cids = set()
+    hwid_scan_lines: List[str] = []
+
+    for rline in resolved_lines:
+        cid_m = _COMPONENT_IDS_LINE_RE.match(rline)
+        if cid_m:
+            for part in cid_m.group(1).split(","):
+                cid = _normalize_component_id(part)
+                if cid and cid not in seen_cids:
+                    seen_cids.add(cid)
+                    component_ids.append(cid)
+            continue
+        hwid_scan_lines.append(rline)
+
+    resolved_body = "\n".join(hwid_scan_lines)
     hwids: List[str] = []
     seen_hw = set()
     for match in _POOL_INF_HWID_RE.findall(resolved_body):
         norm = re.sub(r"\\+", r"\\", str(match).strip().upper())
         if not norm or norm.startswith(("ROOT\\", "SWD\\")):
             continue
+        if norm.startswith("SWC\\"):
+            if norm not in seen_cids:
+                seen_cids.add(norm)
+                component_ids.append(norm)
+            if dch_role != "software_component":
+                continue
         if norm not in seen_hw:
             seen_hw.add(norm)
             hwids.append(norm)
 
-    if not hwids and not driver_ver and not driver_class:
+    if not hwids and not component_ids and not driver_ver and not driver_class:
         return None
 
     return {
         "inf_name": inf_name,
         "inf_stem": os.path.splitext(inf_name)[0],
         "driver_class": driver_class,
+        "dch_role": dch_role,
         "provider": provider,
         "driver_date": driver_date,
         "driver_ver": driver_ver,
         "catalog_files": catalog_files,
         "hwids": hwids,
+        "component_ids": component_ids,
     }
 
 
@@ -579,6 +776,9 @@ class DriverPoolManager:
             "updated_at": datetime.now().isoformat(),
             "packages": {},
             "hwid_winners": {},
+            "hwid_winners_by_build": {},
+            "dch_extensions": {},
+            "dch_components": {},
             "rejected_packages": [],
             "ingested_archives": {},
             "model_hits": {},
@@ -602,6 +802,9 @@ class DriverPoolManager:
                         data = json.load(f)
                     if isinstance(data, dict) and isinstance(data.get("packages"), dict):
                         data.setdefault("hwid_winners", {})
+                        data.setdefault("hwid_winners_by_build", {})
+                        data.setdefault("dch_extensions", {})
+                        data.setdefault("dch_components", {})
                         data.setdefault("rejected_packages", [])
                         data.setdefault("ingested_archives", {})
                         data.setdefault("model_hits", {})
@@ -751,12 +954,19 @@ class DriverPoolManager:
                 primary_fn, primary_meta = parsed_infs[0]
                 all_hwids: List[str] = []
                 seen_h = set()
+                all_cids: List[str] = []
+                seen_c = set()
+                all_inf_names: List[str] = []
+                all_classes: List[str] = []
                 best_ver = primary_meta["driver_ver"]
                 best_date = primary_meta["driver_date"]
                 best_inf_name = primary_fn
                 best_inf_stem = primary_meta["inf_stem"]
 
                 for fn, pm in parsed_infs:
+                    all_inf_names.append(fn)
+                    if pm.get("driver_class") and pm["driver_class"] not in all_classes:
+                        all_classes.append(pm["driver_class"])
                     if is_catalog_driver_newer(best_ver, best_date, pm["driver_ver"], pm["driver_date"]):
                         best_ver = pm["driver_ver"]
                         best_date = pm["driver_date"]
@@ -766,20 +976,32 @@ class DriverPoolManager:
                         if h not in seen_h:
                             seen_h.add(h)
                             all_hwids.append(h)
+                    for cid in (pm.get("component_ids") or []):
+                        if cid not in seen_c:
+                            seen_c.add(cid)
+                            all_cids.append(cid)
 
                 excluded_lower = _IGNORED_INBOX_INFS
                 unit_files = [
                     (rel, fp) for rel, fp in dir_all_files
                     if os.path.basename(rel).lower() not in excluded_lower
                 ]
+                roles = {pm.get("dch_role") or _get_dch_role(pm.get("driver_class", "")) for _, pm in parsed_infs}
+                unit_role = primary_meta.get("dch_role") or _get_dch_role(primary_meta.get("driver_class", ""))
+                if "base" in roles:
+                    unit_role = "base"
                 units.append({
                     "inf_name": best_inf_name,
                     "inf_stem": best_inf_stem,
+                    "inf_names": all_inf_names,
                     "driver_class": primary_meta["driver_class"],
+                    "driver_classes": all_classes,
+                    "dch_role": unit_role,
                     "provider": primary_meta["provider"],
                     "driver_ver": best_ver,
                     "driver_date": best_date,
                     "hwids": all_hwids,
+                    "component_ids": all_cids,
                     "files": unit_files,
                 })
             else:
@@ -801,15 +1023,96 @@ class DriverPoolManager:
                     units.append({
                         "inf_name": fn,
                         "inf_stem": pm["inf_stem"],
+                        "inf_names": [fn],
                         "driver_class": pm["driver_class"],
+                        "driver_classes": [pm["driver_class"]] if pm.get("driver_class") else [],
+                        "dch_role": pm.get("dch_role") or _get_dch_role(pm.get("driver_class", "")),
                         "provider": pm["provider"],
                         "driver_ver": pm["driver_ver"],
                         "driver_date": pm["driver_date"],
                         "hwids": pm["hwids"],
+                        "component_ids": list(pm.get("component_ids") or []),
                         "files": u_files,
                     })
 
         return units
+
+    def _consolidate_manifest_hwid_map_locked(
+        self,
+        hwid_map: Dict[str, str],
+        idx: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """
+        Sažima `hwid_map` jednog manifesta tako da za isti `inf_name` (npr. stara i nova
+        verzija `iigd_dch.inf` ili `netwtw14.inf`) kada dele HWID ili `(provider, driver_class)`
+        ostane samo 1 aktuelni pobednik (IMP-97).
+        """
+        pkgs = idx.get("packages", {})
+        cleaned: Dict[str, str] = {}
+        for hw_l, pid in hwid_map.items():
+            pmeta = pkgs.get(pid)
+            if not pmeta:
+                continue
+            pdir = os.path.join(self.packages_dir, pid)
+            if os.path.islink(pdir) or not os.path.isdir(pdir):
+                continue
+            if is_blocked_harvest_firmware_package(pmeta, pdir):
+                continue
+            cleaned[hw_l] = pid
+
+        # Grupisanje po inf_name.lower() za otkrivanje istorijskih duplikata verzija istog INF-a
+        by_inf: Dict[str, List[str]] = {}
+        for pid in set(cleaned.values()):
+            pmeta = pkgs.get(pid) or {}
+            inf_k = os.path.basename(str(pmeta.get("inf_name") or "").strip()).lower()
+            if inf_k:
+                by_inf.setdefault(inf_k, []).append(pid)
+
+        dropped_pids = set()
+        redirect_pid: Dict[str, str] = {}
+        for inf_k, pids in by_inf.items():
+            if len(pids) <= 1:
+                continue
+            # Izaberi najboljeg pobednika među paketima istog inf_name
+            best_pid = pids[0]
+            for cand_pid in pids[1:]:
+                if self._is_package_better(pkgs[cand_pid], pkgs[best_pid]):
+                    best_pid = cand_pid
+            best_meta = pkgs[best_pid]
+            best_hw_set = {str(h).lower() for h in (best_meta.get("hwids") or [])}
+            best_prov_cls = (
+                str(best_meta.get("provider") or "").strip().lower(),
+                str(best_meta.get("driver_class") or "").strip().lower(),
+            )
+            for other_pid in pids:
+                if other_pid == best_pid:
+                    continue
+                other_meta = pkgs[other_pid]
+                other_hw_set = {str(h).lower() for h in (other_meta.get("hwids") or [])}
+                other_prov_cls = (
+                    str(other_meta.get("provider") or "").strip().lower(),
+                    str(other_meta.get("driver_class") or "").strip().lower(),
+                )
+                shares_hwid = bool(best_hw_set & other_hw_set)
+                same_identity = bool(best_prov_cls[0] and best_prov_cls == other_prov_cls)
+                if shares_hwid or same_identity:
+                    dropped_pids.add(other_pid)
+                    redirect_pid[other_pid] = best_pid
+
+        if not dropped_pids:
+            return cleaned
+
+        consolidated: Dict[str, str] = {}
+        for hw_l, pid in cleaned.items():
+            if pid not in dropped_pids:
+                consolidated[hw_l] = pid
+                continue
+            target_pid = redirect_pid[pid]
+            target_hw_set = {str(h).lower() for h in (pkgs[target_pid].get("hwids") or [])}
+            if hw_l in target_hw_set:
+                consolidated[hw_l] = target_pid
+            # Zastareli HWID koji više ne postoji ni u novoj verziji istog INF-a biva izbačen
+        return consolidated
 
     def ingest_directory(
         self,
@@ -818,6 +1121,7 @@ class DriverPoolManager:
         model: Optional[str] = None,
         manufacturer: str = "",
         oem_meta: Optional[Dict[str, Any]] = None,
+        os_build: str = "",
     ) -> Dict[str, Any]:
         """
         Indeksira i deduplikuje sve validne .inf drajver pakete iz već raspakovanog direktorijuma.
@@ -825,6 +1129,12 @@ class DriverPoolManager:
         src_norm = str(source or "harvest").strip().lower()
         if src_norm not in _SOURCE_PRIORITY:
             src_norm = "harvest"
+
+        norm_build = (
+            _normalize_os_build(os_build)
+            or _normalize_os_build((oem_meta or {}).get("os_build"))
+            or _detect_os_build_from_dir(extracted_dir)
+        )
 
         clean_model = None
         if model and str(model).strip():
@@ -840,10 +1150,32 @@ class DriverPoolManager:
         rejected_events: List[Dict[str, Any]] = []
 
         for unit in units:
+            # IMP-113: Blokiraj Class=Firmware i firmware/CFU INF obrasce iz harvest izvora pri ingestu
+            if src_norm == "harvest":
+                unit_inf_names = list(unit.get("inf_names") or [unit["inf_name"]])
+                unit_classes = list(unit.get("driver_classes") or ([unit["driver_class"]] if unit.get("driver_class") else []))
+                file_infs = [os.path.basename(rel_p) for rel_p, _ in unit["files"] if rel_p.lower().endswith(".inf")]
+                blocked_fw = (
+                    is_blocked_firmware_inf(unit["inf_name"], unit["driver_class"])
+                    or any(is_blocked_firmware_inf("", c) for c in unit_classes)
+                    or any(is_blocked_firmware_inf(fn, "") for fn in (unit_inf_names + file_infs))
+                )
+                if blocked_fw:
+                    rejected_events.append({
+                        "inf_name": unit["inf_name"],
+                        "driver_class": unit.get("driver_class", ""),
+                        "reason": "blocked_firmware_or_cfu_harvest",
+                        "source": src_norm,
+                        "os_build": norm_build,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    continue
+
             accepted_files: List[Tuple[str, str, str, int]] = []
             has_forbidden = False
             has_cat = False
             total_size = 0
+            inf_sha256 = ""
 
             for rel_p, full_p in unit["files"]:
                 lower_rel = rel_p.lower()
@@ -857,6 +1189,8 @@ class DriverPoolManager:
                     fsha = _file_sha256(full_p)
                 except OSError:
                     continue
+                if os.path.basename(lower_rel) == str(unit["inf_name"]).lower():
+                    inf_sha256 = fsha
                 accepted_files.append((rel_p, full_p, fsha, sz))
                 total_size += sz
 
@@ -879,19 +1213,27 @@ class DriverPoolManager:
                 hasher.update(f"{rel_p.lower()}|{fsha}|{sz}\n".encode("utf-8"))
             pkg_sha256 = hasher.hexdigest()
 
+            dch_role = unit.get("dch_role") or _get_dch_role(unit.get("driver_class", ""))
             cand_meta = {
                 "pkg_id": pkg_sha256,
                 "inf_name": unit["inf_name"],
                 "inf_stem": unit["inf_stem"],
+                "inf_names": list(unit.get("inf_names") or [unit["inf_name"]]),
+                "inf_sha256": inf_sha256,
                 "driver_class": unit["driver_class"],
+                "driver_classes": list(unit.get("driver_classes") or ([unit["driver_class"]] if unit.get("driver_class") else [])),
+                "dch_role": dch_role,
                 "provider": unit["provider"],
                 "driver_ver": unit["driver_ver"],
                 "driver_date": unit["driver_date"],
                 "has_cat": has_cat,
                 "hwids": list(unit["hwids"]),
+                "component_ids": list(unit.get("component_ids") or []),
                 "size_bytes": total_size,
                 "file_count": len(accepted_files),
                 "sources": [src_norm],
+                "os_build": norm_build,
+                "os_builds": [norm_build] if norm_build else [],
             }
             prepared_units.append((cand_meta, accepted_files))
 
@@ -904,15 +1246,77 @@ class DriverPoolManager:
         manifest_pkg_candidates: List[Tuple[str, Dict[str, Any]]] = []
 
         def _is_older_than_winners_locked(idx_map: Dict[str, Any], cand_meta_obj: Dict[str, Any]) -> bool:
+            role = cand_meta_obj.get("dch_role") or _get_dch_role(cand_meta_obj.get("driver_class", ""))
+            inf_key = os.path.basename(str(cand_meta_obj.get("inf_name") or "").strip()).lower()
             hw_list = cand_meta_obj.get("hwids") or []
+            cid_list = cand_meta_obj.get("component_ids") or []
+
+            if role == "extension":
+                if not hw_list:
+                    return False
+                ext_index = idx_map.get("dch_extensions", {})
+                for hw_item in hw_list:
+                    win_pid = (ext_index.get(hw_item.lower()) or {}).get(inf_key)
+                    if not win_pid or win_pid not in idx_map["packages"]:
+                        return False
+                    win_meta = idx_map["packages"][win_pid]
+                    if norm_build and src_norm == "harvest" and not _is_pkg_compatible_with_os_build(win_meta, norm_build):
+                        return False
+                    if self._is_package_better(cand_meta_obj, win_meta):
+                        return False
+                return True
+
+            if role == "software_component":
+                comp_keys = list(cid_list) or [h for h in hw_list if str(h).upper().startswith("SWC\\")]
+                if not comp_keys and not hw_list:
+                    return False
+                comp_index = idx_map.get("dch_components", {})
+                for ck in comp_keys:
+                    win_pid = (comp_index.get(ck.lower()) or {}).get(inf_key)
+                    if not win_pid or win_pid not in idx_map["packages"]:
+                        return False
+                    win_meta = idx_map["packages"][win_pid]
+                    if norm_build and src_norm == "harvest" and not _is_pkg_compatible_with_os_build(win_meta, norm_build):
+                        return False
+                    if self._is_package_better(cand_meta_obj, win_meta):
+                        return False
+                if not comp_keys and hw_list:
+                    ext_index = idx_map.get("dch_extensions", {})
+                    for hw_item in hw_list:
+                        win_pid = (ext_index.get(hw_item.lower()) or {}).get(inf_key)
+                        if not win_pid or win_pid not in idx_map["packages"]:
+                            return False
+                        if self._is_package_better(cand_meta_obj, idx_map["packages"][win_pid]):
+                            return False
+                return True
+
             if not hw_list:
                 return False
+            build_winners = (idx_map.get("hwid_winners_by_build") or {}).get(norm_build, {}) if (norm_build and src_norm == "harvest") else None
             for hw_item in hw_list:
-                win_pid = idx_map["hwid_winners"].get(hw_item.lower())
-                if not win_pid or win_pid not in idx_map["packages"]:
-                    return False
-                if self._is_package_better(cand_meta_obj, idx_map["packages"][win_pid]):
-                    return False
+                hw_l = hw_item.lower()
+                if build_winners is not None:
+                    win_pid = build_winners.get(hw_l)
+                    if not win_pid or win_pid not in idx_map["packages"]:
+                        # Proveri da li je globalni pobednik zvanični potpisani oem_pack (on pobeđuje harvest za sve buildove)
+                        glob_pid = idx_map["hwid_winners"].get(hw_l)
+                        if glob_pid and glob_pid in idx_map["packages"]:
+                            gmeta = idx_map["packages"][glob_pid]
+                            if "oem_pack" in (gmeta.get("sources") or []) and gmeta.get("has_cat") and not self._is_package_better(cand_meta_obj, gmeta):
+                                continue
+                        return False
+                    if is_blocked_harvest_firmware_package(idx_map["packages"][win_pid]):
+                        return False
+                    if self._is_package_better(cand_meta_obj, idx_map["packages"][win_pid]):
+                        return False
+                else:
+                    win_pid = idx_map["hwid_winners"].get(hw_l)
+                    if not win_pid or win_pid not in idx_map["packages"]:
+                        return False
+                    if is_blocked_harvest_firmware_package(idx_map["packages"][win_pid]):
+                        return False
+                    if self._is_package_better(cand_meta_obj, idx_map["packages"][win_pid]):
+                        return False
             return True
 
         def _stage_package_files(pkg_id: str, files_spec: List[Tuple[str, str, str, int]]) -> str:
@@ -930,6 +1334,80 @@ class DriverPoolManager:
             except Exception:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
                 raise
+
+        def _register_pkg_in_index_locked(idx_map: Dict[str, Any], pkg_id: str, meta_obj: Dict[str, Any]) -> int:
+            local_upgrades = 0
+            role = meta_obj.get("dch_role") or _get_dch_role(meta_obj.get("driver_class", ""))
+            inf_key = os.path.basename(str(meta_obj.get("inf_name") or "").strip()).lower()
+            hw_list = meta_obj.get("hwids") or []
+            cid_list = meta_obj.get("component_ids") or []
+
+            if role == "extension":
+                ext_idx = idx_map.setdefault("dch_extensions", {})
+                for hw in hw_list:
+                    hw_l = hw.lower()
+                    bucket = ext_idx.setdefault(hw_l, {})
+                    cur_id = bucket.get(inf_key)
+                    if not cur_id or cur_id not in idx_map["packages"] or (
+                        cur_id != pkg_id and self._is_package_better(meta_obj, idx_map["packages"][cur_id])
+                    ):
+                        bucket[inf_key] = pkg_id
+                        local_upgrades += 1
+                return local_upgrades
+
+            if role == "software_component":
+                comp_idx = idx_map.setdefault("dch_components", {})
+                for cid in cid_list:
+                    cid_l = cid.lower()
+                    bucket = comp_idx.setdefault(cid_l, {})
+                    cur_id = bucket.get(inf_key)
+                    if not cur_id or cur_id not in idx_map["packages"] or (
+                        cur_id != pkg_id and self._is_package_better(meta_obj, idx_map["packages"][cur_id])
+                    ):
+                        bucket[inf_key] = pkg_id
+                        local_upgrades += 1
+                ext_idx = idx_map.setdefault("dch_extensions", {})
+                for hw in hw_list:
+                    if str(hw).upper().startswith("SWC\\"):
+                        continue
+                    hw_l = hw.lower()
+                    bucket = ext_idx.setdefault(hw_l, {})
+                    cur_id = bucket.get(inf_key)
+                    if not cur_id or cur_id not in idx_map["packages"] or (
+                        cur_id != pkg_id and self._is_package_better(meta_obj, idx_map["packages"][cur_id])
+                    ):
+                        bucket[inf_key] = pkg_id
+                        local_upgrades += 1
+                return local_upgrades
+
+            # Base drajver -> globalni hwid_winners (+ build-specifična mapa ako je os_build zadat)
+            for hw in hw_list:
+                hw_l = hw.lower()
+                cur_win_id = idx_map["hwid_winners"].get(hw_l)
+                cur_invalid = (
+                    not cur_win_id
+                    or cur_win_id not in idx_map["packages"]
+                    or is_blocked_harvest_firmware_package(idx_map["packages"][cur_win_id])
+                )
+                if cur_invalid:
+                    idx_map["hwid_winners"][hw_l] = pkg_id
+                    local_upgrades += 1
+                elif cur_win_id != pkg_id:
+                    if self._is_package_better(meta_obj, idx_map["packages"][cur_win_id]):
+                        idx_map["hwid_winners"][hw_l] = pkg_id
+                        local_upgrades += 1
+
+                if norm_build:
+                    bmap = idx_map.setdefault("hwid_winners_by_build", {}).setdefault(norm_build, {})
+                    cur_b_id = bmap.get(hw_l)
+                    if (
+                        not cur_b_id
+                        or cur_b_id not in idx_map["packages"]
+                        or is_blocked_harvest_firmware_package(idx_map["packages"][cur_b_id])
+                        or (cur_b_id != pkg_id and self._is_package_better(meta_obj, idx_map["packages"][cur_b_id]))
+                    ):
+                        bmap[hw_l] = pkg_id
+            return local_upgrades
 
         # Faza A (kratki lock): odredi koje nove pakete uopšte treba kopirati na disk
         to_copy: List[Tuple[str, List[Tuple[str, str, str, int]]]] = []
@@ -978,7 +1456,19 @@ class DriverPoolManager:
                             dedup_saved_bytes += total_size
                             if src_norm not in existing_pkg.get("sources", []):
                                 existing_pkg.setdefault("sources", []).append(src_norm)
+                            if norm_build:
+                                b_list = existing_pkg.setdefault("os_builds", [])
+                                if norm_build not in b_list:
+                                    b_list.append(norm_build)
+                                existing_pkg["os_build"] = norm_build
+                            if cand_meta.get("component_ids") and not existing_pkg.get("component_ids"):
+                                existing_pkg["component_ids"] = list(cand_meta["component_ids"])
+                            if not existing_pkg.get("dch_role"):
+                                existing_pkg["dch_role"] = cand_meta.get("dch_role", "base")
+                            if cand_meta.get("inf_sha256") and not existing_pkg.get("inf_sha256"):
+                                existing_pkg["inf_sha256"] = cand_meta["inf_sha256"]
                             existing_pkg["last_seen"] = datetime.now().isoformat()
+                            upgraded_hwids += _register_pkg_in_index_locked(idx, pkg_sha256, existing_pkg)
                             manifest_pkg_candidates.append((pkg_sha256, existing_pkg))
                             continue
 
@@ -991,10 +1481,23 @@ class DriverPoolManager:
                             older_skipped += 1
                             idx["stats"]["older_skipped_count"] = int(idx["stats"].get("older_skipped_count", 0)) + 1
                             # U manifest modela i dalje možemo uvezati pobednike iz pool-a za iste HWID-ove
-                            for hw in hwids_list:
-                                win_id = idx["hwid_winners"].get(hw.lower())
-                                if win_id and win_id in idx["packages"]:
-                                    manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
+                            role_c = cand_meta.get("dch_role") or "base"
+                            inf_k_c = os.path.basename(str(cand_meta.get("inf_name") or "").strip()).lower()
+                            if role_c == "extension":
+                                for hw in hwids_list:
+                                    win_id = (idx.get("dch_extensions", {}).get(hw.lower()) or {}).get(inf_k_c)
+                                    if win_id and win_id in idx["packages"]:
+                                        manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
+                            elif role_c == "software_component":
+                                for cid in (cand_meta.get("component_ids") or []):
+                                    win_id = (idx.get("dch_components", {}).get(cid.lower()) or {}).get(inf_k_c)
+                                    if win_id and win_id in idx["packages"]:
+                                        manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
+                            else:
+                                for hw in hwids_list:
+                                    win_id = idx["hwid_winners"].get(hw.lower())
+                                    if win_id and win_id in idx["packages"]:
+                                        manifest_pkg_candidates.append((win_id, idx["packages"][win_id]))
                             continue
 
                         tmp_pkg_dir = staged_dirs.pop(pkg_sha256, None)
@@ -1013,24 +1516,14 @@ class DriverPoolManager:
                         idx["packages"][pkg_sha256] = stored_meta
                         added_count += 1
 
-                        for hw in hwids_list:
-                            hw_l = hw.lower()
-                            cur_win_id = idx["hwid_winners"].get(hw_l)
-                            if not cur_win_id or cur_win_id not in idx["packages"]:
-                                idx["hwid_winners"][hw_l] = pkg_sha256
-                                upgraded_hwids += 1
-                            elif cur_win_id != pkg_sha256:
-                                if self._is_package_better(stored_meta, idx["packages"][cur_win_id]):
-                                    idx["hwid_winners"][hw_l] = pkg_sha256
-                                    upgraded_hwids += 1
-
+                        upgraded_hwids += _register_pkg_in_index_locked(idx, pkg_sha256, stored_meta)
                         manifest_pkg_candidates.append((pkg_sha256, stored_meta))
 
                     idx["stats"]["dedup_hits"] = int(idx["stats"].get("dedup_hits", 0)) + dedup_hits
                     idx["stats"]["dedup_saved_bytes"] = int(idx["stats"].get("dedup_saved_bytes", 0)) + dedup_saved_bytes
                     idx["stats"]["ingests_count"] = int(idx["stats"].get("ingests_count", 0)) + 1
 
-                    # Ažuriranje Model Manifesta (bez duplikata i bez degradacije verzije!)
+                    # Ažuriranje Model Manifesta (bez duplikata, bez firmware harvest bloat-a i sa DCH/OS-build mapama!)
                     if clean_model:
                         manifest = self._load_manifest_locked(clean_model) or {
                             "model": clean_model,
@@ -1038,8 +1531,12 @@ class DriverPoolManager:
                             "manufacturer": manufacturer or detect_oem_vendor(manufacturer, str(model or "")),
                             "updated_at": datetime.now().isoformat(),
                             "sources": [],
+                            "os_builds": [],
                             "oem_pack": None,
                             "hwid_map": {},
+                            "hwid_map_by_build": {},
+                            "dch_hwid_map": {},
+                            "component_map": {},
                             "packages": [],
                             "total_bytes": 0,
                         }
@@ -1059,46 +1556,138 @@ class DriverPoolManager:
                         m_sources.add(src_norm)
                         manifest["sources"] = sorted(m_sources)
 
+                        m_builds = set(manifest.get("os_builds") or [])
+                        if norm_build:
+                            m_builds.add(norm_build)
+                        manifest["os_builds"] = sorted(b for b in m_builds if b)
+
                         hwid_map: Dict[str, str] = dict(manifest.get("hwid_map") or {})
+                        hwid_map_by_build: Dict[str, Dict[str, str]] = {
+                            str(bk): dict(bv)
+                            for bk, bv in (manifest.get("hwid_map_by_build") or {}).items()
+                            if isinstance(bv, dict)
+                        }
+                        dch_hwid_map: Dict[str, Dict[str, str]] = {
+                            str(hk): dict(hv)
+                            for hk, hv in (manifest.get("dch_hwid_map") or {}).items()
+                            if isinstance(hv, dict)
+                        }
+                        component_map: Dict[str, Dict[str, str]] = {
+                            str(ck): dict(cv)
+                            for ck, cv in (manifest.get("component_map") or {}).items()
+                            if isinstance(cv, dict)
+                        }
                         no_hwid_pkgs: List[str] = []
 
-                        # Uključi postojeće pakete bez HWID-ova ako i dalje postoje u pool-u
+                        # Uključi postojeće pakete bez HWID-ova/ComponentID-ova ako i dalje postoje u pool-u
                         for old_pid in (manifest.get("packages") or []):
                             pmeta = idx["packages"].get(old_pid)
-                            if pmeta and not pmeta.get("hwids"):
+                            if (
+                                pmeta
+                                and not pmeta.get("hwids")
+                                and not pmeta.get("component_ids")
+                                and not is_blocked_harvest_firmware_package(pmeta)
+                            ):
                                 no_hwid_pkgs.append(old_pid)
 
                         for cand_pid, cand_pmeta in manifest_pkg_candidates:
+                            if is_blocked_harvest_firmware_package(cand_pmeta):
+                                continue
+                            role_c = cand_pmeta.get("dch_role") or _get_dch_role(cand_pmeta.get("driver_class", ""))
+                            inf_k_c = os.path.basename(str(cand_pmeta.get("inf_name") or "").strip()).lower()
                             p_hwids = cand_pmeta.get("hwids") or []
+                            p_cids = cand_pmeta.get("component_ids") or []
+
+                            if role_c == "extension":
+                                for hw in p_hwids:
+                                    hw_l = hw.lower()
+                                    bucket = dch_hwid_map.setdefault(hw_l, {})
+                                    cur_e_id = bucket.get(inf_k_c)
+                                    best_id = cand_pid
+                                    if cur_e_id and cur_e_id in idx["packages"]:
+                                        if not self._is_package_better(cand_pmeta, idx["packages"][cur_e_id]):
+                                            best_id = cur_e_id
+                                    bucket[inf_k_c] = best_id
+                                continue
+
+                            if role_c == "software_component":
+                                for cid in p_cids:
+                                    cid_l = cid.lower()
+                                    bucket = component_map.setdefault(cid_l, {})
+                                    cur_c_id = bucket.get(inf_k_c)
+                                    best_id = cand_pid
+                                    if cur_c_id and cur_c_id in idx["packages"]:
+                                        if not self._is_package_better(cand_pmeta, idx["packages"][cur_c_id]):
+                                            best_id = cur_c_id
+                                    bucket[inf_k_c] = best_id
+                                for hw in p_hwids:
+                                    if str(hw).upper().startswith("SWC\\"):
+                                        continue
+                                    hw_l = hw.lower()
+                                    bucket = dch_hwid_map.setdefault(hw_l, {})
+                                    cur_e_id = bucket.get(inf_k_c)
+                                    best_id = cand_pid
+                                    if cur_e_id and cur_e_id in idx["packages"]:
+                                        if not self._is_package_better(cand_pmeta, idx["packages"][cur_e_id]):
+                                            best_id = cur_e_id
+                                    bucket[inf_k_c] = best_id
+                                continue
+
                             if not p_hwids:
                                 if cand_pid not in no_hwid_pkgs:
                                     no_hwid_pkgs.append(cand_pid)
                                 continue
+
                             for hw in p_hwids:
                                 hw_l = hw.lower()
                                 # Uvek biraj pobednika između postojećeg u manifestu, kandidata i globalnog hwid_winner-a
                                 best_id = cand_pid
                                 best_meta = cand_pmeta
                                 cur_m_id = hwid_map.get(hw_l)
-                                if cur_m_id and cur_m_id in idx["packages"]:
+                                if cur_m_id and cur_m_id in idx["packages"] and not is_blocked_harvest_firmware_package(idx["packages"][cur_m_id]):
                                     if not self._is_package_better(best_meta, idx["packages"][cur_m_id]):
                                         best_id = cur_m_id
                                         best_meta = idx["packages"][cur_m_id]
                                 glob_w_id = idx["hwid_winners"].get(hw_l)
-                                if glob_w_id and glob_w_id in idx["packages"]:
+                                if glob_w_id and glob_w_id in idx["packages"] and not is_blocked_harvest_firmware_package(idx["packages"][glob_w_id]):
                                     if self._is_package_better(idx["packages"][glob_w_id], best_meta):
                                         best_id = glob_w_id
                                         best_meta = idx["packages"][glob_w_id]
                                 hwid_map[hw_l] = best_id
 
+                                if norm_build:
+                                    bmap = hwid_map_by_build.setdefault(norm_build, {})
+                                    b_best = cand_pid
+                                    cur_b_id = bmap.get(hw_l)
+                                    if cur_b_id and cur_b_id in idx["packages"] and not is_blocked_harvest_firmware_package(idx["packages"][cur_b_id]):
+                                        if not self._is_package_better(cand_pmeta, idx["packages"][cur_b_id]):
+                                            b_best = cur_b_id
+                                    bmap[hw_l] = b_best
+
+                        hwid_map = self._consolidate_manifest_hwid_map_locked(hwid_map, idx)
+                        for bk in list(hwid_map_by_build.keys()):
+                            hwid_map_by_build[bk] = self._consolidate_manifest_hwid_map_locked(hwid_map_by_build[bk], idx)
+
                         unique_pids: List[str] = []
                         seen_pids = set()
-                        for pid in list(hwid_map.values()) + no_hwid_pkgs:
-                            if pid in idx["packages"] and pid not in seen_pids:
+                        all_ref_pids: List[str] = list(hwid_map.values())
+                        for bmap in hwid_map_by_build.values():
+                            all_ref_pids.extend(bmap.values())
+                        for bucket in dch_hwid_map.values():
+                            all_ref_pids.extend(bucket.values())
+                        for bucket in component_map.values():
+                            all_ref_pids.extend(bucket.values())
+                        all_ref_pids.extend(no_hwid_pkgs)
+
+                        for pid in all_ref_pids:
+                            if pid in idx["packages"] and pid not in seen_pids and not is_blocked_harvest_firmware_package(idx["packages"][pid]):
                                 seen_pids.add(pid)
                                 unique_pids.append(pid)
 
                         manifest["hwid_map"] = hwid_map
+                        manifest["hwid_map_by_build"] = hwid_map_by_build
+                        manifest["dch_hwid_map"] = dch_hwid_map
+                        manifest["component_map"] = component_map
                         manifest["packages"] = unique_pids
                         manifest["package_count"] = len(unique_pids)
                         manifest["total_bytes"] = sum(int(idx["packages"][pid].get("size_bytes") or 0) for pid in unique_pids)
@@ -1118,6 +1707,7 @@ class DriverPoolManager:
             "status": "ok",
             "source": src_norm,
             "model": clean_model,
+            "os_build": norm_build,
             "units_discovered": len(units),
             "packages_added": added_count,
             "dedup_hits": dedup_hits,
@@ -1134,6 +1724,7 @@ class DriverPoolManager:
         model: Optional[str] = None,
         manufacturer: str = "",
         oem_meta: Optional[Dict[str, Any]] = None,
+        os_build: str = "",
     ) -> Dict[str, Any]:
         """Bezbedno raspakuje arhivu u temp direktorijum, ingestuje je u CAS Pool i briše temp."""
         if not os.path.isfile(archive_path):
@@ -1147,6 +1738,7 @@ class DriverPoolManager:
                 model=model,
                 manufacturer=manufacturer,
                 oem_meta=oem_meta,
+                os_build=os_build,
             )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -1219,6 +1811,50 @@ class DriverPoolManager:
         if not entry:
             return {"status": "not_found", "vendor": vendor, "model": model}
 
+        # IMP-98 / IMP-106: Ako katalog zapis nema ni lokalni Drop-in fajl ni verifikovan direktni CDN URL,
+        # za Microsoft Surface pokušaj dinamički fetch + HTTP HEAD verifikaciju; ako nema, vrati čist dropin_required.
+        if not str(entry.get("download_url") or "").strip() and not str(entry.get("local_path") or "").strip():
+            if vendor == "microsoft" and entry.get("download_page_url"):
+                discovered = discover_surface_msi_entries(
+                    entry,
+                    timeout=10.0,
+                    verify_head=True,
+                    allowed_hosts=getattr(self.catalog_mgr, "allowed_hosts", None),
+                )
+                if discovered:
+                    req_bld = _normalize_os_build(os_ver)
+                    discovered.sort(
+                        key=lambda e: (
+                            1 if (req_bld and e.get("os_build") == req_bld) else 0,
+                            1 if e.get("arch") == entry.get("arch") else 0,
+                            int(e.get("os_feature_rank") or 0),
+                            str(e.get("version") or ""),
+                        ),
+                        reverse=True,
+                    )
+                    entry = dict(entry)
+                    entry.update({
+                        "download_url": discovered[0]["download_url"],
+                        "package_name": discovered[0]["package_name"],
+                        "version": discovered[0].get("version") or entry.get("version", ""),
+                        "size_bytes": discovered[0].get("size_bytes") or entry.get("size_bytes", 0),
+                    })
+            if not str(entry.get("download_url") or "").strip() and not str(entry.get("local_path") or "").strip():
+                return {
+                    "status": "dropin_required",
+                    "vendor": vendor,
+                    "model": model,
+                    "download_page_url": entry.get("download_page_url") or entry.get("support_page_url") or "",
+                    "dropin_hint": entry.get("dropin_hint") or f"<dropin_dir>/{vendor}/{model}/",
+                    "oem_entry": {
+                        "package_id": entry.get("package_id"),
+                        "package_name": entry.get("package_name"),
+                        "version": entry.get("version"),
+                        "release_date": entry.get("release_date"),
+                        "os": entry.get("os"),
+                    },
+                }
+
         tmp_dl = tempfile.mkdtemp(prefix="wis-oem-dl-")
         try:
             pkg_file = self.catalog_mgr.download_driver_pack(entry, tmp_dl)
@@ -1228,6 +1864,7 @@ class DriverPoolManager:
                 model=model,
                 manufacturer=vendor,
                 oem_meta=entry,
+                os_build=str(entry.get("os_build") or ""),
             )
             res["oem_entry"] = {
                 "package_id": entry.get("package_id"),
@@ -1315,14 +1952,22 @@ class DriverPoolManager:
                     cand_l = cand.lower()
                     m_pid = manifest_hmap.get(cand_l)
                     g_pid = idx["hwid_winners"].get(cand_l)
-                    cand_pid = None
-                    if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
-                        cand_pid = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
-                    elif g_pid and g_pid in idx["packages"]:
-                        cand_pid = g_pid
-                    elif m_pid and m_pid in idx["packages"]:
-                        cand_pid = m_pid
-                    if cand_pid and os.path.isdir(os.path.join(self.packages_dir, cand_pid)):
+                    valid_cands = []
+                    for pid_try in (m_pid, g_pid):
+                        if not pid_try or pid_try not in idx["packages"]:
+                            continue
+                        pdir = os.path.join(self.packages_dir, pid_try)
+                        if os.path.islink(pdir) or not os.path.isdir(pdir):
+                            continue
+                        if is_blocked_harvest_firmware_package(idx["packages"][pid_try], pdir):
+                            continue
+                        if pid_try not in valid_cands:
+                            valid_cands.append(pid_try)
+                    if valid_cands:
+                        cand_pid = valid_cands[0]
+                        for other_pid in valid_cands[1:]:
+                            if self._is_package_better(idx["packages"][other_pid], idx["packages"][cand_pid]):
+                                cand_pid = other_pid
                         chosen = cand_pid
                         matched_cand = cand
                         break
@@ -1347,21 +1992,101 @@ class DriverPoolManager:
             "has_oem_pack": bool(self.has_oem_pack_in_manifest(model)) if model else False,
         }
 
+    def _deduplicate_selected_pids_locked(
+        self,
+        selected_pids: Sequence[str],
+        idx: Dict[str, Any],
+    ) -> List[str]:
+        """
+        Deduplikuje odabrane pakete za bundle po `pkg_id` i po `(inf_name.lower(), dch_role)`
+        kada postoje istorijske duple verzije istog INF-a koje dele HWID ili `(provider, driver_class)`
+        ili identičan `inf_sha256` (IMP-97).
+        """
+        pkgs = idx.get("packages", {})
+        unique_order: List[str] = []
+        seen = set()
+        for pid in selected_pids:
+            if pid and pid not in seen and pid in pkgs:
+                seen.add(pid)
+                unique_order.append(pid)
+
+        # 1. Deduplikacija po identičnom (inf_name.lower(), inf_sha256)
+        by_inf_sha: Dict[Tuple[str, str], str] = {}
+        dropped = set()
+        for pid in unique_order:
+            pm = pkgs[pid]
+            inf_n = os.path.basename(str(pm.get("inf_name") or "").strip()).lower()
+            inf_s = str(pm.get("inf_sha256") or "").strip().lower()
+            if inf_n and inf_s:
+                key = (inf_n, inf_s)
+                prev = by_inf_sha.get(key)
+                if prev is None:
+                    by_inf_sha[key] = pid
+                else:
+                    if self._is_package_better(pm, pkgs[prev]):
+                        dropped.add(prev)
+                        by_inf_sha[key] = pid
+                    else:
+                        dropped.add(pid)
+
+        stage1 = [pid for pid in unique_order if pid not in dropped]
+
+        # 2. Deduplikacija različitih verzija istog (inf_name.lower(), dch_role) koje dele HWID ili (provider, driver_class)
+        by_inf_role: Dict[Tuple[str, str], List[str]] = {}
+        for pid in stage1:
+            pm = pkgs[pid]
+            inf_n = os.path.basename(str(pm.get("inf_name") or "").strip()).lower()
+            role = pm.get("dch_role") or _get_dch_role(pm.get("driver_class", ""))
+            if inf_n:
+                by_inf_role.setdefault((inf_n, role), []).append(pid)
+
+        for _, pids in by_inf_role.items():
+            if len(pids) <= 1:
+                continue
+            best_pid = pids[0]
+            for cand_pid in pids[1:]:
+                if self._is_package_better(pkgs[cand_pid], pkgs[best_pid]):
+                    best_pid = cand_pid
+            best_meta = pkgs[best_pid]
+            best_hws = {str(h).lower() for h in (best_meta.get("hwids") or [])}
+            best_pc = (
+                str(best_meta.get("provider") or "").strip().lower(),
+                str(best_meta.get("driver_class") or "").strip().lower(),
+            )
+            for other_pid in pids:
+                if other_pid == best_pid:
+                    continue
+                om = pkgs[other_pid]
+                other_hws = {str(h).lower() for h in (om.get("hwids") or [])}
+                other_pc = (
+                    str(om.get("provider") or "").strip().lower(),
+                    str(om.get("driver_class") or "").strip().lower(),
+                )
+                if (best_hws & other_hws) or (best_pc[0] and best_pc == other_pc):
+                    dropped.add(other_pid)
+
+        return [pid for pid in stage1 if pid not in dropped]
+
     def build_bundle_tar(
         self,
         model: str = "",
         missing_hwids: Optional[Sequence[str]] = None,
         all_hwids: Optional[Sequence[str]] = None,
         allow_stream_plan: bool = False,
+        os_build: str = "",
     ) -> Dict[str, Any]:
         """
         Dinamički sastavlja (ili vraća iz bundles/ keša) minimalni, 100% deduplikovani `.tar` paket
-        za traženi model i/ili konkretne HWID-ove uređaja.
-        Kada je allow_stream_plan=True, retki (hits < min_hits) ili preveliki (> max_gb) modeli
-        vraćaju plan za on-the-fly streaming bez upisa u bundles/.
+        za traženi model i/ili konkretne HWID-ove uređaja:
+        - IMP-97: filtrira manifest po `all_hwids` / `hwid_winners` (1 aktuelni winner po HWID-u)
+          sa deduplikacijom fajlova i INF-ova.
+        - IMP-113: blokira `Class=Firmware` i firmware/CFU pakete iz harvest izvora,
+          uparuje DCH `Extension`/`SoftwareComponent` INF-ove u `clean_missing` (i `clean_all`) modu
+          bez ubacivanja nesrodnih paketa modela, i čuva OS-build izolaciju (`26200` vs `26100`).
         """
         clean_missing = [str(h).strip() for h in (missing_hwids or []) if str(h).strip()]
         clean_all = [str(h).strip() for h in (all_hwids or []) if str(h).strip()]
+        req_build = _normalize_os_build(os_build)
 
         selected_pids: List[str] = []
         seen_pids = set()
@@ -1373,61 +2098,264 @@ class DriverPoolManager:
 
         with self.lock:
             idx = self._ensure_index_loaded()
+            pkgs_map = idx.get("packages", {})
             manifest = self._find_manifest_for_model(model)
             manifest_model = (manifest or {}).get("model")
             manifest_hmap = (manifest or {}).get("hwid_map") or {}
-            manifest_has_packages = bool(manifest and (manifest.get("packages") or []))
+            manifest_hmap_build = ((manifest or {}).get("hwid_map_by_build") or {}).get(req_build, {}) if req_build else {}
+            global_winners_build = (idx.get("hwid_winners_by_build") or {}).get(req_build, {}) if req_build else {}
+            manifest_dch_map = (manifest or {}).get("dch_hwid_map") or {}
+            manifest_comp_map = (manifest or {}).get("component_map") or {}
+            manifest_pkgs_list = list((manifest or {}).get("packages") or [])
+            manifest_has_packages = bool(manifest and manifest_pkgs_list)
+
+            def _is_valid_bundle_pkg(pid: Optional[str], enforce_build: bool = True) -> bool:
+                if not pid or pid not in pkgs_map:
+                    return False
+                pmeta = pkgs_map[pid]
+                pdir = os.path.join(self.packages_dir, pid)
+                if os.path.islink(pdir) or not os.path.isdir(pdir):
+                    return False
+                if is_blocked_harvest_firmware_package(pmeta, pdir):
+                    return False
+                if enforce_build and req_build and not _is_pkg_compatible_with_os_build(pmeta, req_build):
+                    return False
+                return True
+
+            def _add_pid(pid: Optional[str]) -> None:
+                if pid and pid not in seen_pids and _is_valid_bundle_pkg(pid):
+                    seen_pids.add(pid)
+                    selected_pids.append(pid)
+
+            def _pick_best_valid(candidates_pids: Iterable[Optional[str]]) -> Optional[str]:
+                best_pid: Optional[str] = None
+                for pid_try in candidates_pids:
+                    if not _is_valid_bundle_pkg(pid_try):
+                        continue
+                    if best_pid is None or (
+                        pid_try != best_pid and self._is_package_better(pkgs_map[pid_try], pkgs_map[best_pid])
+                    ):
+                        best_pid = pid_try
+                return best_pid
 
             def _pick_for_hwid(raw_h: str, allow_global_generic: bool = True) -> Optional[str]:
                 cands = generate_hwid_candidates(raw_h)
                 for cand in cands:
                     cand_l = cand.lower()
-                    m_pid = manifest_hmap.get(cand_l)
                     allow_g = allow_global_generic or bool(_STRICT_SUBSYS_RE.search(cand))
-                    g_pid = idx["hwid_winners"].get(cand_l) if allow_g else None
-                    chosen = None
-                    if m_pid and g_pid and m_pid in idx["packages"] and g_pid in idx["packages"]:
-                        chosen = g_pid if self._is_package_better(idx["packages"][g_pid], idx["packages"][m_pid]) else m_pid
-                    elif g_pid and g_pid in idx["packages"]:
-                        chosen = g_pid
-                    elif m_pid and m_pid in idx["packages"]:
-                        chosen = m_pid
-                    if chosen and os.path.isdir(os.path.join(self.packages_dir, chosen)):
+                    cand_pids: List[Optional[str]] = [
+                        manifest_hmap_build.get(cand_l) if req_build else None,
+                        manifest_hmap.get(cand_l),
+                    ]
+                    if allow_g:
+                        if req_build:
+                            cand_pids.append(global_winners_build.get(cand_l))
+                        cand_pids.append(idx["hwid_winners"].get(cand_l))
+                    chosen = _pick_best_valid(cand_pids)
+                    if chosen:
                         return chosen
                 return None
 
+            def _collect_dch_companions(raw_h: str, base_pid: Optional[str], allow_global: bool = False) -> List[str]:
+                """
+                Uparuje povezane DCH Extension i SoftwareComponent pakete za isti HWID (i njihove ComponentIDs)
+                primarno iz manifesta modela, bez ubacivanja nesrodnih paketa modela (IMP-113).
+                """
+                cands = generate_hwid_candidates(raw_h)
+                cand_lowers = [c.lower() for c in cands]
+                cand_set = set(cand_lowers)
+
+                # 1. Extension (i direktno HWID-vezani SoftwareComponent) paketi za iste HWID kandidate
+                ext_by_inf: Dict[str, str] = {}
+
+                def _consider_companion(pid_c: Optional[str]) -> None:
+                    if not _is_valid_bundle_pkg(pid_c):
+                        return
+                    pm_c = pkgs_map[pid_c]
+                    inf_k = os.path.basename(str(pm_c.get("inf_name") or "").strip()).lower() or pid_c
+                    prev = ext_by_inf.get(inf_k)
+                    if prev is None or (pid_c != prev and self._is_package_better(pm_c, pkgs_map[prev])):
+                        ext_by_inf[inf_k] = pid_c
+
+                for cand_l in cand_lowers:
+                    m_bucket = manifest_dch_map.get(cand_l)
+                    if isinstance(m_bucket, dict):
+                        for ext_pid in m_bucket.values():
+                            _consider_companion(ext_pid)
+                    elif isinstance(m_bucket, list):
+                        for ext_pid in m_bucket:
+                            _consider_companion(ext_pid)
+
+                # Fallback za postojeće manifeste koji još nemaju dch_hwid_map polje
+                if manifest_pkgs_list:
+                    for m_pid in manifest_pkgs_list:
+                        if not _is_valid_bundle_pkg(m_pid):
+                            continue
+                        pm = pkgs_map[m_pid]
+                        role = pm.get("dch_role") or _get_dch_role(pm.get("driver_class", ""))
+                        if role not in ("extension", "software_component"):
+                            continue
+                        pm_hws = {str(h).lower() for h in (pm.get("hwids") or [])}
+                        if pm_hws & cand_set:
+                            _consider_companion(m_pid)
+
+                # Globalni DCH fallback (kad manifest nema poklapanje ili je generička ploča u clean_missing modu)
+                if allow_global and not manifest_has_packages:
+                    glob_dch = idx.get("dch_extensions") or {}
+                    for cand_l in cand_lowers:
+                        g_bucket = glob_dch.get(cand_l)
+                        if isinstance(g_bucket, dict):
+                            for ext_pid in g_bucket.values():
+                                _consider_companion(ext_pid)
+
+                companions: List[str] = list(ext_by_inf.values())
+
+                # 2. SoftwareComponent paketi vezani preko ComponentIDs (SWC\...) sa Base i Extension INF-ova
+                needed_cids = set()
+                seed_pids = ([base_pid] if base_pid else []) + companions
+                for spid in seed_pids:
+                    pm_s = pkgs_map.get(spid) or {}
+                    for cid in (pm_s.get("component_ids") or []):
+                        norm_cid = _normalize_component_id(cid)
+                        if norm_cid:
+                            needed_cids.add(norm_cid.lower())
+
+                if needed_cids:
+                    comp_by_inf: Dict[str, str] = {}
+
+                    def _consider_comp(pid_sc: Optional[str]) -> None:
+                        if not _is_valid_bundle_pkg(pid_sc):
+                            return
+                        pm_sc = pkgs_map[pid_sc]
+                        inf_k = os.path.basename(str(pm_sc.get("inf_name") or "").strip()).lower() or pid_sc
+                        prev = comp_by_inf.get(inf_k)
+                        if prev is None or (pid_sc != prev and self._is_package_better(pm_sc, pkgs_map[prev])):
+                            comp_by_inf[inf_k] = pid_sc
+
+                    for cid_l in needed_cids:
+                        c_bucket = manifest_comp_map.get(cid_l)
+                        if isinstance(c_bucket, dict):
+                            for sc_pid in c_bucket.values():
+                                _consider_comp(sc_pid)
+                        elif isinstance(c_bucket, list):
+                            for sc_pid in c_bucket:
+                                _consider_comp(sc_pid)
+
+                    # Fallback za stare manifeste bez component_map
+                    if manifest_pkgs_list:
+                        for m_pid in manifest_pkgs_list:
+                            if not _is_valid_bundle_pkg(m_pid):
+                                continue
+                            pm = pkgs_map[m_pid]
+                            role = pm.get("dch_role") or _get_dch_role(pm.get("driver_class", ""))
+                            if role != "software_component":
+                                continue
+                            pm_cids = {
+                                _normalize_component_id(c).lower()
+                                for c in (list(pm.get("component_ids") or []) + [h for h in (pm.get("hwids") or []) if str(h).upper().startswith("SWC\\")])
+                                if _normalize_component_id(c)
+                            }
+                            if pm_cids & needed_cids:
+                                _consider_comp(m_pid)
+
+                    if allow_global and not comp_by_inf:
+                        glob_comps = idx.get("dch_components") or {}
+                        for cid_l in needed_cids:
+                            g_bucket = glob_comps.get(cid_l)
+                            if isinstance(g_bucket, dict):
+                                for sc_pid in g_bucket.values():
+                                    _consider_comp(sc_pid)
+
+                    companions.extend(comp_by_inf.values())
+
+                return companions
+
             if clean_missing:
-                # Ciljani mod: samo paketi koji rešavaju prijavljene problematične HWID-ove
+                # Ciljani mod (IMP-113): pogođeni Base INF + povezani DCH Extension/SoftwareComponent INF-ovi
+                # za iste HWID-ove iz manifesta, strogo bez nesrodnih paketa modela.
                 for raw_h in clean_missing:
                     pid = _pick_for_hwid(raw_h, allow_global_generic=True)
-                    if pid:
+                    companions = _collect_dch_companions(raw_h, pid, allow_global=True)
+                    if pid or companions:
                         matched_hwids.append(raw_h)
-                        if pid not in seen_pids:
-                            seen_pids.add(pid)
-                            selected_pids.append(pid)
+                        if pid:
+                            _add_pid(pid)
+                        for comp_pid in companions:
+                            _add_pid(comp_pid)
+                    else:
+                        unmatched_hwids.append(raw_h)
+            elif clean_all:
+                # IMP-97: Kada klijent dostavi all_hwids (Model DNA), filtriraj manifest po all_hwids / hwid_winners
+                # (po 1 aktuelni winner po HWID-u + povezani DCH Extension/Component paketi), umesto istorijske
+                # gomile svih manifest["packages"]!
+                for raw_h in clean_all:
+                    pid = _pick_for_hwid(raw_h, allow_global_generic=not manifest_has_packages)
+                    companions = _collect_dch_companions(raw_h, pid, allow_global=not manifest_has_packages)
+                    if pid or companions:
+                        matched_hwids.append(raw_h)
+                        if pid:
+                            _add_pid(pid)
+                        for comp_pid in companions:
+                            _add_pid(comp_pid)
                     else:
                         unmatched_hwids.append(raw_h)
             else:
-                # Puni mod modela: ceo manifest modela + dopuna iz Pool-a za poznate all_hwids uređaja.
-                # IMP-89: kad već postoji manifest sa paketima za model, zabrani generički globalni fallback
-                # bez SUBSYS-a u clean_all da se ne bi ubacivao tuđi driver bloat.
+                # Puni mod modela bez eksplicitne liste HWID-ova: po 1 aktuelni pobednik po HWID-u iz hwid_map / hwid_winners
+                # umesto slepog uzimanja zastarelih paketa iz manifest["packages"] (IMP-97).
                 if manifest:
-                    for pid in (manifest.get("packages") or []):
-                        if pid in idx["packages"] and pid not in seen_pids and os.path.isdir(os.path.join(self.packages_dir, pid)):
-                            seen_pids.add(pid)
-                            selected_pids.append(pid)
-                for raw_h in clean_all:
-                    pid = _pick_for_hwid(raw_h, allow_global_generic=not manifest_has_packages)
-                    if pid:
-                        matched_hwids.append(raw_h)
-                        if pid not in seen_pids:
-                            seen_pids.add(pid)
-                            selected_pids.append(pid)
+                    active_hmap = dict(manifest_hmap)
+                    if req_build and manifest_hmap_build:
+                        active_hmap.update(manifest_hmap_build)
+                    if active_hmap:
+                        for hw_l, m_pid in active_hmap.items():
+                            cands_hw = [
+                                manifest_hmap_build.get(hw_l) if req_build else None,
+                                m_pid,
+                                global_winners_build.get(hw_l) if req_build else None,
+                                idx["hwid_winners"].get(hw_l),
+                            ]
+                            chosen = _pick_best_valid(cands_hw)
+                            if chosen:
+                                _add_pid(chosen)
+                        for bucket in manifest_dch_map.values():
+                            vals = bucket.values() if isinstance(bucket, dict) else (bucket if isinstance(bucket, list) else [])
+                            for dch_pid in vals:
+                                _add_pid(dch_pid)
+                        for bucket in manifest_comp_map.values():
+                            vals = bucket.values() if isinstance(bucket, dict) else (bucket if isinstance(bucket, list) else [])
+                            for comp_pid in vals:
+                                _add_pid(comp_pid)
+                        # Sačuvaj i validne ne-blokirane pakete bez HWID-ova / stare DCH pakete iz manifest["packages"]
+                        for pid in manifest_pkgs_list:
+                            if not _is_valid_bundle_pkg(pid):
+                                continue
+                            pm = pkgs_map[pid]
+                            role = pm.get("dch_role") or _get_dch_role(pm.get("driver_class", ""))
+                            if (not pm.get("hwids")) or role in ("extension", "software_component"):
+                                _add_pid(pid)
                     else:
-                        unmatched_hwids.append(raw_h)
+                        # Legacy manifest bez hwid_map: izaberi po 1 najbolji paket po HWID-u
+                        legacy_winners: Dict[str, str] = {}
+                        for pid in manifest_pkgs_list:
+                            if not _is_valid_bundle_pkg(pid):
+                                continue
+                            pm = pkgs_map[pid]
+                            p_hws = pm.get("hwids") or []
+                            if not p_hws:
+                                _add_pid(pid)
+                                continue
+                            for hw in p_hws:
+                                hw_l = hw.lower()
+                                prev = legacy_winners.get(hw_l)
+                                if prev is None or self._is_package_better(pm, pkgs_map[prev]):
+                                    legacy_winners[hw_l] = pid
+                        for pid in legacy_winners.values():
+                            _add_pid(pid)
+
+            selected_pids = self._deduplicate_selected_pids_locked(selected_pids, idx)
 
             for pid in selected_pids:
-                pmeta = dict(idx["packages"].get(pid, {}))
+                pmeta = dict(pkgs_map.get(pid, {}))
                 pkg_snapshots[pid] = (pmeta, os.path.join(self.packages_dir, pid))
 
             if selected_pids and allow_stream_plan:
@@ -1546,21 +2474,37 @@ class DriverPoolManager:
                 with open(tmp_tar, "wb") as raw_out:
                     hash_writer = _HashingFileWrapper(raw_out)
                     with tarfile.open(fileobj=hash_writer, mode="w") as tf:
+                        seen_arcnames = set()
                         for pid in sorted_pids:
                             pmeta, pdir = pkg_snapshots.get(pid, ({}, os.path.join(self.packages_dir, pid)))
                             if not os.path.isdir(pdir) or os.path.islink(pdir):
                                 continue
+                            if is_blocked_harvest_firmware_package(pmeta, pdir):
+                                continue
+                            real_pdir = os.path.realpath(pdir)
                             stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(pmeta.get("inf_stem") or "drv")).strip("_") or "drv"
                             folder_prefix = f"{stem}_{pid[:8]}"
-                            for rdir, _, files in os.walk(pdir, followlinks=False):
+                            for rdir, dirnames, files in os.walk(real_pdir, followlinks=False):
+                                dirnames[:] = [
+                                    d for d in sorted(dirnames)
+                                    if not os.path.islink(os.path.join(rdir, d))
+                                ]
                                 for fn in sorted(files):
                                     if fn.lower().endswith(FORBIDDEN_DRIVER_EXTENSIONS):
                                         continue
                                     full_f = os.path.join(rdir, fn)
                                     if os.path.islink(full_f):
                                         continue
-                                    rel = os.path.relpath(full_f, pdir).replace("\\", "/")
-                                    tf.add(full_f, arcname=f"{folder_prefix}/{rel}", recursive=False)
+                                    real_f = os.path.realpath(full_f)
+                                    if os.path.commonpath([real_pdir, real_f]) != real_pdir:
+                                        continue
+                                    rel = os.path.relpath(real_f, real_pdir).replace("\\", "/")
+                                    arcname = f"{folder_prefix}/{rel}"
+                                    arc_low = arcname.lower()
+                                    if arc_low in seen_arcnames:
+                                        continue
+                                    seen_arcnames.add(arc_low)
+                                    tf.add(real_f, arcname=arcname, recursive=False)
                     hash_writer.flush()
                     bundle_sha = hash_writer.hexdigest()
                 os.replace(tmp_tar, bundle_path)
@@ -1704,9 +2648,11 @@ class DriverPoolManager:
     ) -> Dict[str, Any]:
         """
         Brza provera koji su klijentski INF paketi već prisutni u Driver Pool-u (sa jednakom
-        ili novijom verzijom), a koji nedostaju i zahtevaju delta harvest upload (2A).
+        ili novijom verzijom i kompatibilnim `os_build`), a koji nedostaju i zahtevaju delta
+        harvest upload (2A). Blokirani firmware/CFU INF paketi se nikada ne traže za harvest (IMP-113).
         """
         pkg_list = packages if isinstance(packages, list) else []
+        req_build = _normalize_os_build(os_build)
         clean_model = ""
         if model and str(model).strip():
             try:
@@ -1716,14 +2662,19 @@ class DriverPoolManager:
 
         already_in_pool = 0
         missing_infs: List[str] = []
+        blocked_infs: List[str] = []
 
         with self.lock:
             idx = self._ensure_index_loaded()
             pkgs_map = idx.get("packages", {})
             hwid_winners = idx.get("hwid_winners", {})
+            hwid_winners_build = (idx.get("hwid_winners_by_build") or {}).get(req_build, {}) if req_build else {}
+            dch_extensions = idx.get("dch_extensions") or {}
             manifest = self._find_manifest_for_model(model)
             manifest_model = (manifest or {}).get("model")
             manifest_hmap = (manifest or {}).get("hwid_map") or {}
+            manifest_hmap_build = ((manifest or {}).get("hwid_map_by_build") or {}).get(req_build, {}) if req_build else {}
+            manifest_dch_map = (manifest or {}).get("dch_hwid_map") or {}
 
             for item in pkg_list:
                 if not isinstance(item, dict):
@@ -1731,12 +2682,19 @@ class DriverPoolManager:
                 inf_name = str(item.get("inf_name") or item.get("inf") or "").strip()
                 if not inf_name:
                     continue
+                drv_class = str(item.get("driver_class") or item.get("class") or "").strip()
+                if is_blocked_firmware_inf(inf_name, drv_class):
+                    blocked_infs.append(inf_name)
+                    continue
+
                 cand_ver = str(item.get("driver_ver") or item.get("version") or "").strip()
                 cand_date = str(item.get("driver_date") or "").strip()
                 cand_sha = str(item.get("sha256") or "").strip().lower()
                 raw_hwids = item.get("hwids") or []
                 if isinstance(raw_hwids, str):
                     raw_hwids = [raw_hwids]
+                role_c = _get_dch_role(drv_class)
+                inf_k_c = os.path.basename(inf_name).lower()
 
                 in_pool = False
                 # 1. Direktno poklapanje po SHA-256 (pkg_id ili inf_sha256)
@@ -1749,12 +2707,14 @@ class DriverPoolManager:
                                 in_pool = True
                                 break
 
-                # 2. Provera po HWID + verziji u manifestu modela i globalnim hwid_winners
+                # 2. Provera po HWID + verziji + OS buildu u manifestu modela i globalnim hwid_winners
                 if not in_pool and raw_hwids:
                     cand_meta = {
                         "driver_ver": cand_ver,
                         "driver_date": cand_date,
                         "source": "harvest",
+                        "os_build": req_build,
+                        "os_builds": [req_build] if req_build else [],
                     }
                     all_hwids_covered = True
                     any_matched = False
@@ -1765,13 +2725,32 @@ class DriverPoolManager:
                         matched_pid = None
                         for cand_h in generate_hwid_candidates(h_str):
                             cl = cand_h.lower()
-                            m_pid = manifest_hmap.get(cl)
-                            g_pid = hwid_winners.get(cl)
-                            if g_pid and g_pid in pkgs_map and os.path.isdir(os.path.join(self.packages_dir, g_pid)):
-                                matched_pid = g_pid
+                            if role_c == "extension":
+                                cand_pool = [
+                                    (manifest_dch_map.get(cl) or {}).get(inf_k_c) if isinstance(manifest_dch_map.get(cl), dict) else None,
+                                    (dch_extensions.get(cl) or {}).get(inf_k_c) if isinstance(dch_extensions.get(cl), dict) else None,
+                                ]
+                            else:
+                                cand_pool = [
+                                    manifest_hmap_build.get(cl) if req_build else None,
+                                    hwid_winners_build.get(cl) if req_build else None,
+                                    hwid_winners.get(cl),
+                                    manifest_hmap.get(cl),
+                                ]
+                            for try_pid in cand_pool:
+                                if not try_pid or try_pid not in pkgs_map:
+                                    continue
+                                pdir = os.path.join(self.packages_dir, try_pid)
+                                if os.path.islink(pdir) or not os.path.isdir(pdir):
+                                    continue
+                                pmeta = pkgs_map[try_pid]
+                                if is_blocked_harvest_firmware_package(pmeta, pdir):
+                                    continue
+                                if req_build and not _is_pkg_compatible_with_os_build(pmeta, req_build):
+                                    continue
+                                matched_pid = try_pid
                                 break
-                            if m_pid and m_pid in pkgs_map and os.path.isdir(os.path.join(self.packages_dir, m_pid)):
-                                matched_pid = m_pid
+                            if matched_pid:
                                 break
                         if not matched_pid:
                             all_hwids_covered = False
@@ -1792,17 +2771,348 @@ class DriverPoolManager:
         return {
             "status": "ok",
             "model": manifest_model or clean_model or model,
-            "os_build": str(os_build or "").strip(),
+            "os_build": req_build or str(os_build or "").strip(),
             "total_checked": len(pkg_list),
             "already_in_pool": already_in_pool,
             "missing_infs": missing_infs,
+            "blocked_infs": blocked_infs,
             "harvest_needed": len(missing_infs) > 0,
         }
 
+    def _compact_manifests_locked(self, idx: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Interna sanacija i sažimanje svih postojećih `manifests/*.json` na osnovu `hwid_map`
+        i realnih `hwid_winners` (IMP-97), uz uklanjanje blokiranih harvest firmware/CFU paketa (IMP-113).
+        Mora se pozivati pod `self.lock`.
+        """
+        pkgs = idx.get("packages", {})
+
+        def _valid_pkg(pid: Optional[str]) -> bool:
+            if not pid or pid not in pkgs:
+                return False
+            pdir = os.path.join(self.packages_dir, pid)
+            if os.path.islink(pdir) or not os.path.isdir(pdir):
+                return False
+            if is_blocked_harvest_firmware_package(pkgs[pid], pdir):
+                return False
+            return True
+
+        # 1. Saniraj globalne mape pobednika (izbaci nepostojeće ili blokirane harvest firmware/CFU)
+        idx_changed = False
+        hwid_winners = idx.setdefault("hwid_winners", {})
+        bad_hw_keys = [hw for hw, pid in list(hwid_winners.items()) if not _valid_pkg(pid)]
+        if bad_hw_keys:
+            idx_changed = True
+            for hw in bad_hw_keys:
+                hwid_winners.pop(hw, None)
+            # Pokušaj zamenu iz preostalih validnih Base paketa
+            for pid, pmeta in pkgs.items():
+                if not _valid_pkg(pid):
+                    continue
+                if (pmeta.get("dch_role") or _get_dch_role(pmeta.get("driver_class", ""))) != "base":
+                    continue
+                for hw in (pmeta.get("hwids") or []):
+                    hw_l = hw.lower()
+                    if hw_l in bad_hw_keys:
+                        cur = hwid_winners.get(hw_l)
+                        if cur is None or self._is_package_better(pmeta, pkgs[cur]):
+                            hwid_winners[hw_l] = pid
+
+        hwid_winners_by_build = idx.setdefault("hwid_winners_by_build", {})
+        for bk in list(hwid_winners_by_build.keys()):
+            bmap = hwid_winners_by_build.get(bk)
+            if not isinstance(bmap, dict):
+                hwid_winners_by_build.pop(bk, None)
+                idx_changed = True
+                continue
+            for hw_l in list(bmap.keys()):
+                if not _valid_pkg(bmap[hw_l]):
+                    bmap.pop(hw_l, None)
+                    idx_changed = True
+            if not bmap:
+                hwid_winners_by_build.pop(bk, None)
+                idx_changed = True
+
+        for dch_key in ("dch_extensions", "dch_components"):
+            dmap = idx.setdefault(dch_key, {})
+            for k in list(dmap.keys()):
+                bucket = dmap.get(k)
+                if not isinstance(bucket, dict):
+                    dmap.pop(k, None)
+                    idx_changed = True
+                    continue
+                for inf_k in list(bucket.keys()):
+                    if not _valid_pkg(bucket[inf_k]):
+                        bucket.pop(inf_k, None)
+                        idx_changed = True
+                if not bucket:
+                    dmap.pop(k, None)
+                    idx_changed = True
+
+        # 2. Saniraj i sažmi sve manifests/*.json
+        manifests_scanned = 0
+        manifests_compacted = 0
+        packages_removed = 0
+        firmware_removed = 0
+        bytes_reclaimed = 0
+        details: List[Dict[str, Any]] = []
+
+        if not os.path.isdir(self.manifests_dir) or os.path.islink(self.manifests_dir):
+            return {
+                "status": "ok",
+                "idx_changed": idx_changed,
+                "manifests_scanned": 0,
+                "manifests_compacted": 0,
+                "packages_removed_from_manifests": 0,
+                "firmware_removed": 0,
+                "bytes_reclaimed_in_manifests": 0,
+                "details": [],
+            }
+
+        real_mdir = os.path.realpath(self.manifests_dir)
+        for fn in sorted(os.listdir(real_mdir)):
+            if not fn.endswith(".json") or fn.startswith(".") or ".." in fn:
+                continue
+            fp = os.path.join(real_mdir, fn)
+            if os.path.islink(fp) or not os.path.isfile(fp):
+                continue
+            try:
+                if os.path.commonpath([real_mdir, os.path.realpath(fp)]) != real_mdir:
+                    continue
+                with open(fp, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except Exception:
+                continue
+            if not isinstance(manifest, dict):
+                continue
+
+            manifests_scanned += 1
+            old_pkgs = list(manifest.get("packages") or [])
+            old_total_bytes = int(manifest.get("total_bytes") or 0)
+            old_hwid_map = dict(manifest.get("hwid_map") or {})
+            old_hwid_map_by_build = {
+                str(bk): dict(bv)
+                for bk, bv in (manifest.get("hwid_map_by_build") or {}).items()
+                if isinstance(bv, dict)
+            }
+            old_dch_map = {
+                str(hk): (dict(hv) if isinstance(hv, dict) else {})
+                for hk, hv in (manifest.get("dch_hwid_map") or {}).items()
+            }
+            old_comp_map = {
+                str(ck): (dict(cv) if isinstance(cv, dict) else {})
+                for ck, cv in (manifest.get("component_map") or {}).items()
+            }
+
+            # Izbroji blokirane firmware/CFU harvest pakete koji se izbacuju iz manifesta
+            m_fw_removed = 0
+            for pid in set(old_pkgs) | set(old_hwid_map.values()):
+                if pid in pkgs and is_blocked_harvest_firmware_package(pkgs[pid], os.path.join(self.packages_dir, pid)):
+                    m_fw_removed += 1
+
+            new_hwid_map: Dict[str, str] = {}
+            new_dch_map: Dict[str, Dict[str, str]] = {}
+            new_comp_map: Dict[str, Dict[str, str]] = {}
+            new_hwid_map_by_build: Dict[str, Dict[str, str]] = {}
+            no_hwid_pkgs: List[str] = []
+
+            # A. Saniraj postojeći hwid_map i nadogradi iz realnih hwid_winners
+            for hw_l, pid in old_hwid_map.items():
+                cand_ids: List[str] = []
+                if _valid_pkg(pid):
+                    pm_cur = pkgs[pid]
+                    role_cur = pm_cur.get("dch_role") or _get_dch_role(pm_cur.get("driver_class", ""))
+                    if role_cur == "extension":
+                        inf_k = os.path.basename(str(pm_cur.get("inf_name") or "").strip()).lower() or pid
+                        new_dch_map.setdefault(hw_l, {})[inf_k] = pid
+                    elif role_cur == "software_component":
+                        inf_k = os.path.basename(str(pm_cur.get("inf_name") or "").strip()).lower() or pid
+                        for cid in (pm_cur.get("component_ids") or []):
+                            new_comp_map.setdefault(cid.lower(), {})[inf_k] = pid
+                        if not hw_l.startswith("swc\\"):
+                            new_dch_map.setdefault(hw_l, {})[inf_k] = pid
+                    else:
+                        cand_ids.append(pid)
+                g_pid = hwid_winners.get(hw_l)
+                if _valid_pkg(g_pid) and g_pid not in cand_ids:
+                    cand_ids.append(g_pid)
+                if cand_ids:
+                    best = cand_ids[0]
+                    for other in cand_ids[1:]:
+                        if self._is_package_better(pkgs[other], pkgs[best]):
+                            best = other
+                    new_hwid_map[hw_l] = best
+
+            # B. Saniraj postojeći dch_hwid_map i component_map
+            for hw_l, bucket in old_dch_map.items():
+                for inf_k, pid in bucket.items():
+                    if _valid_pkg(pid):
+                        new_dch_map.setdefault(hw_l, {})[inf_k] = pid
+            for cid_l, bucket in old_comp_map.items():
+                for inf_k, pid in bucket.items():
+                    if _valid_pkg(pid):
+                        new_comp_map.setdefault(cid_l, {})[inf_k] = pid
+
+            # C. Ako je stari manifest imao prazan hwid_map, ili je imao DCH/no-hwid pakete u packages[]
+            had_existing_hmap = bool(old_hwid_map)
+            for pid in old_pkgs:
+                if not _valid_pkg(pid):
+                    continue
+                pm = pkgs[pid]
+                role = pm.get("dch_role") or _get_dch_role(pm.get("driver_class", ""))
+                inf_k = os.path.basename(str(pm.get("inf_name") or "").strip()).lower() or pid
+                p_hwids = pm.get("hwids") or []
+                p_cids = pm.get("component_ids") or []
+                if role == "extension":
+                    for hw in p_hwids:
+                        hw_l = hw.lower()
+                        prev = new_dch_map.get(hw_l, {}).get(inf_k)
+                        if prev is None or self._is_package_better(pm, pkgs[prev]):
+                            new_dch_map.setdefault(hw_l, {})[inf_k] = pid
+                elif role == "software_component":
+                    for cid in p_cids:
+                        cid_l = cid.lower()
+                        prev = new_comp_map.get(cid_l, {}).get(inf_k)
+                        if prev is None or self._is_package_better(pm, pkgs[prev]):
+                            new_comp_map.setdefault(cid_l, {})[inf_k] = pid
+                    for hw in p_hwids:
+                        if str(hw).upper().startswith("SWC\\"):
+                            continue
+                        hw_l = hw.lower()
+                        prev = new_dch_map.get(hw_l, {}).get(inf_k)
+                        if prev is None or self._is_package_better(pm, pkgs[prev]):
+                            new_dch_map.setdefault(hw_l, {})[inf_k] = pid
+                elif not p_hwids:
+                    if pid not in no_hwid_pkgs:
+                        no_hwid_pkgs.append(pid)
+                elif not had_existing_hmap:
+                    # Legacy manifest bez hwid_map: izračunaj pobednike po HWID-u
+                    for hw in p_hwids:
+                        hw_l = hw.lower()
+                        cand_best = pid
+                        cur_m = new_hwid_map.get(hw_l)
+                        if cur_m and not self._is_package_better(pm, pkgs[cur_m]):
+                            cand_best = cur_m
+                        g_pid = hwid_winners.get(hw_l)
+                        if _valid_pkg(g_pid) and self._is_package_better(pkgs[g_pid], pkgs[cand_best]):
+                            cand_best = g_pid
+                        new_hwid_map[hw_l] = cand_best
+
+            # D. Saniraj hwid_map_by_build
+            for bk, bmap in old_hwid_map_by_build.items():
+                cleaned_b = {}
+                for hw_l, pid in bmap.items():
+                    if _valid_pkg(pid):
+                        cleaned_b[hw_l] = pid
+                cleaned_b = self._consolidate_manifest_hwid_map_locked(cleaned_b, idx)
+                if cleaned_b:
+                    new_hwid_map_by_build[bk] = cleaned_b
+
+            # E. Konsoliduj duple verzije istog inf_name u hwid_map
+            new_hwid_map = self._consolidate_manifest_hwid_map_locked(new_hwid_map, idx)
+
+            # F. Sastavi sažetu listu jedinstvenih pobedničkih paketa
+            new_pkgs: List[str] = []
+            seen_new = set()
+            ref_stream: List[str] = list(new_hwid_map.values())
+            for bmap in new_hwid_map_by_build.values():
+                ref_stream.extend(bmap.values())
+            for bucket in new_dch_map.values():
+                ref_stream.extend(bucket.values())
+            for bucket in new_comp_map.values():
+                ref_stream.extend(bucket.values())
+            ref_stream.extend(no_hwid_pkgs)
+
+            for pid in ref_stream:
+                if _valid_pkg(pid) and pid not in seen_new:
+                    seen_new.add(pid)
+                    new_pkgs.append(pid)
+
+            new_total_bytes = sum(int(pkgs[pid].get("size_bytes") or 0) for pid in new_pkgs)
+            new_sources = set()
+            new_builds = set(manifest.get("os_builds") or [])
+            for pid in new_pkgs:
+                for s in (pkgs[pid].get("sources") or []):
+                    new_sources.add(s)
+                for b in _get_pkg_os_builds(pkgs[pid]):
+                    new_builds.add(b)
+            if manifest.get("oem_pack") and "oem_pack" in (manifest.get("sources") or []):
+                new_sources.add("oem_pack")
+
+            changed = (
+                new_pkgs != old_pkgs
+                or new_hwid_map != old_hwid_map
+                or new_total_bytes != old_total_bytes
+                or new_dch_map != old_dch_map
+                or new_comp_map != old_comp_map
+                or new_hwid_map_by_build != old_hwid_map_by_build
+            )
+
+            if changed:
+                manifest["hwid_map"] = new_hwid_map
+                manifest["hwid_map_by_build"] = new_hwid_map_by_build
+                manifest["dch_hwid_map"] = new_dch_map
+                manifest["component_map"] = new_comp_map
+                manifest["packages"] = new_pkgs
+                manifest["package_count"] = len(new_pkgs)
+                manifest["total_bytes"] = new_total_bytes
+                manifest["sources"] = sorted(new_sources)
+                manifest["os_builds"] = sorted(b for b in new_builds if b)
+                manifest["updated_at"] = datetime.now().isoformat()
+
+                tmp_path = f"{fp}.{uuid.uuid4().hex[:6]}.tmp"
+                with open(tmp_path, "w", encoding="utf-8") as mf:
+                    json.dump(manifest, mf, indent=2, ensure_ascii=False)
+                os.replace(tmp_path, fp)
+                self._invalidate_stats_cache()
+
+                manifests_compacted += 1
+                diff_pkgs = max(0, len(old_pkgs) - len(new_pkgs))
+                diff_bytes = max(0, old_total_bytes - new_total_bytes)
+                packages_removed += diff_pkgs
+                firmware_removed += m_fw_removed
+                bytes_reclaimed += diff_bytes
+                details.append({
+                    "model": manifest.get("model") or os.path.splitext(fn)[0],
+                    "packages_before": len(old_pkgs),
+                    "packages_after": len(new_pkgs),
+                    "firmware_removed": m_fw_removed,
+                    "bytes_before": old_total_bytes,
+                    "bytes_after": new_total_bytes,
+                })
+
+        return {
+            "status": "ok",
+            "idx_changed": idx_changed,
+            "manifests_scanned": manifests_scanned,
+            "manifests_compacted": manifests_compacted,
+            "packages_removed_from_manifests": packages_removed,
+            "firmware_removed": firmware_removed,
+            "bytes_reclaimed_in_manifests": bytes_reclaimed,
+            "details": details,
+        }
+
+    def compact_manifests(self, prune_orphans: bool = False) -> Dict[str, Any]:
+        """
+        Migraciona i periodična funkcija za sanaciju i sažimanje svih `manifests/*.json`
+        na osnovu `hwid_map` i realnih `hwid_winners` (IMP-97), uz čišćenje blokiranih
+        harvest firmware/CFU paketa (IMP-113).
+        """
+        with self.lock:
+            idx = self._ensure_index_loaded()
+            res = self._compact_manifests_locked(idx)
+            if res.pop("idx_changed", False):
+                self._save_index_locked(idx)
+
+        if prune_orphans:
+            res["prune"] = self.prune_unused_packages()
+        return res
+
     def prune_unused_packages(self, max_bundle_age_sec: int = 86400) -> Dict[str, Any]:
         """
-        Briše nekorišćene (stare/orphan) pakete koje nijedan manifest modela niti trenutni
-        `hwid_winners` indeks ne referenciraju, kao i zastarele keširane `.tar` bundle fajlove.
+        Najpre sažima i sanira postojeće `manifests/*.json` (IMP-97), a zatim briše
+        nekorišćene (stare/orphan/blokirane) pakete koje nijedan manifest modela niti trenutni
+        indeksi pobednika ne referenciraju, kao i zastarele keširane `.tar` bundle fajlove.
         """
         removed_packages = 0
         freed_bytes = 0
@@ -1811,7 +3121,15 @@ class DriverPoolManager:
 
         with self.lock:
             idx = self._ensure_index_loaded()
+            compact_res = self._compact_manifests_locked(idx)
             referenced = set(idx.get("hwid_winners", {}).values())
+            for bmap in (idx.get("hwid_winners_by_build") or {}).values():
+                if isinstance(bmap, dict):
+                    referenced.update(bmap.values())
+            for dch_key in ("dch_extensions", "dch_components"):
+                for bucket in (idx.get(dch_key) or {}).values():
+                    if isinstance(bucket, dict):
+                        referenced.update(bucket.values())
             for manifest in self._iter_manifests_locked():
                 for pid in (manifest.get("packages") or []):
                     referenced.add(pid)
@@ -1866,6 +3184,8 @@ class DriverPoolManager:
             "removed_bundles": removed_bundles,
             "freed_bytes": freed_bytes,
             "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+            "manifests_compacted": int(compact_res.get("manifests_compacted") or 0),
+            "firmware_removed": int(compact_res.get("firmware_removed") or 0),
         }
 
     def _iter_manifests_locked(self) -> Iterable[Dict[str, Any]]:

@@ -176,8 +176,11 @@ def parse_fujitsu_catalog_xml(
         if not raw_url.startswith(("http://", "https://")):
             raw_url = f"{base_url}/{raw_url.lstrip('/')}"
 
-        # Stroga validacija HTTPS allowlist-a (odbija HTTP i neovlašćene domene)
-        dl_url = validate_oem_download_url(raw_url, allowed_hosts=allowed_hosts)
+        # Stroga validacija HTTPS allowlist-a (odbija HTTP i neovlašćene domene po paketu bez rušenja celog kataloga — IMP-106)
+        try:
+            dl_url = validate_oem_download_url(raw_url, allowed_hosts=allowed_hosts)
+        except ValueError:
+            continue
 
         pkg_name = (
             fields.get("packagename")
@@ -222,7 +225,10 @@ class FujitsuOEMProvider(BaseOEMProvider):
     """
 
     DESKUPDATE_CATALOG_URL = DESKUPDATE_CATALOG_URL
+    SUPPORT_DOWNLOAD_PORTAL_URL = "https://support.ts.fujitsu.com/IndexDownload.asp"
 
+    # Referentni metapodaci za poznate Fujitsu modele bez sintetičkih SoftwareGUID URL-ova (IMP-106).
+    # Stvarni paketi stižu iz DeskUpdateCatalog.xml ili preko lokalnog DropInOEMProvider-a.
     KNOWN_MODELS: Dict[str, Dict[str, Any]] = {
         "LIFEBOOK_E5411": {
             "model_name": "FUJITSU LIFEBOOK E5411",
@@ -230,10 +236,12 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "package_name": "FTS_DriverPack_LIFEBOOK_E5411_Win11_x64.zip",
             "version": "1.24.0",
             "release_date": "2024-11-10",
-            "download_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-e5411-w11",
-            "size_bytes": 1350000000,
+            "download_url": "",
+            "support_page_url": SUPPORT_DOWNLOAD_PORTAL_URL,
+            "dropin_hint": "<dropin_dir>/fujitsu/LIFEBOOK_E5411/*.zip",
+            "size_bytes": 0,
             "bios_version": "2.18",
-            "bios_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-e5411-bios",
+            "bios_url": "",
         },
         "LIFEBOOK_U7411": {
             "model_name": "FUJITSU LIFEBOOK U7411",
@@ -241,10 +249,12 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "package_name": "FTS_DriverPack_LIFEBOOK_U7411_Win11_x64.zip",
             "version": "1.30.0",
             "release_date": "2024-12-05",
-            "download_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-u7411-w11",
-            "size_bytes": 1420000000,
+            "download_url": "",
+            "support_page_url": SUPPORT_DOWNLOAD_PORTAL_URL,
+            "dropin_hint": "<dropin_dir>/fujitsu/LIFEBOOK_U7411/*.zip",
+            "size_bytes": 0,
             "bios_version": "2.22",
-            "bios_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-u7411-bios",
+            "bios_url": "",
         },
         "LIFEBOOK_U7511": {
             "model_name": "FUJITSU LIFEBOOK U7511",
@@ -252,10 +262,12 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "package_name": "FTS_DriverPack_LIFEBOOK_U7511_Win11_x64.zip",
             "version": "1.28.0",
             "release_date": "2024-11-18",
-            "download_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-u7511-w11",
-            "size_bytes": 1445000000,
+            "download_url": "",
+            "support_page_url": SUPPORT_DOWNLOAD_PORTAL_URL,
+            "dropin_hint": "<dropin_dir>/fujitsu/LIFEBOOK_U7511/*.zip",
+            "size_bytes": 0,
             "bios_version": "2.20",
-            "bios_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=lifebook-u7511-bios",
+            "bios_url": "",
         },
         "ESPRIMO_D7011": {
             "model_name": "FUJITSU ESPRIMO D7011",
@@ -263,10 +275,12 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "package_name": "FTS_DriverPack_ESPRIMO_D7011_Win11_x64.zip",
             "version": "1.19.0",
             "release_date": "2024-10-22",
-            "download_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=esprimo-d7011-w11",
-            "size_bytes": 980000000,
+            "download_url": "",
+            "support_page_url": SUPPORT_DOWNLOAD_PORTAL_URL,
+            "dropin_hint": "<dropin_dir>/fujitsu/ESPRIMO_D7011/*.zip",
+            "size_bytes": 0,
             "bios_version": "1.15",
-            "bios_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=esprimo-d7011-bios",
+            "bios_url": "",
         },
         "CELSIUS_H7510": {
             "model_name": "FUJITSU CELSIUS H7510",
@@ -274,10 +288,12 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "package_name": "FTS_DriverPack_CELSIUS_H7510_Win11_x64.zip",
             "version": "1.40.0",
             "release_date": "2024-09-30",
-            "download_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=celsius-h7510-w11",
-            "size_bytes": 1820000000,
+            "download_url": "",
+            "support_page_url": SUPPORT_DOWNLOAD_PORTAL_URL,
+            "dropin_hint": "<dropin_dir>/fujitsu/CELSIUS_H7510/*.zip",
+            "size_bytes": 0,
             "bios_version": "1.32",
-            "bios_url": "https://support.ts.fujitsu.com/IndexDownload.asp?SoftwareGUID=celsius-h7510-bios",
+            "bios_url": "",
         },
     }
 
@@ -286,6 +302,7 @@ class FujitsuOEMProvider(BaseOEMProvider):
         cache_dir: Optional[str] = None,
         timeout: float = 5.0,
         max_cache_gb: Optional[float] = None,
+        dropin_dir: Optional[str] = None,
     ):
         if cache_dir:
             self.base_cache_dir = os.path.abspath(cache_dir)
@@ -300,6 +317,11 @@ class FujitsuOEMProvider(BaseOEMProvider):
 
         self.max_drivers_cache_gb = float(max_cache_gb) if max_cache_gb is not None else 25.0
         self.timeout = self._clamp_timeout(timeout)
+        self.dropin_dir = (
+            os.path.abspath(str(dropin_dir).strip())
+            if (dropin_dir is not None and str(dropin_dir).strip())
+            else os.path.abspath(os.environ.get("SERVIS_OEM_DROPIN_DIR", "/app/oem_dropin"))
+        )
         self.lock = threading.Lock()
 
         with self.lock:
@@ -308,11 +330,24 @@ class FujitsuOEMProvider(BaseOEMProvider):
             os.makedirs(self.warranty_cache_dir, exist_ok=True)
 
     @classmethod
-    def get_builtin_catalog_entries(cls) -> List[Dict[str, Any]]:
-        """Vraća referentne Fujitsu DeskUpdate zapise sa validiranim HTTPS URL-ovima."""
+    def get_builtin_catalog_entries(cls, dropin_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Vraća isključivo verifikovane Fujitsu zapise (ili lokalne Drop-in pakete ako je zadat
+        `dropin_dir`), bez sintetičkih `SoftwareGUID=lifebook-...` URL-ova (IMP-106).
+        """
         out: List[Dict[str, Any]] = []
+        if dropin_dir:
+            from servishub.drivers.oem.dropin import DropInOEMProvider
+            out.extend(DropInOEMProvider(vendor="fujitsu", dropin_dir=dropin_dir).scan_packages(vendor="fujitsu"))
+
         for km in cls.KNOWN_MODELS.values():
-            url = validate_oem_download_url(km["download_url"])
+            raw_url = str(km.get("download_url") or "").strip()
+            if not raw_url:
+                continue
+            try:
+                url = validate_oem_download_url(raw_url)
+            except ValueError:
+                continue
             out.append({
                 "vendor": "fujitsu",
                 "package_id": km["package_id"],
@@ -325,7 +360,7 @@ class FujitsuOEMProvider(BaseOEMProvider):
                 "arch": "x64",
                 "format": "zip",
                 "download_url": url,
-                "size_bytes": int(km["size_bytes"]),
+                "size_bytes": int(km.get("size_bytes") or 0),
                 "sha256": "",
                 "md5": "",
                 "models": [km["model_name"], km["model_name"].replace("FUJITSU ", "")],
@@ -450,6 +485,24 @@ class FujitsuOEMProvider(BaseOEMProvider):
                                 "size_bytes": f_size,
                             }
 
+        # 2. Čist DropInOEMProvider fallback pre bilo kakve referentne baze (IMP-106)
+        from servishub.drivers.oem.dropin import DropInOEMProvider
+        dropin_hits = DropInOEMProvider(vendor="fujitsu", dropin_dir=self.dropin_dir).scan_packages(
+            vendor="fujitsu",
+            model=clean_model,
+            os_ver=os_ver,
+        )
+        if dropin_hits:
+            best_di = dropin_hits[0]
+            return {
+                "status": "ok",
+                "source": "dropin",
+                "package_name": best_di["package_name"],
+                "download_url": "",
+                "local_path": best_di["local_path"],
+                "size_bytes": int(best_di.get("size_bytes") or 0),
+            }
+
         km = self._match_known_model(clean_model)
         if not km:
             return {
@@ -461,6 +514,20 @@ class FujitsuOEMProvider(BaseOEMProvider):
                 "size_bytes": 0,
             }
 
+        dl_url = str(km.get("download_url") or "").strip()
+        if not dl_url:
+            return {
+                "status": "not_found",
+                "source": "fujitsu_dropin_required",
+                "package_name": km["package_name"],
+                "download_url": "",
+                "support_page_url": km.get("support_page_url", self.SUPPORT_DOWNLOAD_PORTAL_URL),
+                "dropin_required": True,
+                "dropin_hint": km.get("dropin_hint", ""),
+                "local_path": "",
+                "size_bytes": 0,
+            }
+
         with self.lock:
             self._atomic_write_json(
                 os.path.join(model_dir, "package_meta.json"),
@@ -468,8 +535,8 @@ class FujitsuOEMProvider(BaseOEMProvider):
                     "model": clean_model,
                     "os_ver": os_ver,
                     "package_name": km["package_name"],
-                    "download_url": km["download_url"],
-                    "size_bytes": km["size_bytes"],
+                    "download_url": dl_url,
+                    "size_bytes": int(km.get("size_bytes") or 0),
                     "source": "fujitsu_deskupdate_known",
                     "resolved_at": datetime.now().isoformat(),
                 },
@@ -479,9 +546,9 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "status": "ok",
             "source": "fujitsu_deskupdate_known",
             "package_name": km["package_name"],
-            "download_url": km["download_url"],
+            "download_url": dl_url,
             "local_path": "",
-            "size_bytes": int(km["size_bytes"]),
+            "size_bytes": int(km.get("size_bytes") or 0),
         }
 
     def check_bios_update(self, model: str, current_bios: str = "") -> Dict[str, Any]:
@@ -509,7 +576,7 @@ class FujitsuOEMProvider(BaseOEMProvider):
             "update_available": update_avail,
             "latest_version": latest,
             "current_version": current_bios,
-            "download_url": km.get("bios_url", ""),
+            "download_url": km.get("bios_url") or km.get("support_page_url") or "",
             "release_date": km.get("release_date", ""),
         }
 

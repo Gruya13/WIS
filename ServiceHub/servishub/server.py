@@ -6,6 +6,7 @@ Inicijalizacija, konfiguracija i pokretanje glavnog HTTP i UDP servera.
 
 import os
 import sys
+import tempfile
 import time
 import socket
 import subprocess
@@ -13,6 +14,7 @@ import signal
 import threading
 from datetime import datetime, timedelta
 from http.server import ThreadingHTTPServer
+from typing import Any, Dict, List, Optional, Sequence
 
 from servishub.config import HubConfig, active_config, get_free_disk_gb
 from servishub.telemetry import FleetStore, FLEET_STORE
@@ -25,6 +27,16 @@ from servishub.discovery import UdpDiscoveryServer
 from servishub.handlers import ServisHubHandler
 from servishub.predictive_cache import PredictiveCacheManager
 from servishub.version import VERSION
+
+DEFAULT_SECONDARY_RELEASE_ROOTS: Sequence[str] = (
+    "/mnt/TK_NAS/ServiceHub/data/cache",
+    "/mnt/TK_NAS/ServiceHub/storage/cache",
+    "/mnt/TK_NAS/Servis/servis-hub/storage/cache",
+    "/mnt/TK_NAS/WIS/shared",
+    "/mnt/TK_NAS/WIS/shared/cache",
+    "/mnt/TK_NAS/Servis/WIS",
+    "/mnt/TK_NAS/Servis/WIS/cache",
+)
 
 
 def _seconds_until_next_local_time(target_hour: int = 3, target_minute: int = 0, now_dt: datetime = None) -> float:
@@ -55,13 +67,114 @@ def _run_oem_catalog_scheduler_step(pool_mgr, lock: threading.Lock, min_free_gb:
         lock.release()
 
 
-def _run_nightly_gc_step(pool_mgr, cache_dir: str, lock: threading.Lock, keep_last: int = 3) -> dict:
-    """Izvršava noćni Garbage Collector: prune_unused_packages() + prune_old_releases(keep_last=3)."""
+def _parse_env_release_roots() -> List[str]:
+    """Parsira listu dodatnih release korena iz okruženja (`SERVIS_RELEASE_ROOTS`)."""
+    raw = os.environ.get("SERVIS_RELEASE_ROOTS", "").strip()
+    if not raw:
+        return []
+    out: List[str] = []
+    for chunk in raw.replace(",", os.pathsep).split(os.pathsep):
+        cand = chunk.strip()
+        if cand:
+            out.append(cand)
+    return out
+
+
+def _collect_release_roots(
+    cache_dir: Optional[str] = None,
+    extra_release_roots: Optional[Sequence[str]] = None,
+    cfg: Optional[HubConfig] = None,
+    include_default_nas_roots: bool = False,
+) -> List[str]:
+    """
+    Skuplja i deduplikuje (po `os.path.realpath`, bez symlinkova) sve aktivne korene
+    direktorijuma koji sadrže `releases/` (IMP-110).
+    """
+    raw_candidates: List[str] = []
+    if cache_dir:
+        raw_candidates.append(str(cache_dir))
+    if cfg is not None:
+        if getattr(cfg, "cache_dir", None):
+            raw_candidates.append(str(cfg.cache_dir))
+        if getattr(cfg, "payload_source_dir", None):
+            raw_candidates.append(str(cfg.payload_source_dir))
+        if getattr(cfg, "storage_dir", None):
+            raw_candidates.append(os.path.join(str(cfg.storage_dir), "cache"))
+    raw_candidates.extend(_parse_env_release_roots())
+    if extra_release_roots:
+        for item in extra_release_roots:
+            if item:
+                raw_candidates.append(str(item))
+
+    if include_default_nas_roots:
+        tmp_root = os.path.abspath(tempfile.gettempdir()).rstrip(os.sep) + os.sep
+        base_check = os.path.abspath(str(cache_dir or getattr(cfg, "cache_dir", "") or ""))
+        is_temp = bool(base_check and base_check.startswith(tmp_root))
+        if not is_temp:
+            for nas_root in DEFAULT_SECONDARY_RELEASE_ROOTS:
+                rel_sub = os.path.join(nas_root, "releases")
+                if not os.path.islink(nas_root) and os.path.isdir(rel_sub) and not os.path.islink(rel_sub):
+                    raw_candidates.append(nas_root)
+
+    roots: List[str] = []
+    seen_real = set()
+    for cand in raw_candidates:
+        c = str(cand or "").strip()
+        if not c or os.path.islink(c):
+            continue
+        real_c = os.path.realpath(c)
+        if real_c in seen_real:
+            continue
+        seen_real.add(real_c)
+        roots.append(c)
+    return roots
+
+
+def _run_nightly_gc_step(
+    pool_mgr,
+    cache_dir: str,
+    lock: threading.Lock,
+    keep_last: int = 3,
+    extra_release_roots: Optional[Sequence[str]] = None,
+) -> dict:
+    """
+    Izvršava noćni Garbage Collector: `prune_unused_packages()` + `prune_old_releases(keep_last=3)`
+    uz `current.json` zaštitu nad primarnim `cache_dir` i svim konfigurisanim/sekundarnim
+    `releases/` korenima (IMP-110).
+    """
     if not lock.acquire(blocking=False):
         return {"status": "skipped_busy"}
     try:
         pool_res = pool_mgr.prune_unused_packages() if pool_mgr is not None else None
-        rel_res = prune_old_releases(cache_dir, keep_last=keep_last) if cache_dir else None
+        roots = _collect_release_roots(
+            cache_dir=cache_dir,
+            extra_release_roots=extra_release_roots,
+            include_default_nas_roots=False,
+        )
+        if not roots:
+            rel_res = None
+        else:
+            agg_kept: List[str] = []
+            agg_removed: List[str] = []
+            agg_freed = 0
+            per_root: Dict[str, Any] = {}
+            primary_active_id = None
+            for idx_r, root_path in enumerate(roots):
+                r_res = prune_old_releases(root_path, keep_last=keep_last)
+                per_root[root_path] = r_res
+                if idx_r == 0:
+                    primary_active_id = r_res.get("active_release_id")
+                agg_kept.extend(r_res.get("kept") or [])
+                agg_removed.extend(r_res.get("removed") or [])
+                agg_freed += int(r_res.get("freed_bytes") or 0)
+            rel_res = {
+                "status": "ok",
+                "active_release_id": primary_active_id,
+                "kept": agg_kept,
+                "removed": agg_removed,
+                "freed_bytes": agg_freed,
+                "roots": per_root,
+            }
         return {"status": "ok", "pool": pool_res, "releases": rel_res}
     finally:
         lock.release()
@@ -104,6 +217,16 @@ def run_hub_server(
         delete_ingested_archives=cfg.delete_ingested_archives,
         oem_catalog_stale_hours=cfg.oem_catalog_stale_hours,
     )
+    # IMP-97 / IMP-113: Bezbedna migraciona sanacija i sažimanje postojećih manifests/*.json pri startu
+    try:
+        compact_res = driver_pool_mgr.compact_manifests(prune_orphans=False)
+        if compact_res.get("manifests_compacted"):
+            print(
+                f" [*] [DriverPool] Sanirano {compact_res['manifests_compacted']} manifesta "
+                f"(uklonjeno {compact_res.get('packages_removed_from_manifests', 0)} istorijskih/firmware paketa)."
+            )
+    except Exception as exc:
+        print(f"[WARN] Startup sanacija Driver Pool manifesta nije uspela: {exc}", file=sys.stderr)
 
     def _on_driver_cab_cached(cab_path: str, saved_meta: dict):
         def _bg_ingest():
@@ -242,7 +365,14 @@ def run_hub_server(
             if watcher_stop.wait(wait_s):
                 break
             try:
-                gc_res = _run_nightly_gc_step(driver_pool_mgr, cfg.cache_dir, nightly_gc_lock, keep_last=3)
+                extra_roots = _collect_release_roots(cfg=cfg, include_default_nas_roots=True)
+                gc_res = _run_nightly_gc_step(
+                    driver_pool_mgr,
+                    cfg.cache_dir,
+                    nightly_gc_lock,
+                    keep_last=3,
+                    extra_release_roots=extra_roots,
+                )
                 pool_r = gc_res.get("pool") or {}
                 rel_r = gc_res.get("releases") or {}
                 if pool_r.get("removed_packages") or pool_r.get("removed_bundles") or rel_r.get("removed"):
