@@ -152,6 +152,62 @@ def is_blocked_firmware_inf(
     return False
 
 
+def _quick_inf_header_is_blocked_firmware(inf_fp: str) -> bool:
+    """
+    Brza provera [Version] zaglavlja .inf fajla (prvih 16 KiB bez HWID regex skeniranja):
+    proverava Class=Firmware, Firmware ClassGuid i CatalogFile firmware/CFU obrasce.
+    """
+    try:
+        with open(inf_fp, "rb") as f:
+            raw = f.read(16384)
+    except OSError:
+        return False
+    if not raw:
+        return False
+    if raw.startswith(b"\xff\xfe"):
+        text = raw.decode("utf-16-le", errors="ignore")
+    elif raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16-be", errors="ignore")
+    elif raw.startswith(b"\xef\xbb\xbf"):
+        text = raw[3:].decode("utf-8", errors="ignore")
+    elif b"\x00" in raw[:256]:
+        text = raw.decode("utf-16-le", errors="ignore")
+    else:
+        text = raw.decode("utf-8", errors="ignore")
+
+    in_version = False
+    drv_cls = ""
+    drv_guid = ""
+    cats: List[str] = []
+    for raw_line in text.splitlines():
+        line = _strip_inf_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            sec = line[1:-1].strip().lower()
+            if in_version and sec != "version":
+                break
+            in_version = (sec == "version")
+            continue
+        if in_version and "=" in line:
+            k, v = line.split("=", 1)
+            kl = k.strip().lower()
+            vv = v.strip().strip('"')
+            if kl == "class":
+                drv_cls = vv
+            elif kl == "classguid":
+                drv_guid = vv
+            elif kl == "catalogfile" or kl.startswith("catalogfile."):
+                if vv:
+                    cats.append(vv)
+    return is_blocked_firmware_inf(
+        os.path.basename(inf_fp),
+        drv_cls,
+        class_guid=drv_guid,
+        catalog_files=cats,
+    )
+
+
 def is_blocked_harvest_firmware_package(
     pmeta: Optional[Dict[str, Any]],
     pkg_dir: Optional[str] = None,
@@ -203,15 +259,8 @@ def is_blocked_harvest_firmware_package(
                             return True
                         if not (has_stored_guid and has_stored_cats):
                             inf_fp = os.path.join(cur_d, fn)
-                            if not os.path.islink(inf_fp):
-                                parsed = parse_inf_metadata(inf_fp)
-                                if parsed and is_blocked_firmware_inf(
-                                    parsed.get("inf_name", fn),
-                                    parsed.get("driver_class", ""),
-                                    class_guid=parsed.get("class_guid", ""),
-                                    catalog_files=parsed.get("catalog_files") or (),
-                                ):
-                                    return True
+                            if not os.path.islink(inf_fp) and _quick_inf_header_is_blocked_firmware(inf_fp):
+                                return True
                     elif fn_low.endswith(".cat"):
                         if is_blocked_firmware_inf("", "", catalog_files=(fn,)):
                             return True
@@ -1118,16 +1167,24 @@ class DriverPoolManager:
         """
         pkgs = idx.get("packages", {})
         cleaned: Dict[str, str] = {}
+        pid_ok_cache: Dict[str, bool] = {}
         for hw_l, pid in hwid_map.items():
-            pmeta = pkgs.get(pid)
-            if not pmeta:
-                continue
-            pdir = os.path.join(self.packages_dir, pid)
-            if os.path.islink(pdir) or not os.path.isdir(pdir):
-                continue
-            if is_blocked_harvest_firmware_package(pmeta, pdir):
-                continue
-            cleaned[hw_l] = pid
+            ok_pid = pid_ok_cache.get(pid)
+            if ok_pid is None:
+                pmeta = pkgs.get(pid)
+                if not pmeta:
+                    ok_pid = False
+                else:
+                    pdir = os.path.join(self.packages_dir, pid)
+                    if os.path.islink(pdir) or not os.path.isdir(pdir):
+                        ok_pid = False
+                    elif is_blocked_harvest_firmware_package(pmeta, pdir):
+                        ok_pid = False
+                    else:
+                        ok_pid = True
+                pid_ok_cache[pid] = ok_pid
+            if ok_pid:
+                cleaned[hw_l] = pid
 
         # Grupisanje po inf_name.lower() za otkrivanje istorijskih duplikata verzija istog INF-a
         by_inf: Dict[str, List[str]] = {}
@@ -2872,21 +2929,31 @@ class DriverPoolManager:
         Mora se pozivati pod `self.lock`.
         """
         pkgs = idx.get("packages", {})
+        valid_pkg_cache: Dict[str, bool] = {}
 
         def _valid_pkg(pid: Optional[str]) -> bool:
-            if not pid or pid not in pkgs:
+            if not pid:
+                return False
+            cached = valid_pkg_cache.get(pid)
+            if cached is not None:
+                return cached
+            if pid not in pkgs:
+                valid_pkg_cache[pid] = False
                 return False
             pdir = os.path.join(self.packages_dir, pid)
             if os.path.islink(pdir) or not os.path.isdir(pdir):
+                valid_pkg_cache[pid] = False
                 return False
             if is_blocked_harvest_firmware_package(pkgs[pid], pdir):
+                valid_pkg_cache[pid] = False
                 return False
+            valid_pkg_cache[pid] = True
             return True
 
         # 1. Saniraj globalne mape pobednika (izbaci nepostojeće ili blokirane harvest firmware/CFU)
         idx_changed = False
         hwid_winners = idx.setdefault("hwid_winners", {})
-        bad_hw_keys = [hw for hw, pid in list(hwid_winners.items()) if not _valid_pkg(pid)]
+        bad_hw_keys = {hw for hw, pid in list(hwid_winners.items()) if not _valid_pkg(pid)}
         if bad_hw_keys:
             idx_changed = True
             for hw in bad_hw_keys:

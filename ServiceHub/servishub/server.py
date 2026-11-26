@@ -217,16 +217,6 @@ def run_hub_server(
         delete_ingested_archives=cfg.delete_ingested_archives,
         oem_catalog_stale_hours=cfg.oem_catalog_stale_hours,
     )
-    # IMP-97 / IMP-113: Bezbedna migraciona sanacija i sažimanje postojećih manifests/*.json pri startu
-    try:
-        compact_res = driver_pool_mgr.compact_manifests(prune_orphans=False)
-        if compact_res.get("manifests_compacted"):
-            print(
-                f" [*] [DriverPool] Sanirano {compact_res['manifests_compacted']} manifesta "
-                f"(uklonjeno {compact_res.get('packages_removed_from_manifests', 0)} istorijskih/firmware paketa)."
-            )
-    except Exception as exc:
-        print(f"[WARN] Startup sanacija Driver Pool manifesta nije uspela: {exc}", file=sys.stderr)
 
     def _on_driver_cab_cached(cab_path: str, saved_meta: dict):
         def _bg_ingest():
@@ -337,6 +327,22 @@ def run_hub_server(
                 break
 
     _wh_threading.Thread(target=_harvest_pool_watcher, name="wis-harvest-pool-watcher", daemon=True).start()
+
+    # IMP-97 / IMP-113: Neblokirajuća startup sanacija i sažimanje postojećih manifests/*.json
+    def _startup_compact_manifests():
+        if watcher_stop.wait(2.0):
+            return
+        try:
+            compact_res = driver_pool_mgr.compact_manifests(prune_orphans=False)
+            if compact_res.get("manifests_compacted"):
+                print(
+                    f" [*] [DriverPool] Sanirano {compact_res['manifests_compacted']} manifesta "
+                    f"(uklonjeno {compact_res.get('packages_removed_from_manifests', 0)} istorijskih/firmware paketa)."
+                )
+        except Exception as exc:
+            print(f"[WARN] Startup sanacija Driver Pool manifesta nije uspela: {exc}", file=sys.stderr)
+
+    _wh_threading.Thread(target=_startup_compact_manifests, name="wis-pool-startup-compact", daemon=True).start()
 
     oem_sched_lock = _wh_threading.Lock()
     nightly_gc_lock = _wh_threading.Lock()
