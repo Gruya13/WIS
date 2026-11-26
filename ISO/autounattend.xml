@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
     <!-- =================================================================== -->
-    <!-- PASS 1: WINDOWS PE - JEZIK SETUP-A I HARDVERSKI BYPASS              -->
+    <!-- PASS 1: WINDOWS PE - JEZIK SETUP-A, HARDVERSKI BYPASS I FORENZIKA   -->
     <!-- =================================================================== -->
     <settings pass="windowsPE">
         <!-- Automatski jezik za Setup u WinPE fazi -->
@@ -15,7 +15,6 @@
             <UILanguageFallback>en-GB</UILanguageFallback>
             <UserLocale>en-GB</UserLocale>
         </component>
-
 
         <!-- Zaobilaženje hardverskih zahteva (TPM, SecureBoot, RAM, Storage, CPU, Disk) -->
         <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -64,41 +63,34 @@
     </settings>
 
     <!-- =================================================================== -->
-    <!-- PASS 4: SPECIALIZE - ZAOBILAŽENJE MREŽE I NALOGA (BypassNRO)        -->
+    <!-- PASS 4: SPECIALIZE - ZIVA MREZA I PRIPREMA ZA OOBE ZTD (IMP-114 C)  -->
+    <!-- Bez preranog BypassNRO / SkipNetworkSetup pre ZTD provere!          -->
     <!-- =================================================================== -->
     <settings pass="specialize">
         <component name="Microsoft-Windows-Deployment" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <RunSynchronous>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>1</Order>
-                    <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v "BypassNRO" /t REG_DWORD /d 1 /f</Path>
+                    <Path>cmd.exe /c "reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v SkipNetworkSetup /f &gt;nul 2&gt;&amp;1 &amp; reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v BypassNRO /f &gt;nul 2&gt;&amp;1 &amp; reg delete HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE /v DisableOOBEConnection /f &gt;nul 2&gt;&amp;1 &amp; ver &gt;nul"</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
                     <Order>2</Order>
-                    <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v "SkipNetworkSetup" /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
-                <RunSynchronousCommand wcm:action="add">
-                    <Order>3</Order>
-                    <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\OOBE" /v "HideOnlineAccountScreens" /t REG_DWORD /d 1 /f</Path>
-                </RunSynchronousCommand>
-                <RunSynchronousCommand wcm:action="add">
-                    <Order>4</Order>
                     <Path>cmd.exe /c if exist C:\Windows\Setup\Scripts\PreOOBE-Network.cmd (C:\Windows\Setup\Scripts\PreOOBE-Network.cmd)</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
-                    <Order>5</Order>
+                    <Order>3</Order>
                     <Path>reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "AllowInsecureGuestAuth" /t REG_DWORD /d 1 /f</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
-                    <Order>6</Order>
+                    <Order>4</Order>
                     <Path>reg.exe add "HKLM\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" /v "RequireSecuritySignature" /t REG_DWORD /d 0 /f</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
-                    <Order>7</Order>
+                    <Order>5</Order>
                     <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v "ConsentPromptBehaviorAdmin" /t REG_DWORD /d 0 /f</Path>
                 </RunSynchronousCommand>
                 <RunSynchronousCommand wcm:action="add">
-                    <Order>8</Order>
+                    <Order>6</Order>
                     <Path>reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v "PromptOnSecureDesktop" /t REG_DWORD /d 0 /f</Path>
                 </RunSynchronousCommand>
             </RunSynchronous>
@@ -106,10 +98,10 @@
     </settings>
 
     <!-- =================================================================== -->
-    <!-- PASS 7: OOBESYSTEM - PRESKAKANJE REGIJE, TASTATURA, AUTOLOGON       -->
+    <!-- PASS 7: OOBESYSTEM - OTVORENA MREZA ZA ZTD + AUTOLOGON KORISNIK     -->
     <!-- =================================================================== -->
     <settings pass="oobeSystem">
-        <!-- 1. Automatski postavlja jezik i regiju - SKIDA PITANJE O ZEMLJI I TASTATURI IZ OOBE -->
+        <!-- 1. Automatski postavlja jezik i regiju -->
         <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <InputLocale>0409:00000409</InputLocale>
             <SystemLocale>en-GB</SystemLocale>
@@ -118,7 +110,7 @@
             <UserLocale>en-GB</UserLocale>
         </component>
 
-        <!-- 2. AutoLogon, OOBE preskakanje i nalog Korisnik -->
+        <!-- 2. OOBE sa aktivnom mrezom za ZTD (IMP-114 Sloj C) i lokalni servisni nalog Korisnik -->
         <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
             <AutoLogon>
                 <Password>
@@ -155,8 +147,8 @@
                 <HideEULAPage>true</HideEULAPage>
                 <HideLocalAccountScreen>true</HideLocalAccountScreen>
                 <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
-                <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
-                <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                <HideOnlineAccountScreens>false</HideOnlineAccountScreens>
+                <HideWirelessSetupInOOBE>false</HideWirelessSetupInOOBE>
                 <NetworkLocation>Work</NetworkLocation>
                 <ProtectYourPC>3</ProtectYourPC>
             </OOBE>

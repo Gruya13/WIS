@@ -25,22 +25,26 @@ namespace WIS.AutopilotAuditor
 
         public static void ExportHtml(AuditorResult result, string filePath)
         {
-            string statusColor = "#27ae60"; // Zelena
-            string badgeText = "100% ČISTO / SLOBODAN";
+            string statusColor = "#f39c12"; // Žuta/Narandžasta (default: NIJE PROVERENO)
+            string badgeText = "NIJE PROVERENO (POTREBNA MREŽA U OOBE-U)";
 
             switch (result.StatusLevel)
             {
                 case StatusSeverity.CRITICAL:
                     statusColor = "#e74c3c"; // Crvena
-                    badgeText = result.MatrixCode == MatrixStatus.LOCKED_TENANT ? "ZAKLJUČAN U ORGANIZACIJI" : "SKRIVENA OPASNOST (ZAKLJUČAN U OBLAKU)";
+                    badgeText = result.MatrixCode == MatrixStatus.LOCKED_TENANT ? "IMA AUTOPILOT (ZAKLJUČAN U ORGANIZACIJI)" : "IMA AUTOPILOT (ZAKLJUČAN U OBLAKU)";
+                    break;
+                case StatusSeverity.OK:
+                    statusColor = "#27ae60"; // Zelena (isključivo CONFIRMED_CLEAN sa Event 807 potvrdom)
+                    badgeText = "NEMA AUTOPILOT (POTVRĐENO EVENT 807)";
                     break;
                 case StatusSeverity.WARNING:
                     statusColor = "#f39c12"; // Žuta/Narandžasta
-                    badgeText = "UPOZORENJE / LOKALNI TRAGOVI";
+                    badgeText = result.ConfirmedFree ? "NEMA AUTOPILOT (STARI LOKALNI TRAGOVI)" : "NIJE PROVERENO (POTREBNA MREŽA U OOBE-U)";
                     break;
-                case StatusSeverity.INFO:
-                    statusColor = "#2980b9"; // Plava
-                    badgeText = "USLOVNO ČISTO (OFFLINE / UNVERIFIED)";
+                default:
+                    statusColor = "#f39c12"; // Zuta/Narandzasta za neprovereno stanje
+                    badgeText = "NIJE PROVERENO (POTREBNA MREŽA U OOBE-U)";
                     break;
             }
 

@@ -283,14 +283,14 @@ namespace WIS.AutopilotAuditor
                     themeColor = Color.FromRgb(34, 197, 94); // Green
                     break;
                 default:
-                    themeColor = Color.FromRgb(56, 189, 248); // Blue
+                    themeColor = Color.FromRgb(245, 158, 11); // Amber (nikad plavo "uslovno čisto")
                     break;
             }
             SetHeroColor(themeColor);
 
             _lblTenantDomain.Text = !string.IsNullOrEmpty(res.TenantDomain) ? res.TenantDomain : "Nema (Nije dodeljen)";
             _lblTenantId.Text = !string.IsNullOrEmpty(res.TenantId) ? res.TenantId : "N/A";
-            _lblZtdStatus.Text = res.CloudZtd.IsRegistered ? "REGISTROVAN U OBLAKU" : (res.CloudZtd.ConfirmedFree ? "SLOBODAN (Nije u bazi)" : "Nije eksplicitno potvrđen");
+            _lblZtdStatus.Text = res.CloudZtd.IsRegistered ? "IMA AUTOPILOT (REGISTROVAN U OBLAKU)" : (res.CloudZtd.ConfirmedFree ? "NEMA AUTOPILOT (EVENT 807 POTVRĐEN)" : "NIJE PROVERENO (Potrebna mreža u OOBE-u)");
             _lblQueryMode.Text = res.CloudZtd.QueryMode;
             _lblZtdMsg.Text = res.CloudZtd.RawStatusMessage;
 

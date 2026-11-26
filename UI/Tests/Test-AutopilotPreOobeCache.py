@@ -2,16 +2,21 @@
 """
 Test-AutopilotPreOobeCache.py
 ==============================
-Automatizovana regresiona provera za Pre-OOBE hvatanje Autopilot ZTD izvestaja
-(autopilot_report.json / AutopilotDDSZTDFile.preoobe.json), ispravku parsiranja
-praznog CloudAssignedTenantId, citanje kesa i auto-retry na mrezu u WIS.UI.
+Automatizovana regresiona provera za IMP-112 (Golden ISO marker + WinPE zastita)
+i IMP-114 (Besplatna Opcija 1 $0: Sloj A Auditor/Skripte sa wmansvc primarnom
+putanjom, popravljenom lokalnom forenzikom i binarnim modelom; Sloj B WinPE
+pre-format forenzika; Sloj C pravi OOBE ZTD presretac).
 """
 
 import hashlib
+import importlib.util
+import json
 import os
 import pathlib
 import re
+import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 
@@ -19,8 +24,17 @@ PREOOBE_NET_CANONICAL = ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "
 PREOOBE_NET_OEM = ROOT / "ISO" / "sources" / "$OEM$" / "$$" / "Setup" / "Scripts" / "PreOOBE-Network.ps1"
 PREOOBE_NET_PATH = PREOOBE_NET_OEM if PREOOBE_NET_OEM.is_file() else PREOOBE_NET_CANONICAL
 SETUP_COMPLETE_PATH = ROOT / "ISO" / "SetupComplete.ps1"
+AUTOUNATTEND_PATH = ROOT / "ISO" / "autounattend.xml"
+BUILD_ISO_PY_PATH = ROOT / "ISO" / "Skripte" / "Build-Iso.py"
+PATCH_BOOTWIM_PY_PATH = ROOT / "ISO" / "Skripte" / "Patch-BootWim.py"
+WINPE_FORENSICS_PS1_PATH = ROOT / "ISO" / "Skripte" / "Invoke-WinPeAutopilotForensics.ps1"
+ACCEL_PE_PATH = ROOT / "ISO" / "WIS-AcceleratePE.cmd"
+
 CLOUD_ZTD_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "CloudZtdInspector.cs"
 LOCAL_FORENSICS_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "LocalForensicsInspector.cs"
+DECISION_MATRIX_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "DecisionMatrix.cs"
+MODEL_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "Model.cs"
+REPORT_EXPORTER_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "ReportExporter.cs"
 PROGRAM_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "Program.cs"
 AUDITOR_MAIN_CS_PATH = ROOT / "Tools" / "AutopilotAuditor" / "MainWindow.cs"
 PROVERA_PS1_PATH = ROOT / "UI" / "Skripte" / "Provera_autopilota.ps1"
@@ -65,6 +79,13 @@ SYNC_GROUPS = [
         ],
     ),
     (
+        ACCEL_PE_PATH,
+        [
+            ROOT / "ISO" / "Skripte" / "WIS-AcceleratePE.cmd",
+            ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "WIS-AcceleratePE.cmd",
+        ],
+    ),
+    (
         PREOOBE_NET_PATH,
         [
             ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "PreviewSetupScripts" / "PreOOBE-Network.ps1",
@@ -99,24 +120,41 @@ def sha256_file(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def load_build_iso_module():
+    spec = importlib.util.spec_from_file_location("wis_build_iso_test", str(BUILD_ISO_PY_PATH))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class TestAutopilotPreOobeCache(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.preoobe_src = PREOOBE_NET_PATH.read_text(encoding="utf-8")
         cls.setup_complete_src = SETUP_COMPLETE_PATH.read_text(encoding="utf-8")
+        cls.autounattend_src = AUTOUNATTEND_PATH.read_text(encoding="utf-8")
+        cls.accel_pe_src = ACCEL_PE_PATH.read_text(encoding="utf-8")
+        cls.patch_bootwim_src = PATCH_BOOTWIM_PY_PATH.read_text(encoding="utf-8")
+        cls.winpe_forensics_src = WINPE_FORENSICS_PS1_PATH.read_text(encoding="utf-8")
         cls.cloud_ztd_src = CLOUD_ZTD_CS_PATH.read_text(encoding="utf-8")
         cls.local_forensics_src = LOCAL_FORENSICS_CS_PATH.read_text(encoding="utf-8")
+        cls.decision_matrix_src = DECISION_MATRIX_CS_PATH.read_text(encoding="utf-8")
+        cls.model_cs_src = MODEL_CS_PATH.read_text(encoding="utf-8")
+        cls.report_exporter_src = REPORT_EXPORTER_CS_PATH.read_text(encoding="utf-8")
         cls.program_src = PROGRAM_CS_PATH.read_text(encoding="utf-8")
         cls.auditor_main_src = AUDITOR_MAIN_CS_PATH.read_text(encoding="utf-8")
         cls.provera_src = PROVERA_PS1_PATH.read_text(encoding="utf-8")
         cls.hw_src = WIS_HW_PSM1_PATH.read_text(encoding="utf-8")
         cls.ui_main_src = "\n".join(p.read_text(encoding="utf-8") for p in sorted((ROOT / "UI").glob("MainWindow*.cs")))
 
-    def test_01_preoobe_scripts_stabilize_network_and_save_report(self):
-        """PreOOBE-Network.ps1 i SetupComplete.ps1 moraju stabilizovati mrezu i sacuvati autopilot_report.json."""
+    def test_01_preoobe_scripts_stabilize_network_and_use_wmansvc_primary_path(self):
+        """PreOOBE-Network.ps1 i SetupComplete.ps1 moraju stabilizovati mrezu, koristiti primarnu wmansvc putanju i sacuvati autopilot_report.json."""
         self.assertIn("Get-NetIPAddress", self.preoobe_src)
         self.assertIn("tbs", self.preoobe_src)
+        self.assertIn("wmansvc", self.preoobe_src)
         self.assertIn("\\Microsoft\\Windows\\Management\\Provisioning\\Autopilot", self.preoobe_src)
+        self.assertIn("WIS_OOBE_ZTD_Watcher", self.preoobe_src)
+        self.assertIn("-OobeWatcherMode", self.preoobe_src)
 
         self.assertIn("AutopilotPreOOBE", self.setup_complete_src)
         self.assertIn("SkipNetworkSetup", self.setup_complete_src)
@@ -126,35 +164,121 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
         self.assertIn("AutopilotDDSZTDFile.preoobe.json", self.setup_complete_src)
         self.assertIn("WIS-AutopilotAuditor.exe", self.setup_complete_src)
 
-    def test_02_csharp_auditor_caches_and_parses_empty_ztd_profile(self):
-        """CloudZtdInspector.cs mora imati TryParseZtdJsonContent (prazan CloudAssignedTenantId -> ConfirmedFree), TryLoadCachedReport i SaveCachedReport."""
+        # IMP-114: primarna Windows 11 putanja u Get-PrimaryZtdJsonFiles mora biti ServiceState\wmansvc\AutopilotDDSZTDFile.json ispred ServiceState\Autopilot
+        ztd_fn_setup = self.setup_complete_src.split("function Get-PrimaryZtdJsonFiles", 1)[1].split("function Copy-PrimaryZtdBackup", 1)[0]
+        idx_wmansvc = ztd_fn_setup.find(r"ServiceState\wmansvc\AutopilotDDSZTDFile.json")
+        idx_prov = ztd_fn_setup.find(r"Provisioning\Autopilot")
+        idx_legacy = ztd_fn_setup.find(r"ServiceState\Autopilot\AutopilotDDSZTDFile.json")
+        self.assertGreater(idx_wmansvc, 0, "SetupComplete.ps1 mora proveravati ServiceState\\wmansvc\\AutopilotDDSZTDFile.json")
+        self.assertGreater(idx_prov, idx_wmansvc, "Provisioning\\Autopilot mora biti iza primarnog wmansvc")
+        self.assertGreater(idx_legacy, idx_prov, "Sekundarna ServiceState\\Autopilot putanja mora biti fallback")
+
+    def test_02_csharp_auditor_wmansvc_primary_no_false_confirmed_free_and_full_event_log(self):
+        """IMP-114 Sloj A: CloudZtdInspector.cs koristi wmansvc primarnu putanju, zabranjuje lazni ConfirmedFree, podrzava 100/110/170/171 i ne pali OnlineChecked na TCP."""
         self.assertIn("public static bool TryParseZtdJsonContent", self.cloud_ztd_src)
         self.assertIn("public static bool TryLoadCachedReport", self.cloud_ztd_src)
         self.assertIn("public static void SaveCachedReport", self.cloud_ztd_src)
         self.assertIn("if (TryLoadCachedReport(targetSerial, report))", self.cloud_ztd_src)
-        self.assertIn("807 - ZtdDeviceIsNotRegistered (ZTD File)", self.cloud_ztd_src)
         self.assertIn("PREOOBE_CACHED_REPORT", self.cloud_ztd_src)
         self.assertIn("AutopilotDDSZTDFile.preoobe.json", self.cloud_ztd_src)
         self.assertIn("IsReportContentConfirmed", self.cloud_ztd_src)
 
+        # Primarna putanja wmansvc + Provisioning\Autopilot ispred ServiceState\Autopilot
+        idx_wmansvc = self.cloud_ztd_src.find(r"ServiceState\wmansvc\AutopilotDDSZTDFile.json")
+        idx_prov = self.cloud_ztd_src.find(r"Provisioning\Autopilot")
+        idx_legacy = self.cloud_ztd_src.find(r"ServiceState\Autopilot\AutopilotDDSZTDFile.json")
+        self.assertGreater(idx_wmansvc, 0)
+        self.assertGreater(idx_prov, idx_wmansvc)
+        self.assertGreater(idx_legacy, idx_prov)
+
+        # Zabrana laznog ConfirmedFree = true za puko ProfileState=NotAssigned ili prazan CloudAssignedTenantId
+        self.assertNotIn("807 - ZtdDeviceIsNotRegistered (ZTD File)", self.cloud_ztd_src)
+        self.assertNotRegex(
+            self.cloud_ztd_src,
+            r'ProfileState\\s\*=\\s\*NotAssigned[\s\S]{0,180}ConfirmedFree\s*=\s*true',
+            "ProfileState=NotAssigned bez Event 807 ne sme postavljati ConfirmedFree = true",
+        )
+
+        # OnlineChecked se NE sme paliti na puki TCP connect ka login.live.com
+        self.assertNotIn("login.live.com", self.cloud_ztd_src)
+        self.assertIn("report.NetworkReachable = canReachZtd;", self.cloud_ztd_src)
+
+        # Pun Event Log bez ogranicenja na zadnjih 50 zapisa, sa podrskom za 24H2/25H2 (100/110/170/171) i kljucna polja
+        self.assertNotIn("checkedCount < 50", self.cloud_ztd_src)
+        for token in (
+            "eventId == 100 || eventId == 110 || eventId == 170 || eventId == 171",
+            "CloudAssignedDeviceName",
+            "CloudAssignedTenantDomain",
+            "CloudAssignedTenantId",
+            "ZtdRegistrationState",
+            "ZtdDeviceIsNotRegistered",
+        ):
+            self.assertIn(token, self.cloud_ztd_src)
+
         self.assertIn("CloudZtdInspector.SaveCachedReport(result)", self.program_src)
         self.assertIn("CloudZtdInspector.SaveCachedReport(evaluated)", self.auditor_main_src)
 
-    def test_03_powershell_auditor_and_hardware_module_use_cache(self):
-        """Provera_autopilota.ps1 i WIS.Hardware.psm1 moraju koristiti sacuvani Pre-OOBE izvestaj bez degradacije."""
+    def test_03_local_forensics_and_powershell_parity(self):
+        """IMP-114 Sloj A: LocalForensicsInspector.cs i Provera_autopilota.ps1 ispravno citaju podkljuceve, PolicyJsonCache, AutopilotSettings i W-AAD-*."""
+        # C# LocalForensicsInspector.cs
+        self.assertIn('key.OpenSubKey("EstablishedCorrelations")', self.local_forensics_src)
+        self.assertIn(r'OpenSubKey(@"SOFTWARE\Microsoft\Provisioning\AutopilotPolicyCache")', self.local_forensics_src)
+        self.assertIn('cacheKey.GetValue("PolicyJsonCache")', self.local_forensics_src)
+        self.assertIn(r'SOFTWARE\Microsoft\Provisioning\AutopilotSettings', self.local_forensics_src)
+        self.assertIn(r'SOFTWARE\Microsoft\Provisioning\EnterpriseAssignedAccess', self.local_forensics_src)
+        self.assertIn("EnrollmentStatusTracking", self.local_forensics_src)
+        self.assertIn(r"W-AAD-\d{9}", self.local_forensics_src)
+        self.assertIn("CloudAssignedDeviceName", self.local_forensics_src)
+
+        # PowerShell Provera_autopilota.ps1 paritet (bez UTF-8 BOM-a)
         self.assertFalse(PROVERA_PS1_PATH.read_bytes().startswith(b"\xef\xbb\xbf"), "Provera_autopilota.ps1 ne sme imati UTF-8 BOM")
         self.assertIn("function Resolve-ZtdJsonContent", self.provera_src)
         self.assertIn("function Test-SavedAutopilotReportConfirmed", self.provera_src)
         self.assertIn("PREOOBE_CACHED_REPORT", self.provera_src)
-        self.assertIn("807 - ZtdDeviceIsNotRegistered (ZTD File)", self.provera_src)
         self.assertIn("AutopilotDDSZTDFile.preoobe.json", self.provera_src)
         self.assertIn("autopilot_report.json", self.provera_src)
+        self.assertNotIn("807 - ZtdDeviceIsNotRegistered (ZTD File)", self.provera_src)
+        self.assertNotIn("-MaxEvents 50", self.provera_src)
+        self.assertNotIn("USLOVNO CISTO", self.provera_src.upper())
+
+        ztd_fn_ps = self.provera_src.split("function Get-PrimaryZtdFileCandidates", 1)[1].split("Clear-Host", 1)[0]
+        idx_ps_wman = ztd_fn_ps.find(r"ServiceState\wmansvc\AutopilotDDSZTDFile.json")
+        idx_ps_prov = ztd_fn_ps.find(r"Provisioning\Autopilot")
+        idx_ps_leg = ztd_fn_ps.find(r"ServiceState\Autopilot\AutopilotDDSZTDFile.json")
+        self.assertGreater(idx_ps_wman, 0)
+        self.assertGreater(idx_ps_prov, idx_ps_wman)
+        self.assertGreater(idx_ps_leg, idx_ps_prov)
+
+        for token in (
+            r"Diagnostics\AutoPilot\EstablishedCorrelations",
+            r"Provisioning\AutopilotPolicyCache",
+            "PolicyJsonCache",
+            r"Provisioning\AutopilotSettings",
+            r"Provisioning\EnterpriseAssignedAccess",
+            "EnrollmentStatusTracking",
+            r"W-AAD-\d{9}",
+            "IMA_AUTOPILOT",
+            "NEMA_AUTOPILOT",
+            "NIJE_PROVERENO",
+        ):
+            self.assertIn(token, self.provera_src)
 
         self.assertIn("autopilot_report.json", self.hw_src)
         self.assertRegex(self.hw_src, r"LOCKED_TENANT.*HIDDEN_LOCK")
 
-    def test_04_wis_ui_uses_cached_report_and_retries_on_network_ready(self):
-        """UI/MainWindow.xaml.cs mora odmah ucitati potvrdjen kes, stititi od degradacije i ponoviti sken po aktivaciji mreze."""
+    def test_04_decision_matrix_binary_model_and_wis_ui_cache_hooks(self):
+        """IMP-114 Sloj A: DecisionMatrix koristi binarni model (WARNING za UNVERIFIED/OFFLINE, nikad INFO/uslovno cisto) i cuva UI kes hookove."""
+        self.assertIn('res.BinaryVerdict = "IMA_AUTOPILOT";', self.decision_matrix_src)
+        self.assertIn('res.BinaryVerdict = "NEMA_AUTOPILOT";', self.decision_matrix_src)
+        self.assertIn('res.BinaryVerdict = "NIJE_PROVERENO";', self.decision_matrix_src)
+        self.assertIn("public string BinaryVerdict { get; set; }", self.model_cs_src)
+        self.assertIn('\\"binary_verdict\\"', self.model_cs_src)
+        self.assertNotIn("StatusSeverity.INFO", self.decision_matrix_src)
+        self.assertNotIn("USLOVNO ČISTO", self.decision_matrix_src.upper())
+        self.assertNotIn("USLOVNO ČISTO", self.report_exporter_src.upper())
+        self.assertNotIn("u normalnom stanju", self.decision_matrix_src.lower())
+
+        # Postojeci UI ugovor za kesirani izvestaj i retry po mrezi
         self.assertIn("_autopilotRetriedAfterNetwork", self.ui_main_src)
         self.assertIn("IsAutopilotMatrixConfirmed", self.ui_main_src)
         self.assertIn("TryReadCachedAutopilotReport", self.ui_main_src)
@@ -229,6 +353,150 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
             2,
             "MainWindow.xaml.cs mora sakriti i EXE i PowerShell fallback prozor za Autopilot skeniranje",
         )
+
+    def test_07_imp112_golden_iso_profile_markers_and_winpe_guard(self):
+        """IMP-112: Build-Iso.py upisuje \\sources\\wis-image-profile.json i \\WIS_IMAGE_PROFILE.tag, a WIS-AcceleratePE.cmd ih poredi pre prebacivanja na Z:\\win11."""
+        mod = load_build_iso_module()
+
+        # 1. Sanitizacija tag vrednosti protiv cmd.exe injekcije
+        sanitized = mod.sanitize_profile_tag_value('preinstalled&calc|echo>x"%')
+        self.assertEqual(sanitized, "preinstalledcalcechox")
+
+        # 2. Stvarno formiranje staging stabla za Golden Preinstalled profil
+        with tempfile.TemporaryDirectory() as tmp_root, tempfile.TemporaryDirectory() as tmp_staging:
+            mock_root = pathlib.Path(tmp_root)
+            staging_dir = pathlib.Path(tmp_staging)
+            (mock_root / "sources" / "$OEM$" / "$$" / "Logs" / "WIS").mkdir(parents=True, exist_ok=True)
+            (mock_root / "sources" / "install.wim").write_text("mock-wim", encoding="utf-8")
+            (mock_root / "sources" / "boot.wim").write_text("mock-boot", encoding="utf-8")
+            (mock_root / "version.json").write_text('{"os_build_target": "10.0.26200.8037"}', encoding="utf-8")
+            (mock_root / "sources" / "$OEM$" / "$$" / "Logs" / "WIS" / "image-profile.json").write_text(
+                json.dumps({
+                    "image_type": "preinstalled",
+                    "wim_version": "26200.8037-heavy-v1",
+                    "preinstalled_apps": ["VCRedist", "DotNet8", "DotNet9", "Office2024", "AcrobatPro2024"],
+                }),
+                encoding="utf-8",
+            )
+
+            builder = mod.IsoBuilder(project_root=mock_root, profile="lean", image_format="wim")
+            builder.populate_staging(staging_dir)
+
+            json_marker = staging_dir / "sources" / "wis-image-profile.json"
+            tag_marker = staging_dir / "WIS_IMAGE_PROFILE.tag"
+            self.assertTrue(json_marker.is_file(), "Mora postojati \\sources\\wis-image-profile.json u staging-u")
+            self.assertTrue(tag_marker.is_file(), "Mora postojati \\WIS_IMAGE_PROFILE.tag u korenu ISO staging-a")
+
+            parsed = json.loads(json_marker.read_text(encoding="utf-8"))
+            self.assertEqual(parsed["image_type"], "preinstalled")
+            self.assertEqual(parsed["wim_version"], "26200.8037-heavy-v1")
+            self.assertIn("Office2024", parsed["preinstalled_apps"])
+
+            tag_raw = tag_marker.read_bytes()
+            self.assertIn(b"\r\n", tag_raw, "WIS_IMAGE_PROFILE.tag mora koristiti CRLF za WinPE cmd.exe")
+            tag_txt = tag_raw.decode("ascii")
+            self.assertIn("IMAGE_TYPE=preinstalled", tag_txt)
+            self.assertIn("WIM_VERSION=26200.8037-heavy-v1", tag_txt)
+
+        # 3. WIS-AcceleratePE.cmd i Patch-BootWim.py moraju porediti Y:\WIS_IMAGE_PROFILE.tag i Z:\win11\WIS_IMAGE_PROFILE.tag PRE detach/remap
+        for label, src in (("WIS-AcceleratePE.cmd", self.accel_pe_src), ("Patch-BootWim.py", self.patch_bootwim_src)):
+            idx_y_tag = src.find(r'Y:\WIS_IMAGE_PROFILE.tag')
+            idx_z_tag = src.find(r'Z:\win11\WIS_IMAGE_PROFILE.tag')
+            idx_detach = src.find(r'if exist "T:\iventoy.iso"')
+            self.assertGreater(idx_y_tag, 0, f"{label} mora citati Y:\\WIS_IMAGE_PROFILE.tag")
+            self.assertGreater(idx_z_tag, idx_y_tag, f"{label} mora porediti Z:\\win11\\WIS_IMAGE_PROFILE.tag")
+            self.assertGreater(idx_detach, idx_z_tag, f"{label} mora izvrsiti poredjenje taga PRE detach-a T:\\iventoy.iso")
+            self.assertIn('ALLOW_Z_SWITCH', src)
+            self.assertIn('WIS_PROFILE_MISMATCH.tag', src)
+            self.assertIn('net.exe use Z: /delete /y', src)
+
+    def test_08_imp114_sloj_b_winpe_preformat_forensics_security_and_integration(self):
+        """IMP-114 Sloj B: Invoke-WinPeAutopilotForensics.ps1 bezbedno radi reg load/unload u finally, stiti tajne i salje na /api/devices/<sn>/autopilot."""
+        self.assertTrue(WINPE_FORENSICS_PS1_PATH.is_file())
+        self.assertFalse(WINPE_FORENSICS_PS1_PATH.read_bytes().startswith(b"\xef\xbb\xbf"), "Invoke-WinPeAutopilotForensics.ps1 ne sme imati UTF-8 BOM")
+        self.assertNotIn("Invoke-Expression", self.winpe_forensics_src)
+        self.assertNotRegex(self.winpe_forensics_src, r"(?i)\biex\b")
+
+        for token in (
+            r"ServiceState\wmansvc\AutopilotDDSZTDFile.json",
+            r"Provisioning\Autopilot",
+            r"System32\config\SOFTWARE",
+            r"System32\config\SYSTEM",
+            "reg.exe load",
+            "reg.exe unload",
+            "[GC]::Collect()",
+            "[GC]::WaitForPendingFinalizers()",
+            "finally {",
+            "EstablishedCorrelations",
+            "AutopilotPolicyCache",
+            "AutopilotSettings",
+            "EnterpriseAssignedAccess",
+            "EnrollmentStatusTracking",
+            "CloudDomainJoin",
+            r"W-AAD-\d{9}",
+            "/api/devices/{1}/autopilot",
+            "X-ServisHub-Client-Token",
+            "***MASKIRANO***",
+            "winpe_preformat",
+        ):
+            self.assertIn(token, self.winpe_forensics_src)
+
+        # Integracija u WIS-AcceleratePE.cmd i Patch-BootWim.py
+        self.assertIn("Invoke-WinPeAutopilotForensics.ps1", self.accel_pe_src)
+        self.assertIn("WIS_WinPE_Forensics_Done.tag", self.accel_pe_src)
+        self.assertIn("Invoke-WinPeAutopilotForensics.ps1", self.patch_bootwim_src)
+        self.assertIn("/Windows/System32/Invoke-WinPeAutopilotForensics.ps1", self.patch_bootwim_src)
+
+    def test_09_imp114_sloj_c_oobe_ztd_interceptor_and_valid_unattend_xml(self):
+        """IMP-114 Sloj C: autounattend.xml je validan XML bez preranog BypassNRO/SkipNetworkSetup, a SetupComplete.ps1 ima SYSTEM OOBE ZTD watcher sa fallbackom."""
+        # 1. Validacija XML strukture ISO/autounattend.xml
+        tree = ET.parse(str(AUTOUNATTEND_PATH))
+        root = tree.getroot()
+        ns = {"u": "urn:schemas-microsoft-com:unattend"}
+        passes = {elem.attrib.get("pass"): elem for elem in root.findall("u:settings", ns)}
+        self.assertIn("windowsPE", passes)
+        self.assertIn("specialize", passes)
+        self.assertIn("oobeSystem", passes)
+
+        # windowsPE zadrzava LabConfig 1-6 + Order 7 load_vmd.cmd + Order 8 WIS-AcceleratePE.cmd
+        winpe_cmds = [c.text or "" for c in passes["windowsPE"].findall(".//u:Path", ns)]
+        self.assertTrue(any("load_vmd.cmd" in p for p in winpe_cmds))
+        self.assertTrue(any("WIS-AcceleratePE.cmd" in p for p in winpe_cmds))
+
+        # specialize NE sme prerano dodavati BypassNRO=1 ili SkipNetworkSetup=1
+        spec_cmds = [c.text or "" for c in passes["specialize"].findall(".//u:Path", ns)]
+        for cmd in spec_cmds:
+            self.assertFalse(
+                re.search(r"(?i)reg(\.exe)?\s+add\b.*(BypassNRO|SkipNetworkSetup|HideOnlineAccountScreens)", cmd),
+                f"specialize ne sme prerano blokirati OOBE mrezu: {cmd}",
+            )
+        self.assertTrue(any("PreOOBE-Network.cmd" in p for p in spec_cmds))
+
+        # oobeSystem OOBE ne blokira online/wireless ZTD razmenu i zadrzava AutoLogon Korisnik
+        oobe_node = passes["oobeSystem"].find(".//u:OOBE", ns)
+        self.assertIsNotNone(oobe_node)
+        self.assertEqual((oobe_node.findtext("u:HideOnlineAccountScreens", default="", namespaces=ns)).lower(), "false")
+        self.assertEqual((oobe_node.findtext("u:HideWirelessSetupInOOBE", default="", namespaces=ns)).lower(), "false")
+        self.assertEqual(passes["oobeSystem"].findtext(".//u:AutoLogon/u:Username", default="", namespaces=ns), "Korisnik")
+
+        # 2. SetupComplete.ps1 ima -OobeWatcherMode bez Invoke-Expression i sa bezbednim timeout/offline fallbackom
+        self.assertNotIn("Invoke-Expression", self.setup_complete_src)
+        self.assertNotIn("Invoke-Expression", self.preoobe_src)
+        for token in (
+            "[switch]$OobeWatcherMode",
+            "function Invoke-OobeZtdWatcher",
+            "function Inspect-OobeZtdRealtimeSnapshot",
+            "function Enable-SafeLocalServiceTransition",
+            "function Send-AutopilotVerdictToHub",
+            "IMA_AUTOPILOT",
+            "NEMA_AUTOPILOT",
+            "NIJE_PROVERENO",
+            "OOBE_ZTD_TIMEOUT",
+            "OOBE_ZTD_OFFLINE",
+            "WIS_OOBE_ZTD_Watcher",
+            "X-ServisHub-Client-Token",
+        ):
+            self.assertIn(token, self.setup_complete_src)
 
 
 if __name__ == "__main__":
