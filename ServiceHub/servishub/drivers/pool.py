@@ -68,8 +68,11 @@ except Exception:
 FORBIDDEN_DRIVER_EXTENSIONS = tuple(_FORBIDDEN_MODEL_PACK_EXTENSIONS)
 _IGNORED_INBOX_INFS = frozenset({"prnms009.inf", "autorun.inf"})
 
-# IMP-113: Stroga crna lista za Class=Firmware i firmware/CFU INF obrasce iz harvest izvora
+# IMP-113: Stroga crna lista za Class=Firmware, Firmware ClassGuid i firmware/CFU INF/Catalog obrasce iz harvest izvora
 BLOCKED_HARVEST_FIRMWARE_CLASSES = frozenset({"firmware"})
+BLOCKED_HARVEST_FIRMWARE_CLASS_GUIDS = frozenset({
+    "f2e7dd72-6468-4e36-b6f1-6488f42c1b52",
+})
 BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS: Tuple[str, ...] = (
     "surfaceuefi*.inf",
     "surfacesam*.inf",
@@ -78,6 +81,15 @@ BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS: Tuple[str, ...] = (
     "surfacecfuoverhid*.inf",
     "surfacestoragefwupdate*.inf",
     "*fwupdate*.inf",
+)
+BLOCKED_HARVEST_FIRMWARE_CATALOG_PATTERNS: Tuple[str, ...] = (
+    "surfaceuefi*",
+    "surfacesam*",
+    "surfaceme*",
+    "surfacetouchpadprocessorupdate*",
+    "surfacecfuoverhid*",
+    "surfacestoragefwupdate*",
+    "*fwupdate*",
 )
 
 MAX_ARCHIVE_FILE_BYTES = int(os.environ.get("SERVIS_POOL_MAX_ARCHIVE_BYTES", str(16 * 1024 ** 3)))
@@ -111,19 +123,33 @@ _POOL_INF_HWID_RE = re.compile(
 )
 
 
-def is_blocked_firmware_inf(inf_name: str = "", driver_class: str = "") -> bool:
+def is_blocked_firmware_inf(
+    inf_name: str = "",
+    driver_class: str = "",
+    class_guid: str = "",
+    catalog_files: Optional[Sequence[str]] = None,
+) -> bool:
     """
-    Vraća True ako INF paket pripada `Class=Firmware` ili poznatom firmware/CFU obrascu
-    (`SurfaceUEFI*.inf`, `SurfaceSAM*.inf`, `SurfaceME*.inf`, `SurfaceTouchPadProcessorUpdate*.inf`,
-    `SurfaceCFUOverHid*.inf`, `SurfaceStorageFwUpdate*.inf`, `*FwUpdate*.inf`).
+    Vraća True ako INF paket pripada `Class=Firmware`, Windows Firmware `ClassGuid`
+    (`f2e7dd72-6468-4e36-b6f1-6488f42c1b52`), ili poznatom firmware/CFU INF/Catalog obrascu
+    (`SurfaceUEFI*`, `SurfaceSAM*`, `SurfaceME*`, `SurfaceTouchPadProcessorUpdate*`,
+    `SurfaceCFUOverHid*`, `SurfaceStorageFwUpdate*`, `*FwUpdate*`).
     """
     cls_norm = str(driver_class or "").strip().lower()
     if cls_norm in BLOCKED_HARVEST_FIRMWARE_CLASSES:
         return True
+    guid_norm = str(class_guid or "").strip().strip("{}").strip().lower()
+    if guid_norm and guid_norm in BLOCKED_HARVEST_FIRMWARE_CLASS_GUIDS:
+        return True
     base = os.path.basename(str(inf_name or "").strip()).lower()
-    if not base:
-        return False
-    return any(fnmatch.fnmatchcase(base, pat) for pat in BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS)
+    if base and any(fnmatch.fnmatchcase(base, pat) for pat in BLOCKED_HARVEST_FIRMWARE_INF_PATTERNS):
+        return True
+    if catalog_files:
+        for cat_item in catalog_files:
+            cat_base = os.path.basename(str(cat_item or "").strip()).lower()
+            if cat_base and any(fnmatch.fnmatchcase(cat_base, pat) for pat in BLOCKED_HARVEST_FIRMWARE_CATALOG_PATTERNS):
+                return True
+    return False
 
 
 def is_blocked_harvest_firmware_package(
@@ -133,7 +159,8 @@ def is_blocked_harvest_firmware_package(
 ) -> bool:
     """
     Proverava da li je paket iz `harvest` izvora (bez `oem_pack`) blokirani firmware/CFU paket
-    po metapodacima ili stvarnim `.inf` datotekama u direktorijumu paketa (IMP-113).
+    po metapodacima (`inf_name`, `driver_class`, `class_guid`, `catalog_files`) ili stvarnim
+    `.inf`/`.cat` datotekama u direktorijumu paketa (IMP-113).
     """
     if not isinstance(pmeta, dict):
         return False
@@ -147,21 +174,47 @@ def is_blocked_harvest_firmware_package(
         if sources and "harvest" not in sources:
             return False
 
-    if is_blocked_firmware_inf(str(pmeta.get("inf_name") or ""), str(pmeta.get("driver_class") or "")):
+    if is_blocked_firmware_inf(
+        str(pmeta.get("inf_name") or ""),
+        str(pmeta.get("driver_class") or ""),
+        class_guid=str(pmeta.get("class_guid") or ""),
+        catalog_files=pmeta.get("catalog_files") or (),
+    ):
         return True
     for cls_item in (pmeta.get("driver_classes") or []):
         if is_blocked_firmware_inf("", str(cls_item or "")):
+            return True
+    for guid_item in (pmeta.get("class_guids") or []):
+        if is_blocked_firmware_inf("", "", class_guid=str(guid_item or "")):
             return True
     for inf_item in (pmeta.get("inf_names") or []):
         if is_blocked_firmware_inf(str(inf_item or ""), ""):
             return True
 
     if pkg_dir and not os.path.islink(pkg_dir) and os.path.isdir(pkg_dir):
+        has_stored_guid = bool(pmeta.get("class_guid") or pmeta.get("class_guids"))
+        has_stored_cats = "catalog_files" in pmeta
         try:
-            for _, _, files in os.walk(pkg_dir, followlinks=False):
+            for cur_d, _, files in os.walk(pkg_dir, followlinks=False):
                 for fn in files:
-                    if fn.lower().endswith(".inf") and is_blocked_firmware_inf(fn, ""):
-                        return True
+                    fn_low = fn.lower()
+                    if fn_low.endswith(".inf"):
+                        if is_blocked_firmware_inf(fn, ""):
+                            return True
+                        if not (has_stored_guid and has_stored_cats):
+                            inf_fp = os.path.join(cur_d, fn)
+                            if not os.path.islink(inf_fp):
+                                parsed = parse_inf_metadata(inf_fp)
+                                if parsed and is_blocked_firmware_inf(
+                                    parsed.get("inf_name", fn),
+                                    parsed.get("driver_class", ""),
+                                    class_guid=parsed.get("class_guid", ""),
+                                    catalog_files=parsed.get("catalog_files") or (),
+                                ):
+                                    return True
+                    elif fn_low.endswith(".cat"):
+                        if is_blocked_firmware_inf("", "", catalog_files=(fn,)):
+                            return True
         except OSError:
             pass
     return False
@@ -357,6 +410,8 @@ def parse_inf_metadata(inf_path: str) -> Optional[Dict[str, Any]]:
         return None
 
     driver_class = _resolve_inf_tokens(version_kv.get("class", ""), strings_kv).strip()
+    raw_class_guid = _resolve_inf_tokens(version_kv.get("classguid", ""), strings_kv).strip()
+    class_guid = raw_class_guid.strip("{}").strip().lower()
     provider = _resolve_inf_tokens(version_kv.get("provider", ""), strings_kv).strip()
     raw_driver_ver = _resolve_inf_tokens(version_kv.get("driverver", ""), strings_kv).strip()
 
@@ -424,6 +479,7 @@ def parse_inf_metadata(inf_path: str) -> Optional[Dict[str, Any]]:
         "inf_name": inf_name,
         "inf_stem": os.path.splitext(inf_name)[0],
         "driver_class": driver_class,
+        "class_guid": class_guid,
         "dch_role": dch_role,
         "provider": provider,
         "driver_date": driver_date,
@@ -958,6 +1014,8 @@ class DriverPoolManager:
                 seen_c = set()
                 all_inf_names: List[str] = []
                 all_classes: List[str] = []
+                all_class_guids: List[str] = []
+                all_catalog_files: List[str] = []
                 best_ver = primary_meta["driver_ver"]
                 best_date = primary_meta["driver_date"]
                 best_inf_name = primary_fn
@@ -967,6 +1025,11 @@ class DriverPoolManager:
                     all_inf_names.append(fn)
                     if pm.get("driver_class") and pm["driver_class"] not in all_classes:
                         all_classes.append(pm["driver_class"])
+                    if pm.get("class_guid") and pm["class_guid"] not in all_class_guids:
+                        all_class_guids.append(pm["class_guid"])
+                    for cat_f in (pm.get("catalog_files") or []):
+                        if cat_f and cat_f not in all_catalog_files:
+                            all_catalog_files.append(cat_f)
                     if is_catalog_driver_newer(best_ver, best_date, pm["driver_ver"], pm["driver_date"]):
                         best_ver = pm["driver_ver"]
                         best_date = pm["driver_date"]
@@ -996,6 +1059,9 @@ class DriverPoolManager:
                     "inf_names": all_inf_names,
                     "driver_class": primary_meta["driver_class"],
                     "driver_classes": all_classes,
+                    "class_guid": primary_meta.get("class_guid", ""),
+                    "class_guids": all_class_guids,
+                    "catalog_files": all_catalog_files,
                     "dch_role": unit_role,
                     "provider": primary_meta["provider"],
                     "driver_ver": best_ver,
@@ -1026,6 +1092,9 @@ class DriverPoolManager:
                         "inf_names": [fn],
                         "driver_class": pm["driver_class"],
                         "driver_classes": [pm["driver_class"]] if pm.get("driver_class") else [],
+                        "class_guid": pm.get("class_guid", ""),
+                        "class_guids": [pm["class_guid"]] if pm.get("class_guid") else [],
+                        "catalog_files": list(pm.get("catalog_files") or []),
                         "dch_role": pm.get("dch_role") or _get_dch_role(pm.get("driver_class", "")),
                         "provider": pm["provider"],
                         "driver_ver": pm["driver_ver"],
@@ -1150,20 +1219,30 @@ class DriverPoolManager:
         rejected_events: List[Dict[str, Any]] = []
 
         for unit in units:
-            # IMP-113: Blokiraj Class=Firmware i firmware/CFU INF obrasce iz harvest izvora pri ingestu
+            # IMP-113: Blokiraj Class=Firmware, Firmware ClassGuid i firmware/CFU INF/Catalog obrasce iz harvest izvora pri ingestu
             if src_norm == "harvest":
                 unit_inf_names = list(unit.get("inf_names") or [unit["inf_name"]])
                 unit_classes = list(unit.get("driver_classes") or ([unit["driver_class"]] if unit.get("driver_class") else []))
+                unit_guids = list(unit.get("class_guids") or ([unit["class_guid"]] if unit.get("class_guid") else []))
+                unit_cats = list(unit.get("catalog_files") or [])
                 file_infs = [os.path.basename(rel_p) for rel_p, _ in unit["files"] if rel_p.lower().endswith(".inf")]
+                file_cats = [os.path.basename(rel_p) for rel_p, _ in unit["files"] if rel_p.lower().endswith(".cat")]
                 blocked_fw = (
-                    is_blocked_firmware_inf(unit["inf_name"], unit["driver_class"])
+                    is_blocked_firmware_inf(
+                        unit["inf_name"],
+                        unit["driver_class"],
+                        class_guid=str(unit.get("class_guid") or ""),
+                        catalog_files=(unit_cats + file_cats),
+                    )
                     or any(is_blocked_firmware_inf("", c) for c in unit_classes)
+                    or any(is_blocked_firmware_inf("", "", class_guid=g) for g in unit_guids)
                     or any(is_blocked_firmware_inf(fn, "") for fn in (unit_inf_names + file_infs))
                 )
                 if blocked_fw:
                     rejected_events.append({
                         "inf_name": unit["inf_name"],
                         "driver_class": unit.get("driver_class", ""),
+                        "class_guid": unit.get("class_guid", ""),
                         "reason": "blocked_firmware_or_cfu_harvest",
                         "source": src_norm,
                         "os_build": norm_build,
@@ -1222,6 +1301,9 @@ class DriverPoolManager:
                 "inf_sha256": inf_sha256,
                 "driver_class": unit["driver_class"],
                 "driver_classes": list(unit.get("driver_classes") or ([unit["driver_class"]] if unit.get("driver_class") else [])),
+                "class_guid": str(unit.get("class_guid") or ""),
+                "class_guids": list(unit.get("class_guids") or ([unit["class_guid"]] if unit.get("class_guid") else [])),
+                "catalog_files": list(unit.get("catalog_files") or []),
                 "dch_role": dch_role,
                 "provider": unit["provider"],
                 "driver_ver": unit["driver_ver"],
@@ -2683,7 +2765,11 @@ class DriverPoolManager:
                 if not inf_name:
                     continue
                 drv_class = str(item.get("driver_class") or item.get("class") or "").strip()
-                if is_blocked_firmware_inf(inf_name, drv_class):
+                drv_guid = str(item.get("class_guid") or "").strip()
+                raw_cats = item.get("catalog_files") or item.get("catalog_file") or []
+                if isinstance(raw_cats, str):
+                    raw_cats = [raw_cats]
+                if is_blocked_firmware_inf(inf_name, drv_class, class_guid=drv_guid, catalog_files=raw_cats):
                     blocked_infs.append(inf_name)
                     continue
 

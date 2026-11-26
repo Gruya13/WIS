@@ -253,22 +253,17 @@ try {
 }
 
 # 5. IMP-114 Sloj C: Registracija pozadinskog SYSTEM OOBE ZTD Watchera (ONSTART -> SetupComplete.ps1 -OobeWatcherMode)
-# Poziva iskljucivo staticku skriptu sa deterministickim timeout osiguracem.
+# Poziva iskljucivo staticku admin-only skriptu iz C:\Windows\Setup\Scripts (nikada C:\setup) sa deterministickim timeout osiguracem.
 try {
-    $setupCompleteCandidates = @(
-        'C:\Windows\Setup\Scripts\SetupComplete.ps1',
-        'C:\setup\SetupComplete.ps1',
-        'C:\setup\Skripte\SetupComplete.ps1'
-    )
-    $watcherScript = $setupCompleteCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if ($watcherScript) {
+    $watcherScript = 'C:\Windows\Setup\Scripts\SetupComplete.ps1'
+    if (Test-Path -LiteralPath $watcherScript -PathType Leaf) {
         $taskCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watcherScript`" -OobeWatcherMode"
         $schOut = (& schtasks.exe /create /tn "WIS_OOBE_ZTD_Watcher" /ru SYSTEM /sc ONSTART /rl HIGHEST /tr $taskCmd /f 2>&1) -join ' '
         $schExit = $LASTEXITCODE
         $schLvl = if ($schExit -eq 0) { 'SUCCESS' } else { 'WARN' }
         Write-PreOobeLog "Registracija SYSTEM zadatka WIS_OOBE_ZTD_Watcher (ExitCode=$schExit): $schOut" $schLvl
     } else {
-        Write-PreOobeLog "SetupComplete.ps1 nije pronadjen za registraciju WIS_OOBE_ZTD_Watcher zadatka." "WARN"
+        Write-PreOobeLog "Admin-only $watcherScript nije pronadjen za registraciju WIS_OOBE_ZTD_Watcher zadatka." "WARN"
     }
 } catch {
     Write-PreOobeLog "Napomena pri registraciji WIS_OOBE_ZTD_Watcher zadatka: $($_.Exception.Message)" "WARN"

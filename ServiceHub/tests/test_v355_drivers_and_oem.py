@@ -805,5 +805,262 @@ class TestIMP110MultiRootReleasesPruning(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(lf_rel, "l1")))
 
 
+class TestSec05AndSec06Hardening(unittest.TestCase):
+    """Regresioni testovi za SEC-05 (3xx SSRF Open Redirect zaštita) i SEC-06 (Firmware ClassGuid/CatalogFile paritet)."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="wis_sec0506_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_sec05_302_redirect_outside_allowlist_blocked_without_following(self):
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        from servishub.drivers.oem.catalogs import OemCatalogManager, open_safe_oem_url
+        from servishub.drivers.oem.microsoft_surface import (
+            discover_surface_msi_entries,
+            verify_surface_msi_url,
+        )
+
+        trap_hits = []
+
+        class TrapHandler(BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                trap_hits.append(("HEAD", self.path))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", "1024")
+                self.end_headers()
+
+            def do_GET(self):
+                trap_hits.append(("GET", self.path))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.end_headers()
+                self.wfile.write(b"SECRET_INTERNAL_PAYLOAD" * 64)
+
+            def log_message(self, fmt, *args):
+                pass
+
+        trap_srv = HTTPServer(("127.0.0.1", 0), TrapHandler)
+        trap_port = trap_srv.server_address[1]
+        trap_thr = threading.Thread(target=trap_srv.serve_forever, daemon=True)
+        trap_thr.start()
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def _send_redirect(self, loc):
+                self.send_response(302)
+                self.send_header("Location", loc)
+                self.end_headers()
+
+            def do_HEAD(self):
+                if self.path == "/redir-evil":
+                    self._send_redirect(f"http://127.0.0.1:{trap_port}/secret.msi")
+                elif self.path == "/redir-external":
+                    self._send_redirect("https://evil.example/payload.msi")
+                elif self.path == "/redir-allowed":
+                    self._send_redirect("/ok.msi")
+                elif self.path == "/redir-loop":
+                    self._send_redirect("/redir-loop")
+                elif self.path == "/ok.msi":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", "2048")
+                    self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def do_GET(self):
+                if self.path == "/redir-evil":
+                    self._send_redirect(f"http://127.0.0.1:{trap_port}/secret.msi")
+                elif self.path == "/redir-external":
+                    self._send_redirect("https://evil.example/payload.msi")
+                elif self.path == "/redir-allowed":
+                    self._send_redirect("/ok.msi")
+                elif self.path == "/redir-loop":
+                    self._send_redirect("/redir-loop")
+                elif self.path == "/ok.msi":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    body = b"VALID_MSI_DATA_" * 100
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+            def log_message(self, fmt, *args):
+                pass
+
+        # Slušamo na localhost, a allowlista sadrži isključivo 'localhost' (ne '127.0.0.1' niti 'evil.example')
+        redir_srv = HTTPServer(("127.0.0.1", 0), RedirectHandler)
+        redir_port = redir_srv.server_address[1]
+        redir_thr = threading.Thread(target=redir_srv.serve_forever, daemon=True)
+        redir_thr.start()
+
+        try:
+            allowed = ["localhost"]
+            # 1. verify_surface_msi_url odbija 302 ka 127.0.0.1 i ka evil.example bez kontakta sa trap serverom
+            ok_evil, sz_evil = verify_surface_msi_url(
+                f"http://localhost:{redir_port}/redir-evil",
+                timeout=3.0,
+                allowed_hosts=allowed,
+            )
+            self.assertFalse(ok_evil)
+            self.assertEqual(sz_evil, 0)
+            self.assertEqual(trap_hits, [], "302 redirekcija ka 127.0.0.1 ne sme uopšte biti ispraćena!")
+
+            ok_ext, _ = verify_surface_msi_url(
+                f"http://localhost:{redir_port}/redir-external",
+                timeout=3.0,
+                allowed_hosts=allowed,
+            )
+            self.assertFalse(ok_ext)
+
+            # 2. Dozvoljena relativna 302 redirekcija na istom allowlist hostu prolazi
+            ok_rel, sz_rel = verify_surface_msi_url(
+                f"http://localhost:{redir_port}/redir-allowed",
+                timeout=3.0,
+                allowed_hosts=allowed,
+            )
+            self.assertTrue(ok_rel)
+            self.assertEqual(sz_rel, 2048)
+
+            # 3. Prekoračenje limita redirekcija (loop > 5 skokova) biva odbijeno
+            ok_loop, _ = verify_surface_msi_url(
+                f"http://localhost:{redir_port}/redir-loop",
+                timeout=3.0,
+                allowed_hosts=allowed,
+            )
+            self.assertFalse(ok_loop)
+
+            # 4. discover_surface_msi_entries odbija 302 van allowliste bez praćenja
+            entries = discover_surface_msi_entries(
+                spec={"download_page_url": f"http://localhost:{redir_port}/redir-evil"},
+                timeout=3.0,
+                verify_head=False,
+                allowed_hosts=allowed,
+            )
+            self.assertEqual(entries, [])
+            self.assertEqual(trap_hits, [])
+
+            # 5. OemCatalogManager._http_fetch_bytes i download_driver_pack bacaju ValueError na 302 van allowliste
+            mgr = OemCatalogManager(
+                catalogs_dir=os.path.join(self.tmp_dir, "cats"),
+                allowed_hosts=allowed,
+            )
+            with self.assertRaises(ValueError):
+                mgr._http_fetch_bytes(f"http://localhost:{redir_port}/redir-evil", timeout=3.0)
+            with self.assertRaises(ValueError):
+                mgr.download_driver_pack(
+                    entry={
+                        "package_name": "test.msi",
+                        "download_url": f"http://localhost:{redir_port}/redir-evil",
+                    },
+                    dest_dir=os.path.join(self.tmp_dir, "dl"),
+                    timeout=3.0,
+                )
+            self.assertEqual(trap_hits, [])
+
+            # 6. Direktna provera open_safe_oem_url za dozvoljeni redirect
+            import urllib.request as _ur
+            with open_safe_oem_url(
+                _ur.Request(f"http://localhost:{redir_port}/redir-allowed"),
+                timeout=3.0,
+                allowed_hosts=allowed,
+            ) as resp:
+                self.assertTrue(resp.geturl().endswith("/ok.msi"))
+                self.assertIn(b"VALID_MSI_DATA_", resp.read())
+        finally:
+            redir_srv.shutdown()
+            redir_srv.server_close()
+            trap_srv.shutdown()
+            trap_srv.server_close()
+
+    def test_sec06_firmware_class_guid_and_catalog_file_parity(self):
+        from servishub.drivers.pool import is_blocked_harvest_firmware_package
+
+        pool = DriverPoolManager(os.path.join(self.tmp_dir, "pool_sec06"))
+        src = os.path.join(self.tmp_dir, "fw_guid_src")
+
+        # 1. INF sa neutralnim imenom i Class=System, ali Windows Firmware ClassGuid
+        guid_dir = os.path.join(src, "fw_by_guid")
+        os.makedirs(guid_dir, exist_ok=True)
+        guid_inf = os.path.join(guid_dir, "NeutralComponent.inf")
+        with open(guid_inf, "w", encoding="utf-8") as f:
+            f.write(
+                "[Version]\n"
+                'Signature="$WINDOWS NT$"\n'
+                "Class=System\n"
+                "ClassGuid={f2e7dd72-6468-4e36-b6f1-6488f42c1b52}\n"
+                'Provider="Vendor"\n'
+                "DriverVer=03/10/2025,1.2.3.4\n"
+                "CatalogFile=neutral.cat\n"
+                "[Models]\n"
+                "Dev = Inst, ACPI\\MSHW7771\n"
+            )
+        with open(os.path.join(guid_dir, "neutral.cat"), "wb") as f:
+            f.write(b"CAT" * 8)
+
+        # 2. INF sa neutralnim imenom i neutralnom klasom/GUID-om, ali CatalogFile za firmware/CFU
+        cat_dir = os.path.join(src, "fw_by_cat")
+        os.makedirs(cat_dir, exist_ok=True)
+        cat_inf = os.path.join(cat_dir, "NeutralHelper.inf")
+        with open(cat_inf, "w", encoding="utf-8") as f:
+            f.write(
+                "[Version]\n"
+                'Signature="$WINDOWS NT$"\n'
+                "Class=HIDClass\n"
+                "ClassGuid={745a17a0-74d3-11d0-b6fe-00a0c90f57da}\n"
+                'Provider="Vendor"\n'
+                "DriverVer=03/10/2025,1.2.3.4\n"
+                "CatalogFile=SurfaceCFUOverHid_x64.cat\n"
+                "[Models]\n"
+                "Dev = Inst, HID\\VEN_MSHW&DEV_7772\n"
+            )
+        with open(os.path.join(cat_dir, "SurfaceCFUOverHid_x64.cat"), "wb") as f:
+            f.write(b"CAT" * 8)
+
+        meta_guid = parse_inf_metadata(guid_inf)
+        self.assertEqual(meta_guid["class_guid"], "f2e7dd72-6468-4e36-b6f1-6488f42c1b52")
+        self.assertTrue(is_blocked_firmware_inf(meta_guid["inf_name"], meta_guid["driver_class"], class_guid=meta_guid["class_guid"]))
+
+        meta_cat = parse_inf_metadata(cat_inf)
+        self.assertTrue(is_blocked_firmware_inf(meta_cat["inf_name"], meta_cat["driver_class"], catalog_files=meta_cat["catalog_files"]))
+
+        # Ingest iz harvest izvora odbija oba
+        res = pool.ingest_directory(src, source="harvest", model="Surface_Test_Sec06", os_build="26200")
+        self.assertEqual(res["packages_added"], 0)
+        self.assertEqual(res["rejected_count"], 2)
+
+        # delta_check takođe odbija oba (po class_guid i po catalog_files)
+        dc = pool.delta_check(
+            model="Surface_Test_Sec06",
+            packages=[
+                {"inf_name": "NeutralComponent.inf", "driver_class": "System", "class_guid": "{F2E7DD72-6468-4E36-B6F1-6488F42C1B52}", "hwids": [r"ACPI\MSHW7771"]},
+                {"inf_name": "NeutralHelper.inf", "driver_class": "HIDClass", "catalog_files": ["CustomFwUpdate.cat"], "hwids": [r"HID\VEN_MSHW&DEV_7772"]},
+            ],
+            os_build="26200",
+        )
+        self.assertEqual(dc["missing_infs"], [])
+        self.assertEqual(len(dc["blocked_infs"]), 2)
+
+        # Legacy paket na disku bez class_guid u index.json biva uhvaćen preko pkg_dir provere
+        self.assertTrue(
+            is_blocked_harvest_firmware_package(
+                {"inf_name": "NeutralComponent.inf", "driver_class": "System", "sources": ["harvest"]},
+                pkg_dir=guid_dir,
+            )
+        )
+        self.assertTrue(
+            is_blocked_harvest_firmware_package(
+                {"inf_name": "NeutralHelper.inf", "driver_class": "HIDClass", "sources": ["harvest"]},
+                pkg_dir=cat_dir,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,10 @@ def _format_iso_utc(value) -> str:
     return _utc_iso_now()
 
 
+_REMOTE_CMD_STEP_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+_REMOTE_CMD_VERSION_RE = re.compile(r"^[0-9A-Za-z.\-_]{1,32}$")
+
+
 def validate_remote_command(action, params=None) -> tuple[str, dict]:
     """
     Strogo validira daljinsku komandu protiv serverske allowliste (IMP-102).
@@ -96,17 +100,35 @@ def validate_remote_command(action, params=None) -> tuple[str, dict]:
     if len(serialized.encode("utf-8")) > _MAX_COMMAND_PARAMS_BYTES:
         raise ValueError(f"Polje 'params' prelazi maksimalnu dozvoljenu veličinu ({_MAX_COMMAND_PARAMS_BYTES} B).")
 
+    if "step_id" in clean_params and clean_params["step_id"] is not None:
+        if not isinstance(clean_params["step_id"], str):
+            raise ValueError("Parametar 'step_id' mora biti validan string identifikator koraka.")
+        clean_step = clean_params["step_id"].strip()
+        if not _REMOTE_CMD_STEP_ID_RE.fullmatch(clean_step):
+            raise ValueError("Parametar 'step_id' sadrži nedozvoljene znake ili neispravnu dužinu (1..64).")
+        clean_params["step_id"] = clean_step
+
+    if "version" in clean_params and clean_params["version"] is not None:
+        if not isinstance(clean_params["version"], str):
+            raise ValueError("Parametar 'version' mora biti validan string verzije.")
+        clean_ver = clean_params["version"].strip()
+        if not _REMOTE_CMD_VERSION_RE.fullmatch(clean_ver):
+            raise ValueError("Parametar 'version' sadrži nedozvoljene znake ili neispravnu dužinu (1..32).")
+        clean_params["version"] = clean_ver
+
     if clean_action in ("retry_phase", "jump_to_phase"):
+        if clean_action == "jump_to_phase" and ("phase" not in clean_params or clean_params["phase"] is None):
+            raise ValueError("Parametar 'phase' je obavezan za jump_to_phase i mora biti ceo broj između 2 i 6.")
         if "phase" in clean_params and clean_params["phase"] is not None:
             raw_p = clean_params["phase"]
             if isinstance(raw_p, bool):
-                raise ValueError("Parametar 'phase' mora biti ceo broj između 1 i 6.")
+                raise ValueError("Parametar 'phase' mora biti ceo broj između 2 i 6.")
             try:
                 p_int = int(raw_p) if isinstance(raw_p, int) or (isinstance(raw_p, str) and raw_p.strip().isdigit()) else -1
             except (ValueError, TypeError):
                 p_int = -1
-            if p_int < 1 or p_int > 6:
-                raise ValueError("Parametar 'phase' mora biti ceo broj između 1 i 6.")
+            if p_int < 2 or p_int > 6:
+                raise ValueError("Parametar 'phase' mora biti ceo broj između 2 i 6.")
             clean_params["phase"] = p_int
         if "clear_step_guard" in clean_params and not isinstance(clean_params["clear_step_guard"], bool):
             raise ValueError("Parametar 'clear_step_guard' mora biti boolean.")
@@ -120,13 +142,13 @@ def validate_remote_command(action, params=None) -> tuple[str, dict]:
         if "target_phase" in clean_params and clean_params["target_phase"] is not None:
             raw_tp = clean_params["target_phase"]
             if isinstance(raw_tp, bool):
-                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 1 i 6.")
+                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 2 i 6.")
             try:
                 tp_int = int(raw_tp) if isinstance(raw_tp, int) or (isinstance(raw_tp, str) and raw_tp.strip().isdigit()) else -1
             except (ValueError, TypeError):
                 tp_int = -1
-            if tp_int < 1 or tp_int > 6:
-                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 1 i 6.")
+            if tp_int < 2 or tp_int > 6:
+                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 2 i 6.")
             clean_params["target_phase"] = tp_int
 
     if clean_action == "unlock_driver_gate":

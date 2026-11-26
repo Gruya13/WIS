@@ -727,15 +727,57 @@ exit /b 0
 :ReadProfileTag
 set "_TAG_FILE=%~1"
 set "_TAG_PREFIX=%~2"
+set "!_TAG_PREFIX!_IMAGE_TYPE="
+set "!_TAG_PREFIX!_WIM_VERSION="
 if not exist "!_TAG_FILE!" goto :eof
-for /f "usebackq tokens=1,* delims==" %%k in ("!_TAG_FILE!") do (
-    set "_RAW_K=%%k"
-    set "_RAW_V=%%l"
-    if defined _RAW_V (
-        set "_RAW_V=!_RAW_V:"=!"
-        for /f "tokens=* delims= " %%v in ("!_RAW_V!") do set "_CLEAN_V=%%v"
-        if /I "!_RAW_K!"=="IMAGE_TYPE" set "!_TAG_PREFIX!_IMAGE_TYPE=!_CLEAN_V!"
-        if /I "!_RAW_K!"=="WIM_VERSION" set "!_TAG_PREFIX!_WIM_VERSION=!_CLEAN_V!"
+set "_L1="
+set "_L2="
+set "_L3="
+set "_L4="
+set "_L5="
+(
+    set /p "_L1="
+    set /p "_L2="
+    set /p "_L3="
+    set /p "_L4="
+    set /p "_L5="
+) < "!_TAG_FILE!"
+for %%n in (_L1 _L2 _L3 _L4 _L5) do (
+    set "_CLEAN_V="
+    set "_RAW_LINE=!%%n!"
+    if defined _RAW_LINE call :ParseProfileTagLine
+)
+set "_L1="
+set "_L2="
+set "_L3="
+set "_L4="
+set "_L5="
+set "_RAW_LINE="
+set "_CLEAN_V="
+goto :eof
+
+:ParseProfileTagLine
+set "_VAL="
+set "_NO_Q="
+set "_CLEAN_V="
+set "_BAD_CHAR="
+if /I "!_RAW_LINE:~0,11!"=="IMAGE_TYPE=" (
+    set "!_TAG_PREFIX!_IMAGE_TYPE="
+    set "_VAL=!_RAW_LINE:~11!"
+    if /I "!_VAL!"=="preinstalled" set "!_TAG_PREFIX!_IMAGE_TYPE=preinstalled"
+    if /I "!_VAL!"=="lean" set "!_TAG_PREFIX!_IMAGE_TYPE=lean"
+    goto :eof
+)
+if /I "!_RAW_LINE:~0,12!"=="WIM_VERSION=" (
+    set "!_TAG_PREFIX!_WIM_VERSION="
+    set "_VAL=!_RAW_LINE:~12!"
+    if not defined _VAL goto :eof
+    set _NO_Q=!_VAL:"=!
+    if not "!_VAL!"=="!_NO_Q!" goto :eof
+    for /f "delims=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-" %%x in ("a!_VAL!") do set "_BAD_CHAR=1"
+    if not defined _BAD_CHAR (
+        set "_CLEAN_V=!_VAL!"
+        set "!_TAG_PREFIX!_WIM_VERSION=!_CLEAN_V!"
     )
 )
 goto :eof

@@ -42,6 +42,7 @@ from servishub.drivers.oem.catalogs import (
     _norm_model_tokens,
     _parse_iso_or_us_date,
     _strip_ns,
+    open_safe_oem_url,
     validate_oem_download_url,
 )
 
@@ -519,7 +520,7 @@ def verify_surface_msi_url(
     for method, extra_hdrs in (("HEAD", {}), ("GET", {"Range": "bytes=0-0"})):
         req = urllib.request.Request(valid_url, method=method, headers={**headers, **extra_hdrs})
         try:
-            with urllib.request.urlopen(req, timeout=eff_timeout) as resp:
+            with open_safe_oem_url(req, timeout=eff_timeout, allowed_hosts=allowed_hosts) as resp:
                 status = getattr(resp, "status", None) or resp.getcode()
                 ctype = str(resp.headers.get("Content-Type") or "").lower()
                 if status not in (200, 206) or ctype.startswith("text/html"):
@@ -547,7 +548,7 @@ def verify_surface_msi_url(
             if method == "HEAD" and code == 405:
                 continue
             return False, 0
-        except (urllib.error.URLError, OSError, TimeoutError):
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError):
             return False, 0
     return False, 0
 
@@ -655,7 +656,7 @@ def discover_surface_msi_entries(
                 headers={"User-Agent": "WIS-ServiceHub/3.7", "Accept": "text/html,application/json"},
             )
             buf = bytearray()
-            with urllib.request.urlopen(req, timeout=eff_timeout) as resp:
+            with open_safe_oem_url(req, timeout=eff_timeout, allowed_hosts=allowed_hosts) as resp:
                 while True:
                     chunk = resp.read(65536)
                     if not chunk:

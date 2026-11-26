@@ -340,24 +340,47 @@ class TestV355ApiReportsCommands(unittest.TestCase):
             self.assertEqual(st_e, 400, f"Opasna akcija '{evil_action}' nije odbijena sa 400")
             self.assertIn("error", err_resp)
 
-        # Nevalidni parametri za jump_to_phase (phase=99) i apply_payload_update (mode=arbitrary) -> 400
-        st_p, _, _ = self._http_json(
-            port,
-            "POST",
-            "/api/devices/TK-ALLOW-01/command",
+        # Nevalidni parametri za jump_to_phase (phase=99, phase=1, bez phase), retry_phase (phase=1),
+        # apply_payload_update (mode=arbitrary, target_phase=1, los version) i step_id (shell metakarakteri) -> 400
+        invalid_payloads = [
             {"action": "jump_to_phase", "params": {"phase": 99}},
-            headers={"X-ServisHub-Admin-Token": "adm-tok-v355"},
-        )
-        self.assertEqual(st_p, 400)
+            {"action": "jump_to_phase", "params": {"phase": 1}},
+            {"action": "jump_to_phase", "params": {}},
+            {"action": "retry_phase", "params": {"phase": 1}},
+            {"action": "apply_payload_update", "params": {"mode": "exec_raw"}},
+            {"action": "apply_payload_update", "params": {"mode": "scripts_only", "target_phase": 1}},
+            {"action": "apply_payload_update", "params": {"mode": "scripts_only", "version": "3.5.5;calc"}},
+            {"action": "apply_payload_update", "params": {"mode": "scripts_only", "version": "../../etc"}},
+            {"action": "skip_step", "params": {"step_id": "P4; whoami"}},
+            {"action": "skip_step", "params": {"step_id": ""}},
+        ]
+        for bad_body in invalid_payloads:
+            st_bad, _, _ = self._http_json(
+                port,
+                "POST",
+                "/api/devices/TK-ALLOW-01/command",
+                bad_body,
+                headers={"X-ServisHub-Admin-Token": "adm-tok-v355"},
+            )
+            self.assertEqual(st_bad, 400, f"Nevalidan payload mora biti odbijen sa 400: {bad_body}")
 
-        st_m, _, _ = self._http_json(
+        # Validni step_id i target_phase=2..6 prolaze sa 200
+        st_step_ok, _, _ = self._http_json(
             port,
             "POST",
             "/api/devices/TK-ALLOW-01/command",
-            {"action": "apply_payload_update", "params": {"mode": "exec_raw"}},
+            {"action": "skip_step", "params": {"step_id": "P4.Office-1"}},
             headers={"X-ServisHub-Admin-Token": "adm-tok-v355"},
         )
-        self.assertEqual(st_m, 400)
+        self.assertEqual(st_step_ok, 200)
+        st_tp_ok, _, _ = self._http_json(
+            port,
+            "POST",
+            "/api/devices/TK-ALLOW-01/command",
+            {"action": "apply_payload_update", "params": {"mode": "full_restart", "target_phase": 2, "version": "3.5.5"}},
+            headers={"X-ServisHub-Admin-Token": "adm-tok-v355"},
+        )
+        self.assertEqual(st_tp_ok, 200)
 
     def test_03_imp102_fleet_broadcast_fail_closed_filters_and_command_ack(self):
         """Testira POST /api/fleet/command (fail-closed 503/401 + filteri), POST /command-ack i heartbeat executed_commands."""

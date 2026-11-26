@@ -267,6 +267,8 @@ function Scan-OfflineRegistrySubtree {
     if (-not (Test-Path -LiteralPath $PsRegPath -ErrorAction SilentlyContinue)) { return 0 }
     $count = 0
     $regItem = $null
+    $children = $null
+    $ch = $null
     try {
         $regItem = Get-Item -LiteralPath $PsRegPath -ErrorAction SilentlyContinue
         if ($regItem) {
@@ -302,23 +304,30 @@ function Scan-OfflineRegistrySubtree {
 
         $children = @(Get-ChildItem -LiteralPath $PsRegPath -ErrorAction SilentlyContinue)
         foreach ($ch in $children) {
-            $count++
-            Inspect-TextForAutopilotMarkers -RawText $ch.PSChildName -Finding $Finding -SourceTag "$Tag\$($ch.PSChildName)"
             $childItem = $null
             try {
-                $childItem = Get-Item -LiteralPath $ch.PSPath -ErrorAction SilentlyContinue
+                if ($null -eq $ch) { continue }
+                $chName = $ch.PSChildName
+                $chPath = $ch.PSPath
+                $count++
+                Inspect-TextForAutopilotMarkers -RawText $chName -Finding $Finding -SourceTag "$Tag\$chName"
+                $childItem = Get-Item -LiteralPath $chPath -ErrorAction SilentlyContinue
                 if ($childItem) {
                     foreach ($cvn in $childItem.GetValueNames()) {
                         $cval = $childItem.GetValue($cvn)
                         if ($null -ne $cval -and "$cval".Trim() -ne '') {
                             $count++
-                            Inspect-TextForAutopilotMarkers -RawText ("$cval".Trim()) -Finding $Finding -SourceTag "$Tag\$($ch.PSChildName)\$cvn"
+                            Inspect-TextForAutopilotMarkers -RawText ("$cval".Trim()) -Finding $Finding -SourceTag "$Tag\$chName\$cvn"
                         }
                     }
                 }
             } finally {
                 if ($childItem -and ($childItem -is [IDisposable])) {
                     try { $childItem.Dispose() } catch { }
+                }
+                $childItem = $null
+                if ($ch -and ($ch -is [IDisposable])) {
+                    try { $ch.Dispose() } catch { }
                 }
             }
         }
@@ -332,9 +341,19 @@ function Scan-OfflineRegistrySubtree {
         }
     } catch { }
     finally {
+        if ($children) {
+            foreach ($chRem in $children) {
+                if ($chRem -and ($chRem -is [IDisposable])) {
+                    try { $chRem.Dispose() } catch { }
+                }
+            }
+        }
+        $children = $null
+        $ch = $null
         if ($regItem -and ($regItem -is [IDisposable])) {
             try { $regItem.Dispose() } catch { }
         }
+        $regItem = $null
     }
     return $count
 }
@@ -434,6 +453,9 @@ if ($winRoots.Count -eq 0) {
             $swMountKey = 'HKLM\WIS_OFFLINE_SW'
             $swPsRoot = 'Registry::HKEY_LOCAL_MACHINE\WIS_OFFLINE_SW'
             $swLoaded = $false
+            $eSubs = $null
+            $es = $null
+            $eProps = $null
             try {
                 # Obezbedi cist mount ako je zaostao iz prethodnog pokusaja
                 if (Test-Path -LiteralPath $swPsRoot -ErrorAction SilentlyContinue) {
@@ -452,19 +474,27 @@ if ($winRoots.Count -eq 0) {
                     Scan-OfflineRegistrySubtree -PsRegPath "$swPsRoot\Microsoft\Windows\Autopilot\EnrollmentStatusTracking" -Finding $finding -Tag 'SOFTWARE\EnrollmentStatusTracking' | Out-Null
                     Scan-OfflineRegistrySubtree -PsRegPath "$swPsRoot\Microsoft\Provisioning\EnrollmentStatusTracking" -Finding $finding -Tag 'SOFTWARE\Provisioning\EnrollmentStatusTracking' | Out-Null
 
-                    # Provera MDM Enrollments
+                    # Provera MDM Enrollments (obavezan .Dispose() za svaki RegistryKey da reg unload uspe!)
                     $enrollRoot = "$swPsRoot\Microsoft\Enrollments"
                     if (Test-Path -LiteralPath $enrollRoot -ErrorAction SilentlyContinue) {
                         $eSubs = @(Get-ChildItem -LiteralPath $enrollRoot -ErrorAction SilentlyContinue)
                         foreach ($es in $eSubs) {
-                            if ($es.PSChildName -match 'ZTD') {
-                                $finding.HasLocalTraces = $true
-                                Add-ForensicsEvidence -Finding $finding -Note "SOFTWARE\Enrollments\$($es.PSChildName)"
-                            }
-                            $eProps = Get-ItemProperty -LiteralPath $es.PSPath -ErrorAction SilentlyContinue
-                            if ($eProps -and $eProps.DiscoveryServiceFullURL) {
-                                $finding.HasLocalTraces = $true
-                                Add-ForensicsEvidence -Finding $finding -Note "SOFTWARE\Enrollments\MDM_URL"
+                            try {
+                                if ($null -eq $es) { continue }
+                                if ($es.PSChildName -match 'ZTD') {
+                                    $finding.HasLocalTraces = $true
+                                    Add-ForensicsEvidence -Finding $finding -Note "SOFTWARE\Enrollments\$($es.PSChildName)"
+                                }
+                                $eProps = Get-ItemProperty -LiteralPath $es.PSPath -ErrorAction SilentlyContinue
+                                if ($eProps -and $eProps.DiscoveryServiceFullURL) {
+                                    $finding.HasLocalTraces = $true
+                                    Add-ForensicsEvidence -Finding $finding -Note "SOFTWARE\Enrollments\MDM_URL"
+                                }
+                            } finally {
+                                $eProps = $null
+                                if ($es -and ($es -is [IDisposable])) {
+                                    try { $es.Dispose() } catch { }
+                                }
                             }
                         }
                     }
@@ -474,6 +504,16 @@ if ($winRoots.Count -eq 0) {
             } catch {
                 Write-WinPeForensicsLog ("Izuzetak pri citanju offline SOFTWARE hive-a: {0}" -f $_.Exception.Message) 'WARN'
             } finally {
+                if ($eSubs) {
+                    foreach ($esRem in $eSubs) {
+                        if ($esRem -and ($esRem -is [IDisposable])) {
+                            try { $esRem.Dispose() } catch { }
+                        }
+                    }
+                }
+                $eSubs = $null
+                $es = $null
+                $eProps = $null
                 if ($swLoaded) {
                     Invoke-SafeRegUnload -HiveMountKey $swMountKey | Out-Null
                     Write-WinPeForensicsLog "Offline SOFTWARE hive bezbedno demontiran (reg unload)." 'INFO'
@@ -487,6 +527,11 @@ if ($winRoots.Count -eq 0) {
             $sysMountKey = 'HKLM\WIS_OFFLINE_SYS'
             $sysPsRoot = 'Registry::HKEY_LOCAL_MACHINE\WIS_OFFLINE_SYS'
             $sysLoaded = $false
+            $cdjSubs = $null
+            $csItem = $null
+            $jProps = $null
+            $selProps = $null
+            $cnProps = $null
             try {
                 if (Test-Path -LiteralPath $sysPsRoot -ErrorAction SilentlyContinue) {
                     Invoke-SafeRegUnload -HiveMountKey $sysMountKey | Out-Null
@@ -504,17 +549,28 @@ if ($winRoots.Count -eq 0) {
                             $csName = ('ControlSet{0:D3}' -f $csNum)
                         }
                     } catch { }
+                    finally {
+                        $selProps = $null
+                    }
 
-                    # CloudDomainJoin\JoinInfo
+                    # CloudDomainJoin\JoinInfo (obavezan .Dispose() za svaki RegistryKey da reg unload uspe!)
                     $cdjRoot = "$sysPsRoot\$csName\Control\CloudDomainJoin\JoinInfo"
                     if (Test-Path -LiteralPath $cdjRoot -ErrorAction SilentlyContinue) {
                         $cdjSubs = @(Get-ChildItem -LiteralPath $cdjRoot -ErrorAction SilentlyContinue)
                         foreach ($csItem in $cdjSubs) {
-                            $jProps = Get-ItemProperty -LiteralPath $csItem.PSPath -ErrorAction SilentlyContinue
-                            if ($jProps -and $jProps.TenantId -and (Test-NonZeroGuid -Candidate "$($jProps.TenantId)")) {
-                                $finding.HasLocalTraces = $true
-                                if (-not $finding.TenantId) { $finding.TenantId = "$($jProps.TenantId)".Trim().Trim('{', '}') }
-                                Add-ForensicsEvidence -Finding $finding -Note "SYSTEM\CloudDomainJoin\TenantId"
+                            try {
+                                if ($null -eq $csItem) { continue }
+                                $jProps = Get-ItemProperty -LiteralPath $csItem.PSPath -ErrorAction SilentlyContinue
+                                if ($jProps -and $jProps.TenantId -and (Test-NonZeroGuid -Candidate "$($jProps.TenantId)")) {
+                                    $finding.HasLocalTraces = $true
+                                    if (-not $finding.TenantId) { $finding.TenantId = "$($jProps.TenantId)".Trim().Trim('{', '}') }
+                                    Add-ForensicsEvidence -Finding $finding -Note "SYSTEM\CloudDomainJoin\TenantId"
+                                }
+                            } finally {
+                                $jProps = $null
+                                if ($csItem -and ($csItem -is [IDisposable])) {
+                                    try { $csItem.Dispose() } catch { }
+                                }
                             }
                         }
                     }
@@ -527,6 +583,7 @@ if ($winRoots.Count -eq 0) {
                             $oldHost = "$($cnProps.ComputerName)".Trim()
                             Inspect-TextForAutopilotMarkers -RawText $oldHost -Finding $finding -SourceTag 'SYSTEM\ComputerName'
                         }
+                        $cnProps = $null
                     }
                 } else {
                     Write-WinPeForensicsLog ("reg load za SYSTEM vratio ExitCode={0}." -f $LASTEXITCODE) 'WARN'
@@ -534,6 +591,18 @@ if ($winRoots.Count -eq 0) {
             } catch {
                 Write-WinPeForensicsLog ("Izuzetak pri citanju offline SYSTEM hive-a: {0}" -f $_.Exception.Message) 'WARN'
             } finally {
+                if ($cdjSubs) {
+                    foreach ($csRem in $cdjSubs) {
+                        if ($csRem -and ($csRem -is [IDisposable])) {
+                            try { $csRem.Dispose() } catch { }
+                        }
+                    }
+                }
+                $cdjSubs = $null
+                $csItem = $null
+                $jProps = $null
+                $selProps = $null
+                $cnProps = $null
                 if ($sysLoaded) {
                     Invoke-SafeRegUnload -HiveMountKey $sysMountKey | Out-Null
                     Write-WinPeForensicsLog "Offline SYSTEM hive bezbedno demontiran (reg unload)." 'INFO'

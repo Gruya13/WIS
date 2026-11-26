@@ -1186,6 +1186,15 @@ try {
     }
 } catch {
     Write-Log ('Izuzetak u Pre-OOBE Autopilot koraku: {0}' -f $_.Exception.Message) 'WARN' 'AutopilotPreOOBE'
+} finally {
+    # Bezuslovno uklanjanje privremenog SYSTEM ONSTART OOBE ZTD watcher zadatka i lock fajla (SEC-07)
+    try { & schtasks.exe /Delete /TN "WIS_OOBE_ZTD_Watcher" /F >$null 2>&1 } catch {}
+    try {
+        $cleanupWatcherLock = Join-Path $LogDir 'oobe_ztd_watcher.lock'
+        if (Test-Path -LiteralPath $cleanupWatcherLock -ErrorAction SilentlyContinue) {
+            Remove-Item -LiteralPath $cleanupWatcherLock -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
 }
 
 # 7. Jedinstvena tiha detekcija i ekstrakcija Programi.tar sa proverom izlaza i sadrzaja (Nalaz 1)

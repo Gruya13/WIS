@@ -447,6 +447,25 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
         self.assertIn("Invoke-WinPeAutopilotForensics.ps1", self.patch_bootwim_src)
         self.assertIn("/Windows/System32/Invoke-WinPeAutopilotForensics.ps1", self.patch_bootwim_src)
 
+        # SEC-07: Eksplicitno oslobadjanje svih RegistryKey rucki (.Dispose() + $null) pre reg.exe unload
+        self.assertIn("$ch.Dispose()", self.winpe_forensics_src)
+        self.assertIn("$es.Dispose()", self.winpe_forensics_src)
+        self.assertIn("$csItem.Dispose()", self.winpe_forensics_src)
+        self.assertIn("$eSubs = $null", self.winpe_forensics_src)
+        self.assertIn("$cdjSubs = $null", self.winpe_forensics_src)
+        self.assertIn("$selProps = $null", self.winpe_forensics_src)
+        self.assertIn("$cnProps = $null", self.winpe_forensics_src)
+
+        # SEC-07: WIS-AcceleratePE.cmd :ReadProfileTag bez findstr, sa set /p, resetom _CLEAN_V i strogom allowlistom
+        for label, src in (("WIS-AcceleratePE.cmd", self.accel_pe_src), ("Patch-BootWim.py", self.patch_bootwim_src)):
+            read_sec = src.split(":ReadProfileTag", 1)[1].split(":RunWinPeForensics", 1)[0]
+            self.assertNotIn("findstr", read_sec.lower(), f"{label} :ReadProfileTag ne sme koristiti findstr.exe (nije u WinPE)")
+            self.assertIn('set /p "_L1="', read_sec)
+            self.assertIn('set "_CLEAN_V="', read_sec)
+            self.assertIn('"preinstalled"', read_sec)
+            self.assertIn('"lean"', read_sec)
+            self.assertIn("delims=0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz._-", read_sec)
+
     def test_09_imp114_sloj_c_oobe_ztd_interceptor_and_valid_unattend_xml(self):
         """IMP-114 Sloj C: autounattend.xml je validan XML bez preranog BypassNRO/SkipNetworkSetup, a SetupComplete.ps1 ima SYSTEM OOBE ZTD watcher sa fallbackom."""
         # 1. Validacija XML strukture ISO/autounattend.xml
@@ -497,6 +516,16 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
             "X-ServisHub-Client-Token",
         ):
             self.assertIn(token, self.setup_complete_src)
+
+        # SEC-07: PreOOBE-Network.ps1 sme registrovati WIS_OOBE_ZTD_Watcher ISKLJUCIVO na admin-only C:\Windows\Setup\Scripts\SetupComplete.ps1
+        self.assertIn(r"$watcherScript = 'C:\Windows\Setup\Scripts\SetupComplete.ps1'", self.preoobe_src)
+        self.assertNotIn(r"'C:\setup\SetupComplete.ps1'", self.preoobe_src)
+        self.assertNotIn(r"'C:\setup\Skripte\SetupComplete.ps1'", self.preoobe_src)
+
+        # SEC-07: Bezuslovno uklanjanje WIS_OOBE_ZTD_Watcher u normalnom SetupComplete.ps1 i u Fazi 6 WIS.Cleanup.psm1
+        cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8-sig")
+        self.assertIn('/Delete /TN "WIS_OOBE_ZTD_Watcher" /F', cleanup_src)
+        self.assertIn('/Delete /TN "WIS_OOBE_ZTD_Watcher" /F', self.setup_complete_src)
 
 
 if __name__ == "__main__":

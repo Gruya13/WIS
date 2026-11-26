@@ -1542,9 +1542,10 @@ function Restore-WisSecurityHardening {
     $allOk = $true
     $Global:WisSecurityHardeningVerified = $false
     try {
-        # 0. Uklanjanje eventualnog zaostalog WinRing0 kernel drajvera (Anti-BYOVD) i recovery sentinela
+        # 0. Uklanjanje eventualnog zaostalog WinRing0 kernel drajvera (Anti-BYOVD) i privremenih SYSTEM zadataka
         Remove-LegacyWinRing0Driver | Out-Null
         try { & schtasks.exe /Delete /TN "WIS_SecurityRecovery_Sentinel" /F >$null 2>&1 } catch {}
+        try { & schtasks.exe /Delete /TN "WIS_OOBE_ZTD_Watcher" /F >$null 2>&1 } catch {}
 
         # 1. UAC na fabricke vrednosti
         $uacRegPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"

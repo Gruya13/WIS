@@ -186,6 +186,82 @@ def validate_oem_download_url(
     raise ValueError(f"OEM hostname '{host}' nije na zvaničnoj OEM allowlist-i.")
 
 
+MAX_OEM_REDIRECTS = 5
+
+
+class _SafeOemRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """
+    HTTPRedirectHandler koji validira svaki 3xx Location cilj kroz `validate_oem_download_url`
+    PRE slanja novog zahteva (štiti od SSRF / 3xx Open Redirect bypass-a HTTPS allowliste)
+    i ograničava broj uzastopnih redirekcija na `max_redirects`.
+    """
+
+    def __init__(
+        self,
+        allowed_hosts: Optional[Sequence[str]] = None,
+        max_redirects: int = MAX_OEM_REDIRECTS,
+    ):
+        super().__init__()
+        self.allowed_hosts = allowed_hosts
+        self.max_redirects = max(0, int(max_redirects))
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        hops = int(getattr(req, "_wis_redirect_hops", 0)) + 1
+        if hops > self.max_redirects:
+            if fp is not None:
+                try:
+                    fp.close()
+                except Exception:
+                    pass
+            raise ValueError(f"OEM redirekcija prelazi maksimalni limit ({self.max_redirects} skokova): {newurl}")
+
+        resolved_url = urllib.parse.urljoin(req.full_url, str(newurl or "").strip())
+        try:
+            valid_target = validate_oem_download_url(resolved_url, allowed_hosts=self.allowed_hosts)
+        except ValueError:
+            if fp is not None:
+                try:
+                    fp.close()
+                except Exception:
+                    pass
+            raise
+
+        new_req = super().redirect_request(req, fp, code, msg, headers, valid_target)
+        if new_req is not None:
+            new_req._wis_redirect_hops = hops
+            if req.get_method().upper() == "HEAD" and code in (301, 302, 307, 308):
+                new_req.method = "HEAD"
+        return new_req
+
+
+def open_safe_oem_url(
+    req: urllib.request.Request,
+    timeout: float = 30.0,
+    allowed_hosts: Optional[Sequence[str]] = None,
+    max_redirects: int = MAX_OEM_REDIRECTS,
+):
+    """
+    Otvara OEM zahtev kroz `urllib.request.build_opener(_SafeOemRedirectHandler(...))`
+    uz pred-proveru inicijalnog URL-a, validaciju svakog 3xx skoka pre slanja i post-response
+    validaciju finalnog `resp.geturl()`.
+    """
+    validate_oem_download_url(req.full_url, allowed_hosts=allowed_hosts)
+    opener = urllib.request.build_opener(
+        _SafeOemRedirectHandler(allowed_hosts=allowed_hosts, max_redirects=max_redirects)
+    )
+    resp = opener.open(req, timeout=timeout)
+    try:
+        final_url = resp.geturl() if hasattr(resp, "geturl") else req.full_url
+        validate_oem_download_url(final_url, allowed_hosts=allowed_hosts)
+    except Exception:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        raise
+    return resp
+
+
 def _check_xml_safe(xml_bytes: bytes) -> bytes:
     """XXE / Entity-expansion zaštita pre XML parsiranja."""
     if not xml_bytes or not isinstance(xml_bytes, (bytes, bytearray)):
@@ -695,7 +771,7 @@ class OemCatalogManager:
         valid_url = validate_oem_download_url(url, allowed_hosts=self.allowed_hosts)
         req = urllib.request.Request(valid_url, headers={"User-Agent": "WIS-ServiceHub/3.5"})
         buf = bytearray()
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_safe_oem_url(req, timeout=timeout, allowed_hosts=self.allowed_hosts) as resp:
             while True:
                 chunk = resp.read(65536)
                 if not chunk:
@@ -1142,7 +1218,7 @@ class OemCatalogManager:
 
         req = urllib.request.Request(url, headers={"User-Agent": "WIS-ServiceHub/3.5"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp, open(tmp_path, "wb") as out_f:
+            with open_safe_oem_url(req, timeout=timeout, allowed_hosts=self.allowed_hosts) as resp, open(tmp_path, "wb") as out_f:
                 while True:
                     chunk = resp.read(65536)
                     if not chunk:
