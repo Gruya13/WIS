@@ -114,7 +114,8 @@ class TestRemoteCommands(unittest.TestCase):
         self.assertEqual(cmd["device_id"], "DEV-01")
         self.assertEqual(cmd["action"], "reboot_uefi")
         self.assertEqual(cmd["params"], {"reason": "firmware"})
-        self.assertIsInstance(cmd["created_at"], float)
+        self.assertIsInstance(cmd["created_at"], str)
+        self.assertTrue(cmd["created_at"].endswith("Z"))
 
         # Pregled bez pražnjenja
         pending = fs.get_pending_commands("DEV-01")
@@ -133,33 +134,33 @@ class TestRemoteCommands(unittest.TestCase):
     def test_02_fleet_store_fifo_ordering(self):
         """Provera FIFO redosleda komandi."""
         fs = FleetStore()
-        c1 = fs.enqueue_command("DEV-FIFO", "action_1", {"seq": 1})
-        c2 = fs.enqueue_command("DEV-FIFO", "action_2", {"seq": 2})
-        c3 = fs.enqueue_command("DEV-FIFO", "action_3", {"seq": 3})
+        c1 = fs.enqueue_command("DEV-FIFO", "skip_step", {"seq": 1})
+        c2 = fs.enqueue_command("DEV-FIFO", "re_resolve_drivers", {"seq": 2})
+        c3 = fs.enqueue_command("DEV-FIFO", "reboot_and_resume", {"seq": 3})
 
         popped = fs.pop_pending_commands("DEV-FIFO")
         self.assertEqual(len(popped), 3)
-        self.assertEqual(popped[0]["action"], "action_1")
-        self.assertEqual(popped[1]["action"], "action_2")
-        self.assertEqual(popped[2]["action"], "action_3")
+        self.assertEqual(popped[0]["action"], "skip_step")
+        self.assertEqual(popped[1]["action"], "re_resolve_drivers")
+        self.assertEqual(popped[2]["action"], "reboot_and_resume")
 
     def test_03_fleet_store_max_capacity_protection(self):
         """Provera ograničenja na maksimalno 20 komandi po uređaju."""
         fs = FleetStore()
         for i in range(25):
-            fs.enqueue_command("DEV-OVERFLOW", f"action_{i}", {"index": i})
+            fs.enqueue_command("DEV-OVERFLOW", "skip_step", {"index": i})
 
         pending = fs.get_pending_commands("DEV-OVERFLOW")
         self.assertEqual(len(pending), 20)
         # Najstarijih 5 je odbačeno (0..4), ostale su 5..24
-        self.assertEqual(pending[0]["action"], "action_5")
-        self.assertEqual(pending[-1]["action"], "action_24")
+        self.assertEqual(pending[0]["params"]["index"], 5)
+        self.assertEqual(pending[-1]["params"]["index"], 24)
 
     def test_04_fleet_store_clear_commands(self):
         """Provera pražnjenja reda preko clear_commands."""
         fs = FleetStore()
-        fs.enqueue_command("DEV-CLEAR", "action_a")
-        fs.enqueue_command("DEV-CLEAR", "action_b")
+        fs.enqueue_command("DEV-CLEAR", "skip_step")
+        fs.enqueue_command("DEV-CLEAR", "cancel")
         self.assertEqual(len(fs.get_pending_commands("DEV-CLEAR")), 2)
 
         fs.clear_commands("DEV-CLEAR")
@@ -252,8 +253,8 @@ class TestRemoteCommands(unittest.TestCase):
         """Provera da klijent kroz heartbeat preuzima više komandi u FIFO redosledu."""
         device_id = "RIG-MULTI-03"
 
-        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "action_first"})
-        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "action_second"})
+        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "skip_step"})
+        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "re_resolve_drivers"})
 
         hb_payload = {"computer_name": device_id}
         status, hb_resp = self._http_request("POST", "/api/heartbeat", hb_payload)
@@ -261,8 +262,8 @@ class TestRemoteCommands(unittest.TestCase):
 
         cmds = hb_resp.get("pending_commands", [])
         self.assertEqual(len(cmds), 2)
-        self.assertEqual(cmds[0]["action"], "action_first")
-        self.assertEqual(cmds[1]["action"], "action_second")
+        self.assertEqual(cmds[0]["action"], "skip_step")
+        self.assertEqual(cmds[1]["action"], "re_resolve_drivers")
 
     # =========================================================================
     # 3. Validacija i zaštita od nevalidnih payload-a (HTTP 400)
@@ -339,7 +340,7 @@ class TestRemoteCommands(unittest.TestCase):
         def _send_device_stream(dev_id: str):
             for s in range(cmds_per_device):
                 payload = {
-                    "action": f"action_seq_{s}",
+                    "action": "skip_step",
                     "params": {"device": dev_id, "sequence": s}
                 }
                 status, resp = self._http_request("POST", f"/api/devices/{dev_id}/command", payload)
@@ -368,7 +369,7 @@ class TestRemoteCommands(unittest.TestCase):
             # Provera da su sve komande striktno za ovaj uređaj i u FIFO redosledu
             for idx, cmd in enumerate(commands):
                 self.assertEqual(cmd["device_id"], dev)
-                self.assertEqual(cmd["action"], f"action_seq_{idx}")
+                self.assertEqual(cmd["action"], "skip_step")
                 self.assertEqual(cmd["params"]["sequence"], idx)
                 self.assertEqual(cmd["params"]["device"], dev)
 
@@ -399,7 +400,7 @@ class TestRemoteCommands(unittest.TestCase):
         received_lock = threading.Lock()
 
         def _producer(seq: int):
-            payload = {"action": f"stress_action_{seq}", "params": {"n": seq}}
+            payload = {"action": "re_resolve_drivers", "params": {"n": seq}}
             status, resp = self._http_request("POST", f"/api/devices/{device_id}/command", payload)
             if status == 200:
                 cid = resp["command"]["command_id"]
@@ -442,11 +443,11 @@ class TestRemoteCommands(unittest.TestCase):
 
     def test_15_action_validation_supported_and_unknown_actions(self):
         """
-        Validacija tipova akcija:
-        - Podržane akcije: reboot_uefi, reboot_pxe, cancel, abort.
-        - Nepoznate/prilagođene akcije (prosledjuju se transparentno bez pada servera).
-        - Sanitizacija praznog prostora (whitespace trim).
-        - Opcioni params (null/None se konvertuje u prazan rečnik {}).
+        IMP-102 stroga validacija tipova akcija protiv allowliste:
+        - Podržane akcije: unlock_driver_gate, retry_phase, jump_to_phase, re_resolve_drivers,
+          reboot_and_resume, apply_payload_update, skip_step, cancel, abort, reboot_pxe, reboot_uefi.
+        - Nepoznate ili arbitrarne shell/PS komande strogo se odbijaju sa HTTP 400.
+        - Sanitizacija praznog prostora (whitespace trim) i None params -> {}.
         """
         device_id = "DEV-ACTION-TEST"
 
@@ -455,7 +456,7 @@ class TestRemoteCommands(unittest.TestCase):
             ("reboot_pxe", {"network_interface": "eth0"}, "reboot_pxe", {"network_interface": "eth0"}),
             ("cancel", {"task": "chkdsk"}, "cancel", {"task": "chkdsk"}),
             ("abort", {}, "abort", {}),
-            ("custom_telemetry_probe", {"interval": 5}, "custom_telemetry_probe", {"interval": 5}),
+            ("unlock_driver_gate", {"reason": "serviser_test"}, "unlock_driver_gate", {"reason": "serviser_test"}),
             ("  reboot_uefi  ", None, "reboot_uefi", {}),  # trim + None params
         ]
 
@@ -472,6 +473,16 @@ class TestRemoteCommands(unittest.TestCase):
             cmd = resp.get("command", {})
             self.assertEqual(cmd.get("action"), exp_action)
             self.assertEqual(cmd.get("params"), exp_params)
+
+        # Nepoznate i arbitrarne shell/PS akcije moraju biti strogo odbijene (HTTP 400)
+        for bad_action in ("custom_telemetry_probe", "Invoke-Expression calc", "powershell -c dir", "cmd /c whoami"):
+            bad_status, bad_resp = self._http_request(
+                "POST",
+                f"/api/devices/{device_id}/command",
+                {"action": bad_action, "params": {}},
+            )
+            self.assertEqual(bad_status, 400, f"Akcija '{bad_action}' morala je biti odbijena sa 400")
+            self.assertIn("error", bad_resp)
 
         # Provera da klijent kroz heartbeat preuzima sve akcije tačno u redosledu slanja
         status, hb_resp = self._http_request("POST", "/api/heartbeat", {"computer_name": device_id})
@@ -493,7 +504,7 @@ class TestRemoteCommands(unittest.TestCase):
         device_id = "DEV-OVERFLOW-HTTP"
 
         for i in range(28):
-            payload = {"action": f"cmd_{i}", "params": {"index": i}}
+            payload = {"action": "skip_step", "params": {"index": i}}
             status, resp = self._http_request("POST", f"/api/devices/{device_id}/command", payload)
             self.assertEqual(status, 200)
 
@@ -503,9 +514,9 @@ class TestRemoteCommands(unittest.TestCase):
         cmds = get_resp.get("commands", [])
         self.assertEqual(len(cmds), 20)
         # Odbaceno 0..7, ostalo 8..27
-        self.assertEqual(cmds[0]["action"], "cmd_8")
+        self.assertEqual(cmds[0]["action"], "skip_step")
         self.assertEqual(cmds[0]["params"]["index"], 8)
-        self.assertEqual(cmds[-1]["action"], "cmd_27")
+        self.assertEqual(cmds[-1]["action"], "skip_step")
         self.assertEqual(cmds[-1]["params"]["index"], 27)
 
         # Klijentski heartbeat mora primiti tačno ovih 20 komandi
@@ -513,8 +524,8 @@ class TestRemoteCommands(unittest.TestCase):
         self.assertEqual(status, 200)
         hb_cmds = hb_resp.get("pending_commands", [])
         self.assertEqual(len(hb_cmds), 20)
-        self.assertEqual(hb_cmds[0]["action"], "cmd_8")
-        self.assertEqual(hb_cmds[-1]["action"], "cmd_27")
+        self.assertEqual(hb_cmds[0]["params"]["index"], 8)
+        self.assertEqual(hb_cmds[-1]["params"]["index"], 27)
 
         # Sledeći heartbeat mora biti prazan
         status, hb_resp_2 = self._http_request("POST", "/api/heartbeat", {"computer_name": device_id})
@@ -570,14 +581,14 @@ class TestRemoteCommands(unittest.TestCase):
         dok tek POST /api/heartbeat vrši pražnjenje.
         """
         device_id = "DEV-IDEMPOTENT"
-        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "test_idem"})
+        self._http_request("POST", f"/api/devices/{device_id}/command", {"action": "skip_step"})
 
         # Pozovi GET 3 puta zaredom
         for _ in range(3):
             status, get_resp = self._http_request("GET", f"/api/devices/{device_id}/commands")
             self.assertEqual(status, 200)
             self.assertEqual(len(get_resp.get("commands", [])), 1)
-            self.assertEqual(get_resp["commands"][0]["action"], "test_idem")
+            self.assertEqual(get_resp["commands"][0]["action"], "skip_step")
 
         # Tek heartbeat vrši pražnjenje
         status, hb_resp = self._http_request("POST", "/api/heartbeat", {"computer_name": device_id})

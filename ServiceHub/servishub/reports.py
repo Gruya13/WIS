@@ -11,11 +11,332 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from servishub.drivers.cache import sanitize_id
 
 _ENOSPC_LOG_LOCK = threading.Lock()
 _LAST_ENOSPC_LOG_TS = 0.0
+
+IMAGE_TYPES = frozenset({"preinstalled", "lean"})
+
+AUTOPILOT_CANONICAL_FIELDS = (
+    "matrix_code",
+    "status_level",
+    "binary_verdict",
+    "is_locked",
+    "confirmed_free",
+    "tenant_domain",
+    "tenant_id",
+    "assigned_device_name",
+    "query_mode",
+    "has_local_traces",
+    "source",
+)
+
+_AUTOPILOT_LOCKED_MATRIX_CODES = frozenset({
+    "LOCKED_TENANT",
+    "HIDDEN_LOCK",
+    "AUTOPILOT_LOCKED",
+    "WINPE_PREFORMAT_LOCKED",
+    "OOBE_ZTD_LOCKED",
+})
+
+_AUTOPILOT_UNVERIFIED_PREFIXES = (
+    "UNVERIFIED",
+    "OFFLINE",
+    "UNKNOWN",
+    "ERROR",
+    "TIMEOUT",
+    "SKIPPED",
+    "NOT_CHECKED",
+    "NIJE_PROVERENO",
+)
+
+
+def normalize_image_type(value) -> str:
+    """Normalizuje tip WIM slike u kanonske vrednosti 'preinstalled' ili 'lean' (podrazumevano 'lean')."""
+    if value is None or isinstance(value, bool):
+        return "lean"
+    norm = str(value).strip().lower()
+    if norm in ("preinstalled", "golden", "heavy", "heavy_only", "golden_preinstalled"):
+        return "preinstalled"
+    return "lean"
+
+
+def normalize_wim_version(value) -> str:
+    """Normalizuje verziju WIM slike (string do 128 znakova ili 'unknown')."""
+    if value is None or isinstance(value, bool):
+        return "unknown"
+    s = str(value).strip()
+    if not s or s.lower() in ("none", "null", "n/a", "na", "nepoznato"):
+        return "unknown"
+    return s[:128]
+
+
+def extract_image_profile(data: dict) -> tuple[str, str, bool]:
+    """
+    Izdvaja (image_type, wim_version, has_explicit_image_type) iz payload-a ili izveštaja
+    (top-level, run_meta, image_profile, benchmark, latest_report).
+    """
+    if not isinstance(data, dict):
+        return ("lean", "unknown", False)
+
+    sources = [data]
+    for nested_key in ("run_meta", "image_profile", "benchmark", "latest_report"):
+        nested_obj = data.get(nested_key)
+        if isinstance(nested_obj, dict):
+            sources.append(nested_obj)
+            if nested_key == "latest_report":
+                for sub_key in ("run_meta", "image_profile", "benchmark"):
+                    sub_obj = nested_obj.get(sub_key)
+                    if isinstance(sub_obj, dict):
+                        sources.append(sub_obj)
+
+    found_type = None
+    found_ver = None
+    for src in sources:
+        if found_type is None:
+            raw_t = src.get("image_type")
+            if raw_t is not None and not isinstance(raw_t, bool) and str(raw_t).strip():
+                found_type = normalize_image_type(raw_t)
+        if found_ver is None:
+            raw_v = src.get("wim_version")
+            if raw_v is not None and not isinstance(raw_v, bool):
+                nv = normalize_wim_version(raw_v)
+                if nv != "unknown":
+                    found_ver = nv
+
+    return (found_type or "lean", found_ver or "unknown", found_type is not None)
+
+
+def merge_image_profile(existing_data: dict, incoming_data: dict) -> tuple[str, str]:
+    """
+    Spaja image_type i wim_version tako da prazan/implicitni 'lean' ili 'unknown'
+    ne pregazi već poznati 'preinstalled' profil ili konkretnu verziju WIM-a.
+    """
+    ex_type, ex_ver, ex_explicit = extract_image_profile(existing_data if isinstance(existing_data, dict) else {})
+    in_type, in_ver, in_explicit = extract_image_profile(incoming_data if isinstance(incoming_data, dict) else {})
+
+    if in_explicit:
+        # Eksplicitni 'preinstalled' uvek pobeđuje; eksplicitni 'lean' ne gazi 'preinstalled' osim ako ex nije eksplicitan
+        if in_type == "preinstalled":
+            final_type = "preinstalled"
+        elif ex_explicit and ex_type == "preinstalled":
+            final_type = "preinstalled"
+        else:
+            final_type = in_type
+    elif ex_explicit:
+        final_type = ex_type
+    else:
+        final_type = "lean"
+
+    final_ver = in_ver if in_ver != "unknown" else ex_ver
+    return (final_type, final_ver)
+
+
+def _ap_clean_str(val, max_len: int = 128) -> str:
+    if val is None or isinstance(val, bool):
+        return ""
+    s = str(val).strip()
+    if s.lower() in ("none", "null", "n/a", "na", "nepoznato"):
+        return ""
+    return s[:max_len]
+
+
+def has_canonical_autopilot_fields(ap) -> bool:
+    """Proverava da li autopilot rečnik sadrži bilo koje v3.5.5 kanonsko polje."""
+    if not isinstance(ap, dict) or not ap:
+        return False
+    return any(k in ap for k in AUTOPILOT_CANONICAL_FIELDS) or ("is_registered" in ap)
+
+
+def normalize_autopilot_payload(raw_ap, default_source: str = "") -> dict:
+    """
+    Normalizuje dolazni autopilot objekat u kanonski IMP-114 format:
+      matrix_code, status_level (CRITICAL|OK|WARNING),
+      binary_verdict (IMA_AUTOPILOT|NEMA_AUTOPILOT|NIJE_PROVERENO),
+      is_locked, confirmed_free, tenant_domain, tenant_id,
+      assigned_device_name, query_mode, has_local_traces, source.
+    Strogo zabranjuje lažno zeleno (OK/NEMA_AUTOPILOT) bez eksplicitnog confirmed_free=True.
+    """
+    src = raw_ap if isinstance(raw_ap, dict) else {}
+
+    raw_matrix = _ap_clean_str(src.get("matrix_code"), 64).upper()
+    raw_verdict = _ap_clean_str(src.get("binary_verdict"), 32).upper().replace(" ", "_")
+    raw_status = _ap_clean_str(src.get("status"), 64)
+    raw_status_up = raw_status.upper()
+
+    parsed_locked = _parse_optional_bool(src.get("is_locked"))
+    parsed_registered = _parse_optional_bool(src.get("is_registered"))
+    parsed_confirmed_free = _parse_optional_bool(src.get("confirmed_free"))
+    parsed_local_traces = _parse_optional_bool(src.get("has_local_traces"))
+
+    tenant_domain = _ap_clean_str(src.get("tenant_domain") or src.get("tenant"), 256)
+    tenant_id = _ap_clean_str(src.get("tenant_id"), 128)
+    assigned_device_name = _ap_clean_str(src.get("assigned_device_name"), 128)
+    query_mode = _ap_clean_str(src.get("query_mode"), 64) or "unknown"
+    source_val = _ap_clean_str(src.get("source"), 64) or _ap_clean_str(default_source, 64) or "unknown"
+
+    is_locked = bool(
+        parsed_locked is True
+        or parsed_registered is True
+        or raw_verdict == "IMA_AUTOPILOT"
+        or raw_matrix in _AUTOPILOT_LOCKED_MATRIX_CODES
+        or raw_status_up in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT", "LOCKED_TENANT", "HIDDEN_LOCK")
+    )
+
+    is_explicit_unverified = bool(
+        raw_verdict == "NIJE_PROVERENO"
+        or any(raw_matrix.startswith(pref) for pref in _AUTOPILOT_UNVERIFIED_PREFIXES)
+        or raw_status_up in ("UNVERIFIED", "OFFLINE", "NIJE_PROVERENO", "NEPOZNATO", "AADMDM")
+    )
+
+    if is_locked:
+        confirmed_free = False
+        binary_verdict = "IMA_AUTOPILOT"
+        status_level = "CRITICAL"
+        matrix_code = raw_matrix or "LOCKED_TENANT"
+    elif (
+        not is_explicit_unverified
+        and parsed_confirmed_free is True
+        and parsed_registered is not True
+    ):
+        confirmed_free = True
+        binary_verdict = "NEMA_AUTOPILOT"
+        status_level = "OK"
+        matrix_code = raw_matrix or "CONFIRMED_CLEAN"
+    else:
+        confirmed_free = False
+        binary_verdict = "NIJE_PROVERENO"
+        status_level = "WARNING"
+        if raw_matrix:
+            matrix_code = raw_matrix
+        elif parsed_local_traces is True:
+            matrix_code = "UNVERIFIED_LOCAL_TRACES"
+        else:
+            matrix_code = "UNVERIFIED_CLEAN"
+
+    has_local_traces = bool(
+        parsed_local_traces is True
+        or (is_locked and source_val in ("winpe_preformat", "local_forensics"))
+    )
+
+    out = {
+        "matrix_code": matrix_code,
+        "status_level": status_level,
+        "binary_verdict": binary_verdict,
+        "is_locked": is_locked,
+        "confirmed_free": confirmed_free,
+        "tenant_domain": tenant_domain,
+        "tenant_id": tenant_id,
+        "assigned_device_name": assigned_device_name,
+        "query_mode": query_mode,
+        "has_local_traces": has_local_traces,
+        "source": source_val,
+    }
+    if isinstance(src.get("evidence_sources"), list):
+        clean_ev = [_ap_clean_str(x, 64) for x in src["evidence_sources"] if _ap_clean_str(x, 64)]
+        if clean_ev:
+            out["evidence_sources"] = list(dict.fromkeys(clean_ev))
+    return out
+
+
+def _autopilot_strength(ap: dict) -> int:
+    """Rangira snagu Autopilot dokaza: 3=is_locked (nepregazivo), 2=confirmed_free, 1=unverified, 0=prazno."""
+    if not isinstance(ap, dict) or not ap:
+        return 0
+    norm = normalize_autopilot_payload(ap)
+    if norm["is_locked"] or norm["binary_verdict"] == "IMA_AUTOPILOT":
+        return 3
+    if norm["confirmed_free"] and norm["binary_verdict"] == "NEMA_AUTOPILOT":
+        return 2
+    return 1
+
+
+def merge_autopilot_status(existing_ap, incoming_ap, default_source: str = "") -> dict:
+    """
+    IMP-114 zaštita integriteta pri spajanju postojećeg i dolaznog Autopilot zapisa:
+    - Jednom potvrđen `is_locked=True` (npr. iz winpe_preformat ili oobe_ztd) NIKADA ne sme
+      biti pregažen praznim, UNVERIFIED, NIJE_PROVERENO niti ne-zaključanim kasnijim heartbeat-om.
+    - Potvrđeno slobodan (`confirmed_free=True`, NEMA_AUTOPILOT) ne sme biti degradiran
+      praznim ili UNVERIFIED heartbeat-om, ali ga jači `is_locked=True` dokaz uvek nadjačava.
+    - Čuva kompatibilnost sa nasleđenim minimalnim dict-om (npr. {'status': 'OK'}) ako nema novog zapisa.
+    """
+    ex = existing_ap if isinstance(existing_ap, dict) and existing_ap else {}
+    inc = incoming_ap if isinstance(incoming_ap, dict) and incoming_ap else {}
+
+    if not ex and not inc:
+        return {}
+    if ex and not inc:
+        if has_canonical_autopilot_fields(ex):
+            return normalize_autopilot_payload(ex)
+        return dict(ex)
+    if inc and not ex:
+        if has_canonical_autopilot_fields(inc) or _ap_clean_str(inc.get("status"), 64).upper() in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT"):
+            return normalize_autopilot_payload(inc, default_source=default_source)
+        return dict(inc)
+
+    # Oba postoje: ako nijedan nema kanonska polja i nije zaključan, zadrži jednostavni merge radi BC
+    ex_canon = has_canonical_autopilot_fields(ex) or _ap_clean_str(ex.get("status"), 64).upper() in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT")
+    inc_canon = has_canonical_autopilot_fields(inc) or _ap_clean_str(inc.get("status"), 64).upper() in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT")
+    if not ex_canon and not inc_canon:
+        merged_legacy = dict(ex)
+        for k, v in inc.items():
+            if v not in (None, ""):
+                merged_legacy[k] = v
+        return merged_legacy
+
+    norm_ex = normalize_autopilot_payload(ex)
+    norm_inc = normalize_autopilot_payload(inc, default_source=default_source)
+    ex_rank = _autopilot_strength(norm_ex)
+    inc_rank = _autopilot_strength(norm_inc)
+
+    if ex_rank == 3:
+        # Postojeći is_locked=True je NEPREGAZIV! Dopuni samo nedostajuće forenzičke detalje.
+        winner = dict(norm_ex)
+        for fld in ("tenant_domain", "tenant_id", "assigned_device_name"):
+            if not winner.get(fld) and norm_inc.get(fld):
+                winner[fld] = norm_inc[fld]
+        winner["has_local_traces"] = bool(winner.get("has_local_traces") or norm_inc.get("has_local_traces"))
+        if inc_rank == 3:
+            # Oba potvrđuju zaključanost: ako novi ima bogatiji query_mode/source, evidentiraj oba izvora
+            ev_sources = list(winner.get("evidence_sources") or [])
+            for src_cand in (winner.get("source"), norm_inc.get("source")):
+                if src_cand and src_cand != "unknown" and src_cand not in ev_sources:
+                    ev_sources.append(src_cand)
+            if len(ev_sources) > 1:
+                winner["evidence_sources"] = ev_sources
+            if winner.get("query_mode") in ("", "unknown") and norm_inc.get("query_mode") not in ("", "unknown"):
+                winner["query_mode"] = norm_inc["query_mode"]
+        return winner
+
+    if inc_rank > ex_rank:
+        winner = dict(norm_inc)
+        for fld in ("tenant_domain", "tenant_id", "assigned_device_name"):
+            if not winner.get(fld) and norm_ex.get(fld):
+                winner[fld] = norm_ex[fld]
+        winner["has_local_traces"] = bool(winner.get("has_local_traces") or norm_ex.get("has_local_traces"))
+        return winner
+
+    if ex_rank > inc_rank:
+        winner = dict(norm_ex)
+        for fld in ("tenant_domain", "tenant_id", "assigned_device_name"):
+            if not winner.get(fld) and norm_inc.get(fld):
+                winner[fld] = norm_inc[fld]
+        winner["has_local_traces"] = bool(winner.get("has_local_traces") or norm_inc.get("has_local_traces"))
+        return winner
+
+    # Isti rang (npr. oba confirmed_free ili oba unverified): preferiraj svežiji uz čuvanje detalja
+    winner = dict(norm_inc)
+    for fld in ("tenant_domain", "tenant_id", "assigned_device_name"):
+        if not winner.get(fld) and norm_ex.get(fld):
+            winner[fld] = norm_ex[fld]
+    if winner.get("query_mode") in ("", "unknown") and norm_ex.get("query_mode") not in ("", "unknown"):
+        winner["query_mode"] = norm_ex["query_mode"]
+    if winner.get("source") in ("", "unknown") and norm_ex.get("source") not in ("", "unknown"):
+        winner["source"] = norm_ex["source"]
+    winner["has_local_traces"] = bool(winner.get("has_local_traces") or norm_ex.get("has_local_traces"))
+    return winner
 
 
 def is_enospc_error(err: Exception) -> bool:
@@ -464,6 +785,17 @@ def compute_handover_status(rec: dict) -> str:
     sec_hardening = _pick("security_hardening_verified")
     handover_ready = _pick("handover_ready")
 
+    ap_raw = _pick("autopilot")
+    ap_locked = False
+    ap_unverified = False
+    if isinstance(ap_raw, dict) and ap_raw:
+        if has_canonical_autopilot_fields(ap_raw) or _ap_clean_str(ap_raw.get("status"), 64).upper() in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT"):
+            ap_norm = normalize_autopilot_payload(ap_raw)
+            if ap_norm["is_locked"] or ap_norm["binary_verdict"] == "IMA_AUTOPILOT":
+                ap_locked = True
+            elif ap_norm["binary_verdict"] == "NIJE_PROVERENO":
+                ap_unverified = True
+
     if (
         status_raw in ("ERROR", "FAILED", "CRITICAL", "CRITICAL_ISSUE", "KVAR_POTVRDJEN")
         or "KVAR" in status_raw
@@ -485,6 +817,7 @@ def compute_handover_status(rec: dict) -> str:
         or handover_ready is False
         or has_app_or_rec_errors
         or is_missing_terminal_report
+        or ap_locked
     ):
         return "NEEDS_SERVICE"
 
@@ -499,6 +832,7 @@ def compute_handover_status(rec: dict) -> str:
         diag_st in ("WARN", "SENSOR_UNAVAILABLE", "ERROR", "CANCELLED")
         or hwtest_overall == "PASS_WITH_SKIP"
         or has_notes
+        or ap_unverified
     ):
         return "READY_WITH_NOTE"
 
@@ -873,7 +1207,7 @@ def merge_report_payloads(existing_rep: dict, incoming_rep: dict) -> dict:
     new_dur = _pick_dur(inc)
 
     for k, v in inc.items():
-        if k in ("duration_seconds", "duration_formatted", "duration", "apps", "hw", "hardware", "is_partial_hwtest", "report_stage"):
+        if k in ("duration_seconds", "duration_formatted", "duration", "apps", "hw", "hardware", "autopilot", "image_type", "wim_version", "is_partial_hwtest", "report_stage"):
             continue
         if isinstance(v, dict):
             old_v = merged.get(k)
@@ -912,6 +1246,19 @@ def merge_report_payloads(existing_rep: dict, incoming_rep: dict) -> dict:
 
     # Apps zaštita
     merged["apps"] = merge_app_statuses(merged.get("apps"), inc.get("apps"))
+
+    # IMP-114 Autopilot zaštita integriteta (jednom potvrđen is_locked=True se nikada ne gazi)
+    merged_ap = merge_autopilot_status(merged.get("autopilot"), inc.get("autopilot"))
+    if merged_ap:
+        merged["autopilot"] = merged_ap
+
+    # IMP-112 Profil slike (image_type / wim_version)
+    ex_img_t, ex_wim_v, ex_img_exp = extract_image_profile(merged)
+    in_img_t, in_wim_v, in_img_exp = extract_image_profile(inc)
+    if ex_img_exp or in_img_exp or ex_wim_v != "unknown" or in_wim_v != "unknown" or "image_type" in merged or "image_type" in inc:
+        img_type, wim_ver = merge_image_profile(merged, inc)
+        merged["image_type"] = img_type
+        merged["wim_version"] = wim_ver
 
     # Hardware zaštita (spoji i hw i hardware blokove)
     old_hw = merge_hw_report_dicts(
@@ -965,6 +1312,8 @@ def generate_markdown_report(report_data: dict) -> str:
     if (diagnostics['manual_check_required'] or handover_status != "READY") and status_icon == '✅':
         status_icon = '⚠️' if handover_status != "FAILED" else '❌'
 
+    img_type, wim_ver, has_explicit_img = extract_image_profile(report_data)
+
     lines = [
         f"# {status_icon} WIS Service | Završni Servisni Izveštaj",
         "",
@@ -978,12 +1327,53 @@ def generate_markdown_report(report_data: dict) -> str:
         f"- **Status Predaje (Handover):** `{handover_status}`",
         f"- **Ukupno Trajanje:** {dur_str} ({dur_sec} s)",
         f"- **Vreme Izveštaja:** {timestamp}",
+    ]
+    if has_explicit_img or wim_ver != "unknown":
+        lines.append(f"- **Tip WIM Slike:** `{img_type}` (WIM verzija: `{wim_ver}`)")
+
+    lines.extend([
         "",
         "## Dijagnostika hlađenja",
         f"- **Rezultat:** {diagnostics['diagnostics_status']}",
         f"- **Automatski provereno:** {'Da' if diagnostics['cooling_verified'] else 'Ne'}",
         f"- **Ručna provera potrebna:** {'Da' if diagnostics['manual_check_required'] else 'Ne'}",
         diagnostics['diagnostics_summary'],
+    ])
+
+    raw_ap = report_data.get("autopilot")
+    if isinstance(raw_ap, dict) and raw_ap:
+        ap_norm = normalize_autopilot_payload(raw_ap)
+        if ap_norm["binary_verdict"] == "IMA_AUTOPILOT" or ap_norm["is_locked"]:
+            ap_badge = "🔴 IMA AUTOPILOT (ZAKLJUČAN)"
+        elif ap_norm["binary_verdict"] == "NEMA_AUTOPILOT" and ap_norm["confirmed_free"]:
+            ap_badge = "🟢 NEMA AUTOPILOT (Potvrđeno slobodan)"
+        else:
+            ap_badge = "⚠️ NIJE PROVERENO (Potrebna mrežna OOBE/ZTD provera)"
+
+        lines.extend([
+            "",
+            "---",
+            "",
+            "## 🛡️ Windows Autopilot Status",
+            "",
+            f"- **Binarni Ishod:** {ap_badge}",
+            f"- **Verdict:** `{ap_norm['binary_verdict']}`",
+            f"- **Nivo Statusa:** `{ap_norm['status_level']}`",
+            f"- **Matrični Kod:** `{ap_norm['matrix_code']}`",
+            f"- **Zaključan (is_locked):** {'Da' if ap_norm['is_locked'] else 'Ne'}",
+            f"- **Potvrđeno Slobodan (confirmed_free):** {'Da' if ap_norm['confirmed_free'] else 'Ne'}",
+            f"- **Lokalni Tragovi (has_local_traces):** {'Da' if ap_norm['has_local_traces'] else 'Ne'}",
+            f"- **Režim Provere (query_mode):** `{ap_norm['query_mode']}`",
+            f"- **Izvor Nalaza (source):** `{ap_norm['source']}`",
+        ])
+        if ap_norm.get("tenant_domain"):
+            lines.append(f"- **Tenant Domen:** `{ap_norm['tenant_domain']}`")
+        if ap_norm.get("tenant_id"):
+            lines.append(f"- **Tenant ID:** `{ap_norm['tenant_id']}`")
+        if ap_norm.get("assigned_device_name"):
+            lines.append(f"- **Dodeljeni Naziv Uređaja:** `{ap_norm['assigned_device_name']}`")
+
+    lines.extend([
         "",
         "---",
         "",
@@ -991,7 +1381,7 @@ def generate_markdown_report(report_data: dict) -> str:
         "",
         "| Aplikacija | Status |",
         "| :--- | :--- |",
-    ]
+    ])
 
     apps = report_data.get("apps", {})
     if isinstance(apps, dict) and apps:
@@ -1229,6 +1619,7 @@ def save_device_report(
     payload: dict,
     reports_dir: str,
     dedup_window_sec: int = 1800,
+    out_merged: dict = None,
 ) -> tuple[str, str, str, str]:
     """
     Arhivira JSON i Markdown servisni karton na disk.
@@ -1388,6 +1779,17 @@ def save_device_report(
     if isinstance(matched_old_data, dict) and matched_old_data:
         sanitized_payload = merge_report_payloads(matched_old_data, sanitized_payload)
 
+    # IMP-112: Kanonski image_type ("preinstalled" | "lean", default "lean") i wim_version
+    img_type, wim_ver, _ = extract_image_profile(sanitized_payload)
+    sanitized_payload["image_type"] = img_type
+    if wim_ver != "unknown" or "wim_version" in sanitized_payload:
+        sanitized_payload["wim_version"] = wim_ver
+
+    # IMP-114: Normalizuj kanonski autopilot objekat ako postoji
+    if isinstance(sanitized_payload.get("autopilot"), dict) and sanitized_payload["autopilot"]:
+        if has_canonical_autopilot_fields(sanitized_payload["autopilot"]) or _ap_clean_str(sanitized_payload["autopilot"].get("status"), 64).upper() in ("AUTOPILOT", "LOCKED", "IMA_AUTOPILOT"):
+            sanitized_payload["autopilot"] = normalize_autopilot_payload(sanitized_payload["autopilot"], default_source="report")
+
     if isinstance(sanitized_payload.get("errors"), list) and sanitized_payload["errors"]:
         sanitized_payload["errors"] = _filter_stale_session_errors(
             sanitized_payload, {}, sanitized_payload["errors"]
@@ -1402,6 +1804,10 @@ def save_device_report(
 
     md_content = generate_markdown_report(sanitized_payload)
     _atomic_write_text(md_filepath, md_content)
+
+    if isinstance(out_merged, dict):
+        out_merged.clear()
+        out_merged.update(sanitized_payload)
 
     if promoted_from_old:
         for old_fp in promoted_from_old:

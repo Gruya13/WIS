@@ -14,7 +14,7 @@ import uuid
 import shutil
 import threading
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from servishub.drivers.cache import sanitize_id
 from servishub.reports import (
     diagnostics_contract,
@@ -26,7 +26,148 @@ from servishub.reports import (
     log_enospc_rate_limited,
     merge_app_statuses,
     merge_report_payloads,
+    extract_image_profile,
+    merge_image_profile,
+    normalize_autopilot_payload,
+    merge_autopilot_status,
+    _parse_semver_tuple,
 )
+
+# IMP-102: Stroga serverska allowlista dozvoljenih daljinskih akcija (bez proizvoljnog shell/PS izvršavanja)
+ALLOWED_REMOTE_COMMAND_ACTIONS = frozenset({
+    "unlock_driver_gate",
+    "retry_phase",
+    "jump_to_phase",
+    "re_resolve_drivers",
+    "reboot_and_resume",
+    "apply_payload_update",
+    "skip_step",
+    "cancel",
+    "abort",
+    "reboot_pxe",
+    "reboot_uefi",
+})
+
+_MAX_COMMAND_PARAMS_BYTES = 8192
+_ALLOWED_HOTFIX_MODES = frozenset({"scripts_only", "full_restart"})
+
+
+def _utc_iso_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _format_iso_utc(value) -> str:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            pass
+    return _utc_iso_now()
+
+
+def validate_remote_command(action, params=None) -> tuple[str, dict]:
+    """
+    Strogo validira daljinsku komandu protiv serverske allowliste (IMP-102).
+    Odbija svaku nepoznatu akciju ili arbitrarnu shell/PowerShell komandu podizanjem ValueError.
+    """
+    if not action or not isinstance(action, str) or not action.strip():
+        raise ValueError("Polje 'action' je obavezno i mora biti neprazan string.")
+
+    clean_action = action.strip().lower()
+    if clean_action not in ALLOWED_REMOTE_COMMAND_ACTIONS:
+        raise ValueError(
+            f"Nepoznata ili nedozvoljena daljinska akcija '{action.strip()}'. "
+            f"Dozvoljene akcije: {', '.join(sorted(ALLOWED_REMOTE_COMMAND_ACTIONS))}."
+        )
+
+    if params is None:
+        clean_params = {}
+    elif isinstance(params, dict):
+        clean_params = dict(params)
+    else:
+        raise ValueError("Polje 'params' mora biti JSON objekat ako je navedeno.")
+
+    try:
+        serialized = json.dumps(clean_params, ensure_ascii=False)
+    except (TypeError, ValueError) as ex:
+        raise ValueError(f"Polje 'params' nije validan JSON objekat: {ex}")
+    if len(serialized.encode("utf-8")) > _MAX_COMMAND_PARAMS_BYTES:
+        raise ValueError(f"Polje 'params' prelazi maksimalnu dozvoljenu veličinu ({_MAX_COMMAND_PARAMS_BYTES} B).")
+
+    if clean_action in ("retry_phase", "jump_to_phase"):
+        if "phase" in clean_params and clean_params["phase"] is not None:
+            raw_p = clean_params["phase"]
+            if isinstance(raw_p, bool):
+                raise ValueError("Parametar 'phase' mora biti ceo broj između 1 i 6.")
+            try:
+                p_int = int(raw_p) if isinstance(raw_p, int) or (isinstance(raw_p, str) and raw_p.strip().isdigit()) else -1
+            except (ValueError, TypeError):
+                p_int = -1
+            if p_int < 1 or p_int > 6:
+                raise ValueError("Parametar 'phase' mora biti ceo broj između 1 i 6.")
+            clean_params["phase"] = p_int
+        if "clear_step_guard" in clean_params and not isinstance(clean_params["clear_step_guard"], bool):
+            raise ValueError("Parametar 'clear_step_guard' mora biti boolean.")
+
+    if clean_action == "apply_payload_update":
+        if "mode" in clean_params and clean_params["mode"] is not None:
+            mode_val = str(clean_params["mode"]).strip().lower()
+            if mode_val not in _ALLOWED_HOTFIX_MODES:
+                raise ValueError(f"Parametar 'mode' za apply_payload_update mora biti 'scripts_only' ili 'full_restart'.")
+            clean_params["mode"] = mode_val
+        if "target_phase" in clean_params and clean_params["target_phase"] is not None:
+            raw_tp = clean_params["target_phase"]
+            if isinstance(raw_tp, bool):
+                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 1 i 6.")
+            try:
+                tp_int = int(raw_tp) if isinstance(raw_tp, int) or (isinstance(raw_tp, str) and raw_tp.strip().isdigit()) else -1
+            except (ValueError, TypeError):
+                tp_int = -1
+            if tp_int < 1 or tp_int > 6:
+                raise ValueError("Parametar 'target_phase' mora biti ceo broj između 1 i 6.")
+            clean_params["target_phase"] = tp_int
+
+    if clean_action == "unlock_driver_gate":
+        if "reason" in clean_params and clean_params["reason"] is not None:
+            if not isinstance(clean_params["reason"], str) or len(clean_params["reason"]) > 500:
+                raise ValueError("Parametar 'reason' za unlock_driver_gate mora biti string do 500 znakova.")
+
+    return clean_action, clean_params
+
+
+def normalize_command_record(raw_cmd, device_id: str = "") -> dict | None:
+    """
+    Standardizuje pending_commands zapis u kanonski objekat:
+      {"command_id": "cmd_<uuid>", "device_id": ..., "action": "<allowlist_action>", "params": {...}, "created_at": "<iso_utc>"}
+    uz povratnu kompatibilnost sa starim string/float formatom.
+    """
+    if isinstance(raw_cmd, str):
+        act = raw_cmd.strip().lower()
+        if act not in ALLOWED_REMOTE_COMMAND_ACTIONS:
+            return None
+        return {
+            "command_id": f"cmd_{uuid.uuid4()}",
+            "device_id": str(device_id or ""),
+            "action": act,
+            "params": {},
+            "created_at": _utc_iso_now(),
+        }
+    if not isinstance(raw_cmd, dict):
+        return None
+    act = str(raw_cmd.get("action") or "").strip().lower()
+    if act not in ALLOWED_REMOTE_COMMAND_ACTIONS:
+        return None
+    cmd_id = str(raw_cmd.get("command_id") or "").strip() or f"cmd_{uuid.uuid4()}"
+    params = dict(raw_cmd.get("params")) if isinstance(raw_cmd.get("params"), dict) else {}
+    return {
+        "command_id": cmd_id,
+        "device_id": str(raw_cmd.get("device_id") or device_id or ""),
+        "action": act,
+        "params": params,
+        "created_at": _format_iso_utc(raw_cmd.get("created_at")),
+    }
 
 
 _HW_PLACEHOLDER_VALUES = {
@@ -273,6 +414,7 @@ class FleetStore:
         # Thread-safe komandni red za daljinsko upravljanje (BIOS reboot, PXE, abort itd.)
         self.command_lock = threading.Lock()
         self.fleet_commands = {}      # device_id -> list of command dicts
+        self.command_history = {}     # device_id -> list of command ack dicts (IMP-102)
 
         # Brojač aktivnih SSE pretplatnika za zaštitu memorije i niti
         self._sse_lock = threading.Lock()
@@ -340,8 +482,25 @@ class FleetStore:
         dst = self.fleet_devices.setdefault(target_key, {})
         if not dst.get("started_at") and src.get("started_at"):
             dst["started_at"] = src["started_at"]
-        if not dst.get("autopilot") and isinstance(src.get("autopilot"), dict) and src["autopilot"]:
-            dst["autopilot"] = dict(src["autopilot"])
+        merged_ap = merge_autopilot_status(dst.get("autopilot"), src.get("autopilot"))
+        if merged_ap:
+            dst["autopilot"] = merged_ap
+        if any(k in src or k in dst for k in ("image_type", "wim_version", "run_meta", "image_profile")):
+            img_type, wim_ver = merge_image_profile(dst, src)
+            dst["image_type"] = img_type
+            if wim_ver != "unknown" or "wim_version" in dst or "wim_version" in src:
+                dst["wim_version"] = wim_ver
+        if isinstance(src.get("executed_commands"), list) and src["executed_commands"]:
+            dst_exec = list(dst.get("executed_commands") or [])
+            seen_cids = {str(x.get("command_id")) for x in dst_exec if isinstance(x, dict) and x.get("command_id")}
+            for item in src["executed_commands"]:
+                if isinstance(item, dict):
+                    cid = str(item.get("command_id") or "")
+                    if not cid or cid not in seen_cids:
+                        dst_exec.append(dict(item))
+                        if cid:
+                            seen_cids.add(cid)
+            dst["executed_commands"] = dst_exec[-50:]
         src_hw = src.get("hw") if isinstance(src.get("hw"), dict) else {}
         dst_hw = dst.get("hw") if isinstance(dst.get("hw"), dict) else {}
         merged_hw = merge_hw_dicts(src_hw, dst_hw)
@@ -676,6 +835,7 @@ class FleetStore:
                     if not dur_fmt or dur_fmt == "N/A":
                         dur_fmt = f"{dur_sec // 60}m {dur_sec % 60:02d}s"
 
+            img_type, wim_ver, _ = extract_image_profile(data)
             record = {
                 "computer_name": comp_name,
                 "device_id": data.get("device_id") or dev_id,
@@ -687,6 +847,8 @@ class FleetStore:
                 "worker_progress": 100,
                 "duration_formatted": dur_fmt,
                 "duration_seconds": dur_sec,
+                "image_type": img_type,
+                "wim_version": wim_ver,
                 "apps": data.get("apps", {}),
                 "system_summary": data.get("system_summary", {}),
                 "hw": hw_data,
@@ -1213,8 +1375,11 @@ class FleetStore:
         canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
         prev_host = str(payload.get("previous_hostname") or "").strip()
         install_sid = str(payload.get("install_session_id") or "").strip()
-        if "hw" in clean_update:
-            del clean_update["hw"]
+        incoming_autopilot = payload.get("autopilot") if isinstance(payload.get("autopilot"), dict) else None
+        incoming_executed_cmds = payload.get("executed_commands") if isinstance(payload.get("executed_commands"), list) else None
+        for reserved_k in ("hw", "autopilot", "executed_commands", "image_type", "wim_version"):
+            if reserved_k in clean_update:
+                del clean_update[reserved_k]
 
         with self.fleet_lock:
             dev_id = self._resolve_device_key_locked(comp_name, canonical_sn=canonical_sn, previous_hostname=prev_host)
@@ -1290,7 +1455,17 @@ class FleetStore:
                 clean_update["computer_name"] = existing_rec.get("computer_name") or dev_id
             existing_hw = existing_rec.get("hw") if isinstance(existing_rec.get("hw"), dict) else {}
             merged_hw = merge_hw_dicts(existing_hw, incoming_hw)
+            merged_img_type, merged_wim_ver = merge_image_profile(existing_rec, payload)
+            merged_ap = merge_autopilot_status(
+                existing_rec.get("autopilot"),
+                incoming_autopilot,
+                default_source="heartbeat",
+            )
             existing_rec.update(clean_update)
+            existing_rec["image_type"] = merged_img_type
+            existing_rec["wim_version"] = merged_wim_ver
+            if merged_ap:
+                existing_rec["autopilot"] = merged_ap
             if merged_hw:
                 existing_rec["hw"] = merged_hw
                 if is_placeholder_hw_value(existing_rec.get("serial_number")) and not is_placeholder_hw_value(merged_hw.get("serial")):
@@ -1310,6 +1485,24 @@ class FleetStore:
                     client_ip=client_ip,
                     previous_hostname=prev_host,
                 )
+
+        # IMP-102: Zabeleži potvrde izvršenih komandi poslate kroz heartbeat (van fleet_lock)
+        if incoming_executed_cmds:
+            for item in incoming_executed_cmds[:50]:
+                try:
+                    if isinstance(item, str) and item.strip():
+                        self.record_command_ack(dev_id, item.strip(), status="ok")
+                    elif isinstance(item, dict) and str(item.get("command_id") or "").strip():
+                        self.record_command_ack(
+                            dev_id,
+                            command_id=str(item.get("command_id")).strip(),
+                            action=str(item.get("action") or "").strip(),
+                            status=str(item.get("status") or "ok").strip(),
+                            detail=str(item.get("detail") or item.get("message") or "").strip(),
+                            applied_at=item.get("applied_at") or item.get("executed_at"),
+                        )
+                except ValueError:
+                    continue
 
         return dev_id
 
@@ -1389,6 +1582,7 @@ class FleetStore:
             mem_autopilot = {}
             mem_hwtest = None
             mem_benchmark = None
+            mem_img_ctx = {}
 
             for rec in related:
                 if not isinstance(rec, dict):
@@ -1398,10 +1592,18 @@ class FleetStore:
                 rep = rec.get("latest_report")
                 if isinstance(rep, dict):
                     merged_hw = merge_hw_dicts(merged_hw, extract_hw_from_payload(rep))
+                    if isinstance(rep.get("apps"), (dict, list)) and rep.get("apps"):
+                        mem_apps = merge_app_statuses(mem_apps, rep.get("apps"))
+                    if isinstance(rep.get("autopilot"), dict) and rep["autopilot"]:
+                        mem_autopilot = merge_autopilot_status(mem_autopilot, rep["autopilot"])
                     if mem_hwtest is None and isinstance(rep.get("hwtest"), dict) and rep.get("hwtest"):
                         mem_hwtest = rep.get("hwtest")
                     if mem_benchmark is None and isinstance(rep.get("benchmark"), dict) and rep.get("benchmark"):
                         mem_benchmark = rep.get("benchmark")
+                    r_img_t, r_wim_v, r_img_exp = extract_image_profile(rep)
+                    if r_img_exp or r_wim_v != "unknown":
+                        mt, mv = merge_image_profile(mem_img_ctx, rep)
+                        mem_img_ctx = {"image_type": mt, "wim_version": mv}
                 if is_placeholder_hw_value(mem_serial):
                     for s_cand in (rec.get("serial_number"), rec.get("serial"), rec_hw.get("serial")):
                         if not is_placeholder_hw_value(s_cand):
@@ -1409,14 +1611,18 @@ class FleetStore:
                             break
                 if is_placeholder_hw_value(mem_chassis) and not is_placeholder_hw_value(rec.get("chassis")):
                     mem_chassis = str(rec["chassis"]).strip()
-                if not mem_apps and isinstance(rec.get("apps"), dict) and rec["apps"]:
-                    mem_apps = dict(rec["apps"])
-                if not mem_autopilot and isinstance(rec.get("autopilot"), dict) and rec["autopilot"]:
-                    mem_autopilot = dict(rec["autopilot"])
+                if isinstance(rec.get("apps"), (dict, list)) and rec["apps"]:
+                    mem_apps = merge_app_statuses(mem_apps, rec["apps"])
+                if isinstance(rec.get("autopilot"), dict) and rec["autopilot"]:
+                    mem_autopilot = merge_autopilot_status(mem_autopilot, rec["autopilot"])
                 if mem_hwtest is None and isinstance(rec.get("hwtest"), dict) and rec.get("hwtest"):
                     mem_hwtest = rec.get("hwtest")
                 if mem_benchmark is None and isinstance(rec.get("benchmark"), dict) and rec.get("benchmark"):
                     mem_benchmark = rec.get("benchmark")
+                rec_img_t, rec_wim_v, rec_img_exp = extract_image_profile(rec)
+                if rec_img_exp or rec_wim_v != "unknown":
+                    mt, mv = merge_image_profile(mem_img_ctx, rec)
+                    mem_img_ctx = {"image_type": mt, "wim_version": mv}
 
         merged_hw = merge_hw_dicts(merged_hw, incoming_hw)
         if merged_hw:
@@ -1435,8 +1641,14 @@ class FleetStore:
         if mem_apps:
             enriched["apps"] = merge_app_statuses(mem_apps, enriched.get("apps"))
 
-        if (not enriched.get("autopilot")) and mem_autopilot:
-            enriched["autopilot"] = mem_autopilot
+        merged_ap = merge_autopilot_status(mem_autopilot, enriched.get("autopilot"), default_source="report")
+        if merged_ap:
+            enriched["autopilot"] = merged_ap
+
+        final_img_type, final_wim_ver = merge_image_profile(mem_img_ctx, enriched)
+        enriched["image_type"] = final_img_type
+        if final_wim_ver != "unknown" or "wim_version" in enriched:
+            enriched["wim_version"] = final_wim_ver
 
         if (not enriched.get("hwtest")) and mem_hwtest:
             enriched["hwtest"] = mem_hwtest
@@ -1614,16 +1826,23 @@ class FleetStore:
             )
             existing_hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else {}
             merged_hw = merge_hw_dicts(existing_hw, incoming_hw)
+            merged_ap = merge_autopilot_status(rec.get("autopilot"), payload.get("autopilot"), default_source="lifecycle_start")
+            merged_img_type, merged_wim_ver = merge_image_profile(rec, payload)
             rec.update({
                 "computer_name": effective_comp_name,
                 "status_label": "Aktivno",
                 "phase": 1,
-                "autopilot": payload.get("autopilot", {}),
+                "image_type": merged_img_type,
+                "wim_version": merged_wim_ver,
                 "hw": merged_hw,
                 "started_at": payload.get("timestamp", datetime.now().isoformat()),
                 "last_seen": now,
                 "client_ip": client_ip,
             })
+            if merged_ap:
+                rec["autopilot"] = merged_ap
+            elif "autopilot" not in rec:
+                rec["autopilot"] = {}
             if is_placeholder_hw_value(rec.get("serial_number")) and not is_placeholder_hw_value(merged_hw.get("serial")):
                 rec["serial_number"] = merged_hw["serial"]
             sensors = self._extract_telemetry_sensors(payload)
@@ -1775,8 +1994,16 @@ class FleetStore:
             rec.update(diagnostics_contract(enriched_payload))
             if rec["diagnostics_status"] == "THERMAL_CRITICAL":
                 rec["status_label"] = "NEEDS_ATTENTION"
-            if "autopilot" in enriched_payload:
-                rec["autopilot"] = enriched_payload["autopilot"]
+            merged_ap = merge_autopilot_status(rec.get("autopilot"), enriched_payload.get("autopilot"), default_source="report")
+            if merged_ap:
+                rec["autopilot"] = merged_ap
+                enriched_payload["autopilot"] = merged_ap
+            merged_img_type, merged_wim_ver = merge_image_profile(rec, enriched_payload)
+            rec["image_type"] = merged_img_type
+            rec["wim_version"] = merged_wim_ver
+            enriched_payload["image_type"] = merged_img_type
+            if merged_wim_ver != "unknown" or "wim_version" in enriched_payload:
+                enriched_payload["wim_version"] = merged_wim_ver
             if "benchmark" in enriched_payload and isinstance(enriched_payload["benchmark"], dict):
                 rec["benchmark"] = enriched_payload["benchmark"]
             if "hwtest" in enriched_payload and isinstance(enriched_payload["hwtest"], dict):
@@ -1952,6 +2179,17 @@ class FleetStore:
                     self.fleet_devices[dev_id]["warranty"] = tab_data["warranty"]
             if "warranty" in payload and isinstance(payload["warranty"], dict):
                 self.fleet_devices[dev_id]["warranty"] = payload["warranty"]
+            sess_ap = payload.get("autopilot") if isinstance(payload.get("autopilot"), dict) else (
+                tab_data.get("autopilot") if isinstance(tab_data, dict) and isinstance(tab_data.get("autopilot"), dict) else None
+            )
+            if sess_ap:
+                merged_sess_ap = merge_autopilot_status(self.fleet_devices[dev_id].get("autopilot"), sess_ap, default_source="session_state")
+                if merged_sess_ap:
+                    self.fleet_devices[dev_id]["autopilot"] = merged_sess_ap
+            if any(k in payload for k in ("image_type", "wim_version", "run_meta", "image_profile")):
+                s_img_t, s_wim_v = merge_image_profile(self.fleet_devices[dev_id], payload)
+                self.fleet_devices[dev_id]["image_type"] = s_img_t
+                self.fleet_devices[dev_id]["wim_version"] = s_wim_v
             if model_info and not is_placeholder_hw_value(model_info):
                 existing_hw = self.fleet_devices[dev_id].get("hw") if isinstance(self.fleet_devices[dev_id].get("hw"), dict) else {}
                 self.fleet_devices[dev_id]["hw"] = merge_hw_dicts(existing_hw, {"model": model_info})
@@ -2110,6 +2348,9 @@ class FleetStore:
                 d_copy["is_online"] = is_online
                 d_copy["last_seen_sec_ago"] = sec_ago
                 d_copy["status_label"] = status_lbl
+                img_t, wim_v, _ = extract_image_profile(d)
+                d_copy["image_type"] = img_t
+                d_copy["wim_version"] = wim_v
                 if status_lbl in ("Zavrseno", "NEEDS_ATTENTION", "Servisiran (AGY)", "Kvar (AGY)"):
                     d_copy["handover_status"] = compute_handover_status(d)
                 else:
@@ -2207,6 +2448,12 @@ class FleetStore:
                         keys.append(d["device_id"])
                     if d.get("computer_name"):
                         keys.append(d["computer_name"])
+            upper_san = sanitize_id(device_id).upper()
+            if upper_san in self._alias_index:
+                keys.append(self._alias_index[upper_san])
+            raw_up = str(device_id).strip().upper()
+            if raw_up in self._serial_index:
+                keys.append(self._serial_index[raw_up])
         seen = set()
         res = []
         for k in keys:
@@ -2217,23 +2464,21 @@ class FleetStore:
 
     def enqueue_command(self, device_id: str, action: str, params: dict = None) -> dict:
         """
-        Kreira komandu sa command_id (npr. cmd_<uuid>), action, params (default {}), created_at.
+        Kreira standardizovanu daljinsku komandu sa command_id (cmd_<uuid>), allowlist akcijom,
+        params (default {}) i created_at (ISO UTC). Strogo odbija akcije van allowliste (IMP-102).
         Dodaje je u red za dati device_id (FIFO, maks. 20 komandi po uređaju radi zaštite memorije).
-        Vraća rečnik komande.
         """
-        if not device_id:
+        if not device_id or not isinstance(device_id, str) or not device_id.strip():
             raise ValueError("device_id ne sme biti prazan")
-        if not action or not isinstance(action, str) or not action.strip():
-            raise ValueError("action mora biti neprazan string")
 
-        clean_params = dict(params) if isinstance(params, dict) else {}
-        cmd_id = f"cmd_{uuid.uuid4().hex}"
+        clean_action, clean_params = validate_remote_command(action, params=params)
+        cmd_id = f"cmd_{uuid.uuid4()}"
         cmd_dict = {
             "command_id": cmd_id,
-            "device_id": str(device_id),
-            "action": action.strip(),
+            "device_id": str(device_id).strip(),
+            "action": clean_action,
             "params": clean_params,
-            "created_at": time.time(),
+            "created_at": _utc_iso_now(),
         }
 
         # Primarni ključ za smeštanje u red
@@ -2250,9 +2495,247 @@ class FleetStore:
 
         return dict(cmd_dict)
 
+    @staticmethod
+    def _extract_device_version_tuple(dev: dict):
+        if not isinstance(dev, dict):
+            return None
+        candidates = [
+            dev.get("wis_version"),
+            dev.get("app_version"),
+            dev.get("client_version"),
+            dev.get("version"),
+        ]
+        rep = dev.get("latest_report")
+        if isinstance(rep, dict):
+            candidates.extend([
+                rep.get("wis_version"),
+                rep.get("app_version"),
+                rep.get("client_version"),
+                rep.get("version"),
+            ])
+        for cand in candidates:
+            vt = _parse_semver_tuple(cand)
+            if vt is not None:
+                return vt
+        return None
+
+    def enqueue_fleet_command(
+        self,
+        action: str,
+        params: dict = None,
+        filter_status=None,
+        filter_phase=None,
+        version_lt: str = None,
+    ) -> dict:
+        """
+        IMP-102: Broadcast komande na sve uređaje flote koji zadovoljavaju opcione filtere
+        (filter_status, filter_phase, version_lt). Validira akciju strogo protiv allowliste.
+        """
+        clean_action, clean_params = validate_remote_command(action, params=params)
+
+        # Validacija filter_status
+        status_tokens = None
+        if filter_status is not None and filter_status != "":
+            if isinstance(filter_status, str):
+                status_tokens = [s.strip().lower() for s in filter_status.split(",") if s.strip()]
+            elif isinstance(filter_status, list):
+                if not all(isinstance(s, str) and s.strip() for s in filter_status):
+                    raise ValueError("Parametar 'filter_status' mora biti string ili lista nepraznih stringova.")
+                status_tokens = [s.strip().lower() for s in filter_status]
+            else:
+                raise ValueError("Parametar 'filter_status' mora biti string ili lista stringova.")
+
+        # Validacija filter_phase
+        phase_set = None
+        if filter_phase is not None and filter_phase != "":
+            raw_phases = filter_phase if isinstance(filter_phase, list) else [filter_phase]
+            phase_set = set()
+            for rp in raw_phases:
+                if isinstance(rp, bool):
+                    raise ValueError("Parametar 'filter_phase' mora biti ceo broj između 1 i 6.")
+                try:
+                    p_int = int(rp) if isinstance(rp, int) or (isinstance(rp, str) and rp.strip().isdigit()) else -1
+                except (ValueError, TypeError):
+                    p_int = -1
+                if p_int < 1 or p_int > 6:
+                    raise ValueError("Parametar 'filter_phase' mora biti ceo broj između 1 i 6.")
+                phase_set.add(p_int)
+
+        # Validacija version_lt
+        target_ver = None
+        if version_lt is not None and str(version_lt).strip() != "":
+            if not isinstance(version_lt, str):
+                raise ValueError("Parametar 'version_lt' mora biti semver string (npr. '3.5.5').")
+            target_ver = _parse_semver_tuple(version_lt)
+            if target_ver is None:
+                raise ValueError(f"Nevalidan semver format za 'version_lt': '{version_lt}'.")
+
+        devices_snapshot = self.get_devices_summary()
+        matched_devices = []
+        command_ids = []
+        enqueued_cmds = []
+
+        for dev_key, dev in devices_snapshot.items():
+            if not isinstance(dev, dict):
+                continue
+
+            # 1. filter_status
+            if status_tokens is not None:
+                lbl_low = str(dev.get("status_label") or "").strip().lower()
+                st_low = str(dev.get("status") or "").strip().lower()
+                dep_low = str(dev.get("deployment_status") or "").strip().lower()
+                ho_low = str(dev.get("handover_status") or "").strip().lower()
+                is_on = bool(dev.get("is_online"))
+
+                status_ok = False
+                for tok in status_tokens:
+                    if tok == "online":
+                        if is_on:
+                            status_ok = True
+                            break
+                    elif tok == "offline":
+                        if (not is_on) or lbl_low == "offline":
+                            status_ok = True
+                            break
+                    elif tok in ("active", "aktivno"):
+                        if lbl_low in ("aktivno", "restart u toku", "upozorenje") or (
+                            st_low == "active" and lbl_low not in ("zavrseno", "završeno", "offline")
+                        ):
+                            status_ok = True
+                            break
+                    elif tok in (lbl_low, st_low, dep_low, ho_low):
+                        status_ok = True
+                        break
+                if not status_ok:
+                    continue
+
+            # 2. filter_phase
+            if phase_set is not None:
+                raw_p = dev.get("phase")
+                try:
+                    dev_p = int(raw_p) if raw_p is not None and not isinstance(raw_p, bool) else None
+                except (ValueError, TypeError):
+                    dev_p = None
+                if dev_p not in phase_set:
+                    continue
+
+            # 3. version_lt
+            if target_ver is not None:
+                dev_ver = self._extract_device_version_tuple(dev)
+                if dev_ver is None or not (dev_ver < target_ver):
+                    continue
+
+            cmd_dict = self.enqueue_command(dev_key, clean_action, params=clean_params)
+            matched_devices.append(dev_key)
+            command_ids.append(cmd_dict["command_id"])
+            enqueued_cmds.append(cmd_dict)
+
+        return {
+            "status": "ok",
+            "action": clean_action,
+            "params": clean_params,
+            "matched_devices": matched_devices,
+            "count": len(matched_devices),
+            "command_ids": command_ids,
+            "commands": enqueued_cmds,
+        }
+
+    def record_command_ack(
+        self,
+        device_id: str,
+        command_id: str,
+        action: str = "",
+        status: str = "ok",
+        detail: str = "",
+        applied_at=None,
+    ) -> dict:
+        """
+        IMP-102: Beleži potvrdu izvršenja daljinske komande sa klijenta (POST /command-ack ili heartbeat executed_commands).
+        Deduplikuje po command_id i uklanja eventualno zaostalu komandu istog ID-a iz pending reda.
+        """
+        if not device_id or not isinstance(device_id, str) or not device_id.strip():
+            raise ValueError("device_id ne sme biti prazan")
+        if not command_id or not isinstance(command_id, str) or not command_id.strip():
+            raise ValueError("Polje 'command_id' je obavezno i mora biti neprazan string")
+
+        clean_dev = device_id.strip()
+        clean_cid = command_id.strip()[:128]
+        clean_action = str(action or "").strip().lower()[:64]
+        clean_status = str(status or "ok").strip()[:64] or "ok"
+        clean_detail = str(detail or "").strip()[:1000]
+        eff_applied = _format_iso_utc(applied_at)
+
+        ack_rec = {
+            "command_id": clean_cid,
+            "device_id": clean_dev,
+            "action": clean_action,
+            "status": clean_status,
+            "detail": clean_detail,
+            "applied_at": eff_applied,
+            "recorded_at": _utc_iso_now(),
+        }
+
+        keys = self._get_associated_device_keys(clean_dev)
+        dev_key = keys[0] if keys else sanitize_id(clean_dev)
+
+        with self.command_lock:
+            hist = self.command_history.setdefault(dev_key, [])
+            replaced = False
+            for idx, existing in enumerate(hist):
+                if existing.get("command_id") == clean_cid:
+                    hist[idx] = ack_rec
+                    replaced = True
+                    break
+            if not replaced:
+                hist.append(ack_rec)
+            if len(hist) > 100:
+                self.command_history[dev_key] = hist[-100:]
+
+            # Ako je command_id još u pending redu, ukloni ga da se ne bi ponovio
+            for k in keys or [dev_key]:
+                if k in self.fleet_commands:
+                    self.fleet_commands[k] = [
+                        c for c in self.fleet_commands[k]
+                        if not (isinstance(c, dict) and c.get("command_id") == clean_cid)
+                    ]
+            hist_snapshot = [dict(x) for x in self.command_history[dev_key][-50:]]
+
+        # Propagacija u fleet_devices ako zapis već postoji (van command_lock -> nema deadlock-a)
+        with self.fleet_lock:
+            target_k = None
+            for k in keys or [dev_key]:
+                if k in self.fleet_devices:
+                    target_k = k
+                    break
+            if target_k is not None:
+                rec = self.fleet_devices[target_k]
+                rec["executed_commands"] = hist_snapshot
+                rec["last_command_ack"] = dict(ack_rec)
+
+        return dict(ack_rec)
+
+    def get_command_history(self, device_id: str) -> list[dict]:
+        """Vraća listu potvrđenih/izvršenih komandi za dati uređaj."""
+        if not device_id:
+            return []
+        keys = self._get_associated_device_keys(device_id)
+        with self.command_lock:
+            items = []
+            seen = set()
+            for k in keys:
+                for rec in self.command_history.get(k, []):
+                    cid = rec.get("command_id")
+                    if cid and cid in seen:
+                        continue
+                    if cid:
+                        seen.add(cid)
+                    items.append(dict(rec))
+            return items
+
     def pop_pending_commands(self, device_id: str) -> list[dict]:
         """
-        Vraća listu beklogovanih komandi za uređaj i prazni red za taj uređaj.
+        Vraća standardizovanu listu beklogovanih komandi za uređaj i prazni red za taj uređaj.
+        Podržava i legacy zapise (string ili float created_at) preko normalize_command_record.
         """
         if not device_id:
             return []
@@ -2262,7 +2745,10 @@ class FleetStore:
             seen_ids = set()
             for k in keys:
                 if k in self.fleet_commands:
-                    for c in self.fleet_commands[k]:
+                    for raw_c in self.fleet_commands[k]:
+                        c = normalize_command_record(raw_c, device_id=device_id)
+                        if not c:
+                            continue
                         cid = c.get("command_id")
                         if cid and cid in seen_ids:
                             continue
@@ -2274,7 +2760,7 @@ class FleetStore:
 
     def get_pending_commands(self, device_id: str) -> list[dict]:
         """
-        Samo pregled komandi bez pražnjenja.
+        Samo pregled standardizovanih komandi bez pražnjenja.
         """
         if not device_id:
             return []
@@ -2283,7 +2769,10 @@ class FleetStore:
             cmds = []
             seen_ids = set()
             for k in keys:
-                for c in self.fleet_commands.get(k, []):
+                for raw_c in self.fleet_commands.get(k, []):
+                    c = normalize_command_record(raw_c, device_id=device_id)
+                    if not c:
+                        continue
                     cid = c.get("command_id")
                     if cid and cid in seen_ids:
                         continue
@@ -2303,6 +2792,105 @@ class FleetStore:
             for k in keys:
                 if k in self.fleet_commands:
                     self.fleet_commands[k] = []
+
+    def record_autopilot_status(self, device_id: str, payload: dict, client_ip: str = "") -> dict:
+        """
+        IMP-114: Beleži kanonski Autopilot nalaz (uključujući WinPE pre-format forenziku po SN)
+        uz strogu zaštitu integriteta (jednom potvrđen is_locked=True se nikada ne gazi).
+        """
+        if not device_id or not isinstance(device_id, str) or not device_id.strip():
+            raise ValueError("device_id ne sme biti prazan")
+        if not isinstance(payload, dict):
+            raise ValueError("Telo zahteva mora biti JSON objekat")
+
+        raw_dev_id = device_id.strip()
+        ap_block = payload.get("autopilot") if isinstance(payload.get("autopilot"), dict) else payload
+
+        incoming_hw = extract_hw_from_payload(payload)
+        canonical_sn = self._extract_canonical_serial(payload, incoming_hw)
+        if not canonical_sn and is_valid_canonical_serial(raw_dev_id):
+            up_id = raw_dev_id.upper()
+            if not up_id.startswith(("TK-", "DESKTOP-", "WIN-", "W-AAD-", "APCL-", "UNKNOWN")):
+                canonical_sn = up_id
+
+        comp_name = str(payload.get("computer_name") or raw_dev_id).strip()
+        prev_host = str(payload.get("previous_hostname") or "").strip()
+        default_src = str(ap_block.get("source") or payload.get("source") or "winpe_preformat").strip()
+        normalized_in = normalize_autopilot_payload(ap_block, default_source=default_src)
+        now = time.time()
+
+        with self.fleet_lock:
+            target_key = self._resolve_device_key_locked(
+                comp_name,
+                canonical_sn=canonical_sn,
+                previous_hostname=prev_host,
+            )
+            if target_key not in self.fleet_devices:
+                self.fleet_devices[target_key] = {
+                    "computer_name": comp_name,
+                    "device_id": payload.get("device_id") or target_key,
+                    "status_label": "Aktivno",
+                    "phase": 1,
+                }
+            rec = self.fleet_devices[target_key]
+            merged_ap = merge_autopilot_status(rec.get("autopilot"), normalized_in, default_source=default_src)
+            rec["autopilot"] = merged_ap
+            rec["last_seen"] = now
+            if client_ip and not rec.get("client_ip"):
+                rec["client_ip"] = client_ip
+            if canonical_sn:
+                self._serial_index[canonical_sn] = target_key
+                if is_placeholder_hw_value(rec.get("serial_number")):
+                    rec["serial_number"] = canonical_sn
+            if incoming_hw:
+                existing_hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else {}
+                rec["hw"] = merge_hw_dicts(existing_hw, incoming_hw)
+                if canonical_sn and is_placeholder_hw_value(rec["hw"].get("serial")):
+                    rec["hw"]["serial"] = canonical_sn
+            elif canonical_sn:
+                existing_hw = rec.get("hw") if isinstance(rec.get("hw"), dict) else {}
+                if is_placeholder_hw_value(existing_hw.get("serial")):
+                    existing_hw = dict(existing_hw)
+                    existing_hw["serial"] = canonical_sn
+                    rec["hw"] = existing_hw
+
+            # Ako već postoji latest_report u memoriji, ažuriraj i njegov autopilot blok
+            if isinstance(rec.get("latest_report"), dict):
+                rec["latest_report"]["autopilot"] = merge_autopilot_status(
+                    rec["latest_report"].get("autopilot"),
+                    merged_ap,
+                    default_source=default_src,
+                )
+
+            eff_sn = canonical_sn or self._extract_canonical_serial(rec, rec.get("hw"))
+            return {
+                "status": "ok",
+                "device_id": target_key,
+                "serial_number": eff_sn,
+                "autopilot": dict(merged_ap),
+            }
+
+    def get_autopilot_status(self, device_id: str) -> tuple[str | None, dict | None]:
+        """Dohvata sačuvani Autopilot status uređaja po ID-u, aliasu ili serijskom broju."""
+        if not device_id or not isinstance(device_id, str) or not device_id.strip():
+            return None, None
+        raw_id = device_id.strip()
+        san_id = sanitize_id(raw_id)
+        with self.fleet_lock:
+            target_key = None
+            for cand in (
+                raw_id,
+                san_id,
+                self._serial_index.get(raw_id.upper()),
+                self._alias_index.get(san_id.upper()),
+            ):
+                if cand and cand in self.fleet_devices:
+                    target_key = cand
+                    break
+            if target_key is None:
+                return None, None
+            ap = self.fleet_devices[target_key].get("autopilot")
+            return target_key, (dict(ap) if isinstance(ap, dict) else {})
 
 
 # Globalni singlton
