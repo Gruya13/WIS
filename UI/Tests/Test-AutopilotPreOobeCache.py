@@ -24,6 +24,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 PREOOBE_NET_CANONICAL = ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "PreOOBE-Network.ps1"
 PREOOBE_NET_OEM = ROOT / "ISO" / "sources" / "$OEM$" / "$$" / "Setup" / "Scripts" / "PreOOBE-Network.ps1"
 PREOOBE_NET_PATH = PREOOBE_NET_OEM if PREOOBE_NET_OEM.is_file() else PREOOBE_NET_CANONICAL
+PREOOBE_CMD_CANONICAL = ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "PreOOBE-Network.cmd"
+PREOOBE_CMD_OEM = ROOT / "ISO" / "sources" / "$OEM$" / "$$" / "Setup" / "Scripts" / "PreOOBE-Network.cmd"
 SETUP_COMPLETE_PATH = ROOT / "ISO" / "SetupComplete.ps1"
 AUTOUNATTEND_PATH = ROOT / "ISO" / "autounattend.xml"
 BUILD_ISO_PY_PATH = ROOT / "ISO" / "Skripte" / "Build-Iso.py"
@@ -92,6 +94,12 @@ SYNC_GROUPS = [
         [
             ROOT / "ISO" / "sources" / "$OEM$" / "$1" / "setup" / "PreviewSetupScripts" / "PreOOBE-Network.ps1",
             ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "PreOOBE-Network.ps1",
+        ],
+    ),
+    (
+        PREOOBE_CMD_CANONICAL,
+        [
+            PREOOBE_CMD_OEM,
         ],
     ),
     (
@@ -586,6 +594,80 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
                 f"{label} sadrzi ne-eskejpovane zagrade u echo linijama:\n" + "\n".join(violations),
             )
             self.assertEqual(depth, 0, f"{label} ima nebalansirane zagrade na kraju (final_depth={depth})")
+
+    def test_11_unattend_path_max_length_and_preoobe_zero_exit(self):
+        """specialize hotfix: svaki <Path>/<CommandLine> u ISO/autounattend.xml <= 255 znakova, PreOOBE-Network.cmd ima '& ver >nul' i 'exit /b 0', a PreOOBE-Network.ps1 'exit 0'."""
+        tree = ET.parse(str(AUTOUNATTEND_PATH))
+        root = tree.getroot()
+        ns = {"u": "urn:schemas-microsoft-com:unattend"}
+
+        all_cmds = []
+        for tag in ("Path", "CommandLine"):
+            for elem in root.findall(f".//u:{tag}", ns):
+                txt = elem.text or ""
+                all_cmds.append((tag, txt))
+                self.assertLessEqual(
+                    len(txt),
+                    255,
+                    f"ISO/autounattend.xml <{tag}> prelazi 255 znakova ({len(txt)}): {txt}",
+                )
+        self.assertGreaterEqual(len(all_cmds), 16, "Ocekivano najmanje 16 <Path>/<CommandLine> unosa u autounattend.xml")
+
+        specialize = root.find("u:settings[@pass='specialize']", ns)
+        self.assertIsNotNone(specialize, "specialize pass mora postojati u autounattend.xml")
+        spec_cmds = [
+            (
+                int(cmd.findtext("u:Order", default="0", namespaces=ns)),
+                cmd.findtext("u:Path", default="", namespaces=ns),
+            )
+            for cmd in specialize.findall(".//u:RunSynchronousCommand", ns)
+        ]
+        spec_cmds.sort(key=lambda item: item[0])
+        self.assertEqual([order for order, _ in spec_cmds], list(range(1, len(spec_cmds) + 1)))
+
+        preoobe_calls = [path for _, path in spec_cmds if "PreOOBE-Network.cmd" in path]
+        self.assertEqual(len(preoobe_calls), 1, "specialize mora imati tacno jedan poziv PreOOBE-Network.cmd")
+        self.assertRegex(
+            preoobe_calls[0].strip(),
+            r"&\s*ver\s*>nul\"?$",
+            f"PreOOBE-Network.cmd poziv u specialize mora zavrsavati sa '& ver >nul': {preoobe_calls[0]}",
+        )
+
+        # Svaka reg delete OOBE stavka u specialize mora biti odvojena i zasticena sa '& ver >nul'
+        for key_name in ("SkipNetworkSetup", "BypassNRO", "DisableOOBEConnection"):
+            matches = [path for _, path in spec_cmds if f"/v {key_name}" in path]
+            self.assertEqual(len(matches), 1, f"specialize mora imati zaseban reg delete za {key_name}")
+            self.assertRegex(
+                matches[0].strip(),
+                r"&\s*ver\s*>nul\"?$",
+                f"reg delete {key_name} mora zavrsavati sa '& ver >nul': {matches[0]}",
+            )
+
+        # PreOOBE-Network.cmd mora zavrsavati sa 'exit /b 0'
+        for cmd_path in (PREOOBE_CMD_CANONICAL, PREOOBE_CMD_OEM):
+            if cmd_path == PREOOBE_CMD_OEM and not cmd_path.is_file():
+                continue
+            self.assertTrue(cmd_path.is_file(), f"Nedostaje {cmd_path}")
+            non_empty = [ln.strip() for ln in cmd_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertTrue(non_empty, f"Prazan fajl: {cmd_path}")
+            self.assertEqual(
+                non_empty[-1].lower(),
+                "exit /b 0",
+                f"{cmd_path} mora zavrsavati sa 'exit /b 0', a zavrsava sa: {non_empty[-1]!r}",
+            )
+
+        # PreOOBE-Network.ps1 mora zavrsavati sa 'exit 0'
+        for ps_path in (PREOOBE_NET_CANONICAL, PREOOBE_NET_OEM):
+            if ps_path == PREOOBE_NET_OEM and not ps_path.is_file():
+                continue
+            self.assertTrue(ps_path.is_file(), f"Nedostaje {ps_path}")
+            non_empty = [ln.strip() for ln in ps_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            self.assertTrue(non_empty, f"Prazan fajl: {ps_path}")
+            self.assertEqual(
+                non_empty[-1].lower(),
+                "exit 0",
+                f"{ps_path} mora zavrsavati sa 'exit 0', a zavrsava sa: {non_empty[-1]!r}",
+            )
 
 
 if __name__ == "__main__":

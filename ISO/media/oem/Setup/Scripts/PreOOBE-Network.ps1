@@ -268,3 +268,5 @@ try {
 } catch {
     Write-PreOobeLog "Napomena pri registraciji WIS_OOBE_ZTD_Watcher zadatka: $($_.Exception.Message)" "WARN"
 }
+
+exit 0
