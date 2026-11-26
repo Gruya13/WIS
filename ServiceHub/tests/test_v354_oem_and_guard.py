@@ -238,11 +238,15 @@ class TestMicrosoftSurfaceAndMsiExtract(unittest.TestCase):
         self.assertEqual(sp9_22h2["os_build"], "22621")
 
     def test_provider_contracts(self):
-        p = MicrosoftOEMProvider(cache_dir=os.path.join(self.tmp_dir, "ms_cache"))
+        dropin_dir = os.path.join(self.tmp_dir, "ms_dropin")
+        p = MicrosoftOEMProvider(cache_dir=os.path.join(self.tmp_dir, "ms_cache"), dropin_dir=dropin_dir)
+        # IMP-98: bez lokalnog Drop-in paketa ili dinamičkog fetcha nema sintetičkih CDN URL-ova
         res = p.resolve_driver_pack("Surface Laptop 5", os_ver="win11-24h2", system_sku="Surface_Laptop_5_1950")
-        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["status"], "not_found")
+        self.assertEqual(res["download_url"], "")
+        self.assertTrue(res.get("dropin_required"))
+        self.assertTrue(str(res.get("download_page_url") or "").startswith("https://www.microsoft.com/"))
         self.assertTrue(res["package_name"].endswith(".msi"))
-        self.assertTrue(res["download_url"].startswith("https://download.microsoft.com/"))
         bios = p.check_bios_update("Surface Laptop 5", current_bios="1.0.0")
         self.assertTrue(bios["update_available"])
 
@@ -268,8 +272,8 @@ class TestFujitsuAndDropIn(unittest.TestCase):
     <Models><Model name="LIFEBOOK E5411"/></Models>
   </DriverPackage>
 </DeskUpdateCatalog>'''
-        with self.assertRaises(ValueError):
-            parse_fujitsu_catalog_xml(bad_http_xml)
+        # IMP-106: nevalidni paketi se preskaču po stavci bez rušenja celog kataloga
+        self.assertEqual(parse_fujitsu_catalog_xml(bad_http_xml), [])
 
         bad_host_xml = b'''<?xml version="1.0" encoding="utf-8"?>
 <DeskUpdateCatalog>
@@ -278,8 +282,7 @@ class TestFujitsuAndDropIn(unittest.TestCase):
     <Models><Model name="LIFEBOOK E5411"/></Models>
   </DriverPackage>
 </DeskUpdateCatalog>'''
-        with self.assertRaises(ValueError):
-            parse_fujitsu_catalog_xml(bad_host_xml)
+        self.assertEqual(parse_fujitsu_catalog_xml(bad_host_xml), [])
 
         good_xml = b'''<?xml version="1.0" encoding="utf-8"?>
 <DeskUpdateCatalog>
