@@ -4,6 +4,28 @@ Sva značajna izdanja i izmene projekta **Windows Installation Assistant (WIS)**
 
 ---
 
+## [v3.5.5] / ServiceHub [v3.7.2] — 2026-11-26
+
+### Golden Preinstalled ISO Profil, Troslojna Autopilot Detekcija (`$0`), DCH/Firmware Izolacija & Daljinsko Upravljanje Flotom (`WIS-TASK-279`)
+
+- **Golden Preinstalled ISO Profil & WinPE Zaštita (`IMP-112` — `Build-Iso.py`, `WIS-AcceleratePE.cmd`, `Patch-BootWim.py`, `WIS.Apps.psm1`, `WIS.Core.psm1`, `UI/MainWindow*.cs`, `ServiceHub`):**
+  - Uvedeni markeri `\sources\wis-image-profile.json` i `\WIS_IMAGE_PROFILE.tag` (`IMAGE_TYPE` / `WIM_VERSION`); WinPE akceleracija poredi profil izvornog medijuma i mrežnog deljenja pre prebacivanja (fail-closed sa strogom allowlist validacijom i bezbednim `set /p` parsiranjem).
+  - Preinstalled aplikacije (`VCRedist`, `.NET 8/9`, `Office 2024`, `Acrobat Pro 2024`) prepoznaju se u Fazi 4 preko `C:\Windows\Logs\WIS\image-profile.json` uz zadržavanje `WinRAR`/`Chrome` i obaveznih konfiguracionih koraka; tip slike se prikazuje u UI-ju i servisnim kartonima.
+- **Troslojna Autopilot Detekcija (`IMP-114` — `Tools/AutopilotAuditor`, `Provera_autopilota.ps1`, `Invoke-WinPeAutopilotForensics.ps1`, `autounattend.xml`, `PreOOBE-Network.ps1`, `SetupComplete.ps1`, `UI/MainWindow*.cs`, `ServiceHub`):**
+  - **Sloj A:** Primarna putanja `ServiceState\wmansvc\AutopilotDDSZTDFile.json` i `Provisioning\Autopilot\*.json`, čitanje kompletnog `ModernDeployment-Diagnostics-Provider/Autopilot` dnevnika (uključujući 24H2/25H2 događaje `100/110/170/171` i `806/807`), popravljeno rekurzivno čitanje `EstablishedCorrelations`/`PolicyJsonCache`/`W-AAD-*` i strogi binarni model (`IMA_AUTOPILOT` / `NEMA_AUTOPILOT` / `NIJE_PROVERENO`, bez lažnog zelenog statusa).
+  - **Sloj B:** WinPE pre-format forenzika (`Invoke-WinPeAutopilotForensics.ps1`) čita postojeće ZTD/offline registry tragove pre formatiranja (sa determinističkim `.Dispose()` i `reg unload` u `finally`) i šalje nalaz na `POST /api/devices/<id>/autopilot`.
+  - **Sloj C:** OOBE ZTD presretač (`PreOOBE-Network.ps1` + `SetupComplete.ps1 -OobeWatcherMode` sa bezbednim timeout/offline fallbackom i bezuslovnim brisanjem `WIS_OOBE_ZTD_Watcher` u `SetupComplete.ps1` i Fazi 6 `Restore-WisSecurityHardening`).
+- **Driver Pool, DCH/Firmware Izolacija & OEM Katalozi (`IMP-97`, `IMP-98`, `IMP-106`, `IMP-108`, `IMP-110`, `IMP-113`):**
+  - `build_bundle_tar` pakuje isključivo aktuelne HWID pobednike po modelu uz automatsku migraciju/sažimanje postojećih `manifests/*.json` (`IMP-97`) i prošireni `releases/` GC (`keep_last=3`, `current.json` + `lsof` zaštita, `IMP-110`).
+  - Troslojna blokada `Class=Firmware`, Windows Firmware `ClassGuid` (`f2e7dd72-6468-4e36-b6f1-6488f42c1b52`) i firmware/CFU INF/Catalog obrazaca iz harvest izvora, DCH Base+Extension+SoftwareComponent uparivanje i OS-build izolacija (`26100` vs `26200`) (`IMP-113`).
+  - Uklonjeni sintetički Surface/Fujitsu URL-ovi, dodat `SystemSKU` za `Surface Laptop 7th Edition Intel (2107)`, proširena detekcija OEM serija (ASUS, HP, Acer, MSI) i uvedena `3xx` Open Redirect / SSRF zaštita (`_SafeOemRedirectHandler`) na svim OEM HTTP zahtevima.
+- **Daljinske Komande, Flota & Pouzdanost Klijenta (`IMP-99`, `IMP-100`, `IMP-102`, `IMP-103`, `IMP-104`, `IMP-105`, `IMP-107`, `IMP-109`, `IMP-111`, `IMP-75`):**
+  - Standardizovane daljinske komande sa strogom allowlistom (`phase`/`target_phase` `2..6`, regex za `step_id`/`version`), `POST /api/fleet/command`, `POST /api/devices/<id>/command-ack`, `command_id` deduplikacijom i RSA-2048 verifikovanim hotfix ažuriranjem (`scripts_only` / `full_restart`).
+  - PreAutoDriverGate `Code 14` (restart pending) auto-remediacija, `HwTest` `Unknown` detalji i `AutoTestDetailsWindow`, paralelni `Test-DeviceDriversHealth`, pouzdana Faza 4/5 mrežna i SMB sinhronizacija, i kompletniji servisni kartoni.
+- **Verzije:** `WIS 3.5.5` (`UI`, `Launcher`, `ISO`), `ServiceHub 3.7.2`.
+
+---
+
 ## [v3.5.4] / ServiceHub [v3.7.1] — 2026-11-25
 
 ### PreAutoDriverGate, OEM Drajveri (Surface `.msi` / Fujitsu / Drop-In), Storage Lifecycle GC & Integritet Kartona (`WIS-TASK-278`, Celine A–E)

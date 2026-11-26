@@ -466,9 +466,9 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
         self.assertIn("_phase3AutoRetryCount", main_cs)
         self.assertIn("try { proc.WaitForExit(); } catch { }", main_cs)
 
-        # BAG-16: AppTitle 3.5.4 i Sync-Versions.py podrska
-        self.assertIn('"WIS v3.5.4 - Windows Installation Assistant"', loc_cs)
-        self.assertIn('"WIS v3.5.4 - 视窗系统自动化安装助手"', loc_cs)
+        # BAG-16: AppTitle 3.5.5 i Sync-Versions.py podrska
+        self.assertIn('"WIS v3.5.5 - Windows Installation Assistant"', loc_cs)
+        self.assertIn('"WIS v3.5.5 - 视窗系统自动化安装助手"', loc_cs)
         self.assertIn("UI/LocalizationService.cs", sync_py)
 
     def test_15_wis_task_258_driver_pool_client_integration(self):

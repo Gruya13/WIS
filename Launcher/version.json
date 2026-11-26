@@ -1,26 +1,26 @@
 {
   "name": "wis-launcher",
-  "version": "3.5.4",
+  "version": "3.5.5",
   "build_target": "Windows 11 24H2+ / PowerShell 5.1 / .NET Framework 4.8",
   "os_build_target": "10.0.26200.8037",
   "components": {
     "ui": {
       "framework": "WPF / C# .NET Framework 4.8",
       "binary": "WIS.UI.exe",
-      "version": "3.5.4"
+      "version": "3.5.5"
     },
     "launcher": {
       "framework": "WinForms / C# .NET Framework 4.0",
       "binary": "WIS.Launcher.exe",
-      "version": "3.5.4"
+      "version": "3.5.5"
     },
     "iso": {
-      "version": "3.5.4",
+      "version": "3.5.5",
       "directory": "ISO",
-      "embedded_launcher_version": "3.5.4"
+      "embedded_launcher_version": "3.5.5"
     },
     "servicehub": {
-      "version": "3.7.1",
+      "version": "3.7.2",
       "directory": "ServiceHub"
     }
   },
@@ -28,13 +28,13 @@
   "windows_validation": "pending",
   "release_package": {
     "name": "WIS paket izdanja",
-    "version": "3.5.4"
+    "version": "3.5.5"
   },
   "compatibility": {
     "min_launcher_version": "3.1.0",
     "payload_schema_version": 2,
     "version_field": "wis_release_package"
   },
-  "wis_release_version": "3.5.4",
+  "wis_release_version": "3.5.5",
   "generated_from": "../version.json"
 }
