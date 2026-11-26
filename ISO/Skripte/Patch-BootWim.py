@@ -640,7 +640,7 @@ if defined Z_READY (
             ) else (
                 set "ALLOW_Z_SWITCH=0"
                 echo [!] IMP-112 BLOKADA: Izvorni Y:\ ima WIS_IMAGE_PROFILE.tag [!Y_IMAGE_TYPE!/!Y_WIM_VERSION!], a Z:\win11 nema marker - zadrzavam Y:\!
-                echo [%TIME%] IMP-112 BLOKADA: Z:\win11 nema WIS_IMAGE_PROFILE.tag (Y=[!Y_IMAGE_TYPE!/!Y_WIM_VERSION!]) - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
+                echo [%TIME%] IMP-112 BLOKADA: Z:\win11 nema WIS_IMAGE_PROFILE.tag [Y=!Y_IMAGE_TYPE!/!Y_WIM_VERSION!] - zadrzan izvorni medijum Y:\. >> "%WIS_LOG%" 2>nul
             )
         ) else if defined Y_HAS_SOURCE (
             if exist "Z:\win11\WIS_IMAGE_PROFILE.tag" (
@@ -784,7 +784,7 @@ goto :eof
 
 :RunWinPeForensics
 if exist "X:\WIS_WinPE_Forensics_Done.tag" goto :eof
-echo [*] WIS WinPE: Pokrecem pre-format Autopilot forenziku (IMP-114 Sloj B)...
+echo [*] WIS WinPE: Pokrecem pre-format Autopilot forenziku [IMP-114 Sloj B]...
 echo [%TIME%] Pokrecem WinPE pre-format Autopilot forenziku... >> "%WIS_LOG%" 2>nul
 set "WIS_WINPE_PS1="
 if exist "X:\Windows\System32\Invoke-WinPeAutopilotForensics.ps1" set "WIS_WINPE_PS1=X:\Windows\System32\Invoke-WinPeAutopilotForensics.ps1"

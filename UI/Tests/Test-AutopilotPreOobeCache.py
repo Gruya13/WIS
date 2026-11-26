@@ -8,6 +8,7 @@ putanjom, popravljenom lokalnom forenzikom i binarnim modelom; Sloj B WinPE
 pre-format forenzika; Sloj C pravi OOBE ZTD presretac).
 """
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -83,6 +84,7 @@ SYNC_GROUPS = [
         [
             ROOT / "ISO" / "Skripte" / "WIS-AcceleratePE.cmd",
             ROOT / "ISO" / "media" / "oem" / "Setup" / "Scripts" / "WIS-AcceleratePE.cmd",
+            ROOT / "ISO" / "sources" / "$OEM$" / "$$" / "Setup" / "Scripts" / "WIS-AcceleratePE.cmd",
         ],
     ),
     (
@@ -526,6 +528,64 @@ class TestAutopilotPreOobeCache(unittest.TestCase):
         cleanup_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Cleanup.psm1").read_text(encoding="utf-8-sig")
         self.assertIn('/Delete /TN "WIS_OOBE_ZTD_Watcher" /F', cleanup_src)
         self.assertIn('/Delete /TN "WIS_OOBE_ZTD_Watcher" /F', self.setup_complete_src)
+
+    def test_10_winpe_batch_scripts_no_unescaped_parens_in_echo_blocks(self):
+        """WinPE batch skripte i Patch-BootWim.py ne smeju imati ne-eskejpovane '(' ili ')' u echo linijama (uzrok 0x800700FF - 0x40030) i moraju imati balansiran depth == 0."""
+        tree = ast.parse(self.patch_bootwim_src, filename=str(PATCH_BOOTWIM_PY_PATH))
+        embedded_batches = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in (
+                        "VENTOY_AUTORUN_BAT_CONTENT",
+                        "STARTNET_CMD_CONTENT",
+                        "ACCELERATE_PE_CMD_CONTENT",
+                    ):
+                        embedded_batches[target.id] = node.value.value
+
+        self.assertEqual(
+            set(embedded_batches.keys()),
+            {"VENTOY_AUTORUN_BAT_CONTENT", "STARTNET_CMD_CONTENT", "ACCELERATE_PE_CMD_CONTENT"},
+            "Patch-BootWim.py mora definisati sva 3 WinPE batch bloka",
+        )
+
+        targets = [
+            ("ISO/WIS-AcceleratePE.cmd", self.accel_pe_src),
+            ("ISO/Skripte/WIS-ConnectNAS.cmd", (ROOT / "ISO" / "Skripte" / "WIS-ConnectNAS.cmd").read_text(encoding="utf-8")),
+            ("ISO/load_vmd.cmd", (ROOT / "ISO" / "load_vmd.cmd").read_text(encoding="utf-8")),
+            ("Patch-BootWim.py::VENTOY_AUTORUN_BAT_CONTENT", embedded_batches["VENTOY_AUTORUN_BAT_CONTENT"]),
+            ("Patch-BootWim.py::STARTNET_CMD_CONTENT", embedded_batches["STARTNET_CMD_CONTENT"]),
+            ("Patch-BootWim.py::ACCELERATE_PE_CMD_CONTENT", embedded_batches["ACCELERATE_PE_CMD_CONTENT"]),
+        ]
+
+        for label, content in targets:
+            depth = 0
+            violations = []
+            for lineno, raw in enumerate(content.splitlines(), 1):
+                line = raw.strip()
+                if not line or line.startswith("::") or re.match(r"(?i)^rem(\s|$)", line):
+                    continue
+                m_echo = re.match(r"(?i)^@?echo(?:\s+|$|\.)(.*)", line)
+                if m_echo:
+                    rest = re.sub(r"\^[()]", "", m_echo.group(1))
+                    if "(" in rest or ")" in rest:
+                        violations.append(f"L{lineno} (depth={depth}): {line}")
+                    continue
+                no_quotes = re.sub(r'"[^"]*"', '""', line)
+                no_quotes = re.sub(r"\^[()]", "", no_quotes)
+                depth += no_quotes.count("(") - no_quotes.count(")")
+                self.assertGreaterEqual(
+                    depth,
+                    0,
+                    f"{label} L{lineno}: negativan balans zagrada (depth={depth}): {line}",
+                )
+
+            self.assertEqual(
+                violations,
+                [],
+                f"{label} sadrzi ne-eskejpovane zagrade u echo linijama:\n" + "\n".join(violations),
+            )
+            self.assertEqual(depth, 0, f"{label} ima nebalansirane zagrade na kraju (final_depth={depth})")
 
 
 if __name__ == "__main__":
