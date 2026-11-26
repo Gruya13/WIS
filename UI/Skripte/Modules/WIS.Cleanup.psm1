@@ -46,6 +46,252 @@ function Get-WisLicenseStatusFromFile {
     return $null
 }
 
+function Write-WisTextAtomic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+    $parentDir = Split-Path -Path $Path -Parent
+    if ($parentDir -and -not (Test-Path -LiteralPath $parentDir -ErrorAction SilentlyContinue)) {
+        New-Item -Path $parentDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    $tmpPath = "$Path.tmp.$PID.$([guid]::NewGuid().ToString('N').Substring(0, 6))"
+    try {
+        [System.IO.File]::WriteAllText($tmpPath, $Content, $utf8NoBom)
+        Move-Item -LiteralPath $tmpPath -Destination $Path -Force -ErrorAction Stop
+    } catch {
+        if (Test-Path -LiteralPath $tmpPath -ErrorAction SilentlyContinue) {
+            Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+        }
+        [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+    }
+}
+
+function Get-WisImageProfileForReport {
+    param(
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+    if (Get-Command Get-WisImageProfile -ErrorAction SilentlyContinue) {
+        try {
+            $prof = Get-WisImageProfile -SystemLogDir $SystemLogDir -LocalSetupDir $LocalSetupDir
+            if ($prof) { return $prof }
+        } catch {}
+    }
+    foreach ($candPath in @(
+        (Join-Path $SystemLogDir "image-profile.json"),
+        "C:\Windows\Logs\WIS\image-profile.json",
+        (Join-Path $LocalSetupDir "image-profile.json")
+    )) {
+        if ($candPath -and (Test-Path -LiteralPath $candPath -PathType Leaf -ErrorAction SilentlyContinue)) {
+            try {
+                $rawJson = Get-Content -LiteralPath $candPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($rawJson)) {
+                    $parsed = ConvertFrom-Json -InputObject $rawJson -ErrorAction SilentlyContinue
+                    if ($parsed) {
+                        $imgType = "lean"
+                        if ($parsed.PSObject.Properties['image_type'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.image_type)) {
+                            $normT = ([string]$parsed.image_type).Trim().ToLowerInvariant()
+                            if ($normT -in @("preinstalled", "lean")) { $imgType = $normT }
+                        }
+                        $wimVer = if ($parsed.PSObject.Properties['wim_version'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.wim_version)) { ([string]$parsed.wim_version).Trim() } else { "unknown" }
+                        return [PSCustomObject]@{
+                            image_type  = $imgType
+                            wim_version = $wimVer
+                            found       = $true
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+    return [PSCustomObject]@{
+        image_type  = "lean"
+        wim_version = "unknown"
+        found       = $false
+    }
+}
+
+function Get-WisAutopilotStatusFromFile {
+    <#
+    .SYNOPSIS
+        IMP-114: Ucitava i normalizuje kanonski Windows Autopilot status objekat iz
+        C:\setup\autopilot-status.json (ili autopilot_report.json / winpe-autopilot-forensics.json).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$LocalSetupDir = "C:\setup",
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS"
+    )
+
+    $candidates = @(
+        @{ Path = (Join-Path $LocalSetupDir "autopilot-status.json");            DefaultSource = "autopilot_status" },
+        @{ Path = "C:\setup\autopilot-status.json";                              DefaultSource = "autopilot_status" },
+        @{ Path = (Join-Path $SystemLogDir "autopilot-status.json");             DefaultSource = "autopilot_status" },
+        @{ Path = "C:\Windows\Logs\WIS\autopilot-status.json";                   DefaultSource = "autopilot_status" },
+        @{ Path = (Join-Path $LocalSetupDir "autopilot_report.json");            DefaultSource = "autopilot_report" },
+        @{ Path = "C:\setup\autopilot_report.json";                              DefaultSource = "autopilot_report" },
+        @{ Path = (Join-Path $SystemLogDir "autopilot_report.json");             DefaultSource = "autopilot_report" },
+        @{ Path = "C:\Windows\Logs\WIS\autopilot_report.json";                   DefaultSource = "autopilot_report" },
+        @{ Path = (Join-Path $LocalSetupDir "winpe-autopilot-forensics.json");   DefaultSource = "winpe_preformat" },
+        @{ Path = (Join-Path $SystemLogDir "winpe-autopilot-forensics.json");    DefaultSource = "winpe_preformat" }
+    )
+
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $bestObj = $null
+    $bestRank = -1
+
+    foreach ($cand in $candidates) {
+        $candPath = $cand.Path
+        if ([string]::IsNullOrWhiteSpace($candPath) -or -not $seenPaths.Add($candPath)) { continue }
+        if (-not (Test-Path -LiteralPath $candPath -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
+
+        try {
+            $rawAp = Get-Content -LiteralPath $candPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($rawAp)) { continue }
+            $parsed = ConvertFrom-Json -InputObject $rawAp -ErrorAction SilentlyContinue
+            if (-not $parsed) { continue }
+
+            $mc = ""
+            if ($parsed.PSObject.Properties['matrix_code'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.matrix_code)) {
+                $mc = ([string]$parsed.matrix_code).Trim().ToUpperInvariant()
+            } elseif ($parsed.PSObject.Properties['status'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.status)) {
+                $mc = ([string]$parsed.status).Trim().ToUpperInvariant()
+            } else {
+                $mc = "UNVERIFIED_UNKNOWN"
+            }
+
+            $cloudObj = if ($parsed.PSObject.Properties['cloud_ztd']) { $parsed.cloud_ztd } else { $null }
+            $localObj = if ($parsed.PSObject.Properties['local_forensics']) { $parsed.local_forensics } else { $null }
+
+            $cloudReg = $false
+            if ($cloudObj -and $cloudObj.PSObject.Properties['is_registered']) {
+                $cloudReg = [bool]$cloudObj.is_registered
+            }
+            $isLocked = $false
+            if ($parsed.PSObject.Properties['is_locked']) {
+                $isLocked = [bool]$parsed.is_locked
+            }
+            if ($cloudReg -or ($mc -in @("LOCKED_TENANT", "HIDDEN_LOCK"))) {
+                $isLocked = $true
+            }
+
+            $rawConfirmedFree = $false
+            if ($parsed.PSObject.Properties['confirmed_free']) {
+                $rawConfirmedFree = [bool]$parsed.confirmed_free
+            } elseif ($cloudObj -and $cloudObj.PSObject.Properties['confirmed_free']) {
+                $rawConfirmedFree = [bool]$cloudObj.confirmed_free
+            }
+            $confirmedFree = (-not $isLocked) -and (-not $cloudReg) -and ($rawConfirmedFree -or ($mc -in @("CONFIRMED_CLEAN", "RELEASED_LOCAL_TRACES")))
+
+            $binaryVerdict = if ($isLocked) {
+                "IMA_AUTOPILOT"
+            } elseif ($confirmedFree) {
+                "NEMA_AUTOPILOT"
+            } else {
+                "NIJE_PROVERENO"
+            }
+
+            $statusLevel = if ($isLocked) {
+                "CRITICAL"
+            } elseif ($confirmedFree) {
+                "OK"
+            } else {
+                "WARNING"
+            }
+
+            $tenantDomain = ""
+            if ($parsed.PSObject.Properties['tenant_domain'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.tenant_domain)) {
+                $tenantDomain = ([string]$parsed.tenant_domain).Trim()
+            } elseif ($cloudObj -and $cloudObj.PSObject.Properties['profile_tenant_domain'] -and -not [string]::IsNullOrWhiteSpace([string]$cloudObj.profile_tenant_domain)) {
+                $tenantDomain = ([string]$cloudObj.profile_tenant_domain).Trim()
+            } elseif ($localObj -and $localObj.PSObject.Properties['tenant_domain'] -and -not [string]::IsNullOrWhiteSpace([string]$localObj.tenant_domain)) {
+                $tenantDomain = ([string]$localObj.tenant_domain).Trim()
+            }
+
+            $tenantId = ""
+            if ($parsed.PSObject.Properties['tenant_id'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.tenant_id)) {
+                $tenantId = ([string]$parsed.tenant_id).Trim()
+            } elseif ($cloudObj -and $cloudObj.PSObject.Properties['profile_tenant_id'] -and -not [string]::IsNullOrWhiteSpace([string]$cloudObj.profile_tenant_id)) {
+                $tenantId = ([string]$cloudObj.profile_tenant_id).Trim()
+            } elseif ($localObj -and $localObj.PSObject.Properties['tenant_id'] -and -not [string]::IsNullOrWhiteSpace([string]$localObj.tenant_id)) {
+                $tenantId = ([string]$localObj.tenant_id).Trim()
+            }
+
+            $assignedName = ""
+            if ($parsed.PSObject.Properties['assigned_device_name'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.assigned_device_name)) {
+                $assignedName = ([string]$parsed.assigned_device_name).Trim()
+            } elseif ($cloudObj -and $cloudObj.PSObject.Properties['profile_device_name'] -and -not [string]::IsNullOrWhiteSpace([string]$cloudObj.profile_device_name)) {
+                $assignedName = ([string]$cloudObj.profile_device_name).Trim()
+            } elseif ($localObj -and $localObj.PSObject.Properties['assigned_device_name'] -and -not [string]::IsNullOrWhiteSpace([string]$localObj.assigned_device_name)) {
+                $assignedName = ([string]$localObj.assigned_device_name).Trim()
+            }
+
+            $queryMode = ""
+            if ($parsed.PSObject.Properties['query_mode'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.query_mode)) {
+                $queryMode = ([string]$parsed.query_mode).Trim()
+            } elseif ($cloudObj -and $cloudObj.PSObject.Properties['query_mode'] -and -not [string]::IsNullOrWhiteSpace([string]$cloudObj.query_mode)) {
+                $queryMode = ([string]$cloudObj.query_mode).Trim()
+            }
+
+            $hasLocalTraces = $false
+            if ($parsed.PSObject.Properties['has_local_traces']) {
+                $hasLocalTraces = [bool]$parsed.has_local_traces
+            } elseif ($localObj -and $localObj.PSObject.Properties['has_traces']) {
+                $hasLocalTraces = [bool]$localObj.has_traces
+            }
+
+            $srcVal = $cand.DefaultSource
+            if ($parsed.PSObject.Properties['source'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.source)) {
+                $srcVal = ([string]$parsed.source).Trim()
+            }
+
+            $normObj = [ordered]@{
+                matrix_code          = $mc
+                status_level         = $statusLevel
+                binary_verdict       = $binaryVerdict
+                is_locked            = [bool]$isLocked
+                confirmed_free       = [bool]$confirmedFree
+                tenant_domain        = $tenantDomain
+                tenant_id            = $tenantId
+                assigned_device_name = $assignedName
+                query_mode           = $queryMode
+                has_local_traces     = [bool]$hasLocalTraces
+                source               = $srcVal
+            }
+
+            # Prioritet integriteta: is_locked (3) > confirmed_free (2) > unverified/ostalo (1)
+            $rank = if ($isLocked) { 3 } elseif ($confirmedFree) { 2 } else { 1 }
+            if ($rank -gt $bestRank) {
+                $bestRank = $rank
+                $bestObj = $normObj
+                if ($bestRank -eq 3) { break }
+            }
+        } catch {}
+    }
+
+    if ($null -ne $bestObj) {
+        return $bestObj
+    }
+
+    return [ordered]@{
+        matrix_code          = "UNVERIFIED_MISSING"
+        status_level         = "WARNING"
+        binary_verdict       = "NIJE_PROVERENO"
+        is_locked            = $false
+        confirmed_free       = $false
+        tenant_domain        = ""
+        tenant_id            = ""
+        assigned_device_name = ""
+        query_mode           = ""
+        has_local_traces     = $false
+        source               = "none"
+    }
+}
+
 function Export-ServisSummaryReport {
     param(
         $VerificationResults,
@@ -83,19 +329,45 @@ function Export-ServisSummaryReport {
             $fbOffice = (Test-Path "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files\Microsoft Office\Office16\WINWORD.EXE") -or (Test-Path "C:\Program Files (x86)\Microsoft Office\Office16\WINWORD.EXE")
             $fbDotNet = (Test-Path "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App") -or [bool]((Get-ItemProperty "HKLM:\SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost" -ErrorAction SilentlyContinue).Version)
             $fbBatt = (Test-Path "C:\Program Files\BatteryBar\BatteryBar.exe") -or (Test-Path "C:\Program Files (x86)\BatteryBar\BatteryBar.exe")
+            # IMP-104: Stvarna detekcija prenosivog uredjaja/laptopa u fallback bloku umesto hardkodovanog $false
+            $fbIsLaptop = $false
+            try {
+                if (Get-Command Test-DeviceIsPortable -ErrorAction SilentlyContinue) {
+                    $fbIsLaptop = [bool](Test-DeviceIsPortable)
+                } elseif (Get-Command Test-BatteryPresent -ErrorAction SilentlyContinue) {
+                    $fbIsLaptop = [bool](Test-BatteryPresent)
+                } else {
+                    $fbBatInst = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
+                    if ($fbBatInst) {
+                        $fbIsLaptop = $true
+                    } else {
+                        $fbEnc = Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue
+                        if ($fbEnc -and $fbEnc.ChassisTypes) {
+                            foreach ($fbCt in @($fbEnc.ChassisTypes)) {
+                                if ($fbCt -in @(8, 9, 10, 11, 12, 14, 30, 31, 32)) {
+                                    $fbIsLaptop = $true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {}
             $fbMiss = [System.Collections.Generic.List[string]]::new()
             if (-not $fbChrome)  { $fbMiss.Add("Google Chrome") }
             if (-not $fbWinrar)  { $fbMiss.Add("WinRAR x64") }
             if (-not $fbAcrobat) { $fbMiss.Add("Adobe Acrobat Pro") }
             if (-not $fbOffice)  { $fbMiss.Add("Microsoft Office") }
             if (-not $fbDotNet)  { $fbMiss.Add("Microsoft .NET Runtime") }
+            if ($fbIsLaptop -and -not $fbBatt) { $fbMiss.Add("BatteryBar (Laptop)") }
+            $fbBattMsg = if (-not $fbIsLaptop) { "Nije primenjivo (Desktop)" } elseif ($fbBatt) { "Instaliran" } else { "Nedostaje" }
             $VerificationResults = @{
                 Chrome               = @{ Installed = $fbChrome; Message = if ($fbChrome) { "Instaliran" } else { "Nedostaje" } }
                 WinRAR               = @{ Installed = $fbWinrar; Message = if ($fbWinrar) { "Instaliran" } else { "Nedostaje" } }
                 Acrobat              = @{ Installed = $fbAcrobat; Message = if ($fbAcrobat) { "Instaliran" } else { "Nedostaje" } }
                 Office               = @{ Installed = $fbOffice; Message = if ($fbOffice) { "Instaliran" } else { "Nedostaje" } }
                 DotNet               = @{ Installed = $fbDotNet; Message = if ($fbDotNet) { "Instaliran" } else { "Nedostaje" } }
-                BatteryBar           = @{ Installed = $fbBatt; IsLaptop = $false; Message = if ($fbBatt) { "Instaliran" } else { "Nedostaje" } }
+                BatteryBar           = @{ Installed = $fbBatt; IsLaptop = $fbIsLaptop; Message = $fbBattMsg }
                 AllRequiredInstalled = ($fbMiss.Count -eq 0)
                 MissingList          = $fbMiss
             }
@@ -142,7 +414,40 @@ function Export-ServisSummaryReport {
                 $sb.AppendLine("Svetleca tastatura    : $($hw.BacklitKbStatus)") | Out-Null
             }
         }
-        $isLaptop = $VerificationResults -and $VerificationResults.BatteryBar -and $VerificationResults.BatteryBar.IsLaptop
+        $isLaptop = $false
+        if ($VerificationResults -and $VerificationResults.BatteryBar -and ($null -ne $VerificationResults.BatteryBar.IsLaptop)) {
+            $isLaptop = [bool]$VerificationResults.BatteryBar.IsLaptop
+        } else {
+            try {
+                if (Get-Command Test-DeviceIsPortable -ErrorAction SilentlyContinue) {
+                    $isLaptop = [bool](Test-DeviceIsPortable)
+                } elseif (Get-Command Test-BatteryPresent -ErrorAction SilentlyContinue) {
+                    $isLaptop = [bool](Test-BatteryPresent)
+                } elseif (Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) {
+                    $isLaptop = $true
+                } else {
+                    $encDet = Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue
+                    if ($encDet -and $encDet.ChassisTypes) {
+                        foreach ($eCt in @($encDet.ChassisTypes)) {
+                            if ($eCt -in @(8, 9, 10, 11, 12, 14, 30, 31, 32)) {
+                                $isLaptop = $true
+                                break
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+        $imgProfile = Get-WisImageProfileForReport -SystemLogDir $SystemLogDir -LocalSetupDir $LocalSetupDir
+        $autopilotObj = Get-WisAutopilotStatusFromFile -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+        $apTxtLine = if ($autopilotObj.binary_verdict -eq "IMA_AUTOPILOT") {
+            $apExtra = if ($autopilotObj.tenant_domain) { " (Tenant: $($autopilotObj.tenant_domain))" } else { "" }
+            "[KRITICNO] IMA AUTOPILOT$apExtra"
+        } elseif ($autopilotObj.binary_verdict -eq "NEMA_AUTOPILOT") {
+            "[OK] NEMA AUTOPILOT (Potvrdjeno slobodan)"
+        } else {
+            "[UPOZORENJE] NIJE PROVERENO (potrebna mreza u OOBE-u)"
+        }
         $thermalNoteText = ""
         foreach ($candPath in @(
             (Join-Path $LocalSetupDir "stress-test-result.json"),
@@ -217,6 +522,8 @@ function Export-ServisSummaryReport {
         $offDetailVal = $rawOffDetail -replace '(?i)\b([A-Z0-9]{5}-){4}([A-Z0-9]{5})\b', '*****-*****-*****-*****-$2'
 
         $sb.AppendLine("Baterija              : $(if ($isLaptop) { 'Detektovana (Laptop)' } else { 'Nema baterije (Desktop / VM)' })") | Out-Null
+        $sb.AppendLine("Profil slike (ISO)    : $($imgProfile.image_type) ($($imgProfile.wim_version))") | Out-Null
+        $sb.AppendLine("Windows Autopilot     : $apTxtLine") | Out-Null
         if ($thermalNoteText) {
             $sb.AppendLine("NAPOMENA (TERMALNA)   : $thermalNoteText") | Out-Null
         }
@@ -229,7 +536,8 @@ function Export-ServisSummaryReport {
             $sb.AppendLine("Adobe Acrobat Pro     : $(if ($VerificationResults.Acrobat.Installed) { '[OK] ' } else { '[NEDOSTAJE] ' })$($VerificationResults.Acrobat.Message)") | Out-Null
             $sb.AppendLine("Microsoft Office      : $(if ($VerificationResults.Office.Installed) { '[OK] ' } else { '[NEDOSTAJE] ' })$($VerificationResults.Office.Message)") | Out-Null
             $sb.AppendLine("Microsoft .NET        : $(if ($VerificationResults.DotNet.Installed) { '[OK] ' } else { '[NEDOSTAJE] ' })$($VerificationResults.DotNet.Message)") | Out-Null
-            $sb.AppendLine("BatteryBar            : $(if ($VerificationResults.BatteryBar.Installed) { '[OK] ' } else { '[NEDOSTAJE] ' })$($VerificationResults.BatteryBar.Message)") | Out-Null
+            $bbTxtStatus = if (-not $isLaptop) { "[PRESKOČENO] Nije primenjivo (Desktop)" } elseif ($VerificationResults.BatteryBar.Installed) { "[OK] $($VerificationResults.BatteryBar.Message)" } else { "[NEDOSTAJE] $($VerificationResults.BatteryBar.Message)" }
+            $sb.AppendLine("BatteryBar            : $bbTxtStatus") | Out-Null
             $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
             $sb.AppendLine("                     STATUS SISTEMSKIH LICENCI                                  ") | Out-Null
             $sb.AppendLine("--------------------------------------------------------------------------------") | Out-Null
@@ -299,6 +607,17 @@ function Export-ServisSummaryReport {
             }
             $mdSb.AppendLine("- **Baterija:** $(if ($isLaptop) { 'Detektovana (Laptop)' } else { 'Nema baterije (Desktop / VM)' })") | Out-Null
         }
+        $mdSb.AppendLine("- **Profil slike (ISO):** $($imgProfile.image_type) ($($imgProfile.wim_version))") | Out-Null
+        $mdSb.AppendLine("") | Out-Null
+        $mdSb.AppendLine("### [AUTOPILOT] Status Windows Autopilota") | Out-Null
+        $mdSb.AppendLine("- **Odluka:** $apTxtLine") | Out-Null
+        $mdSb.AppendLine("- **Matrix kod:** $($autopilotObj.matrix_code) (Nivo: $($autopilotObj.status_level), Izvor: $($autopilotObj.source))") | Out-Null
+        if ($autopilotObj.tenant_domain) {
+            $mdSb.AppendLine("- **Tenant domen:** $($autopilotObj.tenant_domain)") | Out-Null
+        }
+        if ($autopilotObj.assigned_device_name) {
+            $mdSb.AppendLine("- **Dodeljeno ime uređaja:** $($autopilotObj.assigned_device_name)") | Out-Null
+        }
         $mdSb.AppendLine("") | Out-Null
         $mdSb.AppendLine("### [PROGRAMI] Status Instaliranih Aplikacija") | Out-Null
         if ($VerificationResults) {
@@ -307,7 +626,8 @@ function Export-ServisSummaryReport {
             $mdSb.AppendLine("- **Adobe Acrobat:** $(if ($VerificationResults.Acrobat.Installed) { '[OK] Instaliran' } else { '[NEDOSTAJE] Nedostaje' }) ($($VerificationResults.Acrobat.Message))") | Out-Null
             $mdSb.AppendLine("- **Microsoft Office:** $(if ($VerificationResults.Office.Installed) { '[OK] Instaliran' } else { '[NEDOSTAJE] Nedostaje' }) ($($VerificationResults.Office.Message))") | Out-Null
             $mdSb.AppendLine("- **Microsoft .NET:** $(if ($VerificationResults.DotNet.Installed) { '[OK] Instaliran' } else { '[NEDOSTAJE] Nedostaje' }) ($($VerificationResults.DotNet.Message))") | Out-Null
-            $mdSb.AppendLine("- **BatteryBar:** $(if ($VerificationResults.BatteryBar.Installed) { '[OK] Instaliran' } else { '[NEDOSTAJE] Nedostaje' }) ($($VerificationResults.BatteryBar.Message))") | Out-Null
+            $bbMdStatus = if (-not $isLaptop) { "[PRESKOČENO] Nije primenjivo (Desktop)" } elseif ($VerificationResults.BatteryBar.Installed) { "[OK] Instaliran ($($VerificationResults.BatteryBar.Message))" } else { "[NEDOSTAJE] Nedostaje ($($VerificationResults.BatteryBar.Message))" }
+            $mdSb.AppendLine("- **BatteryBar:** $bbMdStatus") | Out-Null
             $mdSb.AppendLine("") | Out-Null
             $mdSb.AppendLine("### [LICENCE] Status Licenci") | Out-Null
             $mdSb.AppendLine("- **Windows Licenca:** $(if ($winActVal) { '[OK] Trajno aktiviran' } else { '[UPOZORENJE] Nije aktiviran' })") | Out-Null
@@ -381,7 +701,14 @@ function Export-ServisSummaryReport {
             hostname          = $compName
             timestamp         = (Get-Date).ToString("o")
             user              = $user
-            status            = if (($VerificationResults -and (-not $VerificationResults.AllRequiredInstalled)) -or $thermalNoteText) { "WARN" } else { "COMPLETED" }
+            status            = if (($VerificationResults -and (-not $VerificationResults.AllRequiredInstalled)) -or $thermalNoteText -or $autopilotObj.is_locked) { "WARN" } else { "COMPLETED" }
+            image_type        = [string]$imgProfile.image_type
+            wim_version       = [string]$imgProfile.wim_version
+            run_meta          = [ordered]@{
+                image_type  = [string]$imgProfile.image_type
+                wim_version = [string]$imgProfile.wim_version
+            }
+            autopilot         = $autopilotObj
             hardware          = [ordered]@{
                 manufacturer     = if ($hw) { $hw.Manufacturer } else { "UNKNOWN" }
                 model            = if ($hw) { $hw.Model } else { "UNKNOWN" }
@@ -405,7 +732,7 @@ function Export-ServisSummaryReport {
                 acrobat    = if ($VerificationResults -and $VerificationResults.Acrobat -and $VerificationResults.Acrobat.Installed) { "OK" } else { "MISSING" }
                 office     = if ($VerificationResults -and $VerificationResults.Office -and $VerificationResults.Office.Installed) { "OK" } else { "MISSING" }
                 dotnet     = if ($VerificationResults -and $VerificationResults.DotNet -and $VerificationResults.DotNet.Installed) { "OK" } else { "MISSING" }
-                batterybar = if ($VerificationResults -and $VerificationResults.BatteryBar -and $VerificationResults.BatteryBar.Installed) { "OK" } else { "MISSING" }
+                batterybar = if (-not $isLaptop) { "SKIPPED" } elseif ($VerificationResults -and $VerificationResults.BatteryBar -and $VerificationResults.BatteryBar.Installed) { "OK" } else { "MISSING" }
             }
             licenses      = [ordered]@{
                 windows                = [bool]$winActVal
@@ -438,31 +765,31 @@ function Export-ServisSummaryReport {
         $jsonKartonContent = ConvertTo-Json -InputObject $kartonMap -Depth 6
 
         $publicDesktop = "C:\Users\Public\Desktop"
-        if (Test-Path $publicDesktop) {
-            [System.IO.File]::WriteAllText((Join-Path $publicDesktop "WIS_Status_Instalacije.txt"), $reportContent, [System.Text.Encoding]::UTF8)
+        if (Test-Path -LiteralPath $publicDesktop -ErrorAction SilentlyContinue) {
+            Write-WisTextAtomic -Path (Join-Path $publicDesktop "WIS_Status_Instalacije.txt") -Content $reportContent
         }
 
         # Upis u C:\setup
-        if (Test-Path $LocalSetupDir) {
-            [System.IO.File]::WriteAllText((Join-Path $LocalSetupDir "WIS_Status_Instalacije.txt"), $reportContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $LocalSetupDir "servisni_karton.md"), $mdKartonContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $LocalSetupDir "servisni_karton.json"), $jsonKartonContent, [System.Text.Encoding]::UTF8)
+        if (Test-Path -LiteralPath $LocalSetupDir -ErrorAction SilentlyContinue) {
+            Write-WisTextAtomic -Path (Join-Path $LocalSetupDir "WIS_Status_Instalacije.txt") -Content $reportContent
+            Write-WisTextAtomic -Path (Join-Path $LocalSetupDir "servisni_karton.md") -Content $mdKartonContent
+            Write-WisTextAtomic -Path (Join-Path $LocalSetupDir "servisni_karton.json") -Content $jsonKartonContent
         }
 
         # Upis u sistemski log direktorijum C:\Windows\Logs\WIS
-        if (Test-Path $SystemLogDir) {
-            [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "WIS_Status_Instalacije.txt"), $reportContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "servisni_karton.md"), $mdKartonContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $SystemLogDir "servisni_karton.json"), $jsonKartonContent, [System.Text.Encoding]::UTF8)
+        if (Test-Path -LiteralPath $SystemLogDir -ErrorAction SilentlyContinue) {
+            Write-WisTextAtomic -Path (Join-Path $SystemLogDir "WIS_Status_Instalacije.txt") -Content $reportContent
+            Write-WisTextAtomic -Path (Join-Path $SystemLogDir "servisni_karton.md") -Content $mdKartonContent
+            Write-WisTextAtomic -Path (Join-Path $SystemLogDir "servisni_karton.json") -Content $jsonKartonContent
         }
 
-        if ($SourceRoot -and (Test-Path $SourceRoot)) {
+        if ($SourceRoot -and (Test-Path -LiteralPath $SourceRoot -ErrorAction SilentlyContinue)) {
             $usbLogs = Join-Path $SourceRoot "Logs"
-            if (-not (Test-Path $usbLogs)) { New-Item -Path $usbLogs -ItemType Directory -Force | Out-Null }
+            if (-not (Test-Path -LiteralPath $usbLogs -ErrorAction SilentlyContinue)) { New-Item -Path $usbLogs -ItemType Directory -Force | Out-Null }
             $dateTag = (Get-Date).ToString("yyyyMMdd")
-            [System.IO.File]::WriteAllText((Join-Path $usbLogs "WIS_Status_${compName}_${dateTag}.txt"), $reportContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $usbLogs "servisni_karton_${compName}_${dateTag}.md"), $mdKartonContent, [System.Text.Encoding]::UTF8)
-            [System.IO.File]::WriteAllText((Join-Path $usbLogs "servisni_karton_${compName}_${dateTag}.json"), $jsonKartonContent, [System.Text.Encoding]::UTF8)
+            Write-WisTextAtomic -Path (Join-Path $usbLogs "WIS_Status_${compName}_${dateTag}.txt") -Content $reportContent
+            Write-WisTextAtomic -Path (Join-Path $usbLogs "servisni_karton_${compName}_${dateTag}.md") -Content $mdKartonContent
+            Write-WisTextAtomic -Path (Join-Path $usbLogs "servisni_karton_${compName}_${dateTag}.json") -Content $jsonKartonContent
         }
         if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
             Write-ServisLog "Uspesno kreiran i eksportovan servisni statusni izvestaj i servisni karton (JSON/MD)." -Level "SUCCESS" -Component "Report"
@@ -1589,7 +1916,7 @@ function Invoke-Phase6Finalize {
             Export-ServisSummaryReport -VerificationResults $verResults -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
         }
 
-        $logFilesToArchive = @("servis_deploy.log", "servis_deploy.jsonl", "setupcomplete.log", "firstlogon.log", "WIS_Status_Instalacije.txt", "servisni_karton.json", "servisni_karton.md", "license-status.json", "acrobat_install.log", "payload_meta.json", "build-attestation.json", "vm-validation.json", "version.json")
+        $logFilesToArchive = @("servis_deploy.log", "servis_deploy.jsonl", "setupcomplete.log", "firstlogon.log", "WIS_Status_Instalacije.txt", "servisni_karton.json", "servisni_karton.md", "license-status.json", "autopilot-status.json", "autopilot_report.json", "winpe-autopilot-forensics.json", "acrobat_install.log", "payload_meta.json", "build-attestation.json", "vm-validation.json", "version.json")
         foreach ($lf in $logFilesToArchive) {
             $srcP = Join-Path $LocalSetupDir $lf
             if (Test-Path $srcP) {
@@ -1650,6 +1977,17 @@ function Invoke-Phase6Finalize {
                 office_license_method  = $licDiagSummary.OfficeLicenseMethod
                 office_license_detail  = $licDiagSummary.OfficeLicenseDetail
             }
+        }
+        $p6ImgProfile = Get-WisImageProfileForReport -SystemLogDir $SystemLogDir -LocalSetupDir $LocalSetupDir
+        $diagCustom["image_type"] = [string]$p6ImgProfile.image_type
+        $diagCustom["wim_version"] = [string]$p6ImgProfile.wim_version
+        $diagCustom["run_meta"] = [ordered]@{
+            image_type  = [string]$p6ImgProfile.image_type
+            wim_version = [string]$p6ImgProfile.wim_version
+        }
+        $p6Autopilot = Get-WisAutopilotStatusFromFile -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+        if ($p6Autopilot) {
+            $diagCustom["autopilot"] = $p6Autopilot
         }
 
         # 3a. Slanje životnog ciklusa COMPLETED
@@ -1716,7 +2054,7 @@ function Invoke-Phase6Finalize {
                 foreach ($dk in $diagCustom.Keys) {
                     $repPayload[$dk] = $diagCustom[$dk]
                 }
-                $jsonRep = ConvertTo-Json -InputObject $repPayload -Compress
+                $jsonRep = ConvertTo-Json -InputObject $repPayload -Compress -Depth 6
                 $postUrl = "$targetHub/api/devices/$deviceId/report"
                 $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonRep)
 
@@ -1768,7 +2106,7 @@ function Invoke-Phase6Finalize {
                 foreach ($dk in $diagCustom.Keys) {
                     $lcPayload[$dk] = $diagCustom[$dk]
                 }
-                $jsonLc = ConvertTo-Json -InputObject $lcPayload -Compress
+                $jsonLc = ConvertTo-Json -InputObject $lcPayload -Compress -Depth 6
                 $lcUrl = "$targetHub/api/lifecycle"
                 $bytesLc = [System.Text.Encoding]::UTF8.GetBytes($jsonLc)
 
@@ -1913,6 +2251,7 @@ function Invoke-Phase5Finalize {
 
 Export-ModuleMember -Function `
     Export-ServisSummaryReport, `
+    Get-WisAutopilotStatusFromFile, `
     Clear-ServisWifiSecrets, `
     Remove-LegacyWinRing0Driver, `
     Restore-WisSecurityHardening, `

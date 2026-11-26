@@ -787,15 +787,18 @@ function Sync-ProgramiFromNas {
         return $false
     }
 
-    # Programi je zasebno deljenje; podrzavamo Programi, WIS, ShareName i Servis fallback
+    # IMP-75: Kanonski prioritet je "Servis" pre default "Programi" deljenja (sprečava lažni WARN za \Programi)
     $shareCandidates = @()
-    if (-not [string]::IsNullOrWhiteSpace($nas.ProgramiShare)) { $shareCandidates += $nas.ProgramiShare }
-    $shareCandidates += "Programi"
-    if (-not [string]::IsNullOrWhiteSpace($nas.ShareName) -and $shareCandidates -notcontains $nas.ShareName) {
-        $shareCandidates += $nas.ShareName
+    $cfgProgShare = if ($nas.ProgramiShare) { $nas.ProgramiShare.Trim() } else { "" }
+    if (-not [string]::IsNullOrWhiteSpace($cfgProgShare) -and ($cfgProgShare -ine "Programi")) {
+        $shareCandidates += $cfgProgShare
     }
-    if ($shareCandidates -notcontains "WIS") { $shareCandidates += "WIS" }
+    if (-not [string]::IsNullOrWhiteSpace($nas.ShareName) -and ($nas.ShareName.Trim() -ine "Programi") -and ($shareCandidates -notcontains $nas.ShareName.Trim())) {
+        $shareCandidates += $nas.ShareName.Trim()
+    }
     if ($shareCandidates -notcontains "Servis") { $shareCandidates += "Servis" }
+    if ($shareCandidates -notcontains "Programi") { $shareCandidates += "Programi" }
+    if ($shareCandidates -notcontains "WIS") { $shareCandidates += "WIS" }
     $shareCandidates = $shareCandidates | Select-Object -Unique
 
     $uncShare = $null
@@ -899,19 +902,15 @@ function Sync-ProgramiFromNas {
             return $false
         }
 
-        # IMP-48: Priprema ciljanog (single-app / SubFolders) prenosa za pojedinacni Retry
+        # IMP-48 / IMP-112: Priprema ciljanog (single-app / SubFolders / Golden ISO delta) prenosa
         $targetSubFolders = [System.Collections.Generic.List[string]]::new()
         $targetRootFilters = [System.Collections.Generic.List[string]]::new()
-        if ($SubFolders) {
-            foreach ($sfItem in $SubFolders) {
-                if (-not [string]::IsNullOrWhiteSpace($sfItem) -and -not $targetSubFolders.Contains($sfItem.Trim())) {
-                    $targetSubFolders.Add($sfItem.Trim())
-                }
-            }
-        }
-        $normalizedOnlyApp = if ($OnlyApp) { $OnlyApp.Trim().ToLowerInvariant() } else { "" }
-        if ($normalizedOnlyApp) {
-            switch -Regex ($normalizedOnlyApp) {
+        $addTargetSpec = {
+            param([string]$RawToken)
+            if ([string]::IsNullOrWhiteSpace($RawToken)) { return }
+            $trimmed = $RawToken.Trim()
+            $norm = $trimmed.ToLowerInvariant()
+            switch -Regex ($norm) {
                 '^(acrobat|adobe acrobat|adobe acrobat pro)$' {
                     foreach ($af in @("Adobe.Acrobat.Pro.2024.x64.Multilingual", "Acrobat Pro 2024", "Adobe Acrobat Pro")) {
                         if (-not $targetSubFolders.Contains($af)) { $targetSubFolders.Add($af) }
@@ -920,7 +919,7 @@ function Sync-ProgramiFromNas {
                 '^(office|microsoft office|ms office)$' {
                     if (-not $targetSubFolders.Contains("Office 2024")) { $targetSubFolders.Add("Office 2024") }
                 }
-                '^(dotnet|runtimes)$' {
+                '^(dotnet|runtimes|vcredist)$' {
                     foreach ($df in @("DotNet", "VCRedist")) {
                         if (-not $targetSubFolders.Contains($df)) { $targetSubFolders.Add($df) }
                     }
@@ -943,7 +942,19 @@ function Sync-ProgramiFromNas {
                         if (-not $targetRootFilters.Contains($wf)) { $targetRootFilters.Add($wf) }
                     }
                 }
+                default {
+                    if (-not $targetSubFolders.Contains($trimmed)) { $targetSubFolders.Add($trimmed) }
+                }
             }
+        }
+        if ($SubFolders) {
+            foreach ($sfItem in $SubFolders) {
+                & $addTargetSpec $sfItem
+            }
+        }
+        $normalizedOnlyApp = if ($OnlyApp) { $OnlyApp.Trim().ToLowerInvariant() } else { "" }
+        if ($normalizedOnlyApp) {
+            & $addTargetSpec $normalizedOnlyApp
         }
         $isTargetedSync = ($targetSubFolders.Count -gt 0) -or ($targetRootFilters.Count -gt 0)
 
@@ -1053,22 +1064,33 @@ function Sync-ProgramiFromNas {
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $rcExitCode = -1
+        # IMP-100: Strogo monotoni brojac preuzetih MB (ne opada unazad pri overwrite-u/brisanju parcijalnih fajlova ili prelazu izmedju robocopy poslova)
+        $maxCopiedMb = 0.0
+        $completedJobsMb = 0.0
         foreach ($job in $robocopyJobs) {
             $rcArgs = $job.Args
             $measureDir = if ($job.Dest) { $job.Dest } else { $DestinationDir }
+            $measureUseRoot = ($robocopyJobs.Count -eq 1) -or ($measureDir -ieq $DestinationDir)
             $proc = Start-Process -FilePath "robocopy.exe" -ArgumentList $rcArgs -PassThru -WindowStyle Hidden
             if ($proc) {
                 while (-not $proc.WaitForExit(15000)) {
                     $elapsedSec = [int]$sw.Elapsed.TotalSeconds
-                    $copiedMb = 0.0
+                    $measuredMb = 0.0
                     try {
-                        if (Test-Path -LiteralPath $measureDir -ErrorAction SilentlyContinue) {
-                            $sumMeasure = Get-ChildItem -LiteralPath $measureDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                        $scanDir = if ($measureUseRoot) { $DestinationDir } else { $measureDir }
+                        if (Test-Path -LiteralPath $scanDir -ErrorAction SilentlyContinue) {
+                            $sumMeasure = Get-ChildItem -LiteralPath $scanDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
                             if ($sumMeasure -and $null -ne $sumMeasure.Sum) {
-                                $copiedMb = [Math]::Round(([double]$sumMeasure.Sum / 1MB), 1)
+                                $measuredMb = [Math]::Round(([double]$sumMeasure.Sum / 1MB), 1)
                             }
                         }
                     } catch {}
+
+                    $candidateMb = if ($measureUseRoot) { $measuredMb } else { [Math]::Round(($completedJobsMb + $measuredMb), 1) }
+                    if ($candidateMb -gt $maxCopiedMb) {
+                        $maxCopiedMb = $candidateMb
+                    }
+                    $copiedMb = $maxCopiedMb
 
                     $syncMsg = "Preuzimam instalacione pakete sa NAS-a ($copiedMb MB preuzeto, ${elapsedSec}s)..."
                     Write-ServisLog "Robocopy prenos sa NAS-a u toku: $copiedMb MB preuzeto (${elapsedSec}s)..." -Level "INFO" -Component "NasProgrami"
@@ -1111,6 +1133,21 @@ function Sync-ProgramiFromNas {
                 }
                 $proc.WaitForExit()
                 $rcExitCode = [int]$proc.ExitCode
+                try {
+                    if (-not $measureUseRoot -and (Test-Path -LiteralPath $measureDir -ErrorAction SilentlyContinue)) {
+                        $doneMeasure = Get-ChildItem -LiteralPath $measureDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                        if ($doneMeasure -and $null -ne $doneMeasure.Sum) {
+                            $completedJobsMb = [Math]::Round(($completedJobsMb + ([double]$doneMeasure.Sum / 1MB)), 1)
+                            if ($completedJobsMb -gt $maxCopiedMb) { $maxCopiedMb = $completedJobsMb }
+                        }
+                    } elseif (Test-Path -LiteralPath $DestinationDir -ErrorAction SilentlyContinue) {
+                        $doneRoot = Get-ChildItem -LiteralPath $DestinationDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum
+                        if ($doneRoot -and $null -ne $doneRoot.Sum) {
+                            $rootMb = [Math]::Round(([double]$doneRoot.Sum / 1MB), 1)
+                            if ($rootMb -gt $maxCopiedMb) { $maxCopiedMb = $rootMb }
+                        }
+                    }
+                } catch {}
             }
         }
         $sw.Stop()
@@ -1126,19 +1163,26 @@ function Sync-ProgramiFromNas {
 
         if ($isTargetedSync) {
             $targetVerified = $false
-            switch -Regex ($normalizedOnlyApp) {
-                '^(acrobat|adobe acrobat|adobe acrobat pro)$' { $targetVerified = [bool]$vAdobe }
-                '^(office|microsoft office|ms office)$'       { $targetVerified = [bool]$vOffice }
-                '^(chrome|google chrome)$'                    { $targetVerified = [bool]$vChrome }
-                '^winrar$'                                    { $targetVerified = @(Get-ChildItem -Path $DestinationDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0 }
-                '^batterybar$'                                { $targetVerified = (Test-Path (Join-Path $DestinationDir "BatteryBar\BatteryBar.exe")) }
-                default                                       { $targetVerified = ($rcExitCode -ge 0 -and $rcExitCode -lt 8) }
+            if (-not [string]::IsNullOrWhiteSpace($normalizedOnlyApp)) {
+                switch -Regex ($normalizedOnlyApp) {
+                    '^(acrobat|adobe acrobat|adobe acrobat pro)$' { $targetVerified = [bool]$vAdobe }
+                    '^(office|microsoft office|ms office)$'       { $targetVerified = [bool]$vOffice }
+                    '^(chrome|google chrome)$'                    { $targetVerified = [bool]$vChrome -or (@(Get-ChildItem -LiteralPath $DestinationDir -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0) -or (@(Get-ChildItem -LiteralPath $DestinationDir -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0) }
+                    '^winrar$'                                    { $targetVerified = @(Get-ChildItem -LiteralPath $DestinationDir -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0 }
+                    '^batterybar$'                                { $targetVerified = (Test-Path -LiteralPath (Join-Path $DestinationDir "BatteryBar\BatteryBar.exe") -ErrorAction SilentlyContinue) }
+                    default                                       { $targetVerified = ($rcExitCode -ge 0 -and $rcExitCode -lt 8) }
+                }
+            } elseif ($SubFolders -and $SubFolders.Count -gt 0) {
+                $subCheck = Test-ProgramiDirComplete -DirPath $DestinationDir -RequiredApps $SubFolders -Quiet
+                $targetVerified = [bool]($subCheck.IsComplete -or ($rcExitCode -ge 0 -and $rcExitCode -lt 8))
+            } else {
+                $targetVerified = ($rcExitCode -ge 0 -and $rcExitCode -lt 8)
             }
             if ($targetVerified) {
-                Write-ServisLog "Ciljana NAS sinhronizacija uspesna (OnlyApp='$OnlyApp', SubFolders='$($targetSubFolders -join ',')') na $DestinationDir." -Level "SUCCESS" -Component "NasProgrami"
+                Write-ServisLog "Ciljana NAS sinhronizacija uspesna (OnlyApp='$OnlyApp', SubFolders='$($targetSubFolders -join ',')', Preuzeto=${maxCopiedMb} MB) na $DestinationDir." -Level "SUCCESS" -Component "NasProgrami"
                 return $true
             }
-            Write-ServisLog "UPOZORENJE: Ciljani paket ($OnlyApp) nije verifikovan nakon robocopy-ja (ExitCode=$rcExitCode)." -Level "WARN" -Component "NasProgrami"
+            Write-ServisLog "UPOZORENJE: Ciljani paket ($OnlyApp / $($targetSubFolders -join ',')) nije verifikovan nakon robocopy-ja (ExitCode=$rcExitCode)." -Level "WARN" -Component "NasProgrami"
             if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
                 Send-IpcLog -Message "Ciljani paket ($OnlyApp) nije kompletiran sa NAS-a na $DestinationDir (ExitCode=$rcExitCode)." -Level "WARN" -Tag "[NasProgrami]"
             }
@@ -1453,12 +1497,15 @@ function Sync-ServisLicensingFromNas {
         } catch {}
 
         $shareCandidates = @()
-        if (-not [string]::IsNullOrWhiteSpace($nas.ProgramiShare)) { $shareCandidates += $nas.ProgramiShare }
-        $shareCandidates += "Programi"
-        $shareCandidates += "Servis"
-        if (-not [string]::IsNullOrWhiteSpace($nas.ShareName) -and $shareCandidates -notcontains $nas.ShareName) {
-            $shareCandidates += $nas.ShareName
+        $cfgLicProgShare = if ($nas.ProgramiShare) { $nas.ProgramiShare.Trim() } else { "" }
+        if (-not [string]::IsNullOrWhiteSpace($cfgLicProgShare) -and ($cfgLicProgShare -ine "Programi")) {
+            $shareCandidates += $cfgLicProgShare
         }
+        if (-not [string]::IsNullOrWhiteSpace($nas.ShareName) -and ($nas.ShareName.Trim() -ine "Programi") -and ($shareCandidates -notcontains $nas.ShareName.Trim())) {
+            $shareCandidates += $nas.ShareName.Trim()
+        }
+        if ($shareCandidates -notcontains "Servis") { $shareCandidates += "Servis" }
+        if ($shareCandidates -notcontains "Programi") { $shareCandidates += "Programi" }
         if ($shareCandidates -notcontains "WIS") { $shareCandidates += "WIS" }
         $shareCandidates = @($shareCandidates | ForEach-Object { ([string]$_) -replace '[\x00-\x1F]', '' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
 
@@ -1571,31 +1618,155 @@ function Sync-ServisLicensingFromNas {
     }
 }
 
+function Get-WisImageProfile {
+    <#
+    .SYNOPSIS
+        IMP-112: Cita profil Windows WIM slike iz C:\Windows\Logs\WIS\image-profile.json
+        sa fallback vrednostima (image_type="lean", wim_version="unknown").
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ProfilePath = "",
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($ProfilePath)) { [void]$candidates.Add($ProfilePath) }
+    foreach ($c in @(
+        (Join-Path $SystemLogDir "image-profile.json"),
+        "C:\Windows\Logs\WIS\image-profile.json",
+        (Join-Path $LocalSetupDir "image-profile.json")
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($c) -and -not $candidates.Contains($c)) {
+            [void]$candidates.Add($c)
+        }
+    }
+
+    foreach ($candPath in $candidates) {
+        if (Test-Path -LiteralPath $candPath -PathType Leaf -ErrorAction SilentlyContinue) {
+            try {
+                $rawJson = Get-Content -LiteralPath $candPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($rawJson)) {
+                    $parsed = ConvertFrom-Json -InputObject $rawJson -ErrorAction SilentlyContinue
+                    if ($parsed) {
+                        $imgType = "lean"
+                        if ($parsed.PSObject.Properties['image_type'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.image_type)) {
+                            $normT = ([string]$parsed.image_type).Trim().ToLowerInvariant()
+                            if ($normT -in @("preinstalled", "lean")) { $imgType = $normT }
+                        }
+                        $wimVer = "unknown"
+                        if ($parsed.PSObject.Properties['wim_version'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.wim_version)) {
+                            $wimVer = ([string]$parsed.wim_version).Trim()
+                        }
+                        $preApps = @()
+                        if ($parsed.PSObject.Properties['preinstalled_apps'] -and $parsed.preinstalled_apps) {
+                            $preApps = @($parsed.preinstalled_apps | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        }
+                        $builtAt = if ($parsed.PSObject.Properties['built_at'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.built_at)) { ([string]$parsed.built_at).Trim() } else { "" }
+                        return [PSCustomObject]@{
+                            image_type        = $imgType
+                            wim_version       = $wimVer
+                            preinstalled_apps = $preApps
+                            built_at          = $builtAt
+                            found             = $true
+                            source_path       = $candPath
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    return [PSCustomObject]@{
+        image_type        = "lean"
+        wim_version       = "unknown"
+        preinstalled_apps = @()
+        built_at          = ""
+        found             = $false
+        source_path       = ""
+    }
+}
+
 function Test-ProgramiDirComplete {
     param(
         [string]$DirPath,
-        [switch]$Quiet
+        [switch]$Quiet,
+        [string[]]$RequiredApps = @()
     )
-    if ([string]::IsNullOrWhiteSpace($DirPath) -or -not (Test-Path $DirPath -ErrorAction SilentlyContinue)) {
+    if ([string]::IsNullOrWhiteSpace($DirPath) -or -not (Test-Path -LiteralPath $DirPath -ErrorAction SilentlyContinue)) {
         if (-not $Quiet) {
             Write-ServisLog "Test-ProgramiDirComplete: Direktorijum '$DirPath' ne postoji ili nije dostupan." -Level "WARN" -Component "NasProgrami"
             if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
                 Send-IpcLog -Message "Direktorijum sa programima '$DirPath' ne postoji ili nije dostupan." -Level "WARN" -Tag "[NasProgrami]"
             }
         }
-        return [PSCustomObject]@{ IsComplete = $false; HasOffice = $false; HasAdobe = $false; HasBatteryBarOk = $false }
+        return [PSCustomObject]@{ IsComplete = $false; HasOffice = $false; HasAdobe = $false; HasBatteryBarOk = $false; MissingInstallers = @($RequiredApps) }
     }
-    $hasOffice = (Test-Path (Join-Path $DirPath "Office 2024\files\setup.exe")) -or `
-                 (Test-Path (Join-Path $DirPath "Office 2024\setup.exe")) -or `
-                 (Test-Path (Join-Path $DirPath "Programi\Office 2024\files\setup.exe")) -or `
-                 (Test-Path (Join-Path $DirPath "Programi\Office 2024\setup.exe"))
-    $hasAdobe = (Test-Path (Join-Path $DirPath "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi")) -or `
-                (Test-Path (Join-Path $DirPath "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi"))
+    $hasOffice = (Test-Path -LiteralPath (Join-Path $DirPath "Office 2024\files\setup.exe") -ErrorAction SilentlyContinue) -or `
+                 (Test-Path -LiteralPath (Join-Path $DirPath "Office 2024\setup.exe") -ErrorAction SilentlyContinue) -or `
+                 (Test-Path -LiteralPath (Join-Path $DirPath "Programi\Office 2024\files\setup.exe") -ErrorAction SilentlyContinue) -or `
+                 (Test-Path -LiteralPath (Join-Path $DirPath "Programi\Office 2024\setup.exe") -ErrorAction SilentlyContinue)
+    $hasAdobe = (Test-Path -LiteralPath (Join-Path $DirPath "Adobe.Acrobat.Pro.2024.x64.Multilingual\Adobe Acrobat Pro\AcroPro.msi") -ErrorAction SilentlyContinue) -or `
+                (Test-Path -LiteralPath (Join-Path $DirPath "Acrobat Pro 2024\Adobe Acrobat Pro\AcroPro.msi") -ErrorAction SilentlyContinue)
     $hasBattery = $false
     try { if (Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) { $hasBattery = $true } } catch {}
-    $hasBatteryBar = (Test-Path (Join-Path $DirPath "BatteryBar\BatteryBar.exe")) -or `
-                     (Test-Path (Join-Path $DirPath "Programi\BatteryBar\BatteryBar.exe"))
+    $hasBatteryBar = (Test-Path -LiteralPath (Join-Path $DirPath "BatteryBar\BatteryBar.exe") -ErrorAction SilentlyContinue) -or `
+                     (Test-Path -LiteralPath (Join-Path $DirPath "Programi\BatteryBar\BatteryBar.exe") -ErrorAction SilentlyContinue)
     $hasBatteryBarOk = if ($hasBattery) { [bool]$hasBatteryBar } else { $true }
+
+    # IMP-112: Kada je zadat ciljani skup RequiredApps (Golden Preinstalled ISO Opcija B), validiraj samo trazene instalere
+    $reqClean = @($RequiredApps | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_.Trim() } | Select-Object -Unique)
+    if ($reqClean.Count -gt 0) {
+        $missingInst = [System.Collections.Generic.List[string]]::new()
+        foreach ($reqApp in $reqClean) {
+            $reqOk = $true
+            switch -Regex ($reqApp.ToLowerInvariant()) {
+                '^(office|office 2024|microsoft office)$' {
+                    $reqOk = [bool]$hasOffice
+                }
+                '^(acrobat|adobe acrobat|adobe acrobat pro|adobe\.acrobat\.pro\.2024\.x64\.multilingual|acrobat pro 2024)$' {
+                    $reqOk = [bool]$hasAdobe
+                }
+                '^batterybar$' {
+                    $reqOk = [bool]$hasBatteryBar
+                }
+                '^(chrome|google chrome)$' {
+                    $reqOk = (Test-Path -LiteralPath (Join-Path $DirPath "GoogleChromeStandaloneEnterprise64.msi") -ErrorAction SilentlyContinue) -or `
+                             (Test-Path -LiteralPath (Join-Path $DirPath "ChromeSetup.exe") -ErrorAction SilentlyContinue) -or `
+                             (@(Get-ChildItem -LiteralPath $DirPath -Filter "*chrome*.msi" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0) -or `
+                             (@(Get-ChildItem -LiteralPath $DirPath -Filter "*chrome*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0)
+                }
+                '^winrar$' {
+                    $reqOk = (@(Get-ChildItem -LiteralPath $DirPath -Filter "*winrar*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0)
+                }
+                '^(dotnet|runtimes|vcredist)$' {
+                    $reqOk = (Test-Path -LiteralPath (Join-Path $DirPath "DotNet") -ErrorAction SilentlyContinue) -or `
+                             (Test-Path -LiteralPath (Join-Path $DirPath "VCRedist") -ErrorAction SilentlyContinue) -or `
+                             (@(Get-ChildItem -LiteralPath $DirPath -Filter "*windowsdesktop-runtime*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0) -or `
+                             (@(Get-ChildItem -LiteralPath $DirPath -Filter "*VC_redist*.exe" -Recurse -File -ErrorAction SilentlyContinue).Count -gt 0)
+                }
+                default {
+                    $reqOk = (Test-Path -LiteralPath (Join-Path $DirPath $reqApp) -ErrorAction SilentlyContinue)
+                }
+            }
+            if (-not $reqOk) {
+                [void]$missingInst.Add($reqApp)
+            }
+        }
+        $isCompleteTargeted = ($missingInst.Count -eq 0)
+        if (-not $isCompleteTargeted -and -not $Quiet) {
+            Write-ServisLog "Test-ProgramiDirComplete: Ciljani instaleri u '$DirPath' nisu kompletni (Nedostaju: $($missingInst -join ', '))." -Level "INFO" -Component "NasProgrami"
+        }
+        return [PSCustomObject]@{
+            IsComplete        = $isCompleteTargeted
+            HasOffice         = $hasOffice
+            HasAdobe          = $hasAdobe
+            HasBatteryBarOk   = $hasBatteryBarOk
+            MissingInstallers = @($missingInst)
+        }
+    }
+
     $isComplete = ($hasOffice -and $hasAdobe -and $hasBatteryBarOk)
     if (-not $isComplete -and -not $Quiet) {
         Write-ServisLog "Test-ProgramiDirComplete: Paketi u '$DirPath' nisu kompletni (Office=$hasOffice, Adobe=$hasAdobe, BatteryBar=$hasBatteryBarOk)." -Level "WARN" -Component "NasProgrami"
@@ -1604,10 +1775,11 @@ function Test-ProgramiDirComplete {
         }
     }
     return [PSCustomObject]@{
-        IsComplete      = $isComplete
-        HasOffice       = $hasOffice
-        HasAdobe        = $hasAdobe
-        HasBatteryBarOk = $hasBatteryBarOk
+        IsComplete        = $isComplete
+        HasOffice         = $hasOffice
+        HasAdobe          = $hasAdobe
+        HasBatteryBarOk   = $hasBatteryBarOk
+        MissingInstallers = @()
     }
 }
 
@@ -1615,7 +1787,9 @@ function Ensure-ProgramiAvailable {
     param(
         [switch]$Interactive = $true,
         [string]$OnlyApp = "",
-        [string[]]$SubFolders = @()
+        [string[]]$SubFolders = @(),
+        [string[]]$MissingApps = $null,
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS"
     )
     $localProg = "C:\setup\Programi"
     Repair-ProgramiNesting $localProg
@@ -1625,6 +1799,92 @@ function Ensure-ProgramiAvailable {
 
     $isTargeted = (-not [string]::IsNullOrWhiteSpace($OnlyApp)) -or ($SubFolders -and $SubFolders.Count -gt 0)
     if ($isTargeted) {
+        return $progDir
+    }
+
+    # IMP-112: Proveri profil slike (image-profile.json), $isLaptop i stvarnu prisutnost instaliranih aplikacija pre punog NAS kopiranja
+    $imgProf = Get-WisImageProfile -SystemLogDir $SystemLogDir
+    $isLaptop = $false
+    try {
+        if (Get-Command Test-BatteryPresent -ErrorAction SilentlyContinue) {
+            $isLaptop = [bool](Test-BatteryPresent)
+        } elseif (Get-Command Test-DeviceIsPortable -ErrorAction SilentlyContinue) {
+            $isLaptop = [bool](Test-DeviceIsPortable)
+        } elseif (Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue) {
+            $isLaptop = $true
+        } else {
+            $encEnsure = Get-CimInstance Win32_SystemEnclosure -ErrorAction SilentlyContinue
+            if ($encEnsure -and $encEnsure.ChassisTypes) {
+                foreach ($eCt in @($encEnsure.ChassisTypes)) {
+                    if ($eCt -in @(8, 9, 10, 11, 12, 14, 30, 31, 32)) { $isLaptop = $true; break }
+                }
+            }
+        }
+    } catch {}
+
+    $effectiveMissing = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $MissingApps) {
+        foreach ($ma in $MissingApps) {
+            if (-not [string]::IsNullOrWhiteSpace($ma) -and -not $effectiveMissing.Contains($ma.Trim())) {
+                [void]$effectiveMissing.Add($ma.Trim())
+            }
+        }
+    } else {
+        $hasPresenceCmd = [bool](Get-Command Get-WisAppPresence -ErrorAction SilentlyContinue)
+        $checkApps = @("VCRedist", "DotNet", "WinRAR", "Chrome", "Acrobat", "Office")
+        if ($isLaptop) { $checkApps += "BatteryBar" }
+
+        foreach ($cApp in $checkApps) {
+            $isInst = $false
+            if ($hasPresenceCmd) {
+                try {
+                    $pr = Get-WisAppPresence -AppId $cApp
+                    if ($pr -and $pr.Installed) { $isInst = $true }
+                } catch {}
+            } else {
+                switch ($cApp) {
+                    "VCRedist"   { $isInst = (Test-Path -LiteralPath "C:\Windows\System32\vcruntime140.dll" -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath "C:\Windows\SysWOW64\vcruntime140.dll" -ErrorAction SilentlyContinue) }
+                    "DotNet"     { $isInst = (Test-Path -LiteralPath "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App" -ErrorAction SilentlyContinue) }
+                    "WinRAR"     { $isInst = (Test-Path -LiteralPath "C:\Program Files\WinRAR\WinRAR.exe" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files (x86)\WinRAR\WinRAR.exe" -ErrorAction SilentlyContinue) }
+                    "Chrome"     { $isInst = (Test-Path -LiteralPath "C:\Program Files\Google\Chrome\Application\chrome.exe" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" -ErrorAction SilentlyContinue) }
+                    "Acrobat"    { $isInst = (Test-Path -LiteralPath "C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files\Adobe\Acrobat 2024\Acrobat\Acrobat.exe" -ErrorAction SilentlyContinue) }
+                    "Office"     { $isInst = (Test-Path -LiteralPath "C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files (x86)\Microsoft Office\root\Office16\WINWORD.EXE" -ErrorAction SilentlyContinue) }
+                    "BatteryBar" { $isInst = (Test-Path -LiteralPath "C:\Program Files\BatteryBar\BatteryBar.exe" -ErrorAction SilentlyContinue) -or (Test-Path -LiteralPath "C:\Program Files (x86)\BatteryBar\BatteryBar.exe" -ErrorAction SilentlyContinue) }
+                }
+            }
+            if (-not $isInst) {
+                [void]$effectiveMissing.Add($cApp)
+            }
+        }
+    }
+
+    # 0a. Ako su SVE aplikacije vec preinstalirane ($missingApps.Count -eq 0), potpuno preskoci Sync-ProgramiFromNas (0 MB prenosa)
+    if ($effectiveMissing.Count -eq 0) {
+        Write-ServisLog "[IMP-112] Sve obavezne aplikacije su vec instalirane (image_type=$($imgProf.image_type), wim_version=$($imgProf.wim_version), isLaptop=$isLaptop). Preskacem Sync-ProgramiFromNas (0 MB prenosa)." -Level "INFO" -Component "PackageChecker"
+        return $progDir
+    }
+
+    # 0b. Ako fale SAMO lagane aplikacije bez Office/Acrobat (Golden Preinstalled ISO Opcija B), radi ciljani delta sync (~130 MB umesto 4 GB)
+    $needsHeavyApps = ($effectiveMissing -contains "Office") -or ($effectiveMissing -contains "Acrobat")
+    if (-not $needsHeavyApps) {
+        $missingArr = @($effectiveMissing)
+        Write-ServisLog "[IMP-112] Delta rezim paketa (image_type=$($imgProf.image_type), wim_version=$($imgProf.wim_version), isLaptop=$isLaptop): Office i Acrobat su vec preinstalirani. Nedostaju samo: [$($missingArr -join ', ')]." -Level "INFO" -Component "PackageChecker"
+        $checkSubsetInit = Test-ProgramiDirComplete -DirPath $progDir -RequiredApps $missingArr -Quiet
+        if ($checkSubsetInit.IsComplete) {
+            Write-ServisLog "[IMP-112] Svi trazeni delta instaleri ($($missingArr -join ', ')) vec postoje lokalno u '$progDir'. Preskacem NAS prenos." -Level "INFO" -Component "PackageChecker"
+            return $progDir
+        }
+        $checkSubsetLocal = Test-ProgramiDirComplete -DirPath $localProg -RequiredApps $missingArr -Quiet
+        if (-not $checkSubsetLocal.IsComplete) {
+            Write-ServisLog "[IMP-112] Pokrecem ciljani NAS delta sync (-SubFolders $($missingArr -join ',')) umesto punog 4 GB prenosa..." -Level "INFO" -Component "PackageChecker"
+            $nasSubsetOk = Sync-ProgramiFromNas -DestinationDir $localProg -SubFolders $missingArr -Force
+            if ($nasSubsetOk) {
+                $progDir = Get-ProgramiDir
+                return $progDir
+            }
+            Write-ServisLog "[IMP-112] Upozorenje: Ciljani NAS delta sync za [$($missingArr -join ', ')] nije uspeo; nastavak sa raspolozivim izvorima/fallbackom." -Level "WARN" -Component "NasProgrami"
+        }
+        $progDir = Get-ProgramiDir
         return $progDir
     }
 
@@ -2942,6 +3202,8 @@ Export-ModuleMember -Function `
     Test-NasHostOnline, `
     Sync-ProgramiFromNas, `
     Sync-ServisLicensingFromNas, `
+    Get-WisImageProfile, `
+    Test-ProgramiDirComplete, `
     Ensure-ProgramiAvailable, `
     Grant-SetupAclPermissions, `
     Test-IsSingleInstance, `

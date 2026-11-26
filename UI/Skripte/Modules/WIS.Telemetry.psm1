@@ -75,6 +75,83 @@ function Ensure-WisSessionLogMarker {
     return $marker
 }
 
+function Get-WisImageProfile {
+    <#
+    .SYNOPSIS
+        IMP-112: Cita profil Windows WIM slike iz C:\Windows\Logs\WIS\image-profile.json
+        sa bezbednim fallbackom (image_type="lean", wim_version="unknown").
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ProfilePath = "",
+        [string]$SystemLogDir = "C:\Windows\Logs\WIS",
+        [string]$LocalSetupDir = "C:\setup"
+    )
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($ProfilePath)) {
+        [void]$candidates.Add($ProfilePath)
+    }
+    foreach ($c in @(
+        (Join-Path $SystemLogDir "image-profile.json"),
+        "C:\Windows\Logs\WIS\image-profile.json",
+        (Join-Path $LocalSetupDir "image-profile.json")
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace($c) -and -not $candidates.Contains($c)) {
+            [void]$candidates.Add($c)
+        }
+    }
+
+    foreach ($candPath in $candidates) {
+        if (Test-Path -LiteralPath $candPath -PathType Leaf -ErrorAction SilentlyContinue) {
+            try {
+                $rawJson = Get-Content -LiteralPath $candPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                if (-not [string]::IsNullOrWhiteSpace($rawJson)) {
+                    $parsed = ConvertFrom-Json -InputObject $rawJson -ErrorAction SilentlyContinue
+                    if ($parsed) {
+                        $imgType = "lean"
+                        if ($parsed.PSObject.Properties['image_type'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.image_type)) {
+                            $normType = ([string]$parsed.image_type).Trim().ToLowerInvariant()
+                            if ($normType -in @("preinstalled", "lean")) {
+                                $imgType = $normType
+                            }
+                        }
+                        $wimVer = "unknown"
+                        if ($parsed.PSObject.Properties['wim_version'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.wim_version)) {
+                            $wimVer = ([string]$parsed.wim_version).Trim()
+                        }
+                        $preApps = @()
+                        if ($parsed.PSObject.Properties['preinstalled_apps'] -and $parsed.preinstalled_apps) {
+                            $preApps = @($parsed.preinstalled_apps | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                        }
+                        $builtAt = ""
+                        if ($parsed.PSObject.Properties['built_at'] -and -not [string]::IsNullOrWhiteSpace([string]$parsed.built_at)) {
+                            $builtAt = ([string]$parsed.built_at).Trim()
+                        }
+                        return [PSCustomObject]@{
+                            image_type        = $imgType
+                            wim_version       = $wimVer
+                            preinstalled_apps = $preApps
+                            built_at          = $builtAt
+                            found             = $true
+                            source_path       = $candPath
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    return [PSCustomObject]@{
+        image_type        = "lean"
+        wim_version       = "unknown"
+        preinstalled_apps = @()
+        built_at          = ""
+        found             = $false
+        source_path       = ""
+    }
+}
+
 # Isti statusni ugovor za heartbeat i zavrsni izvestaj; bez HTTP-a.
 function Get-WisTelemetryDiagnostics {
     [CmdletBinding()]
@@ -531,10 +608,22 @@ function Get-WisPreviousHostname {
                     $obj = ConvertFrom-Json -InputObject $raw -ErrorAction SilentlyContinue
                     if ($obj) {
                         if ($obj.PSObject.Properties['previous_hostname'] -and -not [string]::IsNullOrWhiteSpace([string]$obj.previous_hostname)) {
-                            return ([string]$obj.previous_hostname).Trim()
+                            $ph = ([string]$obj.previous_hostname).Trim()
+                            if (-not $ph.StartsWith("TK-", [System.StringComparison]::OrdinalIgnoreCase)) {
+                                return $ph
+                            }
                         }
                         if ($obj.PSObject.Properties['initial_hostname'] -and -not [string]::IsNullOrWhiteSpace([string]$obj.initial_hostname)) {
-                            return ([string]$obj.initial_hostname).Trim()
+                            $ih = ([string]$obj.initial_hostname).Trim()
+                            if (-not $ih.StartsWith("TK-", [System.StringComparison]::OrdinalIgnoreCase)) {
+                                return $ih
+                            }
+                        }
+                        if ($obj.PSObject.Properties['computer_name'] -and -not [string]::IsNullOrWhiteSpace([string]$obj.computer_name)) {
+                            $cn = ([string]$obj.computer_name).Trim()
+                            if (-not $cn.StartsWith("TK-", [System.StringComparison]::OrdinalIgnoreCase)) {
+                                return $cn
+                            }
                         }
                     }
                 }
@@ -545,17 +634,28 @@ function Get-WisPreviousHostname {
             try {
                 $hfVal = (Get-Content -LiteralPath $hostFile -Raw -Encoding UTF8 -ErrorAction SilentlyContinue)
                 if (-not [string]::IsNullOrWhiteSpace($hfVal)) {
-                    return $hfVal.Trim()
+                    $hfTrim = $hfVal.Trim()
+                    if (-not $hfTrim.StartsWith("TK-", [System.StringComparison]::OrdinalIgnoreCase)) {
+                        return $hfTrim
+                    }
                 }
             } catch {}
         }
+    }
+    # IMP-109: Nikada ne upisuj vec preimenovan TK-* hostname u initial-hostname.txt
+    if ($curHost -and $curHost.StartsWith("TK-", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return ""
     }
     try {
         $targetDir = if (Test-Path -LiteralPath $LocalSetupDir) { $LocalSetupDir } else { "C:\setup" }
         if (-not (Test-Path -LiteralPath $targetDir)) {
             New-Item -Path $targetDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
         }
-        Set-Content -LiteralPath (Join-Path $targetDir "initial-hostname.txt") -Value $curHost -Encoding UTF8 -Force -ErrorAction SilentlyContinue
+        $destHostFile = Join-Path $targetDir "initial-hostname.txt"
+        $tmpHostFile = "$destHostFile.tmp.$PID"
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tmpHostFile, $curHost, $utf8NoBom)
+        Move-Item -LiteralPath $tmpHostFile -Destination $destHostFile -Force -ErrorAction SilentlyContinue
     } catch {}
     return $curHost
 }
@@ -658,6 +758,7 @@ function Send-ServisHeartbeat {
         }
         $serialNum = if ($Global:FleetSerialNumber) { $Global:FleetSerialNumber } elseif ($hw -and $hw.SerialNumber) { $hw.SerialNumber } elseif ($fHw -and $fHw.SerialNumber) { $fHw.SerialNumber } else { "" }
         $prevHost = Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+        $imgProfile = Get-WisImageProfile -SystemLogDir $SystemLogDir -LocalSetupDir $LocalSetupDir
 
         $payload = [ordered]@{
             device_id         = $devId
@@ -665,20 +766,26 @@ function Send-ServisHeartbeat {
             previous_hostname = $prevHost
             computer_name     = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "KLIJENT" }
             phase             = $curPhase
-            phase_name      = $phaseName
-            update_cycle    = $upCycle
-            max_cycles      = $maxCycles
-            live_status     = $effectiveLiveStatus
-            worker_progress = $effectiveProgress
-            cpu_percent     = $cpuPercent
-            cpu_temp        = $cpuTemp
-            ram_used        = $ramUsed
-            ram_total       = $ramTotal
-            ram_percent     = $ramPercent
-            hw              = $hwDict
-            network         = $netInfo
-            apps            = $appsSummary
-            timestamp       = (Get-Date).ToString("o")
+            phase_name        = $phaseName
+            update_cycle      = $upCycle
+            max_cycles        = $maxCycles
+            live_status       = $effectiveLiveStatus
+            worker_progress   = $effectiveProgress
+            cpu_percent       = $cpuPercent
+            cpu_temp          = $cpuTemp
+            ram_used          = $ramUsed
+            ram_total         = $ramTotal
+            ram_percent       = $ramPercent
+            image_type        = [string]$imgProfile.image_type
+            wim_version       = [string]$imgProfile.wim_version
+            run_meta          = [ordered]@{
+                image_type  = [string]$imgProfile.image_type
+                wim_version = [string]$imgProfile.wim_version
+            }
+            hw                = $hwDict
+            network           = $netInfo
+            apps              = $appsSummary
+            timestamp         = (Get-Date).ToString("o")
         }
 
         $jsonBody = New-WisTelemetryJson -Payload $payload -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -Depth 4
@@ -898,12 +1005,19 @@ function Send-ServisLifecycleEvent {
             Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
         }
 
+        $lcImgProfile = Get-WisImageProfile -LocalSetupDir $LocalSetupDir
         $payload = [ordered]@{
             event             = $EventType
             device_id         = $lcDevId
             serial_number     = $lcSerial
             previous_hostname = $lcPrevHost
             computer_name     = $compName
+            image_type        = [string]$lcImgProfile.image_type
+            wim_version       = [string]$lcImgProfile.wim_version
+            run_meta          = [ordered]@{
+                image_type  = [string]$lcImgProfile.image_type
+                wim_version = [string]$lcImgProfile.wim_version
+            }
         }
 
         if ($Data) {
@@ -1325,6 +1439,7 @@ function Send-FleetFinalReport {
         $serialNum = if ($Global:FleetSerialNumber) { $Global:FleetSerialNumber } else { if ($hw) { $hw.SerialNumber } else { $fHw.SerialNumber } }
 
         $prevHost = Get-WisPreviousHostname -LocalSetupDir $LocalSetupDir
+        $repImgProfile = Get-WisImageProfile -SystemLogDir $SystemLogDir -LocalSetupDir $LocalSetupDir
 
         # 7. Formiranje JSON payload-a
         $payload = [ordered]@{
@@ -1337,6 +1452,12 @@ function Send-FleetFinalReport {
             status             = $Status
             duration_seconds   = $totalSec
             duration_formatted = $durFmt
+            image_type         = [string]$repImgProfile.image_type
+            wim_version        = [string]$repImgProfile.wim_version
+            run_meta           = [ordered]@{
+                image_type  = [string]$repImgProfile.image_type
+                wim_version = [string]$repImgProfile.wim_version
+            }
             apps               = $appsData
             errors             = @($errorList)
             hw                 = $hwDict
@@ -1349,6 +1470,15 @@ function Send-FleetFinalReport {
 
         if ($hwTestObj) {
             $payload["hwtest"] = $hwTestObj
+        }
+
+        if ((-not $CustomData -or -not $CustomData.ContainsKey("autopilot")) -and (Get-Command Get-WisAutopilotStatusFromFile -ErrorAction SilentlyContinue)) {
+            try {
+                $apStatusRep = Get-WisAutopilotStatusFromFile -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir
+                if ($apStatusRep) {
+                    $payload["autopilot"] = $apStatusRep
+                }
+            } catch {}
         }
 
         $jsonBody = New-WisTelemetryJson -Payload $payload -CustomData $CustomData -LocalSetupDir $LocalSetupDir -SystemLogDir $SystemLogDir -Depth 6
@@ -1463,6 +1593,7 @@ Export-ModuleMember -Function `
     Get-WisPreviousHostname, `
     Get-WisInstallSessionId, `
     Ensure-WisSessionLogMarker, `
+    Get-WisImageProfile, `
     Send-FleetFinalReport, `
     Get-WisTelemetryDiagnostics, `
     New-WisTelemetryJson
