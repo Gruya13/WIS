@@ -1400,6 +1400,16 @@ function Get-WisAppPresence {
 
     $id = $AppId.Trim()
     $isLaptop = Test-BatteryPresent
+    $isPreinstalledProfile = $false
+    try {
+        if (Test-Path -LiteralPath "C:\Windows\Logs\WIS\image-profile.json" -PathType Leaf -ErrorAction SilentlyContinue) {
+            $rawProfPres = Get-Content -LiteralPath "C:\Windows\Logs\WIS\image-profile.json" -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            if ($rawProfPres -and ($rawProfPres -match '"image_type"\s*:\s*"preinstalled"')) {
+                $isPreinstalledProfile = $true
+            }
+        }
+    } catch {}
+    $prePrefix = if ($isPreinstalledProfile) { "[PREINSTALLED] " } else { "" }
 
     $result = @{
         Installed = $false
@@ -1479,7 +1489,7 @@ function Get-WisAppPresence {
                 $result.Path      = $acPath
                 $result.Version   = $ver
                 $result.Message   = $msg
-                $result.Reason    = $msg
+                $result.Reason    = "${prePrefix}$msg"
             } else {
                 $result.Message   = "NEDOSTAJE (Acrobat.exe nije pronađen)"
                 $result.Reason    = "Adobe Acrobat nije pronađen na disku"
@@ -1517,7 +1527,7 @@ function Get-WisAppPresence {
                 $result.WordVersion  = $wVer
                 $result.ExcelVersion = $eVer
                 $result.Message      = $msg
-                $result.Reason       = $msg
+                $result.Reason       = "${prePrefix}$msg"
             } else {
                 $result.Message   = "NEDOSTAJE (WINWORD.EXE i EXCEL.EXE nisu pronađeni)"
                 $result.Reason    = "Microsoft Office nije pronađen na disku"
@@ -1559,6 +1569,24 @@ function Get-WisAppPresence {
             return $result
         }
 
+        '(?i)^VCRedist$' {
+            $vc64 = Test-Path -LiteralPath "C:\Windows\System32\vcruntime140.dll" -ErrorAction SilentlyContinue
+            $vc86 = Test-Path -LiteralPath "C:\Windows\SysWOW64\vcruntime140.dll" -ErrorAction SilentlyContinue
+            if ($vc64 -and $vc86) {
+                $msg = "Instaliran VC++ Redistributable (x64 & x86)"
+                $result.Installed = $true
+                $result.Done      = $true
+                $result.Path      = "C:\Windows\System32\vcruntime140.dll"
+                $result.Version   = "14.x"
+                $result.Message   = $msg
+                $result.Reason    = "${prePrefix}$msg"
+            } else {
+                $result.Message   = "NEDOSTAJE (vcruntime140.dll x64=$vc64, x86=$vc86)"
+                $result.Reason    = "VC++ Redistributable (x64/x86) nije kompletan na disku"
+            }
+            return $result
+        }
+
         '(?i)^(DotNet|Runtimes)$' {
             $dotnetDesktopDir = "C:\Program Files\dotnet\shared\Microsoft.WindowsDesktop.App"
             $hasDotNetDesktop = $false
@@ -1574,7 +1602,7 @@ function Get-WisAppPresence {
                 $result.Done      = $true
                 $result.Version   = $verStr
                 $result.Message   = $msg
-                $result.Reason    = $msg
+                $result.Reason    = "${prePrefix}$msg"
             } else {
                 $regDn = (Get-ItemProperty "HKLM:\SOFTWARE\dotnet\Setup\InstalledVersions\x64\sharedhost" -ErrorAction SilentlyContinue).Version
                 if ($regDn) {
@@ -1583,7 +1611,7 @@ function Get-WisAppPresence {
                     $result.Done      = $true
                     $result.Version   = $regDn
                     $result.Message   = $msg
-                    $result.Reason    = $msg
+                    $result.Reason    = "${prePrefix}$msg"
                 } else {
                     $result.Message   = "NEDOSTAJE (.NET Desktop Runtime nije pronađen)"
                     $result.Reason    = ".NET Desktop Runtime nije pronađen"
@@ -1954,17 +1982,20 @@ function Get-ServisProgramiRoot {
     $nasIni = $null
 
     # Dodavanje parametara iz Wifi-Servis.ini ako postoje
+    # IMP-75: Default ProgramiShare="Programi" iz INI-ja NE sme pregaziti kanonski prioritet "Servis"
     if (Get-Command Get-ServisNasSettings -ErrorAction SilentlyContinue) {
         $nasIni = Get-ServisNasSettings
         if ($nasIni) {
             if (-not [string]::IsNullOrWhiteSpace($nasIni.NasHost) -and ($nasHosts -notcontains $nasIni.NasHost)) {
                 $nasHosts += $nasIni.NasHost
             }
-            if (-not [string]::IsNullOrWhiteSpace($nasIni.ProgramiShare) -and ($nasShares -notcontains $nasIni.ProgramiShare)) {
-                $nasShares = @($nasIni.ProgramiShare) + $nasShares
+            $cfgProgShare = if ($nasIni.ProgramiShare) { $nasIni.ProgramiShare.Trim() } else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($cfgProgShare) -and ($cfgProgShare -ine "Programi") -and ($nasShares -notcontains $cfgProgShare)) {
+                $nasShares = @($cfgProgShare) + $nasShares
             }
-            if (-not [string]::IsNullOrWhiteSpace($nasIni.ShareName) -and ($nasShares -notcontains $nasIni.ShareName)) {
-                $nasShares += $nasIni.ShareName
+            $cfgShareName = if ($nasIni.ShareName) { $nasIni.ShareName.Trim() } else { "" }
+            if (-not [string]::IsNullOrWhiteSpace($cfgShareName) -and ($cfgShareName -ine "Programi") -and ($nasShares -notcontains $cfgShareName)) {
+                $nasShares += $cfgShareName
             }
         }
     }
@@ -5266,28 +5297,94 @@ function Invoke-Phase4Apps {
         }
     }
 
-    # Pronalazenje foldera sa programima (Prioritet 1: Lokalni C:\setup\Programi, Prioritet 2: SMB 3.1.1 TrueNAS)
-    $detectedProgDir = Get-ServisProgramiRoot -LocalSetupDir $LocalSetupDir -PreferredDir $ProgramiDir
-    $localCandidates = @(
-        $detectedProgDir,
-        $ProgramiDir,
-        "C:\setup\Programi",
-        "C:\setup\Programi\Programi",
-        (Join-Path $LocalSetupDir "Programi")
-    )
-    foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
-        $cand = Join-Path "$($d.Root)" "Programi"
-        if ($localCandidates -notcontains $cand) { $localCandidates += $cand }
+    # IMP-112: Na samom ulazu u Fazu 4 proveri image-profile.json, $isLaptop i stvarnu prisutnost aplikacija
+    $isLaptop = Test-BatteryPresent
+    $imgProfile = $null
+    if (Get-Command Get-WisImageProfile -ErrorAction SilentlyContinue) {
+        try { $imgProfile = Get-WisImageProfile -LocalSetupDir $LocalSetupDir } catch {}
     }
-    $activeProgDir = $localCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-    if (-not $activeProgDir) {
-        $activeProgDir = if ($detectedProgDir) { $detectedProgDir } else { "C:\setup\Programi" }
+    if (-not $imgProfile) {
+        $imgProfile = [PSCustomObject]@{ image_type = "lean"; wim_version = "unknown"; preinstalled_apps = @(); found = $false }
+        foreach ($ipCand in @("C:\Windows\Logs\WIS\image-profile.json", (Join-Path $LocalSetupDir "image-profile.json"))) {
+            if ($ipCand -and (Test-Path -LiteralPath $ipCand -PathType Leaf -ErrorAction SilentlyContinue)) {
+                try {
+                    $rawIp = Get-Content -LiteralPath $ipCand -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+                    if ($rawIp) {
+                        $parsedIp = ConvertFrom-Json -InputObject $rawIp -ErrorAction SilentlyContinue
+                        if ($parsedIp) {
+                            $tVal = if ($parsedIp.PSObject.Properties['image_type'] -and ([string]$parsedIp.image_type).Trim().ToLowerInvariant() -in @("preinstalled", "lean")) { ([string]$parsedIp.image_type).Trim().ToLowerInvariant() } else { "lean" }
+                            $vVal = if ($parsedIp.PSObject.Properties['wim_version'] -and -not [string]::IsNullOrWhiteSpace([string]$parsedIp.wim_version)) { ([string]$parsedIp.wim_version).Trim() } else { "unknown" }
+                            $pApps = if ($parsedIp.PSObject.Properties['preinstalled_apps'] -and $parsedIp.preinstalled_apps) { @($parsedIp.preinstalled_apps) } else { @() }
+                            $imgProfile = [PSCustomObject]@{ image_type = $tVal; wim_version = $vVal; preinstalled_apps = $pApps; found = $true }
+                            break
+                        }
+                    }
+                } catch {}
+            }
+        }
     }
+    $isPreinstalledImage = ($imgProfile.image_type -eq "preinstalled")
 
-    if (Get-Command Ensure-ProgramiAvailable -ErrorAction SilentlyContinue) {
-        $ensuredDir = Ensure-ProgramiAvailable -Interactive:$false -OnlyApp $OnlyApp
-        if ($ensuredDir -and (Test-Path $ensuredDir)) {
-            $activeProgDir = $ensuredDir
+    $missingAppsList = [System.Collections.Generic.List[string]]::new()
+    $preinstalledDetected = [System.Collections.Generic.List[string]]::new()
+    if (-not $isSingleAppRetry) {
+        $phase4AppCandidates = @("VCRedist", "DotNet", "WinRAR", "Chrome", "Acrobat", "Office")
+        if ($isLaptop) { $phase4AppCandidates += "BatteryBar" }
+        foreach ($appKey in $phase4AppCandidates) {
+            $presObj = Get-WisAppPresence -AppId $appKey
+            if ($presObj -and $presObj.Installed) {
+                [void]$preinstalledDetected.Add($appKey)
+            } else {
+                [void]$missingAppsList.Add($appKey)
+            }
+        }
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[IMP-112] Faza 4 profil slike: image_type=$($imgProfile.image_type), wim_version=$($imgProfile.wim_version), isLaptop=$isLaptop | Prisutno: [$($preinstalledDetected -join ', ')] | Nedostaje: [$($missingAppsList -join ', ')]" -Level "INFO" -Component "Apps"
+        }
+    }
+    $missingApps = @($missingAppsList)
+
+    # Pronalazenje foldera sa programima i pametni delta NAS sync (IMP-112)
+    $activeProgDir = if ($ProgramiDir -and (Test-Path -LiteralPath $ProgramiDir -ErrorAction SilentlyContinue)) { $ProgramiDir } else { "C:\setup\Programi" }
+    if ((-not $isSingleAppRetry) -and ($missingApps.Count -eq 0)) {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[IMP-112] Sve obavezne aplikacije su vec instalirane ($($preinstalledDetected -join ', ')). Preskacem Sync-ProgramiFromNas (0 MB prenosa); nastavljam na P4.Shortcuts, P4.PdfDefault i P4.Activation." -Level "INFO" -Component "NasProgrami"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message "Sve aplikacije su već preinstalirane ($($imgProfile.image_type)) — preskačem NAS prenos (0 MB)." -Level "INFO" -Tag "[NasProgrami]" -Phase $ipcLogPhase
+        }
+    } else {
+        $needHeavyRootProbe = $isSingleAppRetry -or ($missingApps -contains "Office") -or ($missingApps -contains "Acrobat")
+        $detectedProgDir = if ($needHeavyRootProbe) {
+            Get-ServisProgramiRoot -LocalSetupDir $LocalSetupDir -PreferredDir $ProgramiDir
+        } else {
+            if (Test-Path -LiteralPath "C:\setup\Programi" -ErrorAction SilentlyContinue) { "C:\setup\Programi" } else { $ProgramiDir }
+        }
+        $localCandidates = @(
+            $detectedProgDir,
+            $ProgramiDir,
+            "C:\setup\Programi",
+            "C:\setup\Programi\Programi",
+            (Join-Path $LocalSetupDir "Programi")
+        )
+        foreach ($d in (Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+            $cand = Join-Path "$($d.Root)" "Programi"
+            if ($localCandidates -notcontains $cand) { $localCandidates += $cand }
+        }
+        $activeProgDir = $localCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $activeProgDir) {
+            $activeProgDir = if ($detectedProgDir) { $detectedProgDir } else { "C:\setup\Programi" }
+        }
+
+        if (Get-Command Ensure-ProgramiAvailable -ErrorAction SilentlyContinue) {
+            $ensuredDir = if ($isSingleAppRetry) {
+                Ensure-ProgramiAvailable -Interactive:$false -OnlyApp $OnlyApp
+            } else {
+                Ensure-ProgramiAvailable -Interactive:$false -OnlyApp $OnlyApp -MissingApps $missingApps
+            }
+            if ($ensuredDir -and (Test-Path $ensuredDir)) {
+                $activeProgDir = $ensuredDir
+            }
         }
     }
 
@@ -5404,7 +5501,21 @@ function Invoke-Phase4Apps {
     # =========================================================================
     if ($runDotNet) {
         $stepRuntimes = Invoke-WisStep -Phase 4 -StepId "P4.Runtimes" -Title "Sistemski runtime paketi (VC++ / .NET)" -NoSkip:$isSingleAppRetry -Test {
-            Get-WisAppPresence -AppId "DotNet"
+            $dnPres = Get-WisAppPresence -AppId "DotNet"
+            $vcPres = Get-WisAppPresence -AppId "VCRedist"
+            if ($dnPres -and $dnPres.Installed -and $vcPres -and $vcPres.Installed) {
+                $dnPres.Reason = "$($dnPres.Reason); $($vcPres.Message)"
+                return $dnPres
+            }
+            if ($dnPres -and $dnPres.Installed -and -not ($vcPres -and $vcPres.Installed)) {
+                return @{
+                    Installed = $false
+                    Done      = $false
+                    Message   = "NEDOSTAJE VC++ Redistributable ($($vcPres.Message))"
+                    Reason    = "VC++ Redistributable nedostaje na sistemu"
+                }
+            }
+            return $dnPres
         } -Action {
             if (-not $preservePhase -and (Get-Command Send-IpcProgress -ErrorAction SilentlyContinue)) {
                 Send-IpcProgress -Progress 12 -Phase 4 -PhaseName "Programi" -SubPhase "Runtimes" -StatusMessage "Instalacija sistemskih runtime paketa (VC++ / .NET)..."
@@ -5421,8 +5532,11 @@ function Invoke-Phase4Apps {
         }
 
         $appsStatusMap["DotNet"] = if ($stepRuntimes.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+        if ($stepRuntimes.State -eq "SKIPPED_DONE" -and $isPreinstalledImage -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+            Write-ServisLog "P4.Runtimes (VCRedist + DotNet): DONE ([PREINSTALLED]) -> Status=OK" -Level "SUCCESS" -Component "Apps"
+        }
         if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-            $dnDetail = if ($stepRuntimes.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepRuntimes.State -eq "OK") { "Instaliran .NET Runtime" } else { "Neuspešno - Nastavak" }
+            $dnDetail = if ($stepRuntimes.State -eq "SKIPPED_DONE") { if ($isPreinstalledImage) { "DONE ([PREINSTALLED])" } else { "Već instalirano" } } elseif ($stepRuntimes.State -eq "OK") { "Instaliran .NET Runtime" } else { "Neuspešno - Nastavak" }
             Send-IpcAppUpdate -AppId "DotNet" -Status $appsStatusMap["DotNet"] -Detail $dnDetail
         }
     }
@@ -5829,8 +5943,11 @@ function Invoke-Phase4Apps {
     }
 
     $appsStatusMap["Acrobat"] = if ($stepAcrobat.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
+    if ($stepAcrobat.State -eq "SKIPPED_DONE" -and $isPreinstalledImage -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+        Write-ServisLog "P4.Acrobat: DONE ([PREINSTALLED]) -> Status=OK" -Level "SUCCESS" -Component "Acrobat"
+    }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        $acDetail = if ($stepAcrobat.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepAcrobat.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
+        $acDetail = if ($stepAcrobat.State -eq "SKIPPED_DONE") { if ($isPreinstalledImage) { "DONE ([PREINSTALLED])" } else { "Već instalirano" } } elseif ($stepAcrobat.State -eq "OK") { "Instaliran" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Acrobat" -Status $appsStatusMap["Acrobat"] -Detail $acDetail
     }
     }
@@ -6153,8 +6270,11 @@ function Invoke-Phase4Apps {
 
     $appsStatusMap["Office"] = if ($stepOffice.State -in @("OK", "SKIPPED_DONE")) { "OK" } else { "WARN" }
     $Global:WisOfficeInstallFailed = [bool](($stepOffice.State -notin @("OK", "SKIPPED_DONE")) -or (-not (Test-OfficeInstalled)))
+    if ($stepOffice.State -eq "SKIPPED_DONE" -and $isPreinstalledImage -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+        Write-ServisLog "P4.Office: DONE ([PREINSTALLED]) -> Status=OK" -Level "SUCCESS" -Component "Office"
+    }
     if (Get-Command Send-IpcAppUpdate -ErrorAction SilentlyContinue) {
-        $offDetail = if ($stepOffice.State -eq "SKIPPED_DONE") { "Već instalirano" } elseif ($stepOffice.State -eq "OK") { "Instaliran Office 2024" } else { "Neuspešno - Nastavak" }
+        $offDetail = if ($stepOffice.State -eq "SKIPPED_DONE") { if ($isPreinstalledImage) { "DONE ([PREINSTALLED])" } else { "Već instalirano" } } elseif ($stepOffice.State -eq "OK") { "Instaliran Office 2024" } else { "Neuspešno - Nastavak" }
         Send-IpcAppUpdate -AppId "Office" -Status $appsStatusMap["Office"] -Detail $offDetail
     }
     }

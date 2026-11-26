@@ -1554,6 +1554,57 @@ class TestUpdateAndDriversLogic(unittest.TestCase):
             if iso_path.is_file():
                 self.assertEqual(ui_bytes, iso_path.read_bytes(), f"1:1 OEM paritet narusen za {rel}")
 
+    def test_41_v355_imp113_imp98_imp105_imp111_need_only_and_delta_harvest(self):
+        """WIS-TASK-279 (v3.5.5): IMP-113 Need-Only/DeltaHarvest/FirmwareBlock, IMP-98 P2 OEM prefetch, IMP-105 SUBSYS/WUA i IMP-111 retry."""
+        upd_src = (ROOT / "UI" / "Skripte" / "Modules" / "WIS.Update.psm1").read_text(encoding="utf-8")
+
+        # 1. IMP-113: Get-WisDevicesNeedingOemDrivers + zlatno pravilo + 0 MB skip + -MissingHwids + 2. prolaz
+        self.assertIn("function Get-WisDevicesNeedingOemDrivers", upd_src)
+        self.assertIn("function Test-WisFirmwareOrCfuInf", upd_src)
+        self.assertIn("function Get-WisActiveOemDriverPackages", upd_src)
+        need_blk = upd_src.split("function Get-WisDevicesNeedingOemDrivers", 1)[1].split("function Invoke-WisEarlyOemPrefetch", 1)[0]
+        self.assertIn("if ($errCode -eq 0 -and $hasActiveOemInf)", need_blk)
+        self.assertIn("Win32_PnPSignedDriver", need_blk)
+
+        pre_blk = upd_src.split("function Invoke-ModelDriversPreInstall", 1)[1].split("function Get-WisUpdateHubEndpoint", 1)[0]
+        self.assertIn("Get-WisDevicesNeedingOemDrivers", pre_blk)
+        self.assertIn("if ($neededDevices.Count -eq 0)", pre_blk)
+        self.assertIn("-MissingHwids $missingHwidsPass1", pre_blk)
+        self.assertIn("-MissingHwids $newChildHwids", pre_blk)
+        self.assertNotIn("-AllHwids $allPoolHwids", pre_blk)
+
+        # 2. IMP-113: Cist aktivni Delta Harvest + Firmware/CFU crna lista + os_build
+        harv_blk = upd_src.split("function Export-ServisHardwareDrivers", 1)[1].split("function Export-ServisNetworkDrivers", 1)[0]
+        self.assertNotIn("/online /export-driver", harv_blk)
+        self.assertIn("Get-WisActiveOemDriverPackages", harv_blk)
+        self.assertIn("Test-WisFirmwareOrCfuInf", harv_blk)
+
+        delta_blk = upd_src.split("function Invoke-DeltaDriverHarvest", 1)[1].split("Export-ModuleMember", 1)[0]
+        self.assertIn("Get-WisActiveOemDriverPackages", delta_blk)
+        self.assertIn("os_build", delta_blk)
+        self.assertIn("Test-WisFirmwareOrCfuInf", delta_blk)
+
+        # 3. IMP-98: Rani P2 OEM prefetch + system_sku
+        self.assertIn("function Invoke-WisEarlyOemPrefetch", upd_src)
+        self.assertIn("[OEM_PREFETCH]", upd_src)
+        self.assertIn("metadata_only", upd_src)
+
+        # 4. IMP-105: SUBSYS-safe Test-WisDeviceCoveredByStagedHub i bez grubog CoveredClasses odbacivanja u WUA
+        cov_blk = upd_src.split("function Test-WisDeviceCoveredByStagedHub", 1)[1].split("function Test-WisWuaDriverCoveredByStagedHub", 1)[0]
+        self.assertIn("&SUBSYS_[0-9A-F]{8}", cov_blk)
+        bg_blk = upd_src.split("function Invoke-BackgroundDriverDownloadWorker", 1)[1].split("function Start-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertNotIn("CoveredClasses.Contains", bg_blk)
+        self.assertIn("Test-WisWuaDriverCoveredByStagedHub", bg_blk)
+        post_blk = upd_src.split("function Invoke-PostRebootDriverFinalize", 1)[1].split("function Invoke-DeltaDriverHarvest", 1)[0]
+        self.assertNotIn("CoveredClasses.Contains", post_blk)
+        self.assertIn("Test-WisWuaDriverCoveredByStagedHub", post_blk)
+
+        # 5. IMP-111: 3 uzastopne prolazne HTTP greske u Invoke-HubBatchDriverResolveAndStage
+        batch_blk = upd_src.split("function Invoke-HubBatchDriverResolveAndStage", 1)[1].split("function Invoke-BackgroundDriverDownloadWorker", 1)[0]
+        self.assertIn("$consecutiveHttpErrors", batch_blk)
+        self.assertIn("$maxConsecutiveHttpErrors = 3", batch_blk)
+        self.assertIn("$consecutiveHttpErrors -lt $maxConsecutiveHttpErrors", batch_blk)
+
 
 if __name__ == "__main__":
     unittest.main()

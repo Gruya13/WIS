@@ -154,6 +154,61 @@ function Confirm-WisQuarantinedInfs {
     return $true
 }
 
+function Test-WisFirmwareOrCfuInf {
+    <#
+    .SYNOPSIS
+        IMP-113: Detektuje i blokira Class=Firmware i poznate firmware/CFU INF pakete
+        (SurfaceUEFI*, SurfaceSAM*, SurfaceME*, SurfaceTouchPadProcessorUpdate*, SurfaceCFUOverHid*, SurfaceStorageFwUpdate*, *FwUpdate*).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$InfPath = "",
+        [string]$InfName = "",
+        [string]$DriverClass = "",
+        [string]$InfContent = ""
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($DriverClass) -and ($DriverClass.Trim() -ieq "Firmware")) {
+        return $true
+    }
+
+    $fwNamePattern = '(?i)(?:^|[\\/])(?:SurfaceUEFI[^\\/]*|SurfaceSAM[^\\/]*|SurfaceME[^\\/]*|SurfaceTouchPadProcessorUpdate[^\\/]*|SurfaceCFUOverHid[^\\/]*|SurfaceStorageFwUpdate[^\\/]*|[^\\/]*FwUpdate[^\\/]*)\.inf(?:_|$)'
+    if (-not [string]::IsNullOrWhiteSpace($InfName) -and ($InfName -match $fwNamePattern -or $InfName -match '(?i)(SurfaceUEFI|SurfaceSAM|SurfaceME|SurfaceTouchPadProcessorUpdate|SurfaceCFUOverHid|SurfaceStorageFwUpdate|FwUpdate)')) {
+        return $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InfPath) -and ($InfPath -match '(?i)(SurfaceUEFI|SurfaceSAM|SurfaceME|SurfaceTouchPadProcessorUpdate|SurfaceCFUOverHid|SurfaceStorageFwUpdate|FwUpdate)')) {
+        return $true
+    }
+
+    $txt = $InfContent
+    if ([string]::IsNullOrWhiteSpace($txt) -and -not [string]::IsNullOrWhiteSpace($InfPath)) {
+        if (Test-Path -LiteralPath $InfPath -PathType Leaf -ErrorAction SilentlyContinue) {
+            try {
+                $txt = [System.IO.File]::ReadAllText($InfPath)
+            } catch {
+                try { $txt = Get-Content -LiteralPath $InfPath -Raw -ErrorAction SilentlyContinue } catch { $txt = "" }
+            }
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($txt)) {
+        if ($txt -match '(?mi)^\s*Class\s*=\s*Firmware\b') {
+            return $true
+        }
+        if ($txt -match '(?i)f2e7dd72-6468-4e36-b6f1-6488f42c1b52') {
+            return $true
+        }
+        if ($txt -match '(?mi)^\s*CatalogFile[^\r\n=]*=\s*[^\r\n]*(?:SurfaceUEFI|SurfaceSAM|SurfaceME|SurfaceTouchPadProcessorUpdate|SurfaceCFUOverHid|SurfaceStorageFwUpdate|FwUpdate)') {
+            return $true
+        }
+        if ($txt -match '(?i)\b(?:SurfaceUEFI|SurfaceSAM|SurfaceME|SurfaceTouchPadProcessorUpdate|SurfaceCFUOverHid|SurfaceStorageFwUpdate)\b') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Invoke-SafePnpUtilAddDriver {
     [CmdletBinding()]
     param(
@@ -213,6 +268,14 @@ function Invoke-SafePnpUtilAddDriver {
             $skipped++
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                 Write-ServisLog "[INF_QUARANTINE] [$infIdx/$infTotal] Preskacem karantinirani INF: $infName ($infFull)" -Level "WARN" -Component "Drivers"
+            }
+            continue
+        }
+
+        if (Test-WisFirmwareOrCfuInf -InfPath $infFull -InfName $infName) {
+            $skipped++
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "[FIRMWARE_BLOCK] [$infIdx/$infTotal] Blokiram instalaciju Firmware/CFU INF paketa: $infName ($infFull)" -Level "WARN" -Component "Drivers"
             }
             continue
         }
@@ -579,7 +642,10 @@ function Install-DriverTarArchive {
         [string]$ExtractRoot = "",
 
         [Parameter(Mandatory = $false)]
-        [string]$SourceLabel = "NAS"
+        [string]$SourceLabel = "NAS",
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$TargetHwids = @()
     )
 
     if (-not (Test-Path $TarPath -ErrorAction SilentlyContinue)) {
@@ -666,7 +732,45 @@ function Install-DriverTarArchive {
             Write-ServisLog "Install-DriverTarArchive: Upozorenje — arhiva $CleanModel.tar nema .cat potpisne kataloge ($($extractedInfs.Count) .inf)." -Level "WARN" -Component "NAS"
         }
 
-        $null = Invoke-SafePnpUtilAddDriver -Path $workDir -ModelName $CleanModel
+        # IMP-113: Ukloni sve Firmware/CFU pakete pre instalacije i postuj ciljani TargetHwids filter (zastita ispravnih OEM drajvera)
+        $allowedInfs = [System.Collections.Generic.List[object]]::new()
+        $blockedFwCount = 0
+        foreach ($eInf in $extractedInfs) {
+            if (Test-WisFirmwareOrCfuInf -InfPath $eInf.FullName -InfName $eInf.Name) {
+                $blockedFwCount++
+                continue
+            }
+            [void]$allowedInfs.Add($eInf)
+        }
+        if ($blockedFwCount -gt 0 -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+            Write-ServisLog "[FIRMWARE_BLOCK] Install-DriverTarArchive ($CleanModel): blokirano $blockedFwCount Firmware/CFU .inf paketa." -Level "WARN" -Component "NAS"
+        }
+
+        $cleanTargets = @($TargetHwids | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($cleanTargets.Count -gt 0 -and $allowedInfs.Count -gt 0) {
+            $filteredInfs = @()
+            if (Get-Command Select-RelevantDriverInfFiles -ErrorAction SilentlyContinue) {
+                try {
+                    $filteredInfs = @(Select-RelevantDriverInfFiles -InfFiles @($allowedInfs) -TargetHwids $cleanTargets)
+                } catch {
+                    $filteredInfs = @()
+                }
+            }
+            if ($filteredInfs.Count -gt 0) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "[IMP-113] Install-DriverTarArchive ($CleanModel): ciljani HWID filter zadrzao $($filteredInfs.Count)/$($allowedInfs.Count) relevantnih .inf paketa." -Level "INFO" -Component "NAS"
+                }
+                foreach ($tInf in $filteredInfs) {
+                    $null = Invoke-SafePnpUtilAddDriver -Path $tInf.FullName -ModelName $CleanModel
+                }
+            } else {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "[IMP-113] Install-DriverTarArchive ($CleanModel): nijedan .inf u arhivi ne poklapa ciljane nedostajuce HWID-ove — preskacem slepu instalaciju svih $($allowedInfs.Count) paketa." -Level "INFO" -Component "NAS"
+                }
+            }
+        } elseif ($allowedInfs.Count -gt 0) {
+            $null = Invoke-SafePnpUtilAddDriver -Path $workDir -ModelName $CleanModel
+        }
         Start-Sleep -Seconds 3
 
         $unresolvedDevs = @()
@@ -695,6 +799,280 @@ function Install-DriverTarArchive {
     }
 }
 
+function Get-WisDevicesNeedingOemDrivers {
+    <#
+    .SYNOPSIS
+        IMP-113: Detektuje iskljucivo PnP uredjaje kojima zaista fali OEM drajver:
+        (a) ConfigManagerErrorCode van @(0, 14, 22, 45) (ignorisuci ROOT\*, SWD\*, Printer, PrintQueue, SoftwareDevice),
+        (b) uredjaje na kljucnim klasama (Display, MEDIA/Audio, Net, Bluetooth, Biometric, Camera/Image,
+            HIDClass/Mouse touchpad, bus/chipset SST/I2C/SPI/SerialHub) na generickom Microsoft inbox drajveru bez aktivnog oem*.inf.
+        Zlatno pravilo: uredjaj sa ConfigManagerErrorCode == 0 i aktivnim oem*.inf je strogo zasticen.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$PnpEntities = $null,
+        [object[]]$SignedDrivers = $null
+    )
+
+    $allPnp = @()
+    if ($null -ne $PnpEntities) {
+        $allPnp = @($PnpEntities)
+    } else {
+        try {
+            $allPnp = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop)
+        } catch {
+            try { $allPnp = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue) } catch {}
+        }
+    }
+
+    $allSigned = @()
+    if ($null -ne $SignedDrivers) {
+        $allSigned = @($SignedDrivers)
+    } else {
+        try {
+            $allSigned = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop)
+        } catch {
+            try { $allSigned = @(Get-WmiObject Win32_PnPSignedDriver -ErrorAction SilentlyContinue) } catch {}
+        }
+    }
+
+    # Mapa aktivno potpisanih drajvera po DeviceID (case-insensitive)
+    $signedMap = @{}
+    foreach ($sd in $allSigned) {
+        if (-not $sd -or [string]::IsNullOrWhiteSpace([string]$sd.DeviceID)) { continue }
+        $sdKey = ([string]$sd.DeviceID).Trim().ToUpperInvariant()
+        $infStr = if ($sd.InfName) { ([string]$sd.InfName).Trim() } else { "" }
+        $hasOem = ($infStr -match '(?i)^oem\d+\.inf$')
+        $provStr = if ($sd.DriverProviderName) { ([string]$sd.DriverProviderName).Trim() } else { "" }
+        $clsStr = if ($sd.DeviceClass) { ([string]$sd.DeviceClass).Trim() } else { "" }
+        # Ako vec postoji unos za isti DeviceID, prednost ima onaj sa aktivnim oem*.inf
+        if (-not $signedMap.ContainsKey($sdKey) -or $hasOem) {
+            $signedMap[$sdKey] = [PSCustomObject]@{
+                InfName            = $infStr
+                DriverProviderName = $provStr
+                DeviceClass        = $clsStr
+                HasOemInf          = $hasOem
+            }
+        }
+    }
+
+    $ignoredClasses = @('Printer', 'PrintQueue', 'SoftwareDevice')
+    $results = [System.Collections.Generic.List[object]]::new()
+    $seenIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($dev in $allPnp) {
+        if (-not $dev) { continue }
+        $devId = if ($dev.DeviceID) { ([string]$dev.DeviceID).Trim() } else { "" }
+        if ([string]::IsNullOrWhiteSpace($devId)) { continue }
+        if ($devId -match '^(?i)(ROOT|SWD)\\') { continue }
+
+        $devClass = if ($dev.PNPClass) { ([string]$dev.PNPClass).Trim() } else { "" }
+        if ($devClass -and ($ignoredClasses -contains $devClass)) { continue }
+
+        $hwids = @($dev.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { ([string]$_).Trim() })
+        if ($hwids.Count -eq 0) { continue }
+
+        $errCode = 0
+        if ($null -ne $dev.ConfigManagerErrorCode) {
+            try { $errCode = [int]$dev.ConfigManagerErrorCode } catch { $errCode = 0 }
+        }
+
+        $devKey = $devId.ToUpperInvariant()
+        $sInfo = if ($signedMap.ContainsKey($devKey)) { $signedMap[$devKey] } else { $null }
+        $hasActiveOemInf = ($null -ne $sInfo) -and ([bool]$sInfo.HasOemInf)
+
+        # ZLATNO PRAVILO: Uredjaj sa ConfigManagerErrorCode == 0 i aktivno potpisanim oem*.inf je strogo zasticen
+        if ($errCode -eq 0 -and $hasActiveOemInf) {
+            continue
+        }
+
+        $devName = if ($dev.Name) { ([string]$dev.Name).Trim() } elseif ($dev.Description) { ([string]$dev.Description).Trim() } else { $devId }
+        $devDesc = if ($dev.Description) { ([string]$dev.Description).Trim() } else { "" }
+        $combinedText = "$devName $devDesc $($hwids -join ' ')"
+        $needReason = ""
+
+        # (a) PnP uredjaji sa greskom van @(0, 14, 22, 45)
+        if ($errCode -notin @(0, 14, 22, 45)) {
+            $needReason = "PnPError(Code=$errCode)"
+        } elseif ($errCode -eq 0 -and (-not $hasActiveOemInf)) {
+            # (b) Uredjaji na kljucnim klasama na generickom Microsoft inbox drajveru bez aktivnog oem*.inf
+            $infNameLow = if ($sInfo -and $sInfo.InfName) { $sInfo.InfName.ToLowerInvariant() } else { "" }
+            $provName = if ($sInfo -and $sInfo.DriverProviderName) { $sInfo.DriverProviderName } else { "" }
+            $isInboxDriver = [string]::IsNullOrWhiteSpace($infNameLow) -or (
+                ($infNameLow -notmatch '^oem\d+\.inf$') -and (
+                    [string]::IsNullOrWhiteSpace($provName) -or
+                    ($provName -match '(?i)^(Microsoft|Standard|Generic|\(Standard)')
+                )
+            )
+
+            if ($isInboxDriver) {
+                $effClass = if (-not [string]::IsNullOrWhiteSpace($devClass)) { $devClass } elseif ($sInfo -and $sInfo.DeviceClass) { $sInfo.DeviceClass } else { "" }
+                $isKeyInboxMatch = $false
+                $matchTag = ""
+
+                if ($effClass -ieq "Display" -and ($devId -match '^(?i)(PCI|ACPI|DISPLAY)\\')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Display"
+                } elseif (($effClass -ieq "MEDIA" -or $effClass -ieq "Audio") -and ($devId -match '^(?i)(PCI|HDAUDIO|INTELAUDIO|ACPI)\\')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Audio"
+                } elseif ($effClass -ieq "Net" -and ($devId -match '^(?i)(PCI|ACPI|SD)\\') -and ($devName -notmatch '(?i)WAN Miniport|Kernel Debug|Loopback|Hyper-V|Bluetooth Device|TAP-|Virtual')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Net"
+                } elseif ($effClass -ieq "Bluetooth" -and ($devId -match '^(?i)(USB|PCI|ACPI|SD)\\') -and ($devName -notmatch '(?i)Enumerator|RFCOMM|Protocol TDI|Avrcp|Transport')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Bluetooth"
+                } elseif ($effClass -ieq "Biometric" -and ($devId -match '^(?i)(USB|PCI|ACPI|HID)\\')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Biometric"
+                } elseif (($effClass -ieq "Camera" -or $effClass -ieq "Image") -and ($devId -match '^(?i)(USB|PCI|ACPI|DISPLAY)\\')) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Camera"
+                } elseif (($effClass -ieq "HIDClass" -or $effClass -ieq "Mouse") -and (
+                    ($combinedText -match '(?i)(Touchpad|TrackPad|Precision\s*Touch|I2C\s*HID|Surface.*Touch|Surface.*HID|HID-compliant\s*touch\s*pad|PNP0C50)') -or
+                    ($devId -match '^(?i)HID\\(VEN_|MSFT00|ELAN|SYN|ALPS|DLL0|CUST00|GXTP|FTSC|MSHW)') -or
+                    ($devId -match '^(?i)ACPI\\(PNP0C50|ELAN|SYN|ALPS|MSFT00|MSHW)')
+                )) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Touchpad/HID"
+                } elseif (($devId -match '^(?i)(PCI\\VEN_|ACPI\\)') -and (
+                    $combinedText -match '(?i)\b(SST|Smart\s*Sound|I2C|SPI|Quick\s*SPI|Serial\s*IO|SerialHub|Serial\s*Hub|LPSS|SMBus|Management\s*Engine|HECI|GPIO\s*Controller|UART\s*Controller)\b'
+                )) {
+                    $isKeyInboxMatch = $true
+                    $matchTag = "Bus/Chipset"
+                }
+
+                if ($isKeyInboxMatch) {
+                    $needReason = "GenericInbox($matchTag)"
+                }
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($needReason) -and $seenIds.Add($devId)) {
+            [void]$results.Add([PSCustomObject]@{
+                DeviceID               = $devId
+                Name                   = $devName
+                PNPClass               = $devClass
+                ConfigManagerErrorCode = $errCode
+                HardwareID             = @($hwids)
+                InfName                = if ($sInfo) { $sInfo.InfName } else { "" }
+                DriverProviderName     = if ($sInfo) { $sInfo.DriverProviderName } else { "" }
+                NeedReason             = $needReason
+                IsError                = ($errCode -notin @(0, 14, 22, 45))
+            })
+        }
+    }
+
+    return @($results)
+}
+
+function Invoke-WisEarlyOemPrefetch {
+    <#
+    .SYNOPSIS
+        IMP-98: Rani, lagani i vidljivo logovan P2 OEM prefetch poziv ka ServiceHub-u
+        (POST /api/drivers/pool/bundle sa metadata_only=true + manufacturer + model + system_sku)
+        za podrzane OEM modele (uklj. Surface Laptop 6/7). Ne preuzima nikakav .tar paket (0 MB).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$HubUrl = "",
+        [string]$CleanModel = "",
+        [string]$Manufacturer = "",
+        [string]$SystemSku = "",
+        [switch]$Force
+    )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($HubUrl) -and (Get-Command Get-WisUpdateHubEndpoint -ErrorAction SilentlyContinue)) {
+            $HubUrl = Get-WisUpdateHubEndpoint
+        }
+        if ([string]::IsNullOrWhiteSpace($HubUrl)) {
+            return $false
+        }
+        $baseUrl = $HubUrl.TrimEnd('/')
+
+        $rawModel = ""
+        try {
+            $csPref = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($csPref) {
+                if ([string]::IsNullOrWhiteSpace($Manufacturer) -and $csPref.Manufacturer) {
+                    $Manufacturer = ($csPref.Manufacturer -replace '\s+', ' ').Trim()
+                }
+                if ($csPref.Model) {
+                    $rawModel = ($csPref.Model -replace '\s+', ' ').Trim()
+                }
+                if ([string]::IsNullOrWhiteSpace($SystemSku) -and $csPref.PSObject.Properties['SystemSKUNumber'] -and $csPref.SystemSKUNumber) {
+                    $SystemSku = ([string]$csPref.SystemSKUNumber).Trim()
+                }
+            }
+        } catch {}
+
+        if ([string]::IsNullOrWhiteSpace($CleanModel)) {
+            $CleanModel = if (-not [string]::IsNullOrWhiteSpace($rawModel)) { $rawModel } else { Get-CleanComputerModel }
+        }
+        $sanitizedCheckModel = Get-CleanComputerModel
+        if ([string]::IsNullOrWhiteSpace($CleanModel) -or (Test-IsGenericComputerModel -CleanModel $sanitizedCheckModel)) {
+            return $false
+        }
+
+        $vendorProbe = "$Manufacturer $CleanModel $SystemSku"
+        $isSupportedOem = ($vendorProbe -match '(?i)(Microsoft|Surface|Dell|Latitude|OptiPlex|Precision|XPS|Vostro|Inspiron|Lenovo|ThinkPad|ThinkBook|ThinkCentre|IdeaPad|Yoga|HP|Hewlett|EliteBook|ProBook|ZBook|Pavilion|Envy|Omen|Victus|OmniBook|ASUS|ZenBook|VivoBook|ExpertBook|ProArt|Acer|Aspire|TravelMate|Swift|Extensa|Veriton|Predator|Fujitsu|LifeBook|MSI|Micro-Star|Prestige|Modern|Katana|Stealth|Creator|Dynabook|Toshiba|Tecra|Portege)')
+        if (-not $isSupportedOem) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "[OEM_PREFETCH] Model '$Manufacturer / $CleanModel' ne pripada podrzanim OEM vendori listama; preskacem rani prefetch." -Level "DEBUG" -Component "NAS"
+            }
+            return $false
+        }
+
+        $prefetchKey = "$($Manufacturer.ToLowerInvariant())|$($CleanModel.ToLowerInvariant())|$($SystemSku.ToLowerInvariant())"
+        if (-not $Force -and $Global:WisEarlyOemPrefetchKey -eq $prefetchKey) {
+            return $true
+        }
+
+        $prefetchUrl = "$baseUrl/api/drivers/pool/bundle"
+        $prefObj = [ordered]@{
+            model         = $CleanModel
+            manufacturer  = $Manufacturer
+            system_sku    = $SystemSku
+            metadata_only = $true
+        }
+        $prefBody = ($prefObj | ConvertTo-Json -Compress)
+        $headers = @{ "Content-Type" = "application/json; charset=utf-8" }
+        $clientTok = ""
+        if (Get-Command Get-ServisHubClientToken -ErrorAction SilentlyContinue) {
+            try { $clientTok = Get-ServisHubClientToken } catch {}
+        }
+        if (-not [string]::IsNullOrWhiteSpace($clientTok)) {
+            $headers["X-ServisHub-Client-Token"] = $clientTok
+        }
+
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[OEM_PREFETCH] Saljem rani P2 OEM prefetch zahtev ka ServiceHub-u ($prefetchUrl) za '$Manufacturer' / '$CleanModel' (SKU: '$SystemSku')..." -Level "INFO" -Component "NAS"
+        }
+
+        $resp = Invoke-RestMethod -Uri $prefetchUrl -Method Post -Headers $headers -Body $prefBody -TimeoutSec 15 -ErrorAction Stop
+        $Global:WisEarlyOemPrefetchKey = $prefetchKey
+
+        $availTxt = if ($resp -and $resp.PSObject.Properties['available']) { [string]$resp.available } else { "unknown" }
+        $pkgCntTxt = if ($resp -and $resp.PSObject.Properties['package_count']) { [string]$resp.package_count } else { "0" }
+        $srcTxt = if ($resp -and $resp.PSObject.Properties['sources'] -and $resp.sources) { (@($resp.sources) -join ",") } else { "none" }
+
+        $okMsg = "[OEM_PREFETCH] Rani P2 OEM prefetch evidentiran na ServiceHub-u za '$Manufacturer / $CleanModel' (SKU='$SystemSku'): available=$availTxt, packages=$pkgCntTxt, sources=[$srcTxt]."
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog $okMsg -Level "INFO" -Component "NAS"
+        }
+        if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+            Send-IpcLog -Message $okMsg -Level "INFO" -Tag "[OEM_PREFETCH]"
+        }
+        return $true
+    } catch {
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[OEM_PREFETCH] Upozorenje pri ranom P2 OEM prefetch pozivu za '$Manufacturer / $CleanModel' (SKU='$SystemSku'): $($_.Exception.Message)" -Level "WARN" -Component "NAS"
+        }
+        return $false
+    }
+}
+
 function Invoke-DriverPoolBundleInstall {
     <#
     .SYNOPSIS
@@ -714,6 +1092,9 @@ function Invoke-DriverPoolBundleInstall {
         [string]$Manufacturer = "",
 
         [Parameter(Mandatory = $false)]
+        [string]$SystemSku = "",
+
+        [Parameter(Mandatory = $false)]
         [string[]]$MissingHwids = @(),
 
         [Parameter(Mandatory = $false)]
@@ -729,6 +1110,16 @@ function Invoke-DriverPoolBundleInstall {
         return $false
     }
 
+    $effectiveSku = $SystemSku
+    if ([string]::IsNullOrWhiteSpace($effectiveSku)) {
+        try {
+            $csSkuPool = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($csSkuPool -and $csSkuPool.PSObject.Properties['SystemSKUNumber'] -and $csSkuPool.SystemSKUNumber) {
+                $effectiveSku = ([string]$csSkuPool.SystemSKUNumber).Trim()
+            }
+        } catch {}
+    }
+
     $bundleUrl = "$baseUrl/api/drivers/pool/bundle"
     $safeLbl = if ([string]::IsNullOrWhiteSpace($CleanModel)) { "PoolHardware" } else { $CleanModel }
 
@@ -737,6 +1128,7 @@ function Invoke-DriverPoolBundleInstall {
     $bodyObj = [ordered]@{
         model         = $CleanModel
         manufacturer  = $Manufacturer
+        system_sku    = $effectiveSku
         missing_hwids = "__WIS_MISS_HWIDS__"
         hwids         = "__WIS_ALL_HWIDS__"
     }
@@ -765,6 +1157,13 @@ function Invoke-DriverPoolBundleInstall {
         $req.Timeout = 120000
         $req.ReadWriteTimeout = 300000
         $req.UserAgent = "WIS-DriverPool/3.2"
+        $poolClientTok = ""
+        if (Get-Command Get-ServisHubClientToken -ErrorAction SilentlyContinue) {
+            try { $poolClientTok = Get-ServisHubClientToken } catch {}
+        }
+        if (-not [string]::IsNullOrWhiteSpace($poolClientTok)) {
+            $req.Headers.Add("X-ServisHub-Client-Token", $poolClientTok)
+        }
 
         $reqBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyJson)
         $req.ContentLength = $reqBytes.Length
@@ -898,38 +1297,89 @@ function Invoke-ModelDriversPreInstall {
         $installedAny = $false
         $skipHttpModelFallback = $false
 
-        # PRIORITET 1: Jedinstveni deduplikovani ServiceHub Driver Pool (/api/drivers/pool/bundle)
+        $sysMfg = ""
+        $sysRawModel = ""
+        $sysSku = ""
+        try {
+            $csInfoPool = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($csInfoPool) {
+                if ($csInfoPool.Manufacturer) { $sysMfg = $csInfoPool.Manufacturer.Trim() }
+                if ($csInfoPool.Model) { $sysRawModel = ($csInfoPool.Model -replace '\s+', ' ').Trim() }
+                if ($csInfoPool.PSObject.Properties['SystemSKUNumber'] -and $csInfoPool.SystemSKUNumber) { $sysSku = ([string]$csInfoPool.SystemSKUNumber).Trim() }
+            }
+        } catch {}
+
+        # PRIORITET 0 (IMP-98): Rani, lagani P2 OEM prefetch poziv ka ServiceHub-u za podrzane modele (uklj. Surface Laptop 6/7)
         $poolHubUrl = ""
         if (Get-Command Get-WisUpdateHubEndpoint -ErrorAction SilentlyContinue) {
             $poolHubUrl = Get-WisUpdateHubEndpoint
         }
-        if (-not [string]::IsNullOrWhiteSpace($poolHubUrl)) {
-            $sysMfg = ""
+        if (-not [string]::IsNullOrWhiteSpace($poolHubUrl) -and -not $isGenericModel) {
             try {
-                $csInfoPool = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-                if ($csInfoPool -and $csInfoPool.Manufacturer) { $sysMfg = $csInfoPool.Manufacturer.Trim() }
+                $prefetchModelArg = if (-not [string]::IsNullOrWhiteSpace($sysRawModel)) { $sysRawModel } else { $cleanModel }
+                $null = Invoke-WisEarlyOemPrefetch -HubUrl $poolHubUrl -CleanModel $prefetchModelArg -Manufacturer $sysMfg -SystemSku $sysSku
             } catch {}
-            $allPoolHwids = @()
-            try {
-                $pnpAll = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-                    $_.HardwareID -and $_.DeviceID -notmatch '^(ROOT|SWD)\\' -and $_.PNPClass -notin @('Printer', 'PrintQueue', 'SoftwareDevice')
-                })
-                $allPoolHwids = @($pnpAll | ForEach-Object {
-                    $hwFirst = @($_.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 1)
-                    if ($hwFirst.Count -gt 0 -and $hwFirst[0] -match '^(PCI|USB|ACPI|HDAUDIO|INTELAUDIO|BTH|HID)\\') {
-                        [string]$hwFirst[0]
-                    }
-                } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -First 80 -Unique)
-            } catch {}
+        }
 
-            $poolTargetModel = if ($isGenericModel) { "" } else { $cleanModel }
-            if ((-not $isGenericModel) -or $allPoolHwids.Count -gt 0) {
-                try {
-                    if (Invoke-DriverPoolBundleInstall -HubUrl $poolHubUrl -CleanModel $poolTargetModel -Manufacturer $sysMfg -AllHwids $allPoolHwids) {
-                        $installedAny = $true
-                    }
-                } catch {}
+        # PRIORITET 0B (IMP-113): Ciljana Need-Only provera preko Get-WisDevicesNeedingOemDrivers
+        # Uredjaji sa ConfigManagerErrorCode == 0 i aktivnim oem*.inf su strogo zasticeni.
+        $neededDevices = @(Get-WisDevicesNeedingOemDrivers)
+        if ($neededDevices.Count -eq 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "[IMP-113] Need-Only provera: 0 uredjaja zahteva OEM drajvere (svi kljucni uredjaji rade ispravno na aktivnim drajverima). Preskacem preuzimanje i instalaciju iz Driver Pool-a / NAS-a (0 MB transfera, 0 pnputil poziva)." -Level "INFO" -Component "NAS"
             }
+            if (Get-Command Send-IpcLog -ErrorAction SilentlyContinue) {
+                Send-IpcLog -Message "Need-Only drajver provera: svi ključni uređaji su već pokriveni OEM drajverima (0 MB prenosa)." -Level "INFO" -Tag "[Drivers]"
+            }
+            try {
+                if (-not (Test-Path "C:\setup" -ErrorAction SilentlyContinue)) {
+                    New-Item -Path "C:\setup" -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+                }
+                Set-Content -Path "C:\setup\model-drivers-preinstalled.flag" -Value "SKIPPED_CLEAN" -Encoding ASCII -Force -ErrorAction SilentlyContinue
+            } catch {}
+            return
+        }
+
+        $missingHwidsPass1 = @($neededDevices | ForEach-Object {
+            @($_.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and ([string]$_ -match '^(?i)(PCI|USB|ACPI|HDAUDIO|INTELAUDIO|BTH|BTHLE|HID|SD|DISPLAY)\\') })
+        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        if ($missingHwidsPass1.Count -eq 0) {
+            $missingHwidsPass1 = @($neededDevices | ForEach-Object { @($_.HardwareID) } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        }
+
+        $errDevCnt = @($neededDevices | Where-Object { $_.IsError }).Count
+        $inboxDevCnt = $neededDevices.Count - $errDevCnt
+        $sampleNames = (@($neededDevices | Select-Object -First 4 | ForEach-Object { "$($_.Name) [$($_.NeedReason)]" }) -join "; ")
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[IMP-113] Need-Only provera: pronađeno $($neededDevices.Count) uredjaja kojima fali OEM drajver (Greske=$errDevCnt, GenerickiInbox=$inboxDevCnt, HWID=$($missingHwidsPass1.Count)): $sampleNames" -Level "INFO" -Component "NAS"
+        }
+
+        # PRIORITET 1: Ciljani ServiceHub Driver Pool (/api/drivers/pool/bundle) ISKLJUCIVO sa -MissingHwids + 2. prolaz za kaskadne child uredjaje
+        if (-not [string]::IsNullOrWhiteSpace($poolHubUrl) -and $missingHwidsPass1.Count -gt 0) {
+            $poolTargetModel = if ($isGenericModel) { "" } else { $cleanModel }
+            try {
+                if (Invoke-DriverPoolBundleInstall -HubUrl $poolHubUrl -CleanModel $poolTargetModel -Manufacturer $sysMfg -SystemSku $sysSku -MissingHwids $missingHwidsPass1) {
+                    $installedAny = $true
+
+                    # IMP-113: Kratak 2. prolaz (~3s pauza) za novootkrivene kaskadne child uredjaje (npr. I2C/SPI/bus -> touchpad/audio/sensor)
+                    Start-Sleep -Seconds 3
+                    $neededPass2 = @(Get-WisDevicesNeedingOemDrivers)
+                    if ($neededPass2.Count -gt 0) {
+                        $pass1Set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+                        foreach ($h1 in $missingHwidsPass1) { [void]$pass1Set.Add($h1) }
+                        $newChildHwids = @($neededPass2 | ForEach-Object {
+                            @($_.HardwareID | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) -and (-not $pass1Set.Contains([string]$_)) })
+                        } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+
+                        if ($newChildHwids.Count -gt 0) {
+                            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                                Write-ServisLog "[IMP-113] 2. prolaz (kaskadni child uredjaji posle 3s pauze): detektovano $($newChildHwids.Count) novih HWID-ova ($($neededPass2.Count) uredjaja). Saljem ciljani -MissingHwids zahtev..." -Level "INFO" -Component "NAS"
+                            }
+                            $null = Invoke-DriverPoolBundleInstall -HubUrl $poolHubUrl -CleanModel $poolTargetModel -Manufacturer $sysMfg -SystemSku $sysSku -MissingHwids $newChildHwids
+                        }
+                    }
+                }
+            } catch {}
         }
 
         if ($isGenericModel) {
@@ -1051,7 +1501,7 @@ function Invoke-ModelDriversPreInstall {
                                     }
                                 }
                             }
-                            if (Install-DriverTarArchive -TarPath $localTar -CleanModel $cleanModel -ExtractRoot $localTemp -SourceLabel "NAS SMB") {
+                            if (Install-DriverTarArchive -TarPath $localTar -CleanModel $cleanModel -ExtractRoot $localTemp -SourceLabel "NAS SMB" -TargetHwids $missingHwidsPass1) {
                                 $installedAny = $true
                             }
                         } catch {
@@ -1186,7 +1636,7 @@ function Invoke-ModelDriversPreInstall {
                             New-Item -Path $localHttpTemp -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
                             $localHttpTar = Join-Path $localHttpTemp "$cleanModel.tar"
                             if (Receive-UpdateFileFromUrl -Url $dlUri -DestinationPath $localHttpTar -TimeoutMs 600000 -MinBytes 512) {
-                                if (Install-DriverTarArchive -TarPath $localHttpTar -CleanModel $cleanModel -ExtractRoot $localHttpTemp -SourceLabel "ServiceHub HTTP") {
+                                if (Install-DriverTarArchive -TarPath $localHttpTar -CleanModel $cleanModel -ExtractRoot $localHttpTemp -SourceLabel "ServiceHub HTTP" -TargetHwids $missingHwidsPass1) {
                                     $installedAny = $true
                                 }
                             } else {
@@ -1855,18 +2305,22 @@ function Send-ModelDriverPackToServisHub {
         [string]$FilePath,
 
         [Parameter(Mandatory = $true)]
-        [string]$CleanModel
+        [string]$CleanModel,
+
+        [string]$OsBuild = ""
     )
 
-    if (-not (Test-Path $FilePath -ErrorAction SilentlyContinue)) { return $false }
-    $fi = Get-Item -Path $FilePath -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue)) { return $false }
+    $fi = Get-Item -LiteralPath $FilePath -ErrorAction SilentlyContinue
     if (-not $fi -or $fi.Length -lt 512) { return $false }
 
-    $targetName = "$CleanModel.tar"
-    $uploadUrl = "$($HubUrl.TrimEnd('/'))/api/drivers/model-pack/upload?model=$([System.Uri]::EscapeDataString($CleanModel))&filename=$([System.Uri]::EscapeDataString($targetName))"
+    $effectiveBuild = if (-not [string]::IsNullOrWhiteSpace($OsBuild)) { $OsBuild.Trim() } else { Get-CurrentWindowsBuildNumber }
+    $targetName = if ($FilePath -match '(?i)\.delta\.tar\.gz$') { "$CleanModel.delta.tar.gz" } else { "$CleanModel.tar" }
+    $uploadUrl = "$($HubUrl.TrimEnd('/'))/api/drivers/model-pack/upload?model=$([System.Uri]::EscapeDataString($CleanModel))&filename=$([System.Uri]::EscapeDataString($targetName))&os_build=$([System.Uri]::EscapeDataString($effectiveBuild))"
     $hdrs = @{
         "X-Model-Name"     = $CleanModel
         "X-Model-Filename" = $targetName
+        "X-OS-Build"       = $effectiveBuild
     }
 
     $ok = Invoke-ServisHubBinaryUpload -UploadUrl $uploadUrl -FilePath $FilePath -Headers $hdrs -TimeoutMs 1200000 -LogLabel $targetName
@@ -1894,14 +2348,18 @@ function Send-ServisHubHarvestNotify {
         [Parameter(Mandatory = $true)]
         [string]$CleanModel,
 
-        [string]$ArchiveFileName = ""
+        [string]$ArchiveFileName = "",
+
+        [string]$OsBuild = ""
     )
 
     if ([string]::IsNullOrWhiteSpace($HubUrl)) { return $false }
     $notifyUrl = "$($HubUrl.TrimEnd('/'))/api/drivers/pool/notify-harvest"
+    $effectiveBuild = if (-not [string]::IsNullOrWhiteSpace($OsBuild)) { $OsBuild.Trim() } else { Get-CurrentWindowsBuildNumber }
     $payloadObj = [ordered]@{
-        model   = $CleanModel
-        archive = if ([string]::IsNullOrWhiteSpace($ArchiveFileName)) { "$CleanModel.tar" } else { $ArchiveFileName }
+        model    = $CleanModel
+        archive  = if ([string]::IsNullOrWhiteSpace($ArchiveFileName)) { "$CleanModel.tar" } else { $ArchiveFileName }
+        os_build = $effectiveBuild
     }
     $bodyJson = ($payloadObj | ConvertTo-Json -Compress)
 
@@ -3053,6 +3511,189 @@ function Test-WisDeviceManagerReadyForHarvest {
     }
 }
 
+function Get-WisActiveOemDriverPackages {
+    <#
+    .SYNOPSIS
+        IMP-113: Prikuplja iskljucivo aktivne oem*.inf pakete vezane za prisutne PnP uredjaje
+        (+ povezane DCH Extension/SoftwareComponent INF-ove), uz strogu blokadu Class=Firmware
+        i firmware/CFU obrazaca i evidentiranje os_build metapodatka.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$PnpEntities = $null,
+        [object[]]$SignedDrivers = $null,
+        [string]$InfRootDir = "",
+        [string]$OsBuild = ""
+    )
+
+    $effectiveInfRoot = if (-not [string]::IsNullOrWhiteSpace($InfRootDir)) {
+        $InfRootDir
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+        Join-Path $env:SystemRoot "INF"
+    } else {
+        "C:\Windows\INF"
+    }
+    $effectiveBuild = if (-not [string]::IsNullOrWhiteSpace($OsBuild)) { $OsBuild.Trim() } else { Get-CurrentWindowsBuildNumber }
+
+    $allPnp = @()
+    if ($null -ne $PnpEntities) {
+        $allPnp = @($PnpEntities)
+    } else {
+        try { $allPnp = @(Get-CimInstance Win32_PnPEntity -ErrorAction Stop) } catch {
+            try { $allPnp = @(Get-WmiObject Win32_PnPEntity -ErrorAction SilentlyContinue) } catch {}
+        }
+    }
+
+    $allSigned = @()
+    if ($null -ne $SignedDrivers) {
+        $allSigned = @($SignedDrivers)
+    } else {
+        try { $allSigned = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction Stop) } catch {
+            try { $allSigned = @(Get-WmiObject Win32_PnPSignedDriver -ErrorAction SilentlyContinue) } catch {}
+        }
+    }
+
+    $presentDevIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $presentHwids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in $allPnp) {
+        if (-not $p -or [string]::IsNullOrWhiteSpace([string]$p.DeviceID)) { continue }
+        $pId = ([string]$p.DeviceID).Trim()
+        $pCls = if ($p.PNPClass) { ([string]$p.PNPClass).Trim() } else { "" }
+        if ($pCls -in @('Printer', 'PrintQueue', 'SoftwareDevice')) { continue }
+        # Zadrzi fizicke prisutne uredjaje + SWC/HDAUDIO/INTELAUDIO/HID DCH child komponente
+        if ($pId -match '^(?i)ROOT\\') { continue }
+        if ($pId -match '^(?i)SWD\\' -and $pCls -notin @('Extension', 'SoftwareComponent', 'AudioProcessingObject', 'MEDIA')) { continue }
+        [void]$presentDevIds.Add($pId)
+        if ($p.HardwareID) {
+            foreach ($ph in @($p.HardwareID)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$ph)) {
+                    [void]$presentHwids.Add(([string]$ph).Trim())
+                }
+            }
+        }
+    }
+
+    $activeInfs = @{}
+    $blockedFirmwareCount = 0
+
+    foreach ($sd in $allSigned) {
+        if (-not $sd -or [string]::IsNullOrWhiteSpace([string]$sd.InfName)) { continue }
+        $infName = ([string]$sd.InfName).Trim()
+        if ($infName -notmatch '(?i)^oem\d+\.inf$') { continue }
+        if ($infName -ieq "prnms009.inf") { continue }
+
+        $sdDevId = if ($sd.DeviceID) { ([string]$sd.DeviceID).Trim() } else { "" }
+        $sdClass = if ($sd.DeviceClass) { ([string]$sd.DeviceClass).Trim() } else { "" }
+        $sdHwid = if ($sd.HardWareID) { ([string]$sd.HardWareID).Trim() } else { "" }
+
+        # Provera da li je drajver vezan za prisutan uredjaj ili aktivnu DCH Extension/SoftwareComponent komponentu
+        $isDchSupport = ($sdClass -in @('Extension', 'SoftwareComponent', 'AudioProcessingObject')) -or ($sdDevId -match '^(?i)SWC\\')
+        $isPresentBound = $false
+        if ($presentDevIds.Count -eq 0) {
+            # Fallback ako Win32_PnPEntity nije vratio zapise: prihvati sve oem*.inf sa DeviceID van ROOT/SWD
+            $isPresentBound = (-not [string]::IsNullOrWhiteSpace($sdDevId)) -and ($sdDevId -notmatch '^(?i)ROOT\\')
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace($sdDevId) -and $presentDevIds.Contains($sdDevId)) {
+                $isPresentBound = $true
+            } elseif ($isDchSupport -and (-not [string]::IsNullOrWhiteSpace($sdDevId) -or (-not [string]::IsNullOrWhiteSpace($sdHwid) -and $presentHwids.Contains($sdHwid)))) {
+                $isPresentBound = $true
+            }
+        }
+        if (-not $isPresentBound) { continue }
+
+        $infFullPath = Join-Path $effectiveInfRoot $infName
+        if (Test-WisFirmwareOrCfuInf -InfPath $infFullPath -InfName $infName -DriverClass $sdClass) {
+            $blockedFirmwareCount++
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "[FIRMWARE_BLOCK] ActiveDeltaHarvest: blokiram Firmware/CFU paket pri berbi: $infName (Class=$sdClass, Device=$sdDevId)" -Level "INFO" -Component "DriverHarvest"
+            }
+            continue
+        }
+
+        $infKey = $infName.ToLowerInvariant()
+        if (-not $activeInfs.ContainsKey($infKey)) {
+            $sha = ""
+            if (Test-Path -LiteralPath $infFullPath -PathType Leaf -ErrorAction SilentlyContinue) {
+                try { $sha = (Get-FileHash -LiteralPath $infFullPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch {}
+            }
+            $hwidList = [System.Collections.Generic.List[string]]::new()
+            if (-not [string]::IsNullOrWhiteSpace($sdHwid)) { [void]$hwidList.Add($sdHwid) }
+            $activeInfs[$infKey] = [ordered]@{
+                inf_name     = $infName
+                driver_ver   = if ($sd.DriverVersion) { ([string]$sd.DriverVersion).Trim() } else { "" }
+                driver_class = $sdClass
+                hwids        = $hwidList
+                sha256       = $sha
+                os_build     = $effectiveBuild
+            }
+        } else {
+            if (-not [string]::IsNullOrWhiteSpace($sdHwid) -and -not $activeInfs[$infKey].hwids.Contains($sdHwid)) {
+                [void]$activeInfs[$infKey].hwids.Add($sdHwid)
+            }
+        }
+    }
+
+    # Dodatno prikupi povezane DCH Extension/SoftwareComponent oem*.inf iz C:\Windows\INF koji dele aktivne HWID-ove
+    if ($presentHwids.Count -gt 0 -and (Test-Path -LiteralPath $effectiveInfRoot -PathType Container -ErrorAction SilentlyContinue)) {
+        try {
+            $oemInfFiles = @(Get-ChildItem -LiteralPath $effectiveInfRoot -Filter "oem*.inf" -File -ErrorAction SilentlyContinue)
+            foreach ($oFile in $oemInfFiles) {
+                $oKey = $oFile.Name.ToLowerInvariant()
+                if ($activeInfs.ContainsKey($oKey)) { continue }
+                try {
+                    $oTxt = [System.IO.File]::ReadAllText($oFile.FullName)
+                    if ([string]::IsNullOrWhiteSpace($oTxt)) { continue }
+                    if ($oTxt -notmatch '(?mi)^\s*Class\s*=\s*(Extension|SoftwareComponent)\b') { continue }
+                    if (Test-WisFirmwareOrCfuInf -InfPath $oFile.FullName -InfName $oFile.Name -InfContent $oTxt) {
+                        $blockedFirmwareCount++
+                        continue
+                    }
+                    $matchedDchHwids = [System.Collections.Generic.List[string]]::new()
+                    foreach ($phw in $presentHwids) {
+                        if ($phw.Length -ge 12 -and $oTxt.IndexOf($phw, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                            [void]$matchedDchHwids.Add($phw)
+                        }
+                    }
+                    if ($matchedDchHwids.Count -gt 0) {
+                        $dchVer = ""
+                        if ($oTxt -match '(?mi)^\s*DriverVer\s*=\s*[^,\r\n]+,\s*([0-9\.]+)') { $dchVer = $matches[1].Trim() }
+                        $dchCls = if ($oTxt -match '(?mi)^\s*Class\s*=\s*([^\r\n;#]+)') { $matches[1].Trim() } else { "Extension" }
+                        $dchSha = ""
+                        try { $dchSha = (Get-FileHash -LiteralPath $oFile.FullName -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch {}
+                        $activeInfs[$oKey] = [ordered]@{
+                            inf_name     = $oFile.Name
+                            driver_ver   = $dchVer
+                            driver_class = $dchCls
+                            hwids        = $matchedDchHwids
+                            sha256       = $dchSha
+                            os_build     = $effectiveBuild
+                        }
+                    }
+                } catch {}
+            }
+        } catch {}
+    }
+
+    $outList = [System.Collections.Generic.List[object]]::new()
+    foreach ($k in ($activeInfs.Keys | Sort-Object)) {
+        $entry = $activeInfs[$k]
+        [void]$outList.Add([ordered]@{
+            inf_name     = [string]$entry.inf_name
+            driver_ver   = [string]$entry.driver_ver
+            driver_class = [string]$entry.driver_class
+            hwids        = @($entry.hwids)
+            sha256       = [string]$entry.sha256
+            os_build     = [string]$entry.os_build
+        })
+    }
+
+    if ($blockedFirmwareCount -gt 0 -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+        Write-ServisLog "[IMP-113] ActiveDeltaHarvest: izabrano $($outList.Count) aktivnih oem*.inf paketa (OSBuild=$effectiveBuild), blokirano $blockedFirmwareCount Firmware/CFU paketa." -Level "INFO" -Component "DriverHarvest"
+    }
+
+    return @($outList)
+}
+
 function Export-ServisHardwareDrivers {
     <#
     .SYNOPSIS
@@ -3243,24 +3884,49 @@ function Export-ServisHardwareDrivers {
             Show-ServisDashboard -LiveStatus "Izvozim hardverske drajvere za model $cleanModel ka NAS-u..."
         }
 
-        # 5. Privremeni direktorijum za lokalnu ekstrakciju
+        # 5. Privremeni direktorijum za lokalnu ekstrakciju (IMP-113: cist aktivni OEM izvoz umesto celog DriverStore-a)
         $tempExportDir = Join-Path $env:TEMP "WIS_DriverExport_$([guid]::NewGuid().ToString('N'))"
         New-Item -Path $tempExportDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
 
-        # Ekstrakcija drajvera: primarno dism.exe, fallback pnputil.exe
-        $dismSuccess = $false
-        try {
-            $proc = Start-Process "dism.exe" -ArgumentList "/online /export-driver /destination:`"$tempExportDir`"" -Wait -PassThru -WindowStyle Hidden -ErrorAction SilentlyContinue
-            if ($proc -and $proc.ExitCode -eq 0) {
-                $dismSuccess = $true
+        $currHarvestBuild = Get-CurrentWindowsBuildNumber
+        $activeOemPkgs = @(Get-WisActiveOemDriverPackages -OsBuild $currHarvestBuild)
+        $exportedActiveCount = 0
+        foreach ($aPkg in $activeOemPkgs) {
+            $oemInfName = [string]$aPkg.inf_name
+            if ($oemInfName -notmatch '(?i)^oem\d+\.inf$') { continue }
+            $subOut = Join-Path $tempExportDir ([System.IO.Path]::GetFileNameWithoutExtension($oemInfName))
+            if (-not (Test-Path -LiteralPath $subOut -ErrorAction SilentlyContinue)) {
+                New-Item -Path $subOut -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
             }
-        } catch {}
-
-        if (-not $dismSuccess) {
             try {
-                & pnputil.exe /export-driver * "$tempExportDir" >$null 2>&1
+                & pnputil.exe /export-driver "$oemInfName" "$subOut" >$null 2>&1
+                if ($LASTEXITCODE -eq 0) { $exportedActiveCount++ }
             } catch {}
         }
+
+        if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+            Write-ServisLog "[IMP-113] Export-ServisHardwareDrivers ($cleanModel): aktivni OEM izvoz zavrsen ($exportedActiveCount/$($activeOemPkgs.Count) aktivnih oem*.inf paketa, OSBuild=$currHarvestBuild; bez punog dism DriverStore dump-a)." -Level "INFO" -Component "DriverHarvest"
+        }
+
+        # IMP-113: Stroga post-export blokada Class=Firmware i poznatih firmware/CFU INF obrazaca pre pakovanja
+        try {
+            $postExportInfs = @(Get-ChildItem -LiteralPath $tempExportDir -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue)
+            $prunedFwCount = 0
+            foreach ($peInf in $postExportInfs) {
+                if (Test-WisFirmwareOrCfuInf -InfPath $peInf.FullName -InfName $peInf.Name) {
+                    $fwParent = $peInf.DirectoryName
+                    if ($fwParent -and ($fwParent -ne $tempExportDir) -and (Test-Path -LiteralPath $fwParent -ErrorAction SilentlyContinue)) {
+                        Remove-Item -LiteralPath $fwParent -Recurse -Force -ErrorAction SilentlyContinue
+                    } elseif (Test-Path -LiteralPath $peInf.FullName -ErrorAction SilentlyContinue) {
+                        Remove-Item -LiteralPath $peInf.FullName -Force -ErrorAction SilentlyContinue
+                    }
+                    $prunedFwCount++
+                }
+            }
+            if ($prunedFwCount -gt 0 -and (Get-Command Write-ServisLog -ErrorAction SilentlyContinue)) {
+                Write-ServisLog "[FIRMWARE_BLOCK] Export-ServisHardwareDrivers ($cleanModel): uklonjeno $prunedFwCount Firmware/CFU paketa pre pakovanja." -Level "INFO" -Component "DriverHarvest"
+            }
+        } catch {}
 
         # 6. Ciscenje duplikata i tudjih OEM HDX varijanti iz tempExportDir pre skeniranja
         try {
@@ -3427,7 +4093,7 @@ function Export-ServisHardwareDrivers {
                                         Write-ServisLog "Drajveri modela $cleanModel uspesno arhivirani u $cleanModel.tar na NAS-u (mrezni paketi: $copiedNetFolders)." -Level "SUCCESS" -Component "DriverHarvest"
                                     }
                                     if ($hubUrl) {
-                                        $null = Send-ServisHubHarvestNotify -HubUrl $hubUrl -CleanModel $cleanModel -ArchiveFileName "$cleanModel.tar"
+                                        $null = Send-ServisHubHarvestNotify -HubUrl $hubUrl -CleanModel $cleanModel -ArchiveFileName "$cleanModel.tar" -OsBuild $currHarvestBuild
                                     }
                                     if (Get-Command Show-ServisDashboard -ErrorAction SilentlyContinue) {
                                         Show-ServisDashboard -LiveStatus "[OK] Arhiva $cleanModel.tar sacuvana na NAS-u"
@@ -3441,7 +4107,7 @@ function Export-ServisHardwareDrivers {
                         }
 
                         if (-not $tarStoredOnSmb -and $hubUrl) {
-                            if (Send-ModelDriverPackToServisHub -HubUrl $hubUrl -FilePath $tarPath -CleanModel $cleanModel) {
+                            if (Send-ModelDriverPackToServisHub -HubUrl $hubUrl -FilePath $tarPath -CleanModel $cleanModel -OsBuild $currHarvestBuild) {
                                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
                                     Write-ServisLog "Drajveri modela $cleanModel uspesno uploadovani kao $cleanModel.tar na ServiceHub HTTP skladiste." -Level "SUCCESS" -Component "DriverHarvest"
                                 }
@@ -4254,6 +4920,10 @@ function Invoke-Phase2Drivers {
             if (Get-Command Send-WisModelDnaToHub -ErrorAction SilentlyContinue) {
                 Send-WisModelDnaToHub | Out-Null
             }
+        } catch {}
+        # IMP-98: Rani, vidljivo logovan P2 OEM prefetch za podrzane modele (uklj. Surface Laptop 6/7)
+        try {
+            $null = Invoke-WisEarlyOemPrefetch
         } catch {}
     }
 
@@ -6255,16 +6925,92 @@ function Test-WisDeviceCoveredByStagedHub {
         if ($Coverage.CoveredHwids.Contains($u)) { return $true }
         $uBase = $u -replace '&REV_[0-9A-F]+', ''
         if ($Coverage.CoveredBaseHwids.Contains($uBase)) { return $true }
-        if ($u -match '((?:PCI|USB)\\(?:VEN|VID)_[0-9A-F]{4}&(?:DEV|PID)_[0-9A-F]{4})') {
+
+        $devSubsys = ""
+        if ($uBase -match '(&SUBSYS_[0-9A-F]{8})') {
+            $devSubsys = $matches[1]
+        }
+        if ($uBase -match '^((?:PCI|USB)\\(?:VEN|VID)_[0-9A-F]{4}&(?:DEV|PID)_[0-9A-F]{4})') {
             $venDev = $matches[1]
             foreach ($cb in $Coverage.CoveredBaseHwids) {
-                if ($cb.StartsWith($venDev, [System.StringComparison]::OrdinalIgnoreCase)) {
+                if (-not $cb.StartsWith($venDev, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+                # IMP-105: StartsWith($venDev) fallback dozvoljen SAMO kada zapis u .inf-u NEMA sopstveni SUBSYS_.
+                # 4-delni SUBSYS zapis u .inf-u mora se tacno poklopiti sa SUBSYS-om uredjaja.
+                if ($cb -match '(&SUBSYS_[0-9A-F]{8})') {
+                    $infSubsys = $matches[1]
+                    if (-not [string]::IsNullOrWhiteSpace($devSubsys) -and $infSubsys.Equals($devSubsys, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        return $true
+                    }
+                } else {
                     return $true
                 }
             }
         }
     }
     return $false
+}
+
+function Test-WisWuaDriverCoveredByStagedHub {
+    <#
+    .SYNOPSIS
+        IMP-105: Proverava da li su ciljni HWID-ovi WUA drajvera zaista pokriveni u DriverStage\Hub,
+        bez grubog odbacivanja po celom DriverClass imenu.
+    #>
+    [CmdletBinding()]
+    param(
+        $UpdateItem,
+        $Coverage
+    )
+    if (-not $UpdateItem -or -not $Coverage -or $Coverage.InfCount -le 0) { return $false }
+
+    $targetHwids = [System.Collections.Generic.List[string]]::new()
+    try {
+        $drvHw = $null
+        if ($UpdateItem.PSObject.Properties['DriverHardwareID']) {
+            $drvHw = $UpdateItem.DriverHardwareID
+        } else {
+            try { $drvHw = $UpdateItem.DriverHardwareID } catch {}
+        }
+        if ($drvHw) {
+            foreach ($h in @($drvHw)) {
+                $hs = ([string]$h).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($hs) -and -not $targetHwids.Contains($hs)) {
+                    [void]$targetHwids.Add($hs)
+                }
+            }
+        }
+    } catch {}
+
+    if ($targetHwids.Count -eq 0) {
+        try {
+            $bundled = $null
+            if ($UpdateItem.PSObject.Properties['BundledUpdates']) { $bundled = $UpdateItem.BundledUpdates }
+            if ($bundled) {
+                foreach ($bu in $bundled) {
+                    if (-not $bu) { continue }
+                    $bHw = $null
+                    try { $bHw = $bu.DriverHardwareID } catch {}
+                    if ($bHw) {
+                        foreach ($h in @($bHw)) {
+                            $hs = ([string]$h).Trim()
+                            if (-not [string]::IsNullOrWhiteSpace($hs) -and -not $targetHwids.Contains($hs)) {
+                                [void]$targetHwids.Add($hs)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    if ($targetHwids.Count -eq 0) {
+        return $false
+    }
+
+    $pseudoDev = [PSCustomObject]@{ HardwareID = @($targetHwids) }
+    return (Test-WisDeviceCoveredByStagedHub -Device $pseudoDev -Coverage $Coverage)
 }
 
 function Invoke-HubBatchDriverResolveAndStage {
@@ -6345,16 +7091,41 @@ function Invoke-HubBatchDriverResolveAndStage {
     $downloadedUrls = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $pollSw = [System.Diagnostics.Stopwatch]::StartNew()
     $attempt = 0
+    # IMP-111: Dozvoli do 3 uzastopne prolazne HTTP greske pre break-a, postujuci budzet i skip
+    $consecutiveHttpErrors = 0
+    $maxConsecutiveHttpErrors = 3
 
     while ($true) {
+        if ($pollSw.Elapsed.TotalSeconds -ge $PollBudgetSeconds) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "Invoke-HubBatchDriverResolveAndStage: Istekao budzet (${PollBudgetSeconds}s) pre pokusaja $($attempt + 1)." -Level "WARN" -Component "BgDriverDL"
+            }
+            break
+        }
+        if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+            break
+        }
+
         $attempt++
         $res = $null
         try {
             Write-DriverStageStatus -State "DOWNLOADING" -HubStagedCount $stagedCount -WuDownloadedCount 0 -TotalCount $Devices.Count -CurrentItem "Batch Hub resolve ($($Devices.Count) uredjaja, pokusaj $attempt)..." -LocalSetupDir $LocalSetupDir
             $res = Invoke-RestMethod -Uri $resolveUrl -Method Post -Headers $headers -Body $reqBody -TimeoutSec 120 -ErrorAction Stop
+            $consecutiveHttpErrors = 0
         } catch {
+            $consecutiveHttpErrors++
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "Invoke-HubBatchDriverResolveAndStage: Batch /api/drivers/resolve greska ($resolveUrl): $($_.Exception.Message)" -Level "WARN" -Component "BgDriverDL"
+                Write-ServisLog "Invoke-HubBatchDriverResolveAndStage: Batch /api/drivers/resolve greska ($consecutiveHttpErrors/$maxConsecutiveHttpErrors, $resolveUrl): $($_.Exception.Message)" -Level "WARN" -Component "BgDriverDL"
+            }
+            if ($consecutiveHttpErrors -lt $maxConsecutiveHttpErrors) {
+                if ($pollSw.Elapsed.TotalSeconds -ge $PollBudgetSeconds) {
+                    break
+                }
+                if ((Get-Command Test-ServisSkipRequested -ErrorAction SilentlyContinue) -and (Test-ServisSkipRequested)) {
+                    break
+                }
+                Start-Sleep -Seconds $PollIntervalSeconds
+                continue
             }
             break
         }
@@ -6507,11 +7278,10 @@ function Invoke-BackgroundDriverDownloadWorker {
                 if ($searchResult -and $searchResult.Updates -and $searchResult.Updates.Count -gt 0) {
                     $dlColl = New-Object -ComObject "Microsoft.Update.UpdateColl"
                     foreach ($u in $searchResult.Updates) {
-                        $uClass = ""
-                        try { if ($u.PSObject.Properties['DriverClass'] -and $u.DriverClass) { $uClass = ([string]$u.DriverClass).Trim() } } catch {}
-                        if (-not [string]::IsNullOrWhiteSpace($uClass) -and $hubCoverage.CoveredClasses.Contains($uClass)) {
+                        # IMP-105: Filtriraj iskljucivo WUA drajvere ciji su ciljni HWID-ovi zaista pokriveni u DriverStage\Hub (bez odbacivanja po celom DriverClass-u)
+                        if (Test-WisWuaDriverCoveredByStagedHub -UpdateItem $u -Coverage $hubCoverage) {
                             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                                Write-ServisLog "BackgroundDriverDownloadWorker: Preskacem WUA drajver '$($u.Title)' jer je OEM klasa '$uClass' vec stage-ovana u DriverStage\Hub." -Level "INFO" -Component "BgDriverDL"
+                                Write-ServisLog "BackgroundDriverDownloadWorker: Preskacem WUA drajver '$($u.Title)' jer su ciljni HWID-ovi vec pokriveni u DriverStage\Hub." -Level "INFO" -Component "BgDriverDL"
                             }
                             continue
                         }
@@ -6919,9 +7689,8 @@ function Invoke-PostRebootDriverFinalize {
                         if ($wuResP -and $wuResP.Updates -and $wuResP.Updates.Count -gt 0) {
                             $wuaTargetColl = New-Object -ComObject "Microsoft.Update.UpdateColl"
                             foreach ($uP in $wuResP.Updates) {
-                                $uCls = ""
-                                try { if ($uP.PSObject.Properties['DriverClass'] -and $uP.DriverClass) { $uCls = ([string]$uP.DriverClass).Trim() } } catch {}
-                                if (-not [string]::IsNullOrWhiteSpace($uCls) -and $hubCovPost.CoveredClasses.Contains($uCls)) {
+                                # IMP-105: Filtriraj iskljucivo WUA drajvere ciji su ciljni HWID-ovi vec pokriveni u DriverStage\Hub (bez odbacivanja po DriverClass-u)
+                                if (Test-WisWuaDriverCoveredByStagedHub -UpdateItem $uP -Coverage $hubCovPost) {
                                     continue
                                 }
                                 if (-not $uP.EulaAccepted) { try { $uP.AcceptEula() } catch {} }
@@ -6986,30 +7755,32 @@ function Invoke-DeltaDriverHarvest {
         }
 
         $cleanModel = if (Get-Command Get-CleanComputerModel -ErrorAction SilentlyContinue) { Get-CleanComputerModel } else { "Unknown_Model" }
-        $signedDrivers = @(Get-CimInstance Win32_PnPSignedDriver -ErrorAction SilentlyContinue | Where-Object {
-            $_.InfName -and $_.InfName -match '(?i)^oem\d+\.inf$'
-        })
-        if ($signedDrivers.Count -eq 0) { return $true }
-
-        $driverInventory = @()
-        $seenInfs = @{}
-        foreach ($sd in $signedDrivers) {
-            $infKey = ([string]$sd.InfName).ToLowerInvariant()
-            if ($seenInfs.ContainsKey($infKey)) { continue }
-            $seenInfs[$infKey] = $true
-
-            $infPath = Join-Path "$env:SystemRoot\INF" $sd.InfName
-            $sha = ""
-            if (Test-Path $infPath -ErrorAction SilentlyContinue) {
-                try { $sha = (Get-FileHash -Path $infPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch {}
+        if (Test-IsGenericComputerModel -CleanModel $cleanModel) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "DeltaHarvest: Detektovan genericki model ($cleanModel) — preskacem berbu." -Level "INFO" -Component "DriverHarvest"
             }
-            $driverInventory += [ordered]@{
-                inf_name   = [string]$sd.InfName
-                driver_ver = [string]$sd.DriverVersion
-                hwids      = @([string]$sd.HardWareID)
-                sha256     = $sha
-            }
+            return $true
         }
+        $currBuildDelta = Get-CurrentWindowsBuildNumber
+
+        # IMP-113: Cist aktivni Delta Harvest — samo aktivni oem*.inf prisutnih uredjaja (+ DCH Extension/Component), bez Class=Firmware i firmware/CFU obrazaca
+        $activePkgs = @(Get-WisActiveOemDriverPackages -OsBuild $currBuildDelta)
+        if ($activePkgs.Count -eq 0) {
+            if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                Write-ServisLog "DeltaHarvest: Nema aktivnih ne-firmware oem*.inf paketa za berbu ($cleanModel, OSBuild=$currBuildDelta)." -Level "INFO" -Component "DriverHarvest"
+            }
+            return $true
+        }
+        $driverInventory = @($activePkgs | ForEach-Object {
+            [ordered]@{
+                inf_name     = [string]$_.inf_name
+                driver_ver   = [string]$_.driver_ver
+                driver_class = [string]$_.driver_class
+                hwids        = @($_.hwids)
+                sha256       = [string]$_.sha256
+                os_build     = [string]$currBuildDelta
+            }
+        })
 
         $deltaCheckUrl = "$hubUrl/api/drivers/pool/delta-check"
         $headers = @{ "Content-Type" = "application/json; charset=utf-8" }
@@ -7018,40 +7789,71 @@ function Invoke-DeltaDriverHarvest {
         }
         $checkBody = ([ordered]@{
             model    = $cleanModel
+            os_build = $currBuildDelta
             packages = $driverInventory
         } | ConvertTo-Json -Depth 5 -Compress)
 
         $checkRes = Invoke-RestMethod -Uri $deltaCheckUrl -Method Post -Headers $headers -Body $checkBody -TimeoutSec 30 -ErrorAction Stop
         if ($checkRes -and ($checkRes.harvest_needed -eq $false)) {
             if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                Write-ServisLog "DeltaHarvest: Svi drajveri za model $cleanModel su vec u Driver Pool-u (0 MB upload)." -Level "INFO" -Component "DriverHarvest"
+                Write-ServisLog "DeltaHarvest: Svi aktivni OEM drajveri za model $cleanModel (OSBuild=$currBuildDelta) su vec u Driver Pool-u (0 MB upload)." -Level "INFO" -Component "DriverHarvest"
             }
             return $true
         }
 
         $missingInfs = @()
         if ($checkRes -and $checkRes.missing_infs) {
-            $missingInfs = @($checkRes.missing_infs | ForEach-Object { ([string]$_).ToLowerInvariant() })
+            $missingInfs = @($checkRes.missing_infs | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ -match '^oem\d+\.inf$' } | Select-Object -Unique)
         }
         if ($missingInfs.Count -eq 0) { return $true }
 
         New-Item -Path $workExportDir -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
+        $exportedDeltaCount = 0
+        $sysInfDir = if ($env:SystemRoot) { Join-Path $env:SystemRoot "INF" } else { "C:\Windows\INF" }
         foreach ($mInf in $missingInfs) {
+            $srcInfCheck = Join-Path $sysInfDir $mInf
+            if (Test-WisFirmwareOrCfuInf -InfPath $srcInfCheck -InfName $mInf) {
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "[FIRMWARE_BLOCK] DeltaHarvest: preskacem eksport Firmware/CFU paketa $mInf." -Level "INFO" -Component "DriverHarvest"
+                }
+                continue
+            }
             $subOut = Join-Path $workExportDir ([System.IO.Path]::GetFileNameWithoutExtension($mInf))
             New-Item -Path $subOut -ItemType Directory -Force -ErrorAction SilentlyContinue | Out-Null
             & pnputil.exe /export-driver "$mInf" "$subOut" >$null 2>&1
+
+            # Post-export verifikacija da eksportovani INF nije Class=Firmware ili CFU obrazac
+            $exportedSubInfs = @(Get-ChildItem -LiteralPath $subOut -Filter "*.inf" -Recurse -File -ErrorAction SilentlyContinue)
+            $subBlocked = $false
+            foreach ($esInf in $exportedSubInfs) {
+                if (Test-WisFirmwareOrCfuInf -InfPath $esInf.FullName -InfName $esInf.Name) {
+                    $subBlocked = $true
+                    break
+                }
+            }
+            if ($subBlocked) {
+                Remove-Item -LiteralPath $subOut -Recurse -Force -ErrorAction SilentlyContinue
+                if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
+                    Write-ServisLog "[FIRMWARE_BLOCK] DeltaHarvest: uklonjen eksportovani Firmware/CFU paket $mInf." -Level "INFO" -Component "DriverHarvest"
+                }
+            } elseif ($exportedSubInfs.Count -gt 0) {
+                $exportedDeltaCount++
+            }
+        }
+        if ($exportedDeltaCount -eq 0) {
+            return $true
         }
 
         $tarGzPath = Join-Path $env:TEMP ("$cleanModel.delta.tar.gz")
-        if (Test-Path $tarGzPath) { Remove-Item -Path $tarGzPath -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $tarGzPath -ErrorAction SilentlyContinue) { Remove-Item -LiteralPath $tarGzPath -Force -ErrorAction SilentlyContinue }
         & tar.exe -czf "$tarGzPath" -C "$workExportDir" . 2>$null
         $uploadedOk = $false
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $tarGzPath) -and ((Get-Item $tarGzPath).Length -gt 0)) {
-            # Primarno HTTP upload samo nedostajucih paketa na ServiceHub
-            $uploadedOk = [bool](Send-ModelDriverPackToServisHub -HubUrl $hubUrl -FilePath $tarGzPath -CleanModel $cleanModel)
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $tarGzPath -ErrorAction SilentlyContinue) -and ((Get-Item -LiteralPath $tarGzPath).Length -gt 0)) {
+            # Primarno HTTP upload samo nedostajucih aktivnih OEM paketa na ServiceHub uz os_build metapodatak
+            $uploadedOk = [bool](Send-ModelDriverPackToServisHub -HubUrl $hubUrl -FilePath $tarGzPath -CleanModel $cleanModel -OsBuild $currBuildDelta)
             if ($uploadedOk) {
                 if (Get-Command Write-ServisLog -ErrorAction SilentlyContinue) {
-                    Write-ServisLog "DeltaHarvest: Uspesan HTTP upload nedostajucih drajvera ($($missingInfs.Count) .inf) za $cleanModel." -Level "SUCCESS" -Component "DriverHarvest"
+                    Write-ServisLog "DeltaHarvest: Uspesan HTTP upload aktivnih OEM drajvera ($exportedDeltaCount .inf, OSBuild=$currBuildDelta) za $cleanModel." -Level "SUCCESS" -Component "DriverHarvest"
                 }
             } else {
                 # SMB fallback strogo na \\<NasHost>\Servis\Drivers\Harvested\Archives\<Model>.tar (IMP-87)
@@ -7075,7 +7877,7 @@ function Invoke-DeltaDriverHarvest {
                             }
                             $destFile = Join-Path $nasArchivesDir "$cleanModel.delta.tar.gz"
                             Copy-FileWithHeartbeat -SourcePath $tarGzPath -DestinationPath $destFile -Label "$cleanModel.delta.tar.gz" -HarvestLockPath $lockFile
-                            $null = Send-ServisHubHarvestNotify -HubUrl $hubUrl -CleanModel $cleanModel -ArchiveFileName "$cleanModel.delta.tar.gz"
+                            $null = Send-ServisHubHarvestNotify -HubUrl $hubUrl -CleanModel $cleanModel -ArchiveFileName "$cleanModel.delta.tar.gz" -OsBuild $currBuildDelta
                             $uploadedOk = $true
                         }
                     } finally {
@@ -7085,7 +7887,7 @@ function Invoke-DeltaDriverHarvest {
                     }
                 }
             }
-            Remove-Item -Path $tarGzPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tarGzPath -Force -ErrorAction SilentlyContinue
         }
         return $uploadedOk
     } catch {
@@ -7108,7 +7910,11 @@ Export-ModuleMember -Function `
     Get-WisQuarantinedInfs, `
     Add-WisQuarantinedInf, `
     Confirm-WisQuarantinedInfs, `
+    Test-WisFirmwareOrCfuInf, `
     Invoke-SafePnpUtilAddDriver, `
+    Get-WisDevicesNeedingOemDrivers, `
+    Invoke-WisEarlyOemPrefetch, `
+    Get-WisActiveOemDriverPackages, `
     Get-CurrentWindowsBuildNumber, `
     Test-UpdatePackageBuildCompatible, `
     Test-IsGenericComputerModel, `
@@ -7144,6 +7950,7 @@ Export-ModuleMember -Function `
     Get-WisProblematicDevicesForStaging, `
     Get-WisStagedHubInfCoverage, `
     Test-WisDeviceCoveredByStagedHub, `
+    Test-WisWuaDriverCoveredByStagedHub, `
     Invoke-HubBatchDriverResolveAndStage, `
     Invoke-BackgroundDriverDownloadWorker, `
     Start-BackgroundDriverDownloadWorker, `
