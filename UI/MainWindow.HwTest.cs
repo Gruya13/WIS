@@ -27,7 +27,9 @@ namespace WIS.UI
         private bool _phase5LastThermalCritical = false;
         private bool _phase5LastCancelled = false;
         private volatile bool _phase5UefiRebootInProgress = false;
+        private volatile bool _phase5RemoteAbortRequested = false;
         private volatile bool _phase5EmergencySkipAuthorized = false;
+        private int _driverGateAutoRecoveryInFlight = 0;
         private int _phase6DispatchGuard = 0;
         private DateTime _lastPendingAlertSoundUtc = DateTime.MinValue;
         private bool _isSequentialPeripheralRunActive = false;
@@ -484,6 +486,7 @@ namespace WIS.UI
                     _embeddedHwTestShell.SetInteractiveTestsGateProvider(EvaluateInteractiveTestsDriverGate);
                     _embeddedHwTestShell.SetPreAutoDriverGateFreshProvider(EvaluatePreAutoDriverGateFresh);
                     _embeddedHwTestShell.SetDriverGateStatusHandler(OnHwTestDriverGateStatusUpdate);
+                    _embeddedHwTestShell.SetDriverGateRecoveryHandler(TriggerDriverGateAutoRecoveryFromHwTest);
                     _embeddedHwTestShell.SetPhase5LiveStatusHandler(OnHwTestPhase5LiveStatusChanged);
                     _embeddedHwTestShell.SetOpenDriversTabHandler(OpenDriversTabFromHwTest);
                     if (ViewModel != null && ViewModel.CurrentPhase >= 5)
@@ -536,6 +539,67 @@ namespace WIS.UI
                 _embeddedHwTestShell.UpdateIdentity(model, serial);
             }
             catch { }
+        }
+
+        private void TriggerDriverGateAutoRecoveryFromHwTest(List<string> problemDevices)
+        {
+            if (Interlocked.CompareExchange(ref _driverGateAutoRecoveryInFlight, 1, 0) != 0)
+            {
+                return;
+            }
+            try
+            {
+                string devsText = (problemDevices != null && problemDevices.Count > 0)
+                    ? string.Join(", ", problemDevices.ToArray())
+                    : "nepoznat uređaj";
+                string msg = "IMP-99: Pokrećem ciljani re-resolve/WUA oporavak (PostRebootFinalize) za blokirane uređaje: " + devsText;
+                if (_telemetryService != null)
+                {
+                    _telemetryService.PushLog("[INFO] [DriverGate] " + msg);
+                }
+                if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                {
+                    Dispatcher.BeginInvoke((Action)delegate
+                    {
+                        if (ViewModel != null)
+                        {
+                            ViewModel.AddLog("INFO", "DriverGate", msg);
+                            ViewModel.LiveStatus = "PreAutoDriverGate: Auto-oporavak drajvera (re-resolve/WUA)...";
+                        }
+                    });
+                }
+
+                RunPhase2DriversStage("PostRebootFinalize", 6);
+
+                try { RefreshPeripheralsAfterDrivers(); } catch { }
+                NotifyHwTestDriverStateChanged(true);
+            }
+            catch { }
+            finally
+            {
+                Interlocked.Exchange(ref _driverGateAutoRecoveryInFlight, 0);
+            }
+        }
+
+        private void CancelEmbeddedPhase5ForRemoteOverride()
+        {
+            _phase5RemoteAbortRequested = true;
+            try
+            {
+                if (_embeddedHwTestShell != null)
+                {
+                    _embeddedHwTestShell.CancelPhase5Workflow();
+                }
+            }
+            catch { }
+
+            lock (_phase5HwSyncLock)
+            {
+                if (_phase5HwCompletedEvent != null)
+                {
+                    try { _phase5HwCompletedEvent.Set(); } catch { }
+                }
+            }
         }
 
         private void ShutdownEmbeddedHwTest()
@@ -1650,6 +1714,7 @@ namespace WIS.UI
             lock (_phase5HwSyncLock)
             {
                 _phase5UefiRebootInProgress = false;
+                _phase5RemoteAbortRequested = false;
                 _phase5HwCompletedEvent = waitEvent;
                 _phase5LastCpuDurationSec = 0;
                 _phase5LastMaxTemp = 0f;
@@ -1740,8 +1805,9 @@ namespace WIS.UI
             while (!signaled)
             {
                 if (_phase5UefiRebootInProgress) break;
+                if (_phase5RemoteAbortRequested) break;
                 signaled = waitEvent.WaitOne(500);
-                if (signaled || _phase5UefiRebootInProgress) break;
+                if (signaled || _phase5UefiRebootInProgress || _phase5RemoteAbortRequested) break;
 
                 bool waitingManual = false;
                 bool waitingDriverGate = false;
@@ -1790,7 +1856,7 @@ namespace WIS.UI
                 catch { }
             }
 
-            if (_phase5UefiRebootInProgress)
+            if (_phase5UefiRebootInProgress || _phase5RemoteAbortRequested)
             {
                 lock (_phase5HwSyncLock)
                 {

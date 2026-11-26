@@ -680,34 +680,34 @@ namespace WIS.UI
             _srDict["ApMatrixRec_ScanError"] = "Kliknite na 'Osveži Proveru' ili proverite mrežnu vezu.";
             _srDict["ApMatrixTitle_ParseError"] = "GREŠKA U PARSIRANJU";
             _srDict["ApMatrixDesc_ParseError"] = "Neispravan JSON format rezultata autopilota.";
-            _srDict["ApMatrixTitle_LockedTenant"] = "🔴 ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)";
+            _srDict["ApMatrixTitle_LockedTenant"] = "🔴 IMA AUTOPILOT — ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)";
             _srDict["ApMatrixDesc_LockedTenant"] = "Uređaj je registrovan u Microsoft oblaku ({0}). OOBE zahteva nalog korporacije!";
             _srDict["ApMatrixRec_LockedTenant"] = "OBAVEZNO KONTAKTIRATI KORPORACIJU ILI PRODAVCA ZA DEREGISTRACIJU IZ INTUNE-A.";
             _srDict["ApMatrixTitle_ReleasedLocalTraces"] = "🟡 OSLOBOĐEN U OBLAKU, LOKALNI TRAGOVI";
             _srDict["ApMatrixDesc_ReleasedLocalTraces"] = "Uređaj je oslobođen iz Autopilot baze, ali na disku postoje ostaci prethodne organizacije.";
             _srDict["ApMatrixRec_ReleasedLocalTraces"] = "Preporučuje se čista instalacija (Clean Install / OOBE reset) radi brisanja lokalnih sertifikata.";
-            _srDict["ApMatrixTitle_HiddenLock"] = "🔴 SKRIVENA OPASNOST - ZAKLJUČAN U OBLAKU (DISK OBRISAN)";
+            _srDict["ApMatrixTitle_HiddenLock"] = "🔴 IMA AUTOPILOT — ZAKLJUČAN U OBLAKU (DISK OBRISAN)";
             _srDict["ApMatrixDesc_HiddenLock"] = "Lokalni sistem nema tragova, ali je hardverski hash ovog računara i dalje vezan u Microsoft bazi!";
             _srDict["ApMatrixRec_HiddenLock"] = "Računar ne sme ići u dalju prodaju dok ga vlasnik tenanta ne oslobodi iz Microsoft Intune portala.";
-            _srDict["ApMatrixTitle_Clean"] = "🟢 100% ČISTO - UREĐAJ JE POTPUNO SLOBODAN";
-            _srDict["ApMatrixDesc_Clean"] = "Hardverski otisak nije registrovan u Microsoft oblaku. Nema lokalnih MDM/Autopilot tragova.";
+            _srDict["ApMatrixTitle_Clean"] = "🟢 NEMA AUTOPILOT — POTVRĐENO SLOBODAN U OBLAKU";
+            _srDict["ApMatrixDesc_Clean"] = "Microsoft ZTD oblak potvrdio je da hardver nije registrovan (Event 807). Nema lokalnih tragova.";
             _srDict["ApMatrixRec_Clean"] = "Uređaj je u potpunosti čist i bezbedan za rad bilo kog korisnika.";
-            _srDict["ApMatrixTitle_UnverifiedClean"] = "🔵 USLOVNO ČISTO - NEMA LOKALNIH TRAGOVA (OBLAK NIJE POTVRDIO)";
-            _srDict["ApMatrixDesc_UnverifiedClean"] = "Lokalni sistem nema tragova, ali tokom brze instalacije Windows OOBE modul nije dobio eksplicitan odgovor iz Microsoft oblaka.";
-            _srDict["ApMatrixRec_UnverifiedClean"] = "Ako je uređaj iz korporativnog izvora, preporučuje se mrežna OOBE provera pre prodaje.";
-            _srDict["ApLogUnverifiedCleanInfo"] = "Lokalni registar čist; status u ZTD oblaku nije eksplicitno potvrđen.";
-            _srDict["ApMatrixTitle_UnverifiedLocalTraces"] = "🟡 UPOZORENJE - LOKALNI TRAGOVI (STATUS U OBLAKU NIJE POTVRĐEN)";
+            _srDict["ApMatrixTitle_UnverifiedClean"] = "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)";
+            _srDict["ApMatrixDesc_UnverifiedClean"] = "Lokalni sistem nema tragova, ali Microsoft ZTD oblak nije potvrdio status uređaja. Uređaj se NE može proglasiti slobodnim bez online OOBE provere.";
+            _srDict["ApMatrixRec_UnverifiedClean"] = "OBAVEZNO obezbediti mrežu u OOBE-u ili ponoviti online ZTD proveru pre predaje uređaja.";
+            _srDict["ApLogUnverifiedCleanInfo"] = "UPOZORENJE: Status u ZTD oblaku nije potvrđen — potrebna mreža u OOBE-u.";
+            _srDict["ApMatrixTitle_UnverifiedLocalTraces"] = "⚠️ NIJE PROVERENO — LOKALNI TRAGOVI (potrebna mreža u OOBE-u)";
             _srDict["ApMatrixDesc_UnverifiedLocalTraces"] = "Pronađeni su registarski tragovi organizacije, ali Microsoft ZTD oblak nije vratio eksplicitnu potvrdu.";
-            _srDict["ApMatrixRec_UnverifiedLocalTraces"] = "Povežite stabilnu internet vezu i kliknite 'Osveži Proveru'.";
-            _srDict["ApLogUnverifiedLocalTracesWarn"] = "Pronađeni lokalni tragovi; status u ZTD oblaku čeka potvrdu.";
-            _srDict["ApMatrixTitle_OfflineLocalTraces"] = "🟡 OFFLINE - DETEKTOVANI LOKALNI TRAGOVI";
+            _srDict["ApMatrixRec_UnverifiedLocalTraces"] = "Povežite stabilnu internet vezu u OOBE-u i kliknite 'Osveži Proveru'.";
+            _srDict["ApLogUnverifiedLocalTracesWarn"] = "UPOZORENJE: Pronađeni lokalni tragovi; status u ZTD oblaku nije potvrđen.";
+            _srDict["ApMatrixTitle_OfflineLocalTraces"] = "⚠️ NIJE PROVERENO — OFFLINE + LOKALNI TRAGOVI (potrebna mreža u OOBE-u)";
             _srDict["ApMatrixDesc_OfflineLocalTraces"] = "Nema internet konekcije za proveru oblaka, a pronađeni su registarski tragovi organizacije.";
-            _srDict["ApMatrixRec_OfflineLocalTraces"] = "Povežite internet i kliknite 'Osveži Proveru' za online proveru.";
-            _srDict["ApMatrixTitle_OfflineCleanLocal"] = "🔵 USLOVNO ČISTO - NEMA LOKALNIH TRAGOVA (OFFLINE)";
-            _srDict["ApMatrixDesc_OfflineCleanLocal"] = "Lokalni sistem nema tragova, ali je računar bio OFFLINE. Status u oblaku ostaje nepoznat.";
-            _srDict["ApMatrixRec_OfflineCleanLocal"] = "Za stopostotnu sigurnost, povežite računar na mrežu i ponovite test.";
+            _srDict["ApMatrixRec_OfflineLocalTraces"] = "Povežite internet u OOBE-u i kliknite 'Osveži Proveru' za online proveru.";
+            _srDict["ApMatrixTitle_OfflineCleanLocal"] = "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)";
+            _srDict["ApMatrixDesc_OfflineCleanLocal"] = "Računar je bio OFFLINE tokom provere. Status u Microsoft ZTD oblaku nije potvrđen — uređaj NIJE potvrđeno slobodan.";
+            _srDict["ApMatrixRec_OfflineCleanLocal"] = "Povežite mrežu u OOBE-u ili kliknite 'Osveži Proveru' za potvrdu iz Microsoft ZTD oblaka.";
 
-            // Autopilot Forenzika i ZTD Tekstovi (v2.14.0 - I18N-01)
+            // Autopilot Forenzika i ZTD Tekstovi (v2.14.0 - I18N-01 / IMP-114)
             _srDict["ApTpmReadyActive"] = "Spreman (TPM 2.0 aktivan)";
             _srDict["ApTpmPresentNotReady"] = "Prisutan (Nije spreman)";
             _srDict["ApTpmMissing"] = "Nije detektovan / Nema TPM";
@@ -716,9 +716,10 @@ namespace WIS.UI
             _srDict["ApTracesClean"] = "Čisto (Nema registarskih tragova)";
             _srDict["ApCloudOnlineChecked"] = "Završena online provera";
             _srDict["ApCloudOffline"] = "Offline / Nije provereno";
-            _srDict["ApCloudRegistered"] = "REGISTROVAN U MICROSOFT OBLAKU";
-            _srDict["ApCloudFree"] = "Slobodan (Nije registrovan u oblaku)";
-            _srDict["ApCloudNotVerified"] = "ZTD Oblak nije proveren (Offline)";
+            _srDict["ApCloudNotConfirmedShort"] = "Online bez ZTD potvrde";
+            _srDict["ApCloudRegistered"] = "🔴 IMA AUTOPILOT (Registrovan u Microsoft oblaku)";
+            _srDict["ApCloudFree"] = "🟢 NEMA AUTOPILOT (Potvrđeno slobodan u oblaku)";
+            _srDict["ApCloudNotVerified"] = "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)";
 
             // Autopilot Log Poruke (v2.14.0 - I18N-01)
             _srDict["ApLogScanStart"] = "Pokretanje bezbednosne provere Microsoft Autopilot statusa...";
@@ -1163,8 +1164,10 @@ namespace WIS.UI
             _srDict["MdlAlertThermalCritTitle"] = "Računar se pregrejava";
             _srDict["MdlAlertThermalWarnDetail"] = "Povišena radna temperatura";
             _srDict["MdlAlertThermalWarnTitle"] = "Povišena temperatura / trotlovanje";
-            _srDict["MdlAlertApLockedTitle"] = "Detektovan Windows Autopilot";
+            _srDict["MdlAlertApLockedTitle"] = "🔴 IMA AUTOPILOT";
             _srDict["MdlAlertApMdmTitle"] = "Detektovan Autopilot / MDM";
+            _srDict["MdlAlertApUnverifiedTitle"] = "⚠️ Autopilot NIJE PROVERENO";
+            _srDict["MdlAlertApUnverifiedDetail"] = "Potrebna mreža u OOBE-u za potvrdu iz Microsoft ZTD oblaka";
             _srDict["MdlAlertApCheckTab"] = "Proverite Autopilot karticu za detalje";
             _srDict["MdlAlertDrvOneMissing"] = "1 uređaj bez drajvera";
             _srDict["MdlAlertDrvManyErrors"] = "{0} uređaja sa greškom";
@@ -1469,6 +1472,44 @@ namespace WIS.UI
             _enDict["WinWaitDriverDownloadProgressFmt"] = "Waiting for driver download completion ({0}/{1})... {2}";
             _enDict["WinWaitDriverDownloadLive"] = "Waiting for background driver download to finish...";
             _enDict["WinWaitDriverDownloadSub"] = "Driver download in progress...";
+            // IMP-114: Autopilot binarni statusi (EN paritet)
+            _enDict["ApMatrixTitle_LockedTenant"] = "🔴 AUTOPILOT LOCKED — REGISTERED IN ORGANIZATION (TENANT LOCK)";
+            _enDict["ApMatrixDesc_LockedTenant"] = "Device is registered in Microsoft cloud ({0}). OOBE requires a corporate account!";
+            _enDict["ApMatrixRec_LockedTenant"] = "REQUIRED: Contact the organization or seller to deregister this device from Intune.";
+            _enDict["ApMatrixTitle_ReleasedLocalTraces"] = "🟡 RELEASED IN CLOUD, LOCAL TRACES FOUND";
+            _enDict["ApMatrixDesc_ReleasedLocalTraces"] = "Device was released from Autopilot cloud, but local organization remnants exist on disk.";
+            _enDict["ApMatrixRec_ReleasedLocalTraces"] = "A clean install or OOBE reset is recommended to wipe residual local certificates.";
+            _enDict["ApMatrixTitle_HiddenLock"] = "🔴 AUTOPILOT LOCKED — CLOUD HARDWARE LOCK (DISK WIPED)";
+            _enDict["ApMatrixDesc_HiddenLock"] = "No local traces found, but this hardware hash is still bound in Microsoft Autopilot cloud!";
+            _enDict["ApMatrixRec_HiddenLock"] = "Do not deliver or resell until the tenant owner releases the device in Microsoft Intune.";
+            _enDict["ApMatrixTitle_Clean"] = "🟢 NO AUTOPILOT — CONFIRMED FREE IN CLOUD";
+            _enDict["ApMatrixDesc_Clean"] = "Microsoft ZTD cloud confirmed this hardware is not registered (Event 807). No local traces found.";
+            _enDict["ApMatrixRec_Clean"] = "Device is clean and safe for handover to any user.";
+            _enDict["ApMatrixTitle_UnverifiedClean"] = "⚠️ NOT VERIFIED (network required in OOBE)";
+            _enDict["ApMatrixDesc_UnverifiedClean"] = "No local registry traces found, but Microsoft ZTD cloud did not confirm device status. The device CANNOT be treated as free without online OOBE verification.";
+            _enDict["ApMatrixRec_UnverifiedClean"] = "REQUIRED: ensure active network in OOBE or repeat online ZTD verification before handover.";
+            _enDict["ApLogUnverifiedCleanInfo"] = "WARNING: Microsoft ZTD cloud status not confirmed — network required in OOBE.";
+            _enDict["ApMatrixTitle_UnverifiedLocalTraces"] = "⚠️ NOT VERIFIED — LOCAL TRACES FOUND (network required in OOBE)";
+            _enDict["ApMatrixDesc_UnverifiedLocalTraces"] = "Local organization registry traces were found, and Microsoft ZTD cloud returned no confirmation.";
+            _enDict["ApMatrixRec_UnverifiedLocalTraces"] = "Connect stable internet in OOBE and click 'Refresh Check'.";
+            _enDict["ApLogUnverifiedLocalTracesWarn"] = "WARNING: Local traces found; Microsoft ZTD cloud status is unconfirmed.";
+            _enDict["ApMatrixTitle_OfflineLocalTraces"] = "⚠️ NOT VERIFIED — OFFLINE + LOCAL TRACES (network required in OOBE)";
+            _enDict["ApMatrixDesc_OfflineLocalTraces"] = "No internet connection for cloud check, and local organization registry traces were found.";
+            _enDict["ApMatrixRec_OfflineLocalTraces"] = "Connect internet in OOBE and click 'Refresh Check' for online verification.";
+            _enDict["ApMatrixTitle_OfflineCleanLocal"] = "⚠️ NOT VERIFIED (network required in OOBE)";
+            _enDict["ApMatrixDesc_OfflineCleanLocal"] = "The device was OFFLINE during verification. Microsoft ZTD cloud status is unconfirmed — device is NOT confirmed free.";
+            _enDict["ApMatrixRec_OfflineCleanLocal"] = "Connect network in OOBE or click 'Refresh Check' to confirm status with Microsoft ZTD cloud.";
+            _enDict["ApCloudOnlineChecked"] = "Online check completed";
+            _enDict["ApCloudOffline"] = "Offline / Not verified";
+            _enDict["ApCloudNotConfirmedShort"] = "Online without ZTD confirmation";
+            _enDict["ApCloudRegistered"] = "🔴 AUTOPILOT LOCKED (Registered in Microsoft cloud)";
+            _enDict["ApCloudFree"] = "🟢 NO AUTOPILOT (Confirmed free in cloud)";
+            _enDict["ApCloudNotVerified"] = "⚠️ NOT VERIFIED (network required in OOBE)";
+            _enDict["MdlAlertApLockedTitle"] = "🔴 AUTOPILOT LOCKED";
+            _enDict["MdlAlertApMdmTitle"] = "Autopilot / MDM Detected";
+            _enDict["MdlAlertApUnverifiedTitle"] = "⚠️ Autopilot NOT VERIFIED";
+            _enDict["MdlAlertApUnverifiedDetail"] = "Network required in OOBE for Microsoft ZTD cloud confirmation";
+            _enDict["MdlAlertApCheckTab"] = "Check the Autopilot tab for details";
 
             // ==========================================
             // KINESKI JEZIK (ZH - 简体中文)
@@ -1864,34 +1905,34 @@ namespace WIS.UI
             _zhDict["ApMatrixRec_ScanError"] = "请点击“重新检查”或检查网络连接。";
             _zhDict["ApMatrixTitle_ParseError"] = "报告解析错误";
             _zhDict["ApMatrixDesc_ParseError"] = "Autopilot 检查结果的 JSON 格式无效。";
-            _zhDict["ApMatrixTitle_LockedTenant"] = "🔴 已被企业租户锁定 (TENANT LOCK)";
+            _zhDict["ApMatrixTitle_LockedTenant"] = "🔴 存在 AUTOPILOT — 已被企业租户锁定 (TENANT LOCK)";
             _zhDict["ApMatrixDesc_LockedTenant"] = "该设备已在微软云端注册 ({0})。开机设置 (OOBE) 需要使用所属企业账户登录！";
             _zhDict["ApMatrixRec_LockedTenant"] = "必须联系所属企业或销售商，在 Intune 中注销该设备。";
             _zhDict["ApMatrixTitle_ReleasedLocalTraces"] = "🟡 云端已解除绑定，但存在本地残留";
             _zhDict["ApMatrixDesc_ReleasedLocalTraces"] = "设备已从 Autopilot 数据库中解除，但磁盘上仍残留原组织的配置。";
             _zhDict["ApMatrixRec_ReleasedLocalTraces"] = "建议执行全新安装 (Clean Install) 或重置 OOBE，以清除本地证书。";
-            _zhDict["ApMatrixTitle_HiddenLock"] = "🔴 隐藏风险 - 云端仍被锁定 (磁盘已清空)";
+            _zhDict["ApMatrixTitle_HiddenLock"] = "🔴 存在 AUTOPILOT — 云端仍被锁定 (磁盘已清空)";
             _zhDict["ApMatrixDesc_HiddenLock"] = "本地系统无任何残留，但该电脑的硬件哈希仍绑定在微软数据库中！";
             _zhDict["ApMatrixRec_HiddenLock"] = "在租户所有者通过 Microsoft Intune 门户解除绑定之前，该电脑不得转售。";
-            _zhDict["ApMatrixTitle_Clean"] = "🟢 100% 干净 - 设备完全未锁定";
-            _zhDict["ApMatrixDesc_Clean"] = "硬件指纹未在微软云端注册，本地也没有 MDM/Autopilot 残留。";
+            _zhDict["ApMatrixTitle_Clean"] = "🟢 无 AUTOPILOT — 云端已确认未锁定";
+            _zhDict["ApMatrixDesc_Clean"] = "微软 ZTD 云端已确认该硬件未注册 (Event 807)，本地无残留痕迹。";
             _zhDict["ApMatrixRec_Clean"] = "设备完全干净，可供任何用户放心使用。";
-            _zhDict["ApMatrixTitle_UnverifiedClean"] = "🔵 有条件干净 - 无本地残留 (云端未确认)";
-            _zhDict["ApMatrixDesc_UnverifiedClean"] = "本地系统无残留，但在快速安装期间 Windows OOBE 模块未收到微软云端的明确答复。";
-            _zhDict["ApMatrixRec_UnverifiedClean"] = "如设备来自企业渠道，建议在销售前联网进行 OOBE 验证。";
-            _zhDict["ApLogUnverifiedCleanInfo"] = "本地注册表干净；微软 ZTD 云端状态尚未明确确认。";
-            _zhDict["ApMatrixTitle_UnverifiedLocalTraces"] = "🟡 警告 - 存在本地残留 (云端状态未确认)";
+            _zhDict["ApMatrixTitle_UnverifiedClean"] = "⚠️ 未验证 (需要在 OOBE 阶段联网检查)";
+            _zhDict["ApMatrixDesc_UnverifiedClean"] = "本地系统未发现残留痕迹，但微软 ZTD 云端未确认设备状态。未经在线 OOBE 验证，不得将设备视为未锁定。";
+            _zhDict["ApMatrixRec_UnverifiedClean"] = "必须：在交付设备前确保 OOBE 阶段联网，或重新执行在线 ZTD 验证。";
+            _zhDict["ApLogUnverifiedCleanInfo"] = "警告：微软 ZTD 云端状态未确认 — 需要在 OOBE 阶段联网验证。";
+            _zhDict["ApMatrixTitle_UnverifiedLocalTraces"] = "⚠️ 未验证 — 发现本地残留 (需要在 OOBE 阶段联网检查)";
             _zhDict["ApMatrixDesc_UnverifiedLocalTraces"] = "检测到组织的注册表残留，但微软 ZTD 云端未返回明确确认。";
-            _zhDict["ApMatrixRec_UnverifiedLocalTraces"] = "请连接稳定的互联网，然后点击“重新检查”。";
-            _zhDict["ApLogUnverifiedLocalTracesWarn"] = "检测到本地残留痕迹；ZTD 云端验证仍在等待确认。";
-            _zhDict["ApMatrixTitle_OfflineLocalTraces"] = "🟡 离线 - 检测到本地残留";
+            _zhDict["ApMatrixRec_UnverifiedLocalTraces"] = "请在 OOBE 阶段连接稳定的互联网，然后点击“重新检查”。";
+            _zhDict["ApLogUnverifiedLocalTracesWarn"] = "警告：检测到本地残留痕迹，且微软 ZTD 云端状态未确认。";
+            _zhDict["ApMatrixTitle_OfflineLocalTraces"] = "⚠️ 未验证 — 离线且存在本地残留 (需要在 OOBE 阶段联网检查)";
             _zhDict["ApMatrixDesc_OfflineLocalTraces"] = "无法联网核验云端，且检测到组织的注册表残留。";
-            _zhDict["ApMatrixRec_OfflineLocalTraces"] = "请连接互联网，然后点击“重新检查”进行在线验证。";
-            _zhDict["ApMatrixTitle_OfflineCleanLocal"] = "🔵 有条件干净 - 无本地残留 (离线)";
-            _zhDict["ApMatrixDesc_OfflineCleanLocal"] = "本地系统无残留，但电脑处于离线状态，云端状态仍未知。";
-            _zhDict["ApMatrixRec_OfflineCleanLocal"] = "为确保万无一失，请将电脑接入网络后重新测试。";
+            _zhDict["ApMatrixRec_OfflineLocalTraces"] = "请在 OOBE 阶段连接互联网，然后点击“重新检查”进行在线验证。";
+            _zhDict["ApMatrixTitle_OfflineCleanLocal"] = "⚠️ 未验证 (需要在 OOBE 阶段联网检查)";
+            _zhDict["ApMatrixDesc_OfflineCleanLocal"] = "检查期间设备处于离线状态，微软 ZTD 云端状态未确认，设备尚未确认未锁定。";
+            _zhDict["ApMatrixRec_OfflineCleanLocal"] = "请在 OOBE 阶段连接网络，或点击“重新检查”以从微软 ZTD 云端获取确认。";
 
-            // Autopilot Forenzika i ZTD Tekstovi (v2.14.0 - I18N-01)
+            // Autopilot Forenzika i ZTD Tekstovi (v2.14.0 - I18N-01 / IMP-114)
             _zhDict["ApTpmReadyActive"] = "已就绪 (TPM 2.0 已启用)";
             _zhDict["ApTpmPresentNotReady"] = "已检测到 (未就绪)";
             _zhDict["ApTpmMissing"] = "未检测到 / 无 TPM";
@@ -1900,9 +1941,10 @@ namespace WIS.UI
             _zhDict["ApTracesClean"] = "干净 (无注册表残留)";
             _zhDict["ApCloudOnlineChecked"] = "已完成在线验证";
             _zhDict["ApCloudOffline"] = "离线 / 未验证";
-            _zhDict["ApCloudRegistered"] = "已在微软云端注册";
-            _zhDict["ApCloudFree"] = "未锁定 (未在云端注册)";
-            _zhDict["ApCloudNotVerified"] = "ZTD 云端未验证 (离线)";
+            _zhDict["ApCloudNotConfirmedShort"] = "在线但未获 ZTD 确认";
+            _zhDict["ApCloudRegistered"] = "🔴 存在 AUTOPILOT (已在微软云端注册)";
+            _zhDict["ApCloudFree"] = "🟢 无 AUTOPILOT (云端已确认未锁定)";
+            _zhDict["ApCloudNotVerified"] = "⚠️ 未验证 (需要在 OOBE 阶段联网检查)";
 
             // Autopilot Log Poruke (v2.14.0 - I18N-01)
             _zhDict["ApLogScanStart"] = "正在启动微软 Autopilot 状态检查...";
@@ -2347,8 +2389,10 @@ namespace WIS.UI
             _zhDict["MdlAlertThermalCritTitle"] = "计算机过热";
             _zhDict["MdlAlertThermalWarnDetail"] = "工作温度偏高";
             _zhDict["MdlAlertThermalWarnTitle"] = "温度偏高 / 降频";
-            _zhDict["MdlAlertApLockedTitle"] = "检测到 Windows Autopilot";
+            _zhDict["MdlAlertApLockedTitle"] = "🔴 存在 AUTOPILOT";
             _zhDict["MdlAlertApMdmTitle"] = "检测到 Autopilot / MDM";
+            _zhDict["MdlAlertApUnverifiedTitle"] = "⚠️ Autopilot 未验证";
+            _zhDict["MdlAlertApUnverifiedDetail"] = "需要在 OOBE 阶段联网以获取微软 ZTD 云端确认";
             _zhDict["MdlAlertApCheckTab"] = "请查看 Autopilot 标签页了解详情";
             _zhDict["MdlAlertDrvOneMissing"] = "1 个设备缺少驱动";
             _zhDict["MdlAlertDrvManyErrors"] = "{0} 个设备存在错误";

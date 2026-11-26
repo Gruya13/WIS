@@ -81,6 +81,9 @@ namespace WIS.UI
         private int _autoStartCountdown = 15;
         private bool _taskRunnerStarted = false;
         private Process _currentPhaseProcess = null;
+        private int _phaseExecutionGeneration = 0;
+        private int _remoteDriverResolveInFlight = 0;
+        private int _remoteHotfixInFlight = 0;
         private int _failedPhase = 0;
         private int _phase3AutoRetryCount = 0;
         private string _lastProcessedLog = "";
@@ -242,6 +245,7 @@ namespace WIS.UI
 
             // Inicijalizacija i pokretanje ServisHub Telemetrije
             _telemetryService = new TelemetryService(ViewModel, Dispatcher);
+            _telemetryService.SetRemoteCommandHandler(ExecuteHubRemoteCommand);
             _telemetryService.Start();
             if (!string.IsNullOrEmpty(_telemetryService.HubUrl))
             {
@@ -5975,10 +5979,30 @@ namespace WIS.UI
                             if (ViewModel != null)
                             {
                                 ViewModel.AddLog("WARN", "DriverGate", rebootMsg);
-                                ViewModel.SubPhase = "Potreban restart za aktivaciju drajvera (Code 14)...";
+                                ViewModel.SubPhase = hasPendingRenameRebootFlag
+                                    ? "Primenjujem preimenovanje naloga i pripremam restart..."
+                                    : "Potreban restart za aktivaciju drajvera (Code 14)...";
                                 ViewModel.LiveStatus = rebootMsg;
                             }
                         }));
+                        // IMP-103: Kada zaostane pending-controlled-reboot.flag (pending-account-rename.json),
+                        // OBAVEZNO primeni ApplyDeferredRename pre SuspendBitLockerBeforeReboot/HandleInterimReboot!
+                        if (hasPendingRenameRebootFlag)
+                        {
+                            string renameLog = "IMP-103: Primenjujem zaostalo preimenovanje lokalnog naloga (Phase2-Drivers.ps1 -Stage ApplyDeferredRename) pre kontrolisanog restarta...";
+                            if (_telemetryService != null)
+                            {
+                                _telemetryService.PushLog("[INFO] [DriverGate] " + renameLog);
+                            }
+                            Dispatcher.BeginInvoke((Action)(() =>
+                            {
+                                if (ViewModel != null)
+                                {
+                                    ViewModel.AddLog("INFO", "DriverGate", renameLog);
+                                }
+                            }));
+                            RunPhase2DriversStage("ApplyDeferredRename", 1);
+                        }
                         SuspendBitLockerBeforeReboot();
                         HandleInterimReboot();
                         return;
@@ -6085,6 +6109,7 @@ namespace WIS.UI
                     StandardErrorEncoding = Encoding.UTF8
                 };
 
+                int myPhaseGen = Interlocked.Increment(ref _phaseExecutionGeneration);
                 var proc = Process.Start(psi);
                 _currentPhaseProcess = proc;
 
@@ -6128,6 +6153,12 @@ namespace WIS.UI
 
                 int timeoutMinutes = GetPhaseTimeoutMinutes(phaseNumber);
                 bool exited = WaitForPhaseProcessExitWithActiveTime(proc, timeoutMinutes);
+
+                // IMP-102: Ako je daljinska komanda (retry_phase / jump_to_phase) zamenila aktivnu fazu, izađi čisto bez SetFailedPhase
+                if (Interlocked.CompareExchange(ref _phaseExecutionGeneration, 0, 0) != myPhaseGen)
+                {
+                    return;
+                }
 
                 if (!exited)
                 {
@@ -10362,10 +10393,25 @@ namespace WIS.UI
                    upper == "CLEAN";
         }
 
+        private bool IsAutopilotNodeConfirmed(JsonNode node)
+        {
+            if (node == null || node.IsNull || !node.IsObject) return false;
+            string code = node["matrix_code"].AsString(node["status"].AsString(node["MatrixCode"].AsString(""))).Trim().ToUpperInvariant();
+            if (code == "LOCKED_TENANT" || code == "HIDDEN_LOCK" || node["is_locked"].AsBool(false))
+            {
+                return true;
+            }
+            if (!IsAutopilotMatrixConfirmed(code)) return false;
+            bool confFree = node["confirmed_free"].AsBool(false) ||
+                            (node["cloud_ztd"].IsObject && node["cloud_ztd"]["confirmed_free"].AsBool(false));
+            return confFree;
+        }
+
         private JsonNode TryReadCachedAutopilotReport()
         {
             string[] candidates = new string[]
             {
+                @"C:\setup\autopilot-status.json",
                 @"C:\Windows\Logs\WIS\autopilot_report.json",
                 @"C:\setup\autopilot_report.json"
             };
@@ -10421,7 +10467,7 @@ namespace WIS.UI
                 if (cachedNode != null)
                 {
                     string cachedMatrix = cachedNode["matrix_code"].AsString(cachedNode["status"].AsString(cachedNode["MatrixCode"].AsString("")));
-                    cachedConfirmed = IsAutopilotMatrixConfirmed(cachedMatrix);
+                    cachedConfirmed = IsAutopilotNodeConfirmed(cachedNode);
                     if (cachedConfirmed)
                     {
                         Dispatcher.BeginInvoke(new Action(delegate
@@ -10560,7 +10606,7 @@ namespace WIS.UI
                 }
 
                 string newMatrix = root["matrix_code"].AsString(root["status"].AsString(root["MatrixCode"].AsString("")));
-                if (cachedConfirmed && !IsAutopilotMatrixConfirmed(newMatrix))
+                if (cachedConfirmed && !IsAutopilotNodeConfirmed(root))
                 {
                     Dispatcher.BeginInvoke(new Action(delegate
                     {
@@ -10695,40 +10741,84 @@ namespace WIS.UI
             }
 
             var czNode = root["cloud_ztd"];
+            bool confirmedFree = false;
+            if (root.ContainsKey("confirmed_free"))
+            {
+                confirmedFree = root["confirmed_free"].AsBool(false);
+            }
+            if (!confirmedFree && czNode.IsObject && czNode.ContainsKey("confirmed_free"))
+            {
+                confirmedFree = czNode["confirmed_free"].AsBool(false);
+            }
+
+            string queryMode = "";
+            if (czNode.IsObject && czNode.ContainsKey("query_mode"))
+            {
+                queryMode = czNode["query_mode"].AsString("");
+            }
+            else if (root.ContainsKey("query_mode"))
+            {
+                queryMode = root["query_mode"].AsString("");
+            }
+            if (!string.IsNullOrWhiteSpace(queryMode))
+            {
+                ViewModel.Autopilot.QueryMode = queryMode.Trim();
+            }
+
+            if (root.ContainsKey("source") && !string.IsNullOrWhiteSpace(root["source"].AsString("")))
+            {
+                ViewModel.Autopilot.Source = root["source"].AsString("").Trim();
+            }
+            if (root.ContainsKey("assigned_device_name") && !string.IsNullOrWhiteSpace(root["assigned_device_name"].AsString("")))
+            {
+                ViewModel.Autopilot.AssignedDeviceName = root["assigned_device_name"].AsString("").Trim();
+            }
+
+            bool isRegistered = false;
             if (czNode.IsObject)
             {
                 bool onlineChecked = czNode["online_checked"].AsBool(false);
-                bool isRegistered = czNode["is_registered"].AsBool(false);
+                isRegistered = czNode["is_registered"].AsBool(false);
                 string rawMsg = czNode["raw_status_message"].AsString("");
                 string errCode = czNode["error_code"].AsString("");
 
+                if (isRegistered || isLocked)
+                {
+                    confirmedFree = false;
+                }
+
                 ViewModel.Autopilot.CloudChecked = onlineChecked;
                 ViewModel.Autopilot.CloudCheckedText = onlineChecked
-                    ? LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera")
+                    ? (confirmedFree || isRegistered
+                        ? LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera")
+                        : LocalizationService.Instance.GetString("ApCloudNotConfirmedShort", "Online bez ZTD potvrde"))
                     : LocalizationService.Instance.GetString("ApCloudOffline", "Offline / Nije provereno");
                 ViewModel.Autopilot.IsRegistered = isRegistered;
+                ViewModel.Autopilot.ConfirmedFree = confirmedFree;
                 ViewModel.Autopilot.RawStatusMessage = !string.IsNullOrEmpty(rawMsg) ? rawMsg : "N/A";
-                ViewModel.Autopilot.ZtdErrorCode = !string.IsNullOrEmpty(errCode) ? errCode : (onlineChecked ? "OK" : "N/A");
+                ViewModel.Autopilot.ZtdErrorCode = !string.IsNullOrEmpty(errCode) ? errCode : (confirmedFree ? "807 OK" : (onlineChecked ? "UNCONFIRMED" : "N/A"));
 
-                if (onlineChecked)
+                // IMP-114: Nikada ne bojiti ZELENO ("Slobodan") kada confirmed_free == false!
+                if (isRegistered || isLocked)
                 {
-                    if (isRegistered)
-                    {
-                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "REGISTROVAN U MICROSOFT OBLAKU");
-                        ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
-                    }
-                    else
-                    {
-                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "Slobodan (Nije registrovan u oblaku)");
-                        ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
-                    }
+                    ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "🔴 IMA AUTOPILOT (Registrovan u Microsoft oblaku)");
+                    ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
+                }
+                else if (confirmedFree)
+                {
+                    ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "🟢 NEMA AUTOPILOT (Potvrđeno slobodan u oblaku)");
+                    ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                 }
                 else
                 {
-                    ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudNotVerified", "ZTD Oblak nije proveren (Offline)");
+                    ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudNotVerified", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
                     ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
                 }
 
+                if (czNode.ContainsKey("assigned_device_name") && !string.IsNullOrWhiteSpace(czNode["assigned_device_name"].AsString("")))
+                {
+                    ViewModel.Autopilot.AssignedDeviceName = czNode["assigned_device_name"].AsString("").Trim();
+                }
                 if (czNode.ContainsKey("profile_tenant_domain") && !string.IsNullOrEmpty(czNode["profile_tenant_domain"].AsString()))
                 {
                     ViewModel.Autopilot.ProfileTenantDomain = czNode["profile_tenant_domain"].AsString();
@@ -10754,38 +10844,74 @@ namespace WIS.UI
                     string ztdStatus = ztdNode["status"].AsString("OFFLINE").ToUpperInvariant();
                     bool checkedZtd = ztdNode["checked"].AsBool(false);
                     int httpStatus = ztdNode["http_status"].AsInt(0);
+                    if (!confirmedFree && ztdNode.ContainsKey("confirmed_free"))
+                    {
+                        confirmedFree = ztdNode["confirmed_free"].AsBool(false);
+                    }
 
                     ViewModel.Autopilot.CloudChecked = checkedZtd;
                     ViewModel.Autopilot.CloudCheckedText = checkedZtd
-                        ? LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera")
+                        ? (confirmedFree || ztdStatus == "ONLINE_MATCH"
+                            ? LocalizationService.Instance.GetString("ApCloudOnlineChecked", "Završena online provera")
+                            : LocalizationService.Instance.GetString("ApCloudNotConfirmedShort", "Online bez ZTD potvrde"))
                         : LocalizationService.Instance.GetString("ApCloudOffline", "Offline / Nije provereno");
-                    ViewModel.Autopilot.ZtdErrorCode = httpStatus > 0 ? string.Format("HTTP {0}", httpStatus) : (checkedZtd ? "Online OK" : "Offline");
+                    ViewModel.Autopilot.ZtdErrorCode = httpStatus > 0 ? string.Format("HTTP {0}", httpStatus) : (confirmedFree ? "807 OK" : "UNCONFIRMED");
 
-                    if (ztdStatus == "ONLINE_MATCH")
+                    if (ztdStatus == "ONLINE_MATCH" || isLocked)
                     {
+                        isRegistered = true;
+                        confirmedFree = false;
                         ViewModel.Autopilot.IsRegistered = true;
-                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "REGISTROVAN U MICROSOFT OBLAKU");
+                        ViewModel.Autopilot.ConfirmedFree = false;
+                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudRegistered", "🔴 IMA AUTOPILOT (Registrovan u Microsoft oblaku)");
                         ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
                     }
-                    else if (ztdStatus == "NOT_REGISTERED")
+                    else if (ztdStatus == "NOT_REGISTERED" && confirmedFree)
                     {
+                        isRegistered = false;
                         ViewModel.Autopilot.IsRegistered = false;
-                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "Slobodan (Nije registrovan)");
+                        ViewModel.Autopilot.ConfirmedFree = true;
+                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudFree", "🟢 NEMA AUTOPILOT (Potvrđeno slobodan u oblaku)");
                         ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                     }
                     else
                     {
-                        ViewModel.Autopilot.CloudStatusText = string.Format("ZTD: {0}", ztdStatus);
+                        confirmedFree = false;
+                        ViewModel.Autopilot.IsRegistered = false;
+                        ViewModel.Autopilot.ConfirmedFree = false;
+                        ViewModel.Autopilot.CloudStatusText = LocalizationService.Instance.GetString("ApCloudNotVerified", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
                         ViewModel.Autopilot.CloudStatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
                     }
                 }
+                else
+                {
+                    ViewModel.Autopilot.ConfirmedFree = confirmedFree && !isLocked && !isRegistered;
+                }
+            }
+
+            if (isRegistered || isLocked)
+            {
+                isLocked = true;
+                confirmedFree = false;
+                ViewModel.Autopilot.IsLocked = true;
+                ViewModel.Autopilot.ConfirmedFree = false;
+            }
+
+            // IMP-114: Ako matrixCode tvrdi CLEAN/CONFIRMED_CLEAN bez confirmed_free==true, spusti na UNVERIFIED_CLEAN
+            if ((matrixCode == "CONFIRMED_CLEAN" || matrixCode == "CLEAN") && !confirmedFree)
+            {
+                matrixCode = ViewModel.Autopilot.HasLocalTraces ? "UNVERIFIED_LOCAL_TRACES" : "UNVERIFIED_CLEAN";
+                ViewModel.Autopilot.MatrixCode = matrixCode;
             }
 
             switch (matrixCode)
             {
                 case "LOCKED_TENANT":
+                    ViewModel.Autopilot.IsLocked = true;
+                    ViewModel.Autopilot.ConfirmedFree = false;
+                    ViewModel.Autopilot.BinaryVerdict = "IMA_AUTOPILOT";
                     ViewModel.Autopilot.StatusLevel = "CRITICAL";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_LockedTenant", "🔴 ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)");
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_LockedTenant", "🔴 IMA AUTOPILOT — ZAKLJUČAN U ORGANIZACIJI (TENANT LOCK)");
                     ViewModel.Autopilot.StatusDescription = string.Format(LocalizationService.Instance.GetString("ApMatrixDesc_LockedTenant", "Uređaj je registrovan u Microsoft oblaku ({0}). OOBE zahteva nalog korporacije!"), ViewModel.Autopilot.TenantDomain);
                     ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_LockedTenant", "OBAVEZNO KONTAKTIRATI KORPORACIJU ILI PRODAVCA ZA DEREGISTRACIJU IZ INTUNE-A.");
                     ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
@@ -10794,6 +10920,7 @@ namespace WIS.UI
                     break;
 
                 case "RELEASED_LOCAL_TRACES":
+                    ViewModel.Autopilot.BinaryVerdict = confirmedFree ? "NEMA_AUTOPILOT" : "NIJE_PROVERENO";
                     ViewModel.Autopilot.StatusLevel = "WARNING";
                     ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_ReleasedLocalTraces", "🟡 OSLOBOĐEN U OBLAKU, LOKALNI TRAGOVI");
                     ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_ReleasedLocalTraces", "Uređaj je oslobođen iz Autopilot baze, ali na disku postoje ostaci prethodne organizacije.");
@@ -10803,8 +10930,11 @@ namespace WIS.UI
                     break;
 
                 case "HIDDEN_LOCK":
+                    ViewModel.Autopilot.IsLocked = true;
+                    ViewModel.Autopilot.ConfirmedFree = false;
+                    ViewModel.Autopilot.BinaryVerdict = "IMA_AUTOPILOT";
                     ViewModel.Autopilot.StatusLevel = "CRITICAL";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_HiddenLock", "🔴 SKRIVENA OPASNOST - ZAKLJUČAN U OBLAKU (DISK OBRISAN)");
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_HiddenLock", "🔴 IMA AUTOPILOT — ZAKLJUČAN U OBLAKU (DISK OBRISAN)");
                     ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_HiddenLock", "Lokalni sistem nema tragova, ali je hardverski hash ovog računara i dalje vezan u Microsoft bazi!");
                     ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_HiddenLock", "Računar ne sme ići u dalju prodaju dok ga vlasnik tenanta ne oslobodi iz Microsoft Intune portala.");
                     ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(231, 76, 60);
@@ -10814,55 +10944,67 @@ namespace WIS.UI
 
                 case "CONFIRMED_CLEAN":
                 case "CLEAN":
-                    ViewModel.Autopilot.StatusLevel = "SUCCESS";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_Clean", "🟢 100% ČISTO - UREĐAJ JE POTPUNO SLOBODAN (POTVRĐENO U OBLAKU)");
+                    ViewModel.Autopilot.BinaryVerdict = "NEMA_AUTOPILOT";
+                    ViewModel.Autopilot.StatusLevel = "OK";
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_Clean", "🟢 NEMA AUTOPILOT — POTVRĐENO SLOBODAN U OBLAKU");
                     ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_Clean", "Microsoft ZTD oblak potvrdio je da hardver nije registrovan (Event 807). Nema lokalnih tragova.");
                     ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_Clean", "Uređaj je u potpunosti čist i bezbedan za rad bilo kog korisnika.");
                     ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(46, 204, 113);
                     ViewModel.AddLog("SUCCESS", "Autopilot", LocalizationService.Instance.GetString("ApLogCleanSuccess", "Verifikacija završena: Microsoft ZTD oblak potvrdio slobodan status."));
                     break;
 
-                case "UNVERIFIED_CLEAN":
-                    ViewModel.Autopilot.StatusLevel = "INFO";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedClean", "🔵 USLOVNO ČISTO - NEMA LOKALNIH TRAGOVA (OBLAK NIJE POTVRDIO)");
-                    ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedClean", "Lokalni sistem nema tragova, ali tokom brze instalacije Windows OOBE modul nije dobio eksplicitan odgovor iz Microsoft oblaka.");
-                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedClean", "Ako je uređaj iz korporativnog izvora, preporučuje se mrežna OOBE provera pre prodaje.");
-                    ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(0, 150, 214);
-                    ViewModel.AddLog("INFO", "Autopilot", LocalizationService.Instance.GetString("ApLogUnverifiedCleanInfo", "Lokalni registar čist; status u ZTD oblaku nije eksplicitno potvrđen."));
-                    break;
-
                 case "UNVERIFIED_LOCAL_TRACES":
+                    ViewModel.Autopilot.BinaryVerdict = "NIJE_PROVERENO";
                     ViewModel.Autopilot.StatusLevel = "WARNING";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedLocalTraces", "🟡 UPOZORENJE - LOKALNI TRAGOVI (STATUS U OBLAKU NIJE POTVRĐEN)");
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedLocalTraces", "⚠️ NIJE PROVERENO — LOKALNI TRAGOVI (potrebna mreža u OOBE-u)");
                     ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedLocalTraces", "Pronađeni su registarski tragovi organizacije, ali Microsoft ZTD oblak nije vratio eksplicitnu potvrdu.");
-                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedLocalTraces", "Povežite stabilnu internet vezu i kliknite 'Osveži Proveru'.");
+                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedLocalTraces", "Povežite stabilnu internet vezu u OOBE-u i kliknite 'Osveži Proveru'.");
                     ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
-                    ViewModel.AddLog("WARN", "Autopilot", LocalizationService.Instance.GetString("ApLogUnverifiedLocalTracesWarn", "Pronađeni lokalni tragovi; status u ZTD oblaku čeka potvrdu."));
+                    ViewModel.AddLog("WARN", "Autopilot", LocalizationService.Instance.GetString("ApLogUnverifiedLocalTracesWarn", "UPOZORENJE: Pronađeni lokalni tragovi; status u ZTD oblaku nije potvrđen."));
                     break;
 
                 case "OFFLINE_LOCAL_TRACES":
+                    ViewModel.Autopilot.BinaryVerdict = "NIJE_PROVERENO";
                     ViewModel.Autopilot.StatusLevel = "WARNING";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineLocalTraces", "🟡 OFFLINE - DETEKTOVANI LOKALNI TRAGOVI");
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineLocalTraces", "⚠️ NIJE PROVERENO — OFFLINE + LOKALNI TRAGOVI (potrebna mreža u OOBE-u)");
                     ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineLocalTraces", "Nema internet konekcije za proveru oblaka, a pronađeni su registarski tragovi organizacije.");
-                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineLocalTraces", "Povežite internet i kliknite 'Osveži Proveru' za online proveru.");
+                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineLocalTraces", "Povežite internet u OOBE-u i kliknite 'Osveži Proveru' za online proveru.");
                     ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
                     ViewModel.AddLog("WARN", "Autopilot", LocalizationService.Instance.GetString("ApLogOfflineTracesWarn", "Offline provera: pronađeni lokalni registarski tragovi."));
                     break;
 
+                case "UNVERIFIED_CLEAN":
+                    ViewModel.Autopilot.BinaryVerdict = "NIJE_PROVERENO";
+                    ViewModel.Autopilot.StatusLevel = "WARNING";
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_UnverifiedClean", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
+                    ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_UnverifiedClean", "Lokalni sistem nema tragova, ali Microsoft ZTD oblak nije potvrdio status uređaja. Uređaj se NE može proglasiti slobodnim bez online OOBE provere.");
+                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_UnverifiedClean", "OBAVEZNO obezbediti mrežu u OOBE-u ili ponoviti online ZTD proveru pre predaje uređaja.");
+                    ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
+                    ViewModel.AddLog("WARN", "Autopilot", LocalizationService.Instance.GetString("ApLogUnverifiedCleanInfo", "UPOZORENJE: Status u ZTD oblaku nije potvrđen — potrebna mreža u OOBE-u."));
+                    break;
+
                 case "OFFLINE_CLEAN_LOCAL":
                 default:
-                    ViewModel.Autopilot.StatusLevel = "INFO";
-                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineCleanLocal", "🔵 USLOVNO ČISTO - NEMA LOKALNIH TRAGOVA (OFFLINE)");
-                    ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineCleanLocal", "Lokalni sistem nema tragova, ali je računar bio OFFLINE. Status u oblaku ostaje nepoznat.");
-                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineCleanLocal", "Za stopostotnu sigurnost, povežite računar na mrežu i ponovite test.");
-                    ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(0, 122, 204);
-                    ViewModel.AddLog("INFO", "Autopilot", LocalizationService.Instance.GetString("ApLogOfflineCleanInfo", "Offline provera: lokalni registar je čist, preporučuje se mrežna verifikacija."));
+                    ViewModel.Autopilot.BinaryVerdict = "NIJE_PROVERENO";
+                    ViewModel.Autopilot.StatusLevel = "WARNING";
+                    ViewModel.Autopilot.StatusTitle = LocalizationService.Instance.GetString("ApMatrixTitle_OfflineCleanLocal", "⚠️ NIJE PROVERENO (potrebna mreža u OOBE-u)");
+                    ViewModel.Autopilot.StatusDescription = LocalizationService.Instance.GetString("ApMatrixDesc_OfflineCleanLocal", "Računar je bio OFFLINE tokom provere. Status u Microsoft ZTD oblaku nije potvrđen — uređaj NIJE potvrđeno slobodan.");
+                    ViewModel.Autopilot.RecommendedAction = LocalizationService.Instance.GetString("ApMatrixRec_OfflineCleanLocal", "Povežite mrežu u OOBE-u ili kliknite 'Osveži Proveru' za potvrdu iz Microsoft ZTD oblaka.");
+                    ViewModel.Autopilot.StatusBrush = BaseViewModel.CreateFrozenBrush(241, 196, 15);
+                    ViewModel.AddLog("WARN", "Autopilot", LocalizationService.Instance.GetString("ApLogOfflineCleanInfo", "Offline provera: lokalni registar je čist, preporučuje se mrežna verifikacija."));
                     break;
             }
 
             if (root.ContainsKey("status_title") && !string.IsNullOrWhiteSpace(root["status_title"].AsString()))
             {
-                ViewModel.Autopilot.StatusTitle = root["status_title"].AsString();
+                string rawTitle = root["status_title"].AsString();
+                bool isLegacySoftClean = rawTitle.IndexOf("USLOVNO ČISTO", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         rawTitle.IndexOf("USLOVNO CISTO", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                         (!confirmedFree && rawTitle.IndexOf("SLOBODAN", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (!isLegacySoftClean)
+                {
+                    ViewModel.Autopilot.StatusTitle = rawTitle;
+                }
             }
             if (root.ContainsKey("status_description") && !string.IsNullOrWhiteSpace(root["status_description"].AsString()))
             {
@@ -10870,7 +11012,24 @@ namespace WIS.UI
             }
             if (root.ContainsKey("status_level") && !string.IsNullOrWhiteSpace(root["status_level"].AsString()))
             {
-                ViewModel.Autopilot.StatusLevel = root["status_level"].AsString();
+                string rawLvl = root["status_level"].AsString().Trim().ToUpperInvariant();
+                if (isLocked)
+                {
+                    ViewModel.Autopilot.StatusLevel = "CRITICAL";
+                }
+                else if (confirmedFree && (rawLvl == "OK" || rawLvl == "SUCCESS"))
+                {
+                    ViewModel.Autopilot.StatusLevel = "OK";
+                }
+                else if (rawLvl == "CRITICAL" || rawLvl == "ERROR" || rawLvl == "WARNING" || rawLvl == "WARN")
+                {
+                    ViewModel.Autopilot.StatusLevel = (rawLvl == "WARN") ? "WARNING" : rawLvl;
+                }
+                else
+                {
+                    // Nikada ne dozvoli INFO/OK za nepotvrđen status!
+                    ViewModel.Autopilot.StatusLevel = "WARNING";
+                }
             }
             if (root.ContainsKey("recommended_action") && !string.IsNullOrWhiteSpace(root["recommended_action"].AsString()))
             {
@@ -10881,9 +11040,946 @@ namespace WIS.UI
                 ViewModel.Autopilot.StatusDescription = root["summary"].AsString();
             }
 
-            if (ViewModel.Autopilot.IsAlertActive)
+            ViewModel.Autopilot.UpdateAlertState();
+            ViewModel.RebuildOverviewAlerts();
+
+            if (ViewModel.Autopilot.IsLocked)
             {
                 try { System.Media.SystemSounds.Exclamation.Play(); } catch { }
+            }
+        }
+
+        #endregion
+
+        #region Daljinske Komande i Live RSA-2048 Potpisani Hotfix (IMP-102)
+
+        private void LogRemoteCommandAudit(string level, string message)
+        {
+            string effLevel = string.IsNullOrEmpty(level) ? "INFO" : level.Trim().ToUpperInvariant();
+            if (_telemetryService != null)
+            {
+                _telemetryService.PushLog(string.Format("[{0}] [RemoteCmd] {1}", effLevel, message));
+            }
+            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                Dispatcher.BeginInvoke((Action)(() =>
+                {
+                    if (ViewModel != null)
+                    {
+                        ViewModel.AddLog(effLevel, "RemoteCmd", message);
+                    }
+                }));
+            }
+        }
+
+        private HubCommandExecutionResult ExecuteHubRemoteCommand(HubRemoteCommand cmd)
+        {
+            if (cmd == null)
+            {
+                return new HubCommandExecutionResult { Status = "REJECTED", Detail = "Null command" };
+            }
+
+            string action = TelemetryService.NormalizeRemoteAction(cmd.Action);
+            switch (action)
+            {
+                case "unlock_driver_gate":
+                    return HandleRemoteUnlockDriverGate(cmd);
+                case "retry_phase":
+                    return HandleRemotePhaseTransition(cmd, false);
+                case "jump_to_phase":
+                    return HandleRemotePhaseTransition(cmd, true);
+                case "re_resolve_drivers":
+                    return HandleRemoteReResolveDrivers(cmd);
+                case "reboot_and_resume":
+                    return HandleRemoteRebootAndResume(cmd);
+                case "apply_payload_update":
+                    return HandleRemoteApplyPayloadUpdate(cmd);
+                default:
+                    LogRemoteCommandAudit("WARN", string.Format("Strogo odbijena nedozvoljena komanda van allowliste: '{0}' (command_id={1}).", action, cmd.CommandId));
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = action,
+                        Status = "REJECTED",
+                        Detail = "Action not permitted by UI strict allowlist"
+                    };
+            }
+        }
+
+        private HubCommandExecutionResult HandleRemoteUnlockDriverGate(HubRemoteCommand cmd)
+        {
+            string rawReason = cmd.GetParamString("reason", "").Replace("\r", " ").Replace("\n", " ").Trim();
+            if (rawReason.Length < 5)
+            {
+                rawReason = string.IsNullOrEmpty(rawReason)
+                    ? "Daljinsko otključavanje putem ServiceHub-a (unlock_driver_gate)"
+                    : ("ServiceHub override: " + rawReason);
+            }
+            if (rawReason.Length > 300)
+            {
+                rawReason = rawReason.Substring(0, 300);
+            }
+
+            try
+            {
+                lock (_restartScheduleLock)
+                {
+                    if (!Directory.Exists(@"C:\setup")) Directory.CreateDirectory(@"C:\setup");
+                    Dictionary<string, object> stateMap = ReadExistingDeployStateMapLocked();
+                    stateMap["manual_driver_bypass"] = true;
+                    stateMap["driver_gate_emergency_override_reason"] = rawReason;
+                    stateMap["timestamp"] = DateTime.Now.ToString("o");
+                    File.WriteAllText(@"C:\setup\deploy-state.json", JsonHelper.Serialize(stateMap), new UTF8Encoding(false));
+                }
+
+                if (_embeddedHwTestShell != null)
+                {
+                    _embeddedHwTestShell.ApplyRemoteEmergencyDriverGateUnlock(rawReason);
+                }
+
+                LogRemoteCommandAudit("WARN", string.Format("Daljinski otključan PreAutoDriverGate (manual_driver_bypass=true, command_id={0}): {1}", cmd.CommandId, rawReason));
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "unlock_driver_gate",
+                    Status = "APPLIED",
+                    Detail = "PreAutoDriverGate unlocked: " + rawReason
+                };
+            }
+            catch (Exception ex)
+            {
+                LogRemoteCommandAudit("ERROR", "Neuspešno otključavanje PreAutoDriverGate: " + ex.Message);
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "unlock_driver_gate",
+                    Status = "FAILED",
+                    Detail = ex.Message
+                };
+            }
+        }
+
+        private void StopActivePhaseExecutionCleanly(string reason)
+        {
+            Interlocked.Increment(ref _phaseExecutionGeneration);
+
+            Process activeProc = _currentPhaseProcess;
+            _currentPhaseProcess = null;
+            if (activeProc != null)
+            {
+                try
+                {
+                    if (!activeProc.HasExited)
+                    {
+                        int pid = activeProc.Id;
+                        LogRemoteCommandAudit("WARN", string.Format("Čisto prekidam aktivni PowerShell proces faze (PID={0}) — razlog: {1}", pid, reason));
+                        try
+                        {
+                            ProcessStartInfo tkPsi = new ProcessStartInfo
+                            {
+                                FileName = "taskkill.exe",
+                                Arguments = string.Format(System.Globalization.CultureInfo.InvariantCulture, "/PID {0} /T /F", pid),
+                                CreateNoWindow = true,
+                                UseShellExecute = false,
+                                WindowStyle = ProcessWindowStyle.Hidden
+                            };
+                            using (Process tk = Process.Start(tkPsi))
+                            {
+                                if (tk != null) tk.WaitForExit(5000);
+                            }
+                        }
+                        catch { }
+                        try
+                        {
+                            if (!activeProc.HasExited) activeProc.Kill();
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+
+            try
+            {
+                CancelEmbeddedPhase5ForRemoteOverride();
+            }
+            catch { }
+        }
+
+        private bool ClearStepGuardEntriesForPhase(int phase, string specificStepId)
+        {
+            const string journalPath = @"C:\setup\step-journal.json";
+            try
+            {
+                if (!File.Exists(journalPath)) return false;
+                string raw = File.ReadAllText(journalPath, Encoding.UTF8);
+                if (string.IsNullOrWhiteSpace(raw)) return false;
+                JsonNode root = JsonHelper.Parse(raw);
+                if (root == null || !root.IsObject || !root.ContainsKey("steps") || !root["steps"].IsObject) return false;
+
+                Dictionary<string, object> journalMap = JsonNodeToNativeObject(root) as Dictionary<string, object>;
+                if (journalMap == null || !journalMap.ContainsKey("steps")) return false;
+                Dictionary<string, object> stepsMap = journalMap["steps"] as Dictionary<string, object>;
+                if (stepsMap == null) return false;
+
+                bool modified = false;
+                if (!string.IsNullOrWhiteSpace(specificStepId) &&
+                    System.Text.RegularExpressions.Regex.IsMatch(specificStepId.Trim(), @"^[A-Za-z0-9_.\-]{1,64}$"))
+                {
+                    string targetKey = specificStepId.Trim();
+                    List<string> keysToRemove = new List<string>();
+                    foreach (string k in stepsMap.Keys)
+                    {
+                        if (string.Equals(k, targetKey, StringComparison.OrdinalIgnoreCase))
+                        {
+                            keysToRemove.Add(k);
+                        }
+                    }
+                    for (int i = 0; i < keysToRemove.Count; i++)
+                    {
+                        stepsMap.Remove(keysToRemove[i]);
+                        modified = true;
+                    }
+                }
+                else
+                {
+                    string phasePrefix = string.Format(System.Globalization.CultureInfo.InvariantCulture, "P{0}.", phase);
+                    List<string> keysToRemove = new List<string>();
+                    foreach (string k in stepsMap.Keys)
+                    {
+                        if (k.StartsWith(phasePrefix, StringComparison.OrdinalIgnoreCase))
+                        {
+                            keysToRemove.Add(k);
+                        }
+                    }
+                    for (int i = 0; i < keysToRemove.Count; i++)
+                    {
+                        stepsMap.Remove(keysToRemove[i]);
+                        modified = true;
+                    }
+                }
+
+                if (modified)
+                {
+                    journalMap["updated_at"] = DateTime.UtcNow.ToString("o");
+                    string tmp = journalPath + ".tmp";
+                    File.WriteAllText(tmp, JsonHelper.Serialize(journalMap), new UTF8Encoding(false));
+                    if (File.Exists(journalPath)) File.Replace(tmp, journalPath, null);
+                    else File.Move(tmp, journalPath);
+                }
+                return modified;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private HubCommandExecutionResult HandleRemotePhaseTransition(HubRemoteCommand cmd, bool requireExplicitPhase)
+        {
+            string actionName = requireExplicitPhase ? "jump_to_phase" : "retry_phase";
+            int targetPhase;
+            bool hasExplicitPhase = cmd.TryGetParamInt("phase", out targetPhase);
+
+            if (!hasExplicitPhase)
+            {
+                if (requireExplicitPhase)
+                {
+                    LogRemoteCommandAudit("WARN", string.Format("Odbijen jump_to_phase (command_id={0}): nedostaje parametar 'phase' (2..6).", cmd.CommandId));
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = actionName,
+                        Status = "REJECTED",
+                        Detail = "Missing required parameter 'phase' (allowed: 2..6)"
+                    };
+                }
+                targetPhase = (ViewModel != null && ViewModel.CurrentPhase >= 2 && ViewModel.CurrentPhase <= 6)
+                    ? ViewModel.CurrentPhase
+                    : 2;
+            }
+
+            if (targetPhase < 2 || targetPhase > 6)
+            {
+                LogRemoteCommandAudit("WARN", string.Format("Odbijen {0} (command_id={1}): nedozvoljena ciljna faza {2} (dozvoljeno 2..6).", actionName, cmd.CommandId, targetPhase));
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = actionName,
+                    Status = "REJECTED",
+                    Detail = string.Format("Invalid target phase {0} (allowed: 2..6)", targetPhase)
+                };
+            }
+
+            bool clearStepGuard = cmd.GetParamBool("clear_step_guard", false);
+            string specificStepId = cmd.GetParamString("step_id", "").Trim();
+            if (string.IsNullOrEmpty(specificStepId))
+            {
+                string rawClearStr = cmd.GetParamString("clear_step_guard", "").Trim();
+                if (!string.IsNullOrEmpty(rawClearStr) &&
+                    !string.Equals(rawClearStr, "true", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(rawClearStr, "false", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(rawClearStr, "1", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(rawClearStr, "0", StringComparison.OrdinalIgnoreCase))
+                {
+                    specificStepId = rawClearStr;
+                    clearStepGuard = true;
+                }
+            }
+
+            StopActivePhaseExecutionCleanly(actionName + " -> Faza " + targetPhase);
+
+            bool clearedGuard = false;
+            if (clearStepGuard)
+            {
+                clearedGuard = ClearStepGuardEntriesForPhase(targetPhase, specificStepId);
+            }
+
+            SaveDeployStatePhase(targetPhase, false);
+            if (_isMasterMode && targetPhase <= 5)
+            {
+                EnsureRunOnceEntry();
+            }
+
+            Dispatcher.BeginInvoke((Action)(() =>
+            {
+                SetFailedPhase(0);
+                if (ViewModel != null)
+                {
+                    ViewModel.IsCompleted = false;
+                    ViewModel.IsServiceFinished = false;
+                    ViewModel.LiveStatus = string.Format("Daljinska komanda ({0}): pokrećem Fazu {1}...", actionName, targetPhase);
+                }
+            }));
+
+            int phaseToRun = targetPhase;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    Thread.Sleep(400);
+                    ExecutePhase(phaseToRun);
+                }
+                catch (Exception ex)
+                {
+                    LogRemoteCommandAudit("ERROR", string.Format("Greška pri pokretanju Faze {0} iz {1}: {2}", phaseToRun, actionName, ex.Message));
+                }
+            });
+
+            string detail = string.Format("Transitioned to Phase {0} (clear_step_guard={1}, cleared={2})", targetPhase, clearStepGuard, clearedGuard);
+            LogRemoteCommandAudit("INFO", string.Format("Izvršena komanda {0} (command_id={1}): {2}", actionName, cmd.CommandId, detail));
+            return new HubCommandExecutionResult
+            {
+                CommandId = cmd.CommandId,
+                Action = actionName,
+                Status = "APPLIED",
+                Detail = detail
+            };
+        }
+
+        private HubCommandExecutionResult HandleRemoteReResolveDrivers(HubRemoteCommand cmd)
+        {
+            if (Interlocked.CompareExchange(ref _remoteDriverResolveInFlight, 1, 0) != 0)
+            {
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "re_resolve_drivers",
+                    Status = "APPLIED",
+                    Detail = "Driver re-resolve already in progress"
+                };
+            }
+
+            LogRemoteCommandAudit("INFO", string.Format("Pokrećem ciljani daljinski re-resolve drajvera (InstallStaged + PostRebootFinalize, command_id={0})...", cmd.CommandId));
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    RunPhase2DriversStage("InstallStaged", 15);
+                    RunPhase2DriversStage("PostRebootFinalize", 8);
+                    try { DetectDisplay(); } catch { }
+                    try { RefreshPeripheralsAfterDrivers(); } catch { }
+                    NotifyHwTestDriverStateChanged(true);
+                    if (_embeddedHwTestShell != null)
+                    {
+                        try { _embeddedHwTestShell.NotifyDriverStateRecheck(); } catch { }
+                    }
+                    LogRemoteCommandAudit("INFO", "Daljinski re-resolve drajvera završen — DriverGate osvežen.");
+                }
+                catch (Exception ex)
+                {
+                    LogRemoteCommandAudit("ERROR", "Greška pri daljinskom re-resolve drajvera: " + ex.Message);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _remoteDriverResolveInFlight, 0);
+                }
+            });
+
+            return new HubCommandExecutionResult
+            {
+                CommandId = cmd.CommandId,
+                Action = "re_resolve_drivers",
+                Status = "APPLIED",
+                Detail = "Triggered targeted InstallStaged + PostRebootFinalize re-resolve"
+            };
+        }
+
+        private HubCommandExecutionResult HandleRemoteRebootAndResume(HubRemoteCommand cmd)
+        {
+            int resumePhase = (ViewModel != null && ViewModel.CurrentPhase >= 2 && ViewModel.CurrentPhase <= 6)
+                ? ViewModel.CurrentPhase
+                : 5;
+            if (resumePhase >= 6 && !_phase6ScriptCompletedSuccessfully)
+            {
+                resumePhase = 5;
+            }
+
+            SaveDeployStatePhase(resumePhase, resumePhase == 5);
+            EnsureRunOnceEntry();
+            try
+            {
+                if (_embeddedHwTestShell != null)
+                {
+                    _embeddedHwTestShell.SaveCheckpoint("remote_reboot_and_resume");
+                }
+            }
+            catch { }
+
+            SuspendBitLockerBeforeReboot();
+            StopScreenCaptureWorker();
+
+            LogRemoteCommandAudit("WARN", string.Format("Daljinski reboot_and_resume (command_id={0}): sačuvano stanje (Faza {1}) + RunOnce + checkpoint; pokrećem shutdown.exe /r /t 5.", cmd.CommandId, resumePhase));
+
+            return new HubCommandExecutionResult
+            {
+                CommandId = cmd.CommandId,
+                Action = "reboot_and_resume",
+                Status = "APPLIED",
+                Detail = string.Format("Saved deploy-state (phase={0}), RunOnce, hwtest-checkpoint; rebooting with shutdown.exe /r /t 5", resumePhase),
+                PostAckAction = delegate
+                {
+                    try
+                    {
+                        ProcessStartInfo psi = new ProcessStartInfo
+                        {
+                            FileName = "shutdown.exe",
+                            Arguments = "/r /t 5",
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        };
+                        Process.Start(psi);
+                    }
+                    catch { }
+
+                    Thread.Sleep(1000);
+                    if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                    {
+                        Dispatcher.BeginInvoke((Action)(() => { try { Close(); } catch { } }));
+                    }
+                }
+            };
+        }
+
+        private void RecordHotfixAppliedMetadata(VerifiedHotfixManifest manifest, string mode, string appliedAtIso)
+        {
+            if (manifest == null) return;
+            var hotfixObj = new Dictionary<string, object>
+            {
+                { "release_id", manifest.ReleaseId ?? "" },
+                { "version", manifest.Version ?? "" },
+                { "mode", mode ?? "scripts_only" },
+                { "applied_at", appliedAtIso ?? DateTime.UtcNow.ToString("o") }
+            };
+
+            // 1. Upis u C:\setup\deploy-state.json
+            lock (_restartScheduleLock)
+            {
+                try
+                {
+                    if (!Directory.Exists(@"C:\setup")) Directory.CreateDirectory(@"C:\setup");
+                    Dictionary<string, object> stateMap = ReadExistingDeployStateMapLocked();
+                    stateMap["hotfix_applied"] = hotfixObj;
+                    stateMap["timestamp"] = DateTime.Now.ToString("o");
+                    File.WriteAllText(@"C:\setup\deploy-state.json", JsonHelper.Serialize(stateMap), new UTF8Encoding(false));
+                }
+                catch { }
+            }
+
+            // 2. Upis u C:\setup\servisni_karton.json ako već postoji na disku
+            string[] kartonPaths = new string[]
+            {
+                @"C:\setup\servisni_karton.json",
+                @"C:\Windows\Logs\WIS\servisni_karton.json"
+            };
+            for (int i = 0; i < kartonPaths.Length; i++)
+            {
+                try
+                {
+                    if (!File.Exists(kartonPaths[i])) continue;
+                    string raw = File.ReadAllText(kartonPaths[i], Encoding.UTF8);
+                    JsonNode root = JsonHelper.Parse(raw);
+                    if (root == null || !root.IsObject) continue;
+                    Dictionary<string, object> kartonMap = JsonNodeToNativeObject(root) as Dictionary<string, object>;
+                    if (kartonMap == null) continue;
+                    kartonMap["hotfix_applied"] = hotfixObj;
+                    string tmp = kartonPaths[i] + ".tmp";
+                    File.WriteAllText(tmp, JsonHelper.Serialize(kartonMap), new UTF8Encoding(false));
+                    File.Replace(tmp, kartonPaths[i], null);
+                }
+                catch { }
+            }
+        }
+
+        private static void SafeDeleteDirQuiet(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                {
+                    Directory.Delete(path, true);
+                }
+            }
+            catch { }
+        }
+
+        private HubCommandExecutionResult HandleRemoteApplyPayloadUpdate(HubRemoteCommand cmd)
+        {
+            string mode = cmd.GetParamString("mode", "scripts_only").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(mode)) mode = "scripts_only";
+            if (mode != "scripts_only" && mode != "full_restart")
+            {
+                LogRemoteCommandAudit("WARN", string.Format("Odbijen apply_payload_update (command_id={0}): nedozvoljen mode '{1}'.", cmd.CommandId, mode));
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "REJECTED",
+                    Detail = "Invalid mode (allowed: scripts_only | full_restart)"
+                };
+            }
+
+            string requestedVersion = cmd.GetParamString("version", "").Trim();
+            if (!string.IsNullOrEmpty(requestedVersion) &&
+                !System.Text.RegularExpressions.Regex.IsMatch(requestedVersion, @"^[0-9A-Za-z.\-_]{1,32}$"))
+            {
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "REJECTED",
+                    Detail = "Invalid version format"
+                };
+            }
+
+            int targetPhase = 0;
+            bool hasTargetPhase = cmd.TryGetParamInt("target_phase", out targetPhase);
+            if (hasTargetPhase && (targetPhase < 2 || targetPhase > 6))
+            {
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "REJECTED",
+                    Detail = string.Format("Invalid target_phase {0} (allowed: 2..6)", targetPhase)
+                };
+            }
+
+            if (_telemetryService == null)
+            {
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "FAILED",
+                    Detail = "TelemetryService nije inicijalizovan"
+                };
+            }
+
+            if (Interlocked.CompareExchange(ref _remoteHotfixInFlight, 1, 0) != 0)
+            {
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "FAILED",
+                    Detail = "Hotfix update je već u toku"
+                };
+            }
+
+            const string setupRoot = @"C:\setup";
+            string attemptDir = Path.Combine(setupRoot, ".hotfix_attempt");
+            string stagingDir = Path.Combine(setupRoot, ".hotfix_staging");
+            string partialZip = Path.Combine(attemptDir, "payload.zip.partial");
+
+            try
+            {
+                // 1. Preuzimanje i stroga RSA-2048 verifikacija payload_meta.json
+                bool metaOk;
+                string metaJson = _telemetryService.HttpGetString("/api/payload/version", 10000, out metaOk);
+                if (!metaOk || string.IsNullOrWhiteSpace(metaJson))
+                {
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "FAILED",
+                        Detail = "Nije uspelo preuzimanje /api/payload/version sa ServiceHub-a"
+                    };
+                }
+
+                VerifiedHotfixManifest manifest;
+                string verifyErr;
+                if (!PayloadHotfixVerifier.ParseAndVerifyManifest(metaJson, out manifest, out verifyErr) || manifest == null || !manifest.IsSignatureValid)
+                {
+                    LogRemoteCommandAudit("ERROR", "apply_payload_update ODBIJEN (RSA-2048 / manifest): " + verifyErr);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "REJECTED",
+                        Detail = "Manifest / RSA-2048 verification failed: " + verifyErr
+                    };
+                }
+
+                if (!string.IsNullOrEmpty(requestedVersion) &&
+                    !string.Equals(manifest.Version.TrimStart('v', 'V'), requestedVersion.TrimStart('v', 'V'), StringComparison.OrdinalIgnoreCase))
+                {
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "FAILED",
+                        Detail = string.Format("Version mismatch: requested={0}, hub={1}", requestedVersion, manifest.Version)
+                    };
+                }
+
+                // 2. Preuzimanje wis-payload.zip sa tvrdim limitom veličine
+                SafeDeleteDirQuiet(attemptDir);
+                SafeDeleteDirQuiet(stagingDir);
+                Directory.CreateDirectory(attemptDir);
+
+                string dlErr;
+                if (!_telemetryService.DownloadToFileWithLimit("/api/payload/download", partialZip, manifest.SizeBytes, 15000, out dlErr))
+                {
+                    SafeDeleteDirQuiet(attemptDir);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "FAILED",
+                        Detail = dlErr ?? "Preuzimanje wis-payload.zip nije uspelo"
+                    };
+                }
+
+                // 3. Verifikacija veličine i SHA-256 preuzetog ZIP-a
+                FileInfo fi = new FileInfo(partialZip);
+                if (!fi.Exists || fi.Length != manifest.SizeBytes)
+                {
+                    SafeDeleteDirQuiet(attemptDir);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "REJECTED",
+                        Detail = "Preuzeti ZIP nema očekivanu veličinu iz potpisanog manifesta"
+                    };
+                }
+
+                string zipSha = PayloadHotfixVerifier.CalculateSha256(partialZip);
+                if (string.IsNullOrEmpty(zipSha) || !string.Equals(zipSha, manifest.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    SafeDeleteDirQuiet(attemptDir);
+                    LogRemoteCommandAudit("ERROR", "apply_payload_update ODBIJEN: SHA-256 neslaganje ZIP arhive!");
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "REJECTED",
+                        Detail = "SHA-256 mismatch on downloaded wis-payload.zip"
+                    };
+                }
+
+                // 4. Zip-Slip i strukturna verifikacija ZIP ulaza PRE ekstrakcije
+                List<string> zipEntries;
+                string zipSlipErr;
+                if (!PayloadHotfixVerifier.ValidateZipEntriesAgainstZipSlip(partialZip, stagingDir, out zipEntries, out zipSlipErr))
+                {
+                    SafeDeleteDirQuiet(attemptDir);
+                    LogRemoteCommandAudit("ERROR", "apply_payload_update ODBIJEN (Zip-Slip): " + zipSlipErr);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "REJECTED",
+                        Detail = "Zip-Slip protection rejected archive: " + zipSlipErr
+                    };
+                }
+
+                for (int i = 0; i < zipEntries.Count; i++)
+                {
+                    string entry = zipEntries[i];
+                    if (entry.EndsWith("/") || entry.EndsWith("\\")) continue;
+                    string normEntry = entry.Replace('\\', '/');
+                    if (!manifest.RequiredFiles.ContainsKey(normEntry))
+                    {
+                        SafeDeleteDirQuiet(attemptDir);
+                        LogRemoteCommandAudit("ERROR", "apply_payload_update ODBIJEN: nepotpisana komponenta u ZIP-u: " + normEntry);
+                        return new HubCommandExecutionResult
+                        {
+                            CommandId = cmd.CommandId,
+                            Action = "apply_payload_update",
+                            Status = "REJECTED",
+                            Detail = "Archive contains unsigned file: " + normEntry
+                        };
+                    }
+                }
+
+                // 5. Ekstrakcija u izolovani .hotfix_staging + ReparsePoint/symlink provera
+                Directory.CreateDirectory(stagingDir);
+                if (!PayloadHotfixVerifier.ExtractZipWithTar(partialZip, stagingDir))
+                {
+                    SafeDeleteDirQuiet(stagingDir);
+                    SafeDeleteDirQuiet(attemptDir);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "FAILED",
+                        Detail = "Raspakivanje verifikovane arhive u .hotfix_staging nije uspelo"
+                    };
+                }
+
+                string reparsePath;
+                if (PayloadHotfixVerifier.ContainsReparsePointsRecursive(stagingDir, out reparsePath))
+                {
+                    SafeDeleteDirQuiet(stagingDir);
+                    SafeDeleteDirQuiet(attemptDir);
+                    LogRemoteCommandAudit("ERROR", "apply_payload_update ODBIJEN: ReparsePoint/symlink u staging-u: " + reparsePath);
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "REJECTED",
+                        Detail = "Detected ReparsePoint/symlink in extracted archive"
+                    };
+                }
+
+                string appliedAtIso = DateTime.UtcNow.ToString("o");
+
+                if (mode == "scripts_only")
+                {
+                    int updatedCount;
+                    string applyErr;
+                    if (!PayloadHotfixVerifier.ApplyScriptsOnlyFromStaging(stagingDir, setupRoot, manifest, out updatedCount, out applyErr))
+                    {
+                        SafeDeleteDirQuiet(stagingDir);
+                        SafeDeleteDirQuiet(attemptDir);
+                        return new HubCommandExecutionResult
+                        {
+                            CommandId = cmd.CommandId,
+                            Action = "apply_payload_update",
+                            Status = "FAILED",
+                            Detail = "scripts_only zamena nije uspela: " + applyErr
+                        };
+                    }
+
+                    SafeDeleteDirQuiet(stagingDir);
+                    SafeDeleteDirQuiet(attemptDir);
+                    RecordHotfixAppliedMetadata(manifest, "scripts_only", appliedAtIso);
+
+                    string okDetail = string.Format("Hotfix scripts_only primenjen (v{0}, release_id={1}, fajlova={2})",
+                        manifest.Version, manifest.ReleaseId, updatedCount);
+                    LogRemoteCommandAudit("SUCCESS", okDetail);
+
+                    Action postPhaseAct = null;
+                    if (hasTargetPhase)
+                    {
+                        int phaseToRun = targetPhase;
+                        postPhaseAct = delegate
+                        {
+                            StopActivePhaseExecutionCleanly("apply_payload_update scripts_only -> Faza " + phaseToRun);
+                            SaveDeployStatePhase(phaseToRun, false);
+                            ThreadPool.QueueUserWorkItem(delegate
+                            {
+                                try { Thread.Sleep(400); ExecutePhase(phaseToRun); } catch { }
+                            });
+                        };
+                    }
+
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "APPLIED",
+                        Detail = okDetail,
+                        AppliedAt = appliedAtIso,
+                        PostAckAction = postPhaseAct
+                    };
+                }
+                else
+                {
+                    // Režim full_restart: potpuna verifikacija svih komponenti, snimanje stanja/checkpointa i delegacija WIS.Launcher helperu
+                    string fullVerifyErr;
+                    if (!PayloadHotfixVerifier.VerifyDirectoryMatchesManifest(stagingDir, manifest, out fullVerifyErr))
+                    {
+                        SafeDeleteDirQuiet(stagingDir);
+                        SafeDeleteDirQuiet(attemptDir);
+                        return new HubCommandExecutionResult
+                        {
+                            CommandId = cmd.CommandId,
+                            Action = "apply_payload_update",
+                            Status = "REJECTED",
+                            Detail = "Staging SHA-256 verifikacija nije uspela: " + fullVerifyErr
+                        };
+                    }
+
+                    // Osiguraj perzistenciju install_session_id (čuvaju se Wifi-Servis.ini i install_session_id)
+                    try { _telemetryService.EnsureInstallSessionIdPersisted(); } catch { }
+
+                    int resumePhase = hasTargetPhase
+                        ? targetPhase
+                        : ((ViewModel != null && ViewModel.CurrentPhase >= 2 && ViewModel.CurrentPhase <= 6) ? ViewModel.CurrentPhase : 2);
+                    SaveDeployStatePhase(resumePhase, resumePhase == 5 && _postRebootFinalizePending);
+                    RecordHotfixAppliedMetadata(manifest, "full_restart", appliedAtIso);
+                    EnsureRunOnceEntry();
+                    try
+                    {
+                        if (_embeddedHwTestShell != null)
+                        {
+                            _embeddedHwTestShell.SaveCheckpoint("hotfix_full_restart");
+                        }
+                    }
+                    catch { }
+
+                    // Priprema .update_attempt pod Global\WIS_Launcher_Update_Mutex za WIS.Launcher.exe --apply-pending-update
+                    string launcherUpdateAttemptDir = Path.Combine(setupRoot, ".update_attempt");
+                    Mutex updMutex = null;
+                    bool updMutexAcquired = false;
+                    try
+                    {
+                        bool createdNew;
+                        updMutex = new Mutex(false, @"Global\WIS_Launcher_Update_Mutex", out createdNew);
+                        try { updMutexAcquired = updMutex.WaitOne(10000, false); }
+                        catch (AbandonedMutexException) { updMutexAcquired = true; }
+                        if (!updMutexAcquired)
+                        {
+                            SafeDeleteDirQuiet(stagingDir);
+                            SafeDeleteDirQuiet(attemptDir);
+                            return new HubCommandExecutionResult
+                            {
+                                CommandId = cmd.CommandId,
+                                Action = "apply_payload_update",
+                                Status = "FAILED",
+                                Detail = "Global\\WIS_Launcher_Update_Mutex je zauzet drugim procesom ažuriranja"
+                            };
+                        }
+
+                        SafeDeleteDirQuiet(launcherUpdateAttemptDir);
+                        Directory.CreateDirectory(launcherUpdateAttemptDir);
+                        File.Copy(partialZip, Path.Combine(launcherUpdateAttemptDir, "payload.zip.partial"), true);
+                        File.WriteAllText(Path.Combine(launcherUpdateAttemptDir, "payload_meta.pending.json"), manifest.RawJson, new UTF8Encoding(false));
+                    }
+                    finally
+                    {
+                        if (updMutex != null)
+                        {
+                            if (updMutexAcquired) { try { updMutex.ReleaseMutex(); } catch { } }
+                            try { updMutex.Close(); } catch { }
+                        }
+                    }
+
+                    string originalLauncher = Path.Combine(setupRoot, "WIS.Launcher.exe");
+                    string launcherSource = File.Exists(originalLauncher)
+                        ? originalLauncher
+                        : Path.Combine(stagingDir, "WIS.Launcher.exe");
+                    if (!File.Exists(launcherSource))
+                    {
+                        SafeDeleteDirQuiet(stagingDir);
+                        SafeDeleteDirQuiet(attemptDir);
+                        return new HubCommandExecutionResult
+                        {
+                            CommandId = cmd.CommandId,
+                            Action = "apply_payload_update",
+                            Status = "FAILED",
+                            Detail = "WIS.Launcher.exe nije pronađen za full_restart hotfix"
+                        };
+                    }
+
+                    string helperDir = Path.Combine(Path.GetTempPath(), "WIS-update-" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(helperDir);
+                    string helperExe = Path.Combine(helperDir, "WIS.UpdateHelper.exe");
+                    File.Copy(launcherSource, helperExe, true);
+                    PayloadHotfixVerifier.UnblockFileZone(helperExe);
+
+                    // Ukloni privremene .hotfix_* direktorijume pre predaje Launcheru
+                    SafeDeleteDirQuiet(stagingDir);
+                    SafeDeleteDirQuiet(attemptDir);
+
+                    int currentPid = Process.GetCurrentProcess().Id;
+                    string fullDetail = string.Format("Hotfix full_restart pripremljen (v{0}, release_id={1}, resume_phase={2}) — pokrećem izolovani WIS.Launcher updater...",
+                        manifest.Version, manifest.ReleaseId, resumePhase);
+                    LogRemoteCommandAudit("WARN", fullDetail);
+
+                    return new HubCommandExecutionResult
+                    {
+                        CommandId = cmd.CommandId,
+                        Action = "apply_payload_update",
+                        Status = "APPLIED",
+                        Detail = fullDetail,
+                        AppliedAt = appliedAtIso,
+                        PostAckAction = delegate
+                        {
+                            try { StopScreenCaptureWorker(); } catch { }
+                            try { StopActivePhaseExecutionCleanly("apply_payload_update full_restart"); } catch { }
+                            try
+                            {
+                                ProcessStartInfo helperPsi = new ProcessStartInfo
+                                {
+                                    FileName = helperExe,
+                                    Arguments = string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                                        "--apply-pending-update {0} \"{1}\"", currentPid, originalLauncher),
+                                    UseShellExecute = false,
+                                    WorkingDirectory = helperDir
+                                };
+                                Process.Start(helperPsi);
+                            }
+                            catch { }
+
+                            Thread.Sleep(500);
+                            if (Dispatcher != null && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                            {
+                                Dispatcher.BeginInvoke((Action)(() =>
+                                {
+                                    try { Close(); } catch { }
+                                    try { Environment.Exit(0); } catch { }
+                                }));
+                            }
+                            else
+                            {
+                                try { Environment.Exit(0); } catch { }
+                            }
+                        }
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                SafeDeleteDirQuiet(stagingDir);
+                SafeDeleteDirQuiet(attemptDir);
+                LogRemoteCommandAudit("ERROR", "Greška u apply_payload_update: " + ex.Message);
+                return new HubCommandExecutionResult
+                {
+                    CommandId = cmd.CommandId,
+                    Action = "apply_payload_update",
+                    Status = "FAILED",
+                    Detail = ex.Message
+                };
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _remoteHotfixInFlight, 0);
             }
         }
 
